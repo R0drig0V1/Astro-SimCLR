@@ -1,2 +1,3 @@
-# Entrenamiento-contrastivo-con-imagenes-de-eventos-astronomicos
-El7006/2021: T4
+# Entrenamiento contrastivo con imágenes de eventos astronómicos
+Curso: El7006
+Semestre: Primavera 2021
