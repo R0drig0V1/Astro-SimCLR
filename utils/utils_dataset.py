@@ -48,26 +48,11 @@ def dataset_structure(data, space=''):
 
 # -----------------------------------------------------------------------------
 
-## Returns a list with the array into the file
-#
-#def load_array(file):
-#
-#    csv_reader = csv.reader(open(file, "r"))
-#    list_array = []
-#
-#    # Only loads the first element
-#    for row in csv_reader:
-#        list_array.append(row[0])
-#
-#    return list_array
+# Change the format of image, from np.float [0,1] to np.int8 (0,255)
+
+def resize(img):
+    img_255 = 255 * img
+    img_round = np.uint8(np.round(img_255))
+    return img_round
 
 # -----------------------------------------------------------------------------
-
-# Recursively prints the type of the objects inside the input.
-#def reduction_images(data, size):
-
-#    for img in data['Train']['images']:
-
-#    for img in data['Validation']['images']:
-
-#    for img in data['Test']['images']:
