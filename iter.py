@@ -7,21 +7,35 @@ import matplotlib.pyplot as plt
 
 import torch
 import torchvision
+#import torchmetrics
 
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
+import torch.nn.functional as F
 
-from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
-from torchvision.transforms import ToTensor, transforms
+from torch.utils.data import Dataset, DataLoader
+from torchvision.transforms import transforms
+
+from sklearn.metrics import confusion_matrix, accuracy_score
 
 # -----------------------------------------------------------------------------
 
 sys.path.append('utils')
 import utils_dataset
-from utils_dataset import dataset_structure
-from utils_dataset import resize
+from utils_dataset import img_float2int, one_hot_trans, Dataset_stamps
+from utils_plots import plot_confusion_matrix
+from utils_metrics import results
+from utils_training import trainer_v1
+
+# -----------------------------------------------------------------------------
+
+sys.path.append('losses')
+from losses import P_stamps_loss
+
+# -----------------------------------------------------------------------------
+
+sys.path.append('models')
+from models import P_stamp_net
 
 # -----------------------------------------------------------------------------
 
@@ -31,158 +45,119 @@ with open('dataset/td_ztf_stamp_17_06_20.pkl', 'rb') as f:
 
 # -----------------------------------------------------------------------------
 
-# Class to load stamps
-class Dataset_stamps(Dataset):
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+torch.backends.cudnn.benchmark = True
 
-    def __init__(self, pickle, dataset, transform=None, target_transform=None):
+# -----------------------------------------------------------------------------
 
-        self.pickle = pickle
-        self.dataset = dataset
-        self.transform = transform
-        self.target_transform = target_transform
-
-    def __len__(self):
-        return len(self.pickle[self.dataset]['labels'])
-
-    def __getitem__(self, idx):
-
-        image = self.pickle[self.dataset]['images'][idx]
-        label = self.pickle[self.dataset]['labels'][idx]
-
-        if self.transform:
-            image = self.transform(image)
-
-        if self.target_transform:
-            label = self.target_transform(label)
-
-        return image, label
-
-epochs = 100
+# Hiperparameters
+epochs = 10
 batch_size = 64
 size = (21, 21)
 lr = 1e-3
 beta = 0.5
 drop_r = 0.5
+num_workers = 4
 
 # -----------------------------------------------------------------------------
 
-# Transformation to load image, np.array(np.int8) is converted to tensor
-
-trans_stamp_load = transforms.Compose([transforms.Lambda(resize),
+# Transformation to load images, float image is converted to np.array(np.int8) and
+# resized
+trans_stamp_load = transforms.Compose([transforms.Lambda(img_float2int),
                                        transforms.ToPILImage(),
                                        transforms.Resize(size),
-                                       transforms.ToTensor()
-                                       ])
+                                       transforms.ToTensor()])
 
-# One hot encoding to use softmax
-trans_labels = None #lambda x: F.one_hot(torch.tensor(x), num_classes=5) 
+# Data reading
+training_data = Dataset_stamps(data,
+                               'Train',
+                               device = device,
+                               transform=trans_stamp_load,
+                               target_transform=one_hot_trans)
 
-# Loads data
-training_data = Dataset_stamps(data, 'Train', transform=trans_stamp_load, target_transform=trans_labels)
-validation_data = Dataset_stamps(data, 'Validation', transform=trans_stamp_load, target_transform=trans_labels)
-test_data = Dataset_stamps(data, 'Test', transform=trans_stamp_load, target_transform=trans_labels)
+validation_data = Dataset_stamps(data,
+                                 'Validation',
+                                 device=device,
+                                 transform=trans_stamp_load,
+                                 target_transform=one_hot_trans)
 
-# Data loader
-train_dataloader = DataLoader(training_data, batch_size=batch_size, shuffle=True)
-validation_dataloader = DataLoader(training_data, batch_size=batch_size, shuffle=True)
-test_dataloader = DataLoader(training_data, batch_size=batch_size, shuffle=True)
+test_data = Dataset_stamps(data,
+                           'Test',
+                           device=device,
+                           transform=trans_stamp_load,
+                           target_transform=one_hot_trans)
+
+# Data loaders
+train_dataloader = DataLoader(training_data,
+                              batch_size=batch_size,
+                              shuffle=True,
+                              num_workers=num_workers,
+                              pin_memory=True)
+
+validation_dataloader = DataLoader(validation_data, num_workers=num_workers)
+
+test_dataloader = DataLoader(test_data,batch_size=100, num_workers=num_workers)
 
 # -----------------------------------------------------------------------------
-
-# P-stamp implementation
-class Net_p_stamp(nn.Module):
-
-    def __init__(self, size, drop_r):
-        super().__init__()
-        self.zpad = nn.ZeroPad2d(3)
-        self.conv1 = nn.Conv2d(3, 32, 4)
-        self.conv2 = nn.Conv2d(32, 32, 3, padding=1)
-        self.pool1 = nn.MaxPool2d(2, stride=2)
-        self.conv3 = nn.Conv2d(32, 64, 3, padding=1)
-        self.conv4 = nn.Conv2d(64, 64, 3, padding=1)
-        self.conv5 = nn.Conv2d(64, 64, 3, padding=1)
-        self.pool2 = nn.MaxPool2d(2, stride=2)
-        self.fl1 = nn.Flatten()
-        self.fc1 = nn.Linear(2304, 64)
-        self.drop = nn.Dropout(p=drop_r)
-        self.fc3 = nn.Linear(64, 64)
-        self.fc4 = nn.Linear(64,5)
-
-    def forward(self, x):
-
-        x = self.zpad(x)
-        #print(x.size())
-
-        x1 = self.conv(torch.rot90(x, 0, [2, 3]))
-        x2 = self.conv(torch.rot90(x, 1, [2, 3]))
-        x3 = self.conv(torch.rot90(x, 2, [2, 3]))
-        x4 = self.conv(torch.rot90(x, 3, [2, 3]))
-        #x = self.conv(x)
-        x = (x1 + x2 + x3 + x4) / 4
-
-        x = self.drop(x)
-        #print(x.size())
-        x = F.relu(self.fc3(x))
-        #print(x.size())
-        #x = F.softmax(self.fc4(x), dim=0)
-        x = self.fc4(x)
-        #print(x.size())
-        return x
-
-    def conv(self, x):
-
-        x = F.relu(self.conv1(x))
-        #print(x.size())
-        x = F.relu(self.conv2(x))
-        #print(x.size())
-        x = self.pool1(x)
-        #print(x.size())
-        x = F.relu(self.conv3(x))
-        #print(x.size())
-        x = F.relu(self.conv4(x))
-        #print(x.size())
-        x = F.relu(self.conv5(x))
-        #print(x.size())
-        x = self.pool2(x)
-        #print(x.size())
-        x = self.fl1(x)
-        #print(x.size())
-        x = F.relu(self.fc1(x))
-        #print(x.size())
-        return x
+# -----------------------------------------------------------------------------
 
 # Network
-net = Net_p_stamp(size, drop_r)
+net = P_stamp_net(drop_r)
+net.to(device)
+#
+criterion = P_stamps_loss(batch_size, beta)
+#optimizer = optim.SGD(net.parameters(), lr=lr, momentum=0.5)
+#optimizer = optim.Adam(net.parameters(), lr=lr, betas=[0.5, 0.9])
+optimizer = optim.AdamW(net.parameters(), lr=0.001, betas=(0.5, 0.9))
+
+#
+trainer_v1(net, epochs, train_dataloader, validation_dataloader, optimizer, criterion, device)
+PATH = '../weights/p_stamp_net_paper_loss.pth'
+torch.save(net.state_dict(), PATH)
+
+net = P_stamp_net(drop_r)
+net.load_state_dict(torch.load(PATH))
+
 
 # -----------------------------------------------------------------------------
 
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(net.parameters(), lr=lr, momentum=0.9)
+net.eval()
 
-for ep in range(epochs):
+y_true, y_pred = results(net, test_dataloader, torch.device("cpu"))
+confusion_matrix = confusion_matrix(y_true, y_pred, labels=[0,1,2,3,4], normalize='true')
+acc = accuracy_score(y_true, y_pred)
 
-    running_loss = 0.0
-    for i, data in enumerate(train_dataloader, 0):
+title = 'Average confusion matrix p-stamps (p-stamps loss)\n Accuracy:{0:.2f}%'.format(acc*100)
+file = 'Figures/conf_mat_pstamps_loss.png'
+plot_confusion_matrix(confusion_matrix, title, utils_dataset.label_names, file)
 
-        # get the inputs; data is a list of [inputs, labels]
-        inputs, labels = data
 
-        # zero the parameter gradients
-        optimizer.zero_grad()
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 
-        # forward + backward + optimize
-        outputs = net(inputs)
+"""
+net = P_stamp_sim_clr()
+net.to(device)
 
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
+#trainer_v1(net, epochs, train_dataloader, optimizer, criterion, device)
+PATH = '../weights/p_stamp_net_paper_loss.pth'
+#torch.save(net.state_dict(), PATH)
 
-        # print statistics
-        running_loss += loss.item()
+net = P_stamp_net(drop_r)
+net.load_state_dict(torch.load(PATH))
 
-        if i % 100 == 99:    # print every 100 mini-batches
-            print('[%d, %5d] loss: %.5f' %
-                  (ep + 1, i + 1, running_loss / 100))
-            running_loss = 0.0
+# -----------------------------------------------------------------------------
 
-print('Finished Training')
+net.eval()
+
+y_true, y_pred = results(net, test_dataloader, torch.device("cpu"))
+confusion_matrix = confusion_matrix(y_true, y_pred, labels=[0,1,2,3,4], normalize='true')
+acc = accuracy_score(y_true, y_pred)
+
+title = 'Average confusion matrix p-stamps (p-stamps loss)\n Accuracy:{0:.2f}%'.format(acc*100)
+file = 'Figures/conf_mat_pstamps_loss.png'
+plot_confusion_matrix(confusion_matrix, title, utils_dataset.label_names, file)
+
+"""
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------

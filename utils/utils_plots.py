@@ -1,10 +1,12 @@
 import csv
 import numpy as np
 import pandas as pd
+import seaborn as sns
 import matplotlib.pyplot as plt
 
 from utils_dataset import feature_names
 from utils_dataset import label_names
+
 
 # -----------------------------------------------------------------------------
 
@@ -40,5 +42,21 @@ def stamps_plot(data, type_set, index):
     # Displays images and features
     plt.show()
     display(df)
+
+# -----------------------------------------------------------------------------
+
+def plot_confusion_matrix(confusion_matrix, title, label_names, file):
+
+    ax = sns.heatmap(confusion_matrix, vmin=0, vmax=1, annot=True, fmt='.2f');
+
+    ax.set_title(title)
+    ax.set_xlabel('Predicted label')
+    ax.set_ylabel('True label')
+
+    # set ticklabels
+    ax.xaxis.set_ticklabels(label_names)
+    ax.yaxis.set_ticklabels(label_names)
+
+    plt.savefig(file, dpi=180)
 
 # -----------------------------------------------------------------------------
