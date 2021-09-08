@@ -58,5 +58,6 @@ def plot_confusion_matrix(confusion_matrix, title, label_names, file):
     ax.yaxis.set_ticklabels(label_names)
 
     plt.savefig(file, dpi=180)
+    plt.clf()
 
 # -----------------------------------------------------------------------------

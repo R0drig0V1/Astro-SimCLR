@@ -1,8 +1,10 @@
 import csv
 import torch
+
 import numpy as np
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
+import torchvision.transforms as transforms
 
 from torch.utils.data import Dataset
 
@@ -24,9 +26,10 @@ def dataset_structure(data, space=''):
 
     # Iteration along dictionary
     for keys in data:
-        print(keys)
+
         # If the object is other dictionary
         if(type(data[keys]) is dict):
+
             print('{0}-{1}:'.format(space,keys))
             dataset_structure(data[keys], space + '\t')
 
@@ -54,6 +57,7 @@ def dataset_structure(data, space=''):
 
 # Change the format of image, from np.float [0,1] to np.int8 (0,255)
 def img_float2int(img):
+
     img_255 = 255 * img
     img_round = np.uint8(np.round(img_255))
     return img_round
@@ -62,36 +66,54 @@ def img_float2int(img):
 
 # One hot encoding to use softmax
 def one_hot_trans(x):
-    return F.one_hot(torch.tensor(x), num_classes=5) 
+
+    return F.one_hot(torch.tensor(x), num_classes=5)
 
 # -----------------------------------------------------------------------------
 
 # Class to load stamps
 class Dataset_stamps(Dataset):
 
-    def __init__(self, pickle, dataset, device='cpu', transform=None, target_transform=None):
+    def __init__(self, pickle, dataset, transform=None, target_transform=None):
 
         self.pickle = pickle
         self.dataset = dataset
-        self.device = device
-        self.transform = transform
-        self.target_transform = target_transform
+
+        if(transform==None):
+            self.transform = transforms.Compose([transforms.Lambda(img_float2int),
+                                                transforms.ToPILImage()
+                                                ])
+        else:
+            self.transform = transforms.Compose([transforms.Lambda(img_float2int),
+                                                transforms.ToPILImage(),
+                                                transform])
+
+        if(target_transform==None):
+            self.target_transform = transforms.Compose([transforms.Lambda(one_hot_trans)
+                                                      ])
+
+        else:
+            self.target_transform = transforms.Compose([transforms.Lambda(one_hot_trans),
+                                                       target_transform])
+
 
     def __len__(self):
         return len(self.pickle[self.dataset]['labels'])
 
+
     def __getitem__(self, idx):
 
+        # Get items
         image = self.pickle[self.dataset]['images'][idx]
-        feature = np.array(self.pickle[self.dataset]['features'][idx], dtype=np.float32)
-        feature = torch.from_numpy(feature)
+
+        feature = torch.from_numpy(np.array(
+            self.pickle[self.dataset]['features'][idx], dtype=np.float32))
+
         label = self.pickle[self.dataset]['labels'][idx]
 
-        if self.transform:
-            image = self.transform(image)
-
-        if self.target_transform:
-            label = self.target_transform(label)
+        # Transformations
+        image = self.transform(image)
+        label = self.target_transform(label)
 
         return image, feature, label
 
