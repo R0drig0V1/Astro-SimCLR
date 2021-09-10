@@ -1,47 +1,26 @@
 import os
-import sys
 import pickle
+import sys
 import torch
-import torchvision
 import torchmetrics
-
+import torchvision
 import warnings
-warnings.filterwarnings("ignore")
-
-# -----------------------------------------------------------------------------
 
 import numpy as np
-import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
-import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 
-from torch.utils.data import Dataset, DataLoader
-from torchvision.transforms import transforms
-
-from sklearn.metrics import confusion_matrix, accuracy_score
-
-# -----------------------------------------------------------------------------
-
-sys.path.append('utils')
-import utils_dataset
-from utils import Args
-from utils_dataset import Dataset_stamps
-from utils_plots import plot_confusion_matrix
-from utils_metrics import results
-from utils_training import Supervised_Cross_Entropy
-
+from utils.args import Args
+from utils.training import Supervised_Cross_Entropy
+from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.loggers import TensorBoardLogger
 
 # -----------------------------------------------------------------------------
 
-sys.path.append('losses')
-from losses import P_stamps_loss
+# Last version of pytorch is unstable
+#warnings.filterwarnings("ignore")
 
-# -----------------------------------------------------------------------------
-
-sys.path.append('models')
-from models import P_stamps_net
+# Sets seed
+pl.utilities.seed.seed_everything(seed=1, workers=False)
 
 # -----------------------------------------------------------------------------
 
@@ -51,63 +30,70 @@ with open('dataset/td_ztf_stamp_17_06_20.pkl', 'rb') as f:
 
 # -----------------------------------------------------------------------------
 
-# Hiperparameters
-args = Args({
+# Configurations
+config = Args({'num_nodes': 1,
+               'gpus': 1,
+               'workers': 4,
+               'model_path': "../weights"
+               })
 
-
-# distributed training
-'num_nodes': 1,
-'gpus': 1,
-'workers': 4,
-'device':torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-
-
-# train options
-'batch_size': 64,
-'image_size': 21,
-'max_epochs': 100,
-
-# model options
-'drop_ratio': 0.5,
-
-# loss options
-'optimizer': "SGD",
-'lr': 1e-3,
-'beta': 0.5,
-
-
-# reload options
-'model_path': "../weights"})
-
+# Hyperparameters
+args = Args({'batch_size': 64,
+             'image_size': 21,
+             'max_epochs': 130,
+             'drop_rate': 0.5,
+             'optimizer': "SGD",
+             'lr': 1e-3,
+             'beta_loss': 0.2
+             })
 
 # -----------------------------------------------------------------------------
 
-# Training 
-sce = Supervised_Cross_Entropy(args)
-trainer = pl.Trainer(max_epochs=args.max_epochs, gpus=args.gpus, benchmark=True)
+# Save checkpoint
+checkpoint_callback = ModelCheckpoint(monitor="Accuracy",
+                                      dirpath=os.path.join(config.model_path),
+                                      filename="Supervised_Cross_Entropy-{epoch:02d}-{Accuracy:.2f}",
+                                      save_top_k=1,
+                                      mode="max")
+
+# -----------------------------------------------------------------------------
+
+# Defining the logger object
+logger = TensorBoardLogger('tb_logs', name='Supervised_Cross_Entropy')
+
+# -----------------------------------------------------------------------------
+
+# Inicialize classifier
+sce = Supervised_Cross_Entropy(image_size=args.image_size,
+                               batch_size=args.batch_size,
+                               drop_rate=args.drop_rate,
+                               beta_loss=args.beta_loss,
+                               lr=args.lr,
+                               optimizer=args.optimizer)
+
+# Trainer
+trainer = pl.Trainer(max_epochs=args.max_epochs,
+                     gpus=config.gpus,
+                     benchmark=True,
+                     stochastic_weight_avg=False,
+                     callbacks=[checkpoint_callback],
+                     logger=logger)
+
+# Training
 trainer.fit(sce)
 
-# Computation of performance metrics for test and validation sets
-val_results = trainer.validate(sce, verbose=False)
-test_results = trainer.test(sce, verbose=False)
+# -----------------------------------------------------------------------------
 
-# Prints performance metrics for validation set 
-print('\n\n', 'Validation results\n', '-'*80)
-for key, value in val_results[0].items():
-    print("{0:<10}:{1:.3f}".format(key, value))
+# Path of best model
+path = checkpoint_callback.best_model_path
+print("\nBest model path:", path)
 
-# Prints performance metrics for test set 
-print('\n\n', 'Test results\n', '-'*80)
-for key, value in test_results[0].items():
-    print("{0:<10}:{1:.3f}".format(key, value))
+# Loads weights
+sce = Supervised_Cross_Entropy.load_from_checkpoint(path)
 
-# Save weights
-file = "P_stamps_epoch{0}.tar".format(args.max_epochs)
-path = os.path.join(args.model_path, file)
-torch.save(sce.model.state_dict(), path)
-
-# Inicialize network
-#model = P_stamps_net(args.drop_ratio, n_features=5, last_act_function='Softmax')
-#model.load_state_dict(torch.load(path, map_location=args.device.type))
+# Load dataset and computes confusion matrixes
+sce.prepare_data()
+sce.conf_mat_val()
+sce.conf_mat_test()
 
 # -----------------------------------------------------------------------------

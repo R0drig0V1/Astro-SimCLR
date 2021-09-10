@@ -1,12 +1,9 @@
-import csv
-import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-from utils_dataset import feature_names
-from utils_dataset import label_names
-
+from utils.dataset import feature_names
+from utils.dataset import label_names
 
 # -----------------------------------------------------------------------------
 

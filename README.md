@@ -36,15 +36,16 @@ Este proyecto busca responder algunas preguntas como:
 
 ### Instalación del entorno
 ```
-conda create --name simclr --file env.yml
+conda env create --name simclr --file env.yml
 ```
 ### Activación del entorno
 ```
 conda activate simclr
 ```
 
-### Adicionales
-* pytorch-lightning
+### Incorporación del entorno a jupyter-notebook
+
 ```
-conda install -c conda-forge pytorch-lightning
+conda install -c anaconda ipykernel
+python -m ipykernel install --user --name=simclr
 ```

@@ -3,10 +3,7 @@ import torch
 
 import numpy as np
 import matplotlib.pyplot as plt
-import torch.nn.functional as F
 import torchvision.transforms as transforms
-
-from torch.utils.data import Dataset
 
 # -----------------------------------------------------------------------------
 
@@ -67,12 +64,12 @@ def img_float2int(img):
 # One hot encoding to use softmax
 def one_hot_trans(x):
 
-    return F.one_hot(torch.tensor(x), num_classes=5)
+    return torch.nn.functional.one_hot(torch.tensor(x), num_classes=5)
 
 # -----------------------------------------------------------------------------
 
 # Class to load stamps
-class Dataset_stamps(Dataset):
+class Dataset_stamps(torch.utils.data.Dataset):
 
     def __init__(self, pickle, dataset, transform=None, target_transform=None):
 
