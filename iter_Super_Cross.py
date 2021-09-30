@@ -10,9 +10,14 @@ import numpy as np
 import pytorch_lightning as pl
 
 from utils.args import Args
+from utils.config import config
 from utils.training import Supervised_Cross_Entropy
+
 from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import TensorBoardLogger
+
+from ray.tune.integration.pytorch_lightning import TuneReportCallback, TuneReportCheckpointCallback
 
 # -----------------------------------------------------------------------------
 
@@ -30,17 +35,10 @@ with open('dataset/td_ztf_stamp_17_06_20.pkl', 'rb') as f:
 
 # -----------------------------------------------------------------------------
 
-# Configurations
-config = Args({'num_nodes': 1,
-               'gpus': 1,
-               'workers': 4,
-               'model_path': "../weights"
-               })
-
 # Hyperparameters
-args = Args({'batch_size': 64,
+args = Args({'batch_size': 65,
              'image_size': 21,
-             'max_epochs': 130,
+             'max_epochs': 250,
              'drop_rate': 0.5,
              'optimizer': "SGD",
              'lr': 1e-3,
@@ -52,11 +50,17 @@ args = Args({'batch_size': 64,
 # Save checkpoint
 checkpoint_callback = ModelCheckpoint(monitor="Accuracy",
                                       dirpath=os.path.join(config.model_path),
-                                      filename="Supervised_Cross_Entropy-{epoch:02d}-{Accuracy:.2f}",
+                                      filename="supervised_cross_entropy",#-{epoch:02d}-{Accuracy:.2f}",
                                       save_top_k=1,
                                       mode="max")
 
-# -----------------------------------------------------------------------------
+# Early stop criterion
+early_stop_callback = EarlyStopping(monitor="Accuracy",
+                                    min_delta=0.002,
+                                    patience=50,
+                                    mode="max",
+                                    check_finite=True,
+                                    divergence_threshold=0.3)
 
 # Defining the logger object
 logger = TensorBoardLogger('tb_logs', name='Supervised_Cross_Entropy')
@@ -76,7 +80,7 @@ trainer = pl.Trainer(max_epochs=args.max_epochs,
                      gpus=config.gpus,
                      benchmark=True,
                      stochastic_weight_avg=False,
-                     callbacks=[checkpoint_callback],
+                     callbacks=[checkpoint_callback, early_stop_callback],
                      logger=logger)
 
 # Training
@@ -97,3 +101,4 @@ sce.conf_mat_val()
 sce.conf_mat_test()
 
 # -----------------------------------------------------------------------------
+

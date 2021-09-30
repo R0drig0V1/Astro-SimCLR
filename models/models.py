@@ -4,6 +4,32 @@ import torch.nn.functional as F
 
 # -----------------------------------------------------------------------------
 
+# Github: Spijkervet
+
+class Linear_classifier(nn.Module):
+
+    def __init__(self, n_features, n_classes):
+        super(Linear_classifier, self).__init__()
+
+        self.model = nn.Linear(n_features, n_classes)
+
+    def forward(self, x):
+        return F.softmax(self.model(x), dim=1)
+
+# -----------------------------------------------------------------------------
+
+# Github: Spijkervet
+
+class Identity(nn.Module):
+    def __init__(self):
+        super(Identity, self).__init__()
+
+    def forward(self, x):
+        return x
+
+# -----------------------------------------------------------------------------
+
+
 # P-stamp implementation
 class P_stamps_net(nn.Module):
 
@@ -11,18 +37,25 @@ class P_stamps_net(nn.Module):
         super().__init__()
         self.zpad = nn.ZeroPad2d(3)
         self.conv1 = nn.Conv2d(3, 32, 4)
-        self.conv2 = nn.Conv2d(32, 32, 5, padding=2)
-        #self.conv2 = nn.Conv2d(32, 32, 3, padding=1)
+        #self.conv2 = nn.Conv2d(32, 32, 5, padding=0)
+        #self.conv2 = nn.Conv2d(32, 32, 5, padding=2)
+        self.conv2 = nn.Conv2d(32, 32, 3, padding=1)
         self.pool1 = nn.MaxPool2d(2, stride=2)
-        self.conv3 = nn.Conv2d(32, 64, 5, padding=2)
-        #self.conv3 = nn.Conv2d(32, 64, 3, padding=1)
-        self.conv4 = nn.Conv2d(64, 64, 5, padding=2)
-        #self.conv4 = nn.Conv2d(64, 64, 3, padding=1)
-        self.conv5 = nn.Conv2d(64, 64, 5, padding=2)
-        #self.conv5 = nn.Conv2d(64, 64, 3, padding=1)
+        #self.conv3 = nn.Conv2d(32, 64, 5, padding=0)
+        #self.conv3 = nn.Conv2d(32, 64, 5, padding=2)
+        self.conv3 = nn.Conv2d(32, 64, 3, padding=1)
+        #self.conv4 = nn.Conv2d(64, 64, 5, padding=0)
+        #self.conv4 = nn.Conv2d(64, 64, 5, padding=2)
+        self.conv4 = nn.Conv2d(64, 64, 3, padding=1)
+        #self.conv5 = nn.Conv2d(64, 64, 5, padding=0)
+        #self.conv5 = nn.Conv2d(64, 64, 5, padding=2)
+        self.conv5 = nn.Conv2d(64, 64, 3, padding=1)
         self.pool2 = nn.MaxPool2d(2, stride=2)
         self.fl1 = nn.Flatten()
-        self.fc1 = nn.Linear(2304, 64)
+        #self.fc1 = nn.Linear(2304, 64)#21 k=3 p=1 (k=5 p=2)
+        self.fc1 = nn.Linear(1024, 64)#35 k=3 p=0
+        #self.fc1 = nn.Linear(4096, 64)#63 k=5 p=0
+        #self.fc1 = nn.Linear(7744, 64)#63 k=3 p=0
         self.bn1 = nn.BatchNorm1d(90)
         self.drop = nn.Dropout(p=drop_ratio)
         self.fc3 = nn.Linear(90, 64)
@@ -30,9 +63,6 @@ class P_stamps_net(nn.Module):
 
         if(last_act_function == 'Softmax'):
             self.last_layer_func = nn.Softmax(dim=1)
-
-        elif(last_act_function == 'ReLU'):
-            self.last_layer_func = nn.ReLU()
 
         elif(last_act_function == 'Identity'):
             self.last_layer_func = nn.Identity()
@@ -47,7 +77,7 @@ class P_stamps_net(nn.Module):
         x_feat: features
         """
 
-        x_img = self.zpad(x_img)
+        #x_img = self.zpad(x_img)
 
         r1 = self.conv(torch.rot90(x_img, 0, [2, 3]))
         r2 = self.conv(torch.rot90(x_img, 1, [2, 3]))
@@ -60,7 +90,6 @@ class P_stamps_net(nn.Module):
 
         x = self.bn1(x)
         x = F.relu(self.drop(x))
-        #x = self.drop(x)
         x = F.relu(self.fc3(x))
         x = self.last_layer_func(self.fc4(x))
 
@@ -82,11 +111,12 @@ class P_stamps_net(nn.Module):
 
 # -----------------------------------------------------------------------------
 
-#  Spijkervet / SimCLR / simclr / simclr.py
-class SimCLR_net(nn.Module):
 
-    def __init__(self, encoder, projection_dim, n_features):
-        super(SimCLR_net, self).__init__()
+#  Spijkervet / SimCLR / simclr / simclr.py
+class SimCLR(nn.Module):
+
+    def __init__(self, encoder, n_features, projection_dim):
+        super(SimCLR, self).__init__()
 
         self.encoder = encoder
 
@@ -98,10 +128,10 @@ class SimCLR_net(nn.Module):
             nn.Linear(n_features, projection_dim, bias=False),
         )
 
-    def forward(self, x_img_i, x_img_j, x_feat):
+    def forward(self, x_img_i, x_img_j, *x_feat):
 
-        h_i = self.encoder(x_img_i, x_feat)
-        h_j = self.encoder(x_img_j, x_feat)
+        h_i = self.encoder(x_img_i, *x_feat)
+        h_j = self.encoder(x_img_j, *x_feat)
 
         z_i = self.projector(h_i)
         z_j = self.projector(h_j)
@@ -110,14 +140,95 @@ class SimCLR_net(nn.Module):
 
 # -----------------------------------------------------------------------------
 
-class Linear_classifier(nn.Module):
 
-    def __init__(self, n_features, n_classes):
-        super(Linear_classifier, self).__init__()
+# P-stamp implementation
+class P_stamps_net_a(nn.Module):
 
-        self.model = nn.Linear(n_features, n_classes)
+    def __init__(self):
+        super().__init__()
+        
+        self.zpad = nn.ZeroPad2d(3)
+        self.conv1 = nn.Conv2d(3, 32, 4)
+        #self.conv2 = nn.Conv2d(32, 32, 5, padding=0)
+        #self.conv2 = nn.Conv2d(32, 32, 5, padding=2)
+        self.conv2 = nn.Conv2d(32, 32, 3, padding=1)
+        self.pool1 = nn.MaxPool2d(2, stride=2)
+        #self.conv3 = nn.Conv2d(32, 64, 5, padding=0)
+        #self.conv3 = nn.Conv2d(32, 64, 5, padding=2)
+        self.conv3 = nn.Conv2d(32, 64, 3, padding=1)
+        #self.conv4 = nn.Conv2d(64, 64, 5, padding=0)
+        #self.conv4 = nn.Conv2d(64, 64, 5, padding=2)
+        self.conv4 = nn.Conv2d(64, 64, 3, padding=1)
+        #self.conv5 = nn.Conv2d(64, 64, 5, padding=0)
+        #self.conv5 = nn.Conv2d(64, 64, 5, padding=2)
+        self.conv5 = nn.Conv2d(64, 64, 3, padding=1)
+        self.pool2 = nn.MaxPool2d(2, stride=2)
+        self.fl1 = nn.Flatten()
+        #self.fc1 = nn.Linear(2304, 64)#21 k=3 p=1 (k=5 p=2)
+        self.fc1 = nn.Linear(1024, 64)#35 k=3 p=0
+        #self.fc1 = nn.Linear(4096, 64)#63 k=5 p=0
+        #self.fc1 = nn.Linear(7744, 64)#63 k=3 p=0
+
+
+    def forward(self, x_img):
+
+        """
+        x_img: images
+        x_feat: features
+        """
+
+        #x_img = self.zpad(x_img)
+
+        r1 = self.conv(torch.rot90(x_img, 0, [2, 3]))
+        r2 = self.conv(torch.rot90(x_img, 1, [2, 3]))
+        r3 = self.conv(torch.rot90(x_img, 2, [2, 3]))
+        r4 = self.conv(torch.rot90(x_img, 3, [2, 3]))
+
+        x_img = (r1 + r2 + r3 + r4) / 4
+
+        return x_img
+
+
+    def conv(self, x):
+
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = self.pool1(x)
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+        x = F.relu(self.conv5(x))
+        x = self.pool2(x)
+        x = self.fl1(x)
+        x = F.relu(self.fc1(x))
+
+        return x
+
+# -----------------------------------------------------------------------------
+
+# P-stamp implementation
+class P_stamps_net_b(nn.Module):
+
+    def __init__(self, drop_rate, n_features):
+        super().__init__()
+
+        self.bn1 = nn.BatchNorm1d(n_features)
+        self.drop = nn.Dropout(p=drop_rate)
+        self.fc3 = nn.Linear(n_features, 64)
+        self.fc4 = nn.Linear(64, 5)
+        self.last_layer_func = nn.Softmax(dim=1)
+
 
     def forward(self, x):
-        return F.softmax(self.model(x), dim=1)
+
+        """
+        x: concatenation of x_img (images) and x_feat (features)
+        """
+
+        x = self.bn1(x)
+        x = F.relu(self.drop(x))
+        x = F.relu(self.fc3(x))
+        x = self.last_layer_func(self.fc4(x))
+
+        return x
 
 # -----------------------------------------------------------------------------

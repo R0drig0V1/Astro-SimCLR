@@ -38,8 +38,7 @@ class Resize_img:
     def __init__(self, size):
 
         self.resize = torchvision.transforms.Compose([
-
-                torchvision.transforms.Resize(size=size),
+                torchvision.transforms.CenterCrop(size=size),
                 torchvision.transforms.ToTensor()
             ])
 
