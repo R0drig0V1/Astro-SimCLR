@@ -55,6 +55,7 @@ class NT_Xent(nn.Module):
 
 
     def mask_negative_samples(self, batch_size):
+
         """
         Mask for negative samples
         """
@@ -123,6 +124,7 @@ class NT_Xent(nn.Module):
 
 # Github: HobbitLong / SupContrast / losses.py
 
+
 class SupConLoss(nn.Module):
 
     """
@@ -153,23 +155,31 @@ class SupConLoss(nn.Module):
 
         # Compute distance between samples
         z = torch.cat((z_i, z_j), dim=0)
+
         sim = self.similarity_f(z.unsqueeze(1), z.unsqueeze(0)) / self.temperature
+
+        # for numerical stability
+        sim_max, _ = torch.max(sim, dim=1, keepdim=True)
+        sim_max = sim_max.detach()
+        sim = sim - sim_max
+
+        # Exponencial similarity
         exp_sim = torch.exp(sim)
 
         # Mask of different elements than i-th sample
         mask_not_diag = torch.ones((N, N), device=mask.device)
-        mask_not_diag = mask_not_diag.fill_diagonal_(0)
+        mask_not_diag.fill_diagonal_(0)
 
         # Mask without diagonal
         mask = mask * mask_not_diag
 
         # compute log_prob
-        log_prob = sim - torch.log((exp_sim * mask_not_diag).sum(1, keepdim=True))
+        log_prob = sim - torch.log((exp_sim * mask_not_diag).sum(1, keepdim=True)) - sim_max
 
         # compute mean of log-likelihood over positive
         mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)
 
         # loss
         loss = - mean_log_prob_pos.mean()
-        print(loss)
+
         return loss
