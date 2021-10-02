@@ -113,10 +113,10 @@ class P_stamps_net(nn.Module):
 
 
 #  Spijkervet / SimCLR / simclr / simclr.py
-class SimCLR(nn.Module):
+class CLR(nn.Module):
 
     def __init__(self, encoder, n_features, projection_dim):
-        super(SimCLR, self).__init__()
+        super(CLR, self).__init__()
 
         self.encoder = encoder
 
@@ -133,8 +133,11 @@ class SimCLR(nn.Module):
         h_i = self.encoder(x_img_i, *x_feat)
         h_j = self.encoder(x_img_j, *x_feat)
 
-        z_i = self.projector(h_i)
-        z_j = self.projector(h_j)
+        #h_i = h_i * (1/torch.norm(h_i, dim=1, keepdim=True))
+        #h_j = h_j * (1/torch.norm(h_j, dim=1, keepdim=True))
+
+        z_i = self.projector(h_i* (1/torch.norm(h_i, dim=1, keepdim=True)))
+        z_j = self.projector(h_j* (1/torch.norm(h_i, dim=1, keepdim=True)))
         
         return h_i, h_j, z_i, z_j
 
