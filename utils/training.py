@@ -188,7 +188,7 @@ class Supervised_Cross_Entropy(pl.LightningModule):
 
         title = 'Confusion matrix P-stamps (P-stamps loss)\n Accuracy:{0:.2f}%'.format(acc)
         file = 'Figures/confusion_matrix_CE_Validation.png'
-        plot_confusion_matrix(conf_mat, title, utils.dataset.label_names, file)
+        plot_confusion_matrix(conf_mat, title, file)
 
         return None
 
@@ -226,7 +226,7 @@ class Supervised_Cross_Entropy(pl.LightningModule):
 
         title = 'Confusion matrix P-stamps (P-stamps loss)\n Accuracy:{0:.2f}%'.format(acc)
         file = 'Figures/confusion_matrix_CE_Test.png'
-        plot_confusion_matrix(conf_mat, title, utils.dataset.label_names, file)
+        plot_confusion_matrix(conf_mat, title, file)
 
         return None
 
@@ -777,7 +777,7 @@ class CLR_a(pl.LightningModule):
 
         if (self.method=='supcon'):
             self.criterion = SupConLoss(self.temperature)
-            self.lr *= 100 if (self.encoder_name == 'resnet18') else 1000
+            #self.lr *= 100 if (self.encoder_name == 'resnet18') else 1000
 
         elif (self.method == 'simclr'):
             self.criterion = NT_Xent(self.batch_size, self.temperature)
