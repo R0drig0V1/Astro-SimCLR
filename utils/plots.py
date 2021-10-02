@@ -42,7 +42,7 @@ def stamps_plot(data, type_set, index):
 
 # -----------------------------------------------------------------------------
 
-def plot_confusion_matrix(confusion_matrix, title, label_names, file):
+def plot_confusion_matrix(confusion_matrix, title, file):
 
     ax = sns.heatmap(confusion_matrix, vmin=0, vmax=1, annot=True, fmt='.2f');
 

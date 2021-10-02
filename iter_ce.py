@@ -38,7 +38,7 @@ with open('dataset/td_ztf_stamp_17_06_20.pkl', 'rb') as f:
 # Hyperparameters
 args = Args({'batch_size': 65,
              'image_size': 21,
-             'max_epochs': 250,
+             'max_epochs': 120,
              'drop_rate': 0.5,
              'optimizer': "SGD",
              'lr': 1e-3,
@@ -48,14 +48,14 @@ args = Args({'batch_size': 65,
 # -----------------------------------------------------------------------------
 
 # Save checkpoint
-checkpoint_callback = ModelCheckpoint(monitor="Accuracy",
+checkpoint_callback = ModelCheckpoint(monitor="accuracy_val",
                                       dirpath=os.path.join(config.model_path),
-                                      filename="supervised_cross_entropy",#-{epoch:02d}-{Accuracy:.2f}",
+                                      filename="ce-accuracy_val{accuracy_val:.3f}",
                                       save_top_k=1,
                                       mode="max")
 
 # Early stop criterion
-early_stop_callback = EarlyStopping(monitor="Accuracy",
+early_stop_callback = EarlyStopping(monitor="accuracy_val",
                                     min_delta=0.002,
                                     patience=50,
                                     mode="max",
