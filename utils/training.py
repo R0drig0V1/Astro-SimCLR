@@ -1,5 +1,6 @@
 import torch
 import pickle
+import pl_bolts
 import utils.dataset
 import torchvision
 
@@ -7,6 +8,8 @@ import pytorch_lightning as pl
 
 from losses import P_stamps_loss, NT_Xent, SupConLoss
 from models import *
+
+from torchlars import LARS
 
 from torch.utils.data import Dataset, DataLoader
 from torchmetrics import MetricCollection, Accuracy, Precision, Recall, ConfusionMatrix
@@ -94,7 +97,7 @@ class Supervised_Cross_Entropy(pl.LightningModule):
         self.logger.experiment.add_scalar("Accuracy/Validation", metrics['Accuracy'], self.current_epoch)
         self.logger.experiment.add_scalar("Precision/Validation", metrics['Precision'], self.current_epoch)
         self.logger.experiment.add_scalar("Recall/Validation", metrics['Recall'], self.current_epoch)
-        self.log('Accuracy', metrics['Accuracy'], logger=False)
+        self.log('accuracy_val', metrics['Accuracy'], logger=False)
 
         return None
 
@@ -184,7 +187,7 @@ class Supervised_Cross_Entropy(pl.LightningModule):
         conf_mat = conf_matrix(y_pred, y_true)
 
         title = 'Confusion matrix P-stamps (P-stamps loss)\n Accuracy:{0:.2f}%'.format(acc)
-        file = 'Figures/confusion_matrix_S_CE_Validation.png'
+        file = 'Figures/confusion_matrix_CE_Validation.png'
         plot_confusion_matrix(conf_mat, title, utils.dataset.label_names, file)
 
         return None
@@ -222,7 +225,7 @@ class Supervised_Cross_Entropy(pl.LightningModule):
         conf_mat = conf_matrix(y_pred, y_true)
 
         title = 'Confusion matrix P-stamps (P-stamps loss)\n Accuracy:{0:.2f}%'.format(acc)
-        file = 'Figures/confusion_matrix_S_CE_Test.png'
+        file = 'Figures/confusion_matrix_CE_Test.png'
         plot_confusion_matrix(conf_mat, title, utils.dataset.label_names, file)
 
         return None
@@ -308,18 +311,16 @@ class Supervised_Cross_Entropy(pl.LightningModule):
     def configure_optimizers(self):
 
         if self.optimizer == "AdamW":
-            optimizer = torch.optim.AdamW(self.model.parameters(),
-                                          lr=self.lr)#,
-                                          #betas=(0.5, 0.9))
+            optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
 
         elif self.optimizer == "Adam":
-            optimizer = torch.optim.Adam(self.model.parameters(),
-                                          lr=self.lr)
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
         elif self.optimizer == "SGD":
-            optimizer = torch.optim.SGD(self.model.parameters(),
-                                        lr=self.lr,
-                                        momentum=0.5)
+            optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr)
+
+        elif self.optimizer == "LARS":            
+            optimizer = pl_bolts.optimizers.LARS(self.model.parameters(), lr=self.lr)
 
         return optimizer
 
@@ -445,15 +446,17 @@ class Self_Supervised_SimCLR(pl.LightningModule):
     def configure_optimizers(self):
 
         if self.optimizer == "AdamW":
-            optimizer = torch.optim.AdamW(self.model.parameters(),
-                                          lr=self.lr)
+            optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
+
         elif self.optimizer == "Adam":
-            optimizer = torch.optim.Adam(self.model.parameters(),
-                                          lr=self.lr)
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
         elif self.optimizer == "SGD":
-            optimizer = torch.optim.SGD(self.model.parameters(),
-                                        lr=self.lr)
+            optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr)
+
+        elif self.optimizer == "LARS":            
+            optimizer = pl_bolts.optimizers.LARS(self.model.parameters(), lr=self.lr)
+
 
         return optimizer
 
@@ -736,23 +739,24 @@ class Linear_SimCLR(pl.LightningModule):
     def configure_optimizers(self):
 
         if self.optimizer == "AdamW":
-            optimizer = torch.optim.AdamW(self.model.parameters(),
-                                          lr=self.lr)
+            optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
 
         elif self.optimizer == "Adam":
-            optimizer = torch.optim.Adam(self.model.parameters(),
-                                          lr=self.lr)
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
         elif self.optimizer == "SGD":
-            optimizer = torch.optim.SGD(self.model.parameters(),
-                                        lr=self.lr)
+            optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr)
+
+        elif self.optimizer == "LARS":            
+            optimizer = pl_bolts.optimizers.LARS(self.model.parameters(), lr=self.lr)
+
 
         return optimizer
 
 
 # -----------------------------------------------------------------------------
 
-class Self_Supervised_SimCLR_a(pl.LightningModule):
+class CLR_a(pl.LightningModule):
 
     def __init__(self, encoder_name, image_size, batch_size,
                  projection_dim, temperature, lr, optimizer, method):
@@ -772,13 +776,14 @@ class Self_Supervised_SimCLR_a(pl.LightningModule):
 
 
         if (self.method=='supcon'):
-            self.criterion = SupConLoss(temperature=self.temperature)
+            self.criterion = SupConLoss(self.temperature)
+            self.lr *= 100 if (self.encoder_name == 'resnet18') else 1000
 
         elif (self.method == 'simclr'):
             self.criterion = NT_Xent(self.batch_size, self.temperature)
 
 
-        if (self.encoder_name == 'p_stamps'):
+        if (self.encoder_name == 'pstamps'):
 
             # Initialize P-stamp network (Part A)
             encoder = P_stamps_net_a()
@@ -787,9 +792,9 @@ class Self_Supervised_SimCLR_a(pl.LightningModule):
             self.n_features = encoder.fc1.out_features
 
             # Initialize SimCLR network
-            self.model = SimCLR(encoder=encoder,
-                                n_features=self.n_features,
-                                projection_dim=self.projection_dim)
+            self.model = CLR(encoder=encoder,
+                             n_features=self.n_features,
+                             projection_dim=self.projection_dim)
 
 
         elif (self.encoder_name == 'resnet18'):
@@ -802,9 +807,9 @@ class Self_Supervised_SimCLR_a(pl.LightningModule):
             encoder.fc = Identity()
 
             # Initialize SimCLR network
-            self.model = SimCLR(encoder=encoder,
-                                n_features=self.n_features,
-                                projection_dim=self.projection_dim)
+            self.model = CLR(encoder=encoder,
+                             n_features=self.n_features,
+                             projection_dim=self.projection_dim)
 
 
         elif (self.encoder_name == 'resnet50'):
@@ -816,9 +821,9 @@ class Self_Supervised_SimCLR_a(pl.LightningModule):
             encoder.fc = Identity()
 
             # Initialize SimCLR network
-            self.model = SimCLR(encoder=encoder,
-                                n_features=self.n_features,
-                                projection_dim=self.projection_dim)
+            self.model = CLR(encoder=encoder,
+                             n_features=self.n_features,
+                             projection_dim=self.projection_dim)
 
 
         self.save_hyperparameters('encoder_name',
@@ -844,8 +849,7 @@ class Self_Supervised_SimCLR_a(pl.LightningModule):
         h_i, h_j, z_i, z_j = self.forward(x_img_i, x_img_j)
 
         loss = self.criterion(z_i, z_j, y_true)
-        #loss.backward()
-        #plot_grad_flow(self.model.cpu().named_parameters())
+
         return loss
 
 
@@ -921,31 +925,32 @@ class Self_Supervised_SimCLR_a(pl.LightningModule):
     def configure_optimizers(self):
 
         if self.optimizer == "AdamW":
-            optimizer = torch.optim.AdamW(self.model.parameters(),
-                                          lr=self.lr)
+            optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
 
         elif self.optimizer == "Adam":
-            optimizer = torch.optim.Adam(self.model.parameters(),
-                                         lr=self.lr)
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
         elif self.optimizer == "SGD":
-            optimizer = torch.optim.SGD(self.model.parameters(),
-                                        lr=self.lr)
+            optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr)
+
+        elif self.optimizer == "LARS":            
+            optimizer = pl_bolts.optimizers.LARS(self.model.parameters(), lr=self.lr)
+
 
         return optimizer
 
 
 # -----------------------------------------------------------------------------
 
-class Self_Supervised_SimCLR_b(pl.LightningModule):
+class CLR_b(pl.LightningModule):
 
-    def __init__(self, simclr_model, image_size, batch_size, beta_loss, lr,
-                 drop_rate, optimizer, with_features=True):
+    def __init__(self, clr_model, image_size, batch_size, beta_loss, lr,
+                 drop_rate, optimizer, with_features):
         super().__init__()
         
 
-        # Load params
-        self.simclr_model = simclr_model
+        # Hyperparameters of class are saved
+        self.clr_model = clr_model
         self.image_size = image_size
         self.batch_size = batch_size
         self.beta_loss = beta_loss
@@ -953,7 +958,10 @@ class Self_Supervised_SimCLR_b(pl.LightningModule):
         self.drop_rate = drop_rate
         self.optimizer = optimizer
         self.with_features = with_features
-        self.encoder_name = self.simclr_model.encoder_name 
+
+        # Useful hyperparameters of encoder
+        self.encoder_name = self.clr_model.encoder_name 
+        self.encoder_loss = self.clr_model.method
 
 
         # dataset features are included to predict
@@ -961,41 +969,43 @@ class Self_Supervised_SimCLR_b(pl.LightningModule):
 
 
         # Part B of P_stamps net
-        if (self.encoder_name == 'p_stamps'):
+        if (self.encoder_name == 'pstamps'):
 
-            n_features = self.simclr_model.n_features + n_features_dataset
+            n_features = self.clr_model.n_features + n_features_dataset
             self.model = P_stamps_net_b(drop_rate=self.drop_rate, n_features=n_features)
 
             
         # Initialize Linear classifier
         elif (self.encoder_name == 'resnet18'):
 
-            n_features = self.simclr_model.n_features + n_features_dataset
+            n_features = self.clr_model.n_features + n_features_dataset
             self.model = Linear_classifier(n_features=n_features, n_classes=5)
 
 
         # Initialize Linear classifier for resnet50
         elif(self.encoder_name == 'resnet50'):
 
-            n_features = self.simclr_model.n_features  + n_features_dataset
+            n_features = self.clr_model.n_features  + n_features_dataset
             self.model = Linear_classifier(n_features=n_features, n_classes=5)
 
 
-        self.save_hyperparameters("image_size",
-                                  "batch_size",
-                                  "beta_loss",
-                                  "lr",
-                                  "drop_rate",
-                                  "optimizer",
-                                  "with_features")
+        self.save_hyperparameters(
+            "image_size",
+            "batch_size",
+            "beta_loss",
+            "lr",
+            "drop_rate",
+            "optimizer",
+            "with_features"
+        )
 
 
     def forward(self, x_img, x_feat):
 
-        self.simclr_model.eval()
+        self.clr_model.eval()
 
         with torch.no_grad():
-            h, _, z, _ = self.simclr_model(x_img, x_img)
+            h, _, z, _ = self.clr_model(x_img, x_img)
         
 
         # Features computed from image and features of dataset are concatenated
@@ -1050,7 +1060,7 @@ class Self_Supervised_SimCLR_b(pl.LightningModule):
         self.logger.experiment.add_scalar("Accuracy/Validation", metrics['Accuracy'], self.current_epoch)
         self.logger.experiment.add_scalar("Precision/Validation", metrics['Precision'], self.current_epoch)
         self.logger.experiment.add_scalar("Recall/Validation", metrics['Recall'], self.current_epoch)
-        self.log('Accuracy', metrics['Accuracy'], logger=False)
+        self.log('accuracy_val', metrics['Accuracy'], logger=False)
 
         return None
 
@@ -1138,11 +1148,18 @@ class Self_Supervised_SimCLR_b(pl.LightningModule):
         acc = accuracy(y_pred, y_true) * 100
         conf_mat = conf_matrix(y_pred, y_true)
 
+        # Title of matrix
+        title1 = "Confusion matrix CLR\n"
+        title2 = f"Accuracy validation:{acc:.2f}%\n"
         features = 'with features' if self.with_features else 'without features'
-        title = f'Confusion matrix Self-Supervised \n Accuracy:{acc:.2f}% ({self.encoder_name}, {features})'
-        file = f'Figures/confusion_matrix_SS_CLR_{self.encoder_name}_{features}_Validation.png'
-        plot_confusion_matrix(conf_mat, title, utils.dataset.label_names, file)
+        title3 = f"({self.encoder_name}, {features}, {self.encoder_loss})"
+        title = title1 + title2 + title3
 
+        # File name
+        file = f'Figures/conf_mat_CLR_{self.encoder_name}_features-{self.with_features}_loss-{self.encoder_loss}_validation.png'
+
+        # It plots matrix
+        plot_confusion_matrix(conf_mat, title, file)
         return None
 
 
@@ -1177,11 +1194,19 @@ class Self_Supervised_SimCLR_b(pl.LightningModule):
 
         acc = accuracy(y_pred, y_true) * 100
         conf_mat = conf_matrix(y_pred, y_true)
-
+  
+        # Title of matrix
+        title1 = "Confusion matrix CLR\n"
+        title2 = f"Accuracy test:{acc:.2f}%\n"
         features = 'with features' if self.with_features else 'without features'
-        title = f'Confusion matrix Self-Supervised \n Accuracy:{acc:.2f}% ({self.encoder_name}, {features})'
-        file = f'Figures/confusion_matrix_SS_CLR_{self.encoder_name}_{features}_Test.png'
-        plot_confusion_matrix(conf_mat, title, utils.dataset.label_names, file)
+        title3 = f"({self.encoder_name}, {features}, {self.encoder_loss})"
+        title = title1 + title2 + title3
+
+        # File name
+        file = f'Figures/conf_mat_CLR_{self.encoder_name}_features-{self.with_features}_loss-{self.encoder_loss}_test.png'
+
+        # It plots matrix
+        plot_confusion_matrix(conf_mat, title, file)
 
         return None
 
@@ -1251,16 +1276,17 @@ class Self_Supervised_SimCLR_b(pl.LightningModule):
     def configure_optimizers(self):
 
         if self.optimizer == "AdamW":
-            optimizer = torch.optim.AdamW(self.model.parameters(),
-                                          lr=self.lr)
+            optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
 
         elif self.optimizer == "Adam":
-            optimizer = torch.optim.Adam(self.model.parameters(),
-                                         lr=self.lr)
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
         elif self.optimizer == "SGD":
-            optimizer = torch.optim.SGD(self.model.parameters(),
-                                        lr=self.lr)
+            optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr)
+
+        elif self.optimizer == "LARS":            
+            optimizer = pl_bolts.optimizers.LARS(self.model.parameters(), lr=self.lr)
+
 
         return optimizer
 
