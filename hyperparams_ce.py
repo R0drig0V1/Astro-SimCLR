@@ -55,34 +55,50 @@ def train_mnist_tune(config_hyper, max_epochs=100, gpus=1):
     balanced_batch = config_hyper['balanced_batch']
     optimizer = config_hyper['optimizer']
 
-    # Inicializes pytorch_lightning module
-    model= Supervised_Cross_Entropy(image_size=image_size,
-                                    batch_size=batch_size,
-                                    drop_rate=drop_rate,
-                                    beta_loss=beta_loss,
-                                    lr=lr,
-                                    optimizer=optimizer,
-                                    balanced_batch=balanced_batch)
 
     # Logger for results
-    logger = TensorBoardLogger("tb_logs", name="")
+    logger = TensorBoardLogger(
+        save_dir="tb_logs",
+        name=""
+    )
  
+
     # Target for ray_tune
-    tune_callback = TuneReportCallback({"accuracy": "Accuracy"}, on="validation_end")
+    tune_callback = TuneReportCallback(
+        metrics={"accuracy": "accuracy_val"},
+        on="validation_end"
+    )
+
 
     # Early stop criterion
-    early_stop_callback = EarlyStopping(monitor="Accuracy",
-                                        min_delta=0.002,
-                                        patience=40,
-                                        mode="max",
-                                        check_finite=True,
-                                        divergence_threshold=0.3)
+    early_stop_callback = EarlyStopping(
+        monitor="accuracy_val",
+        min_delta=0.002,
+        patience=40,
+        mode="max",
+        check_finite=True,
+        divergence_threshold=0.3
+    )
+
 
     # Save checkpoint
     tune_checkpoint = TuneReportCheckpointCallback(
-        metrics={"accuracy": "Accuracy"},
+        metrics={"accuracy": "accuracy_val"},
         filename="trainer.ckpt",
-        on="validation_end")
+        on="validation_end"
+    )
+
+
+    # Initialize pytorch_lightning module
+    model = Supervised_Cross_Entropy(
+        image_size=image_size,
+        batch_size=batch_size,
+        drop_rate=drop_rate,
+        beta_loss=beta_loss,
+        lr=lr,
+        optimizer=optimizer,
+        balanced_batch=balanced_batch
+    )
 
 
     # Trainer
@@ -97,8 +113,10 @@ def train_mnist_tune(config_hyper, max_epochs=100, gpus=1):
         ],
         logger=logger,
         progress_bar_refresh_rate=False,
-        weights_summary=None)
+        weights_summary=None
+    )
 
+    # Training
     trainer.fit(model)
 
     return None
@@ -121,13 +139,9 @@ def tune_mnist_asha(num_samples=10, max_epochs=100, cpus_per_trial=1, gpus_per_t
         "beta_loss": tune.loguniform(1e-4, 1e+1),
         "lr": tune.loguniform(1e-4, 1e-1),
         "balanced_batch": tune.choice([True, False]),
-        "optimizer": tune.choice(['AdamW', 'SGD'])}
+        "optimizer": tune.choice(['AdamW', 'SGD'])
+    }
 
-    # Scheduler
-    scheduler = ASHAScheduler(
-        max_t=max_epochs,
-        grace_period=max_epochs,
-        reduction_factor=2)
 
     # Name of hyperparameters
     parameter_columns = [
@@ -138,20 +152,33 @@ def tune_mnist_asha(num_samples=10, max_epochs=100, cpus_per_trial=1, gpus_per_t
         "balanced_batch",
         "optimizer"]
 
-    # It reports progress
+
+    # Scheduler
+    scheduler = ASHAScheduler(
+        max_t=max_epochs,
+        grace_period=max_epochs,
+        reduction_factor=2
+    )
+
+
+    # Report progress
     reporter = CLIReporter(
         parameter_columns=parameter_columns,
-        metric_columns=["accuracy", "training_iteration"])
+        metric_columns=["accuracy", "training_iteration"]
+    )
+
 
     # Function with trainer and parameters
     params = tune.with_parameters(
         train_mnist_tune,
         max_epochs=max_epochs,
-        gpus=gpus_per_trial)
+        gpus=gpus_per_trial
+    )
 
 
-    # It explores hyperparameters
-    analysis = tune.run(params,
+    # Hyperparameters tunning
+    analysis = tune.run(
+        params,
         resources_per_trial={"cpu": cpus_per_trial, "gpu": gpus_per_trial},
         metric="accuracy",
         mode="max",
@@ -162,39 +189,44 @@ def tune_mnist_asha(num_samples=10, max_epochs=100, cpus_per_trial=1, gpus_per_t
         scheduler=scheduler,
         progress_reporter=reporter,
         local_dir="../hyperparams",
-        name="Supervised_Cross_Entropy",
+        name="CE",
         trial_name_creator=trial_name_creator,
         trial_dirname_creator=trial_name_creator,
-        verbose=1)
+        verbose=1
+    )
+
 
     # Best config based on accuracy
     best_config = analysis.get_best_config(
         metric="accuracy",
         mode="max",
-        scope="all")
+        scope="all"
+    )
+
 
     # Dataframe with results
-    df = analysis.dataframe(
-        metric="accuracy",
-        mode="max")
+    df = analysis.dataframe(metric="accuracy", mode="max")
 
     # Dataframe is saved
-    df.to_csv('results/hyper_supervised_cross_entropy.csv', float_format='%.6f')
+    df.to_csv('results/hyperameters_ce.csv', float_format='%.6f')
+
 
     # Best hyperparameters are printed
     print("Best hyperparameters found were: ", best_config)
+
 
     # Path best checkpoint
     best_checkpoint_path = analysis.get_best_checkpoint(
         trial=analysis.get_best_trial("accuracy", "max", "all"),
         metric="accuracy",
-        mode="max")
+        mode="max"
+    )
 
     return best_config, best_checkpoint_path
 
 # -----------------------------------------------------------------------------
 
-# Exploration of hyperparameters
+# Hyperparameters tunning
 hyperparams, path = tune_mnist_asha(
     num_samples=20,
     max_epochs=250,
@@ -203,7 +235,7 @@ hyperparams, path = tune_mnist_asha(
 
 # -----------------------------------------------------------------------------
 
-# Loads weights
+# Load weights
 sce = Supervised_Cross_Entropy.load_from_checkpoint(path + "/trainer.ckpt")
 
 # Load dataset and computes confusion matrixes
