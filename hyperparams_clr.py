@@ -50,6 +50,7 @@ def train_mnist_tune(config_hyper, max_epochs=100, gpus=1, checkpoint_dir=''):
 
     # Dataset's hyperparameters
     image_size = config_hyper["image_size"]
+    astro_augmentation = config_hyper["astro_augmentation"]
     batch_size = config_hyper["batch_size"]
     balanced_batch = config_hyper["balanced_batch"]
 
@@ -81,7 +82,7 @@ def train_mnist_tune(config_hyper, max_epochs=100, gpus=1, checkpoint_dir=''):
 
     # Logger for results
     logger = TensorBoardLogger(
-        save_dir="tb_logs",
+        save_dir="simclr_a",
         name=""
     )
  
@@ -90,7 +91,7 @@ def train_mnist_tune(config_hyper, max_epochs=100, gpus=1, checkpoint_dir=''):
     checkpoint_callback_a = ModelCheckpoint(
         monitor="loss_val",
         #dirpath=checkpoint_dir,
-        filename="clr_encoder_loss_val-{loss_val:.2f}'",
+        filename="clr_encoder{loss_val:.2f}'",
         save_top_k=1,
         mode="min"
     )
@@ -109,6 +110,7 @@ def train_mnist_tune(config_hyper, max_epochs=100, gpus=1, checkpoint_dir=''):
     clr_a = CLR_a(
         encoder_name=encoder,
         image_size=image_size,
+        astro_augmentation=astro_augmentation,
         batch_size=batch_size,
         projection_dim=projection_dim,
         temperature=temperature,
@@ -120,13 +122,13 @@ def train_mnist_tune(config_hyper, max_epochs=100, gpus=1, checkpoint_dir=''):
 
     # Trainer
     trainer = pl.Trainer(
-        max_epochs=15,#max_epochs,
+        max_epochs=1000,
         gpus=gpus,
         benchmark=True,
         stochastic_weight_avg=False,
         callbacks=[checkpoint_callback_a, early_stop_callback_a],
         logger=logger,
-        progress_bar_refresh_rate=True,
+        progress_bar_refresh_rate=False,
         weights_summary=None
     )
 
@@ -151,6 +153,13 @@ def train_mnist_tune(config_hyper, max_epochs=100, gpus=1, checkpoint_dir=''):
         metrics={"accuracy": "accuracy_val"},
         filename="sim_b.ckpt",
         on="validation_end"
+    )
+
+
+   # Logger for results
+    logger = TensorBoardLogger(
+        save_dir="simclr_b",
+        name=""
     )
 
 
@@ -194,6 +203,7 @@ def train_mnist_tune(config_hyper, max_epochs=100, gpus=1, checkpoint_dir=''):
             early_stop_callback_b,
             tune_checkpoint,
             tune_callback],
+        logger=logger,
         progress_bar_refresh_rate=False,
         weights_summary=None
     )
@@ -219,13 +229,14 @@ def tune_mnist_asha(num_samples=10, max_epochs=10, cpus_per_trial=1, gpus_per_tr
     config_hyper = {
         "encoder": tune.choice(["pstamps", "resnet18", "resnet50"]),
         "image_size": tune.choice([21]),
-        "batch_size": tune.choice([300, 600, 900]),
-        "balanced_batch": tune.choice([True, False]),
-        "optimizer": tune.choice(['AdamW', 'SGD']),
-        "lr": tune.loguniform(1e-4, 1e+1),
+        "astro_augmentation": tune.choice([True]),
+        "batch_size": tune.choice([200, 350, 500]),
+        "balanced_batch": tune.choice([True]),#, False]),
+        "optimizer": tune.choice(['LARS']),
+        "lr": tune.choice([100, 10, 1, 0.1, 0.01]),
         "temperature": tune.loguniform(1e-4, 1e+1),
         "method": tune.choice(["supcon", "simclr"]),
-        "with_features": tune.choice([True, False])
+        "with_features": tune.choice([True]),# False])
     }
 
 
@@ -233,6 +244,7 @@ def tune_mnist_asha(num_samples=10, max_epochs=10, cpus_per_trial=1, gpus_per_tr
     parameter_columns = [
         "encoder",
         "image_size",
+        "astro_augmentation"
         "batch_size",
         "balanced_batch",
         "optimizer",
@@ -316,9 +328,9 @@ def tune_mnist_asha(num_samples=10, max_epochs=10, cpus_per_trial=1, gpus_per_tr
 # -----------------------------------------------------------------------------
 
 # Hyperparameters tunning
-hyperparams, path = tune_mnist_asha(
-    num_samples=3,
-    max_epochs=10,
+config_hyper, path = tune_mnist_asha(
+    num_samples=20,
+    max_epochs=100,
     cpus_per_trial=resources_per_trial.cpus,
     gpus_per_trial=resources_per_trial.gpus
 )
@@ -330,6 +342,7 @@ encoder = config_hyper["encoder"]
 
 # Dataset's hyperparameters
 image_size = config_hyper["image_size"]
+astro_augmentation = config_hyper["astro_augmentation"]
 batch_size = config_hyper["batch_size"]
 balanced_batch = config_hyper["balanced_batch"]
 
@@ -338,19 +351,20 @@ optimizer = config_hyper["optimizer"]
 lr = config_hyper["lr"]
 
 # Loss's hyperparameters
-temperatue = config_hyper["temperature"]
+temperature = config_hyper["temperature"]
 method = config_hyper["method"]
 
 # Proyection's hyperparameter
 projection_dim = 64
 
 # Classification with features
-with_features = config_hyper["with_features"]
+#with_features = config_hyper["with_features"]
 
 # Initialize classifier
 clr_a = CLR_a(
     encoder_name=encoder,
     image_size=image_size,
+    astro_augmentation=astro_augmentation,
     batch_size=batch_size,
     projection_dim=projection_dim,
     temperature=temperature,
@@ -360,10 +374,6 @@ clr_a = CLR_a(
 )
 
 # -----------------------------------------------------------------------------
-
-# Path of best model
-path = checkpoint_callback_b.best_model_path
-print("\nBest classifier path:", path)
 
 # Load weights
 clr_b = CLR_b.load_from_checkpoint(path + "/sim_b.ckpt", clr_model=clr_a)
