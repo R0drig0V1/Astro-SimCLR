@@ -1,8 +1,5 @@
-#import os
-
-# -----------------------------------------------------------------------------
-
 # https://dev.to/0xbf/use-dot-syntax-to-access-dictionary-key-python-tips-10ec
+
 class Args(dict):
 
     def __getattr__(self, key):

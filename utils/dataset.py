@@ -22,7 +22,7 @@ feature_names = ['sgscore_1', 'sgscore_2', 'sgscore_3', 'distpsnr_1',
 
 # -----------------------------------------------------------------------------
 
-# Recursively prints the type of the objects inside the input.
+# It Recursively prints the type of the objects inside the input.
 def dataset_structure(data, space=''):
 
     # Iteration along dictionary
@@ -106,7 +106,9 @@ class Dataset_stamps(torch.utils.data.Dataset):
         image = self.pickle[self.dataset]['images'][idx]
 
         feature = torch.from_numpy(np.array(
-            self.pickle[self.dataset]['features'][idx], dtype=np.float32))
+            self.pickle[self.dataset]['features'][idx],
+            dtype=np.float32
+            ))
 
         label = self.pickle[self.dataset]['labels'][idx]
 
@@ -122,11 +124,11 @@ class Dataset_stamps(torch.utils.data.Dataset):
 #https://discuss.pytorch.org/t/load-the-same-number-of-data-per-class/65198
 
 class BalancedBatchSampler(BatchSampler):
+
     """
     BatchSampler - from a MNIST-like dataset, samples n_classes and within these classes samples n_samples.
     Returns batches of size n_classes * n_samples
     """
-
 
     def __init__(self, dataset, n_classes, n_samples):
 
