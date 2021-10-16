@@ -13,46 +13,22 @@ from torch.utils.data.sampler import BatchSampler
 
 label_names = ['AGN', 'SN', 'VS', 'Asteroid', 'Bogus']
 
-feature_names = ['sgscore_1', 'sgscore_2', 'sgscore_3', 'distpsnr_1',
-                 'distpsnr_2', 'distpsnr_3', 'isdiffpos', 'fwhm', 'magpsf',
-                 'sigmapsf', 'RA', 'DEC', 'diffmaglim', 'classtar', 'ndethist',
-                 'ncovhist', 'chinr', 'sharpnr', 'Ecliptic coordinates RA',
-                 'Ecliptic coordinates DEC', 'Galactic coordinates RA',
-                 'Galactic coordinates DEC', 'approx non-detections']
+feature_names = ['sgscore1', 'distpsnr1', 'sgscore2', 'distpsnr2', 'sgscore3',
+                 'distpsnr3', 'isdiffpos', 'fwhm', 'magpsf', 'sigmapsf', 'ra',
+                 'dec', 'diffmaglim', 'rb', 'distnr', 'magnr', 'classtar',
+                 'ndethist', 'ncovhist', 'ecl_lat', 'ecl_long', 'gal_lat',
+                 'gal_long', 'non_detections', 'chinr', 'sharpnr']
+
 
 # -----------------------------------------------------------------------------
 
-# It Recursively prints the type of the objects inside the input.
-def dataset_structure(data, space=''):
+# Dataset is loaded
+with open('dataset/td_ztf_stamp_17_06_20.pkl', 'rb') as f:
+    data = pickle.load(f)
 
-    # Iteration along dictionary
-    for keys in data:
-
-        # If the object is other dictionary
-        if(type(data[keys]) is dict):
-
-            print('{0}-{1}:'.format(space,keys))
-            dataset_structure(data[keys], space + '\t')
-
-        else:
-
-            # Type of the object
-            type_obj = type(data[keys]).__name__
-
-            # Extracts an example of the elements into the object
-            example = data[keys][0]
-            type_example = type(example).__name__
-
-            # If the element is an ndarray, its shape is printed
-            if(type_example=='ndarray'):
-                shape_example = str(np.shape(example))
-            else:
-                shape_example = 'Non-ndarray'
-
-            # Prints the information (length and type) of the structure inside
-            # the dictionary
-            print("{0}-{1:<10}N={2:<10}Type:{3}".format(space, keys, len(data[keys]), type_obj), end="")
-            print("\t-->\tType:{1:<10}Shape:{2:<10}".format(space, type_example, shape_example))
+# Mean and std to normalize
+mean_features = np.mean(np.array(features, dtype=np.float32), axis=0)
+std_features = np.std(np.array(features, dtype=np.float32), axis=0)
 
 # -----------------------------------------------------------------------------
 
@@ -61,25 +37,36 @@ def img_float2int(img):
 
     img_255 = 255 * img
     img_round = np.uint8(np.round(img_255))
+
     return img_round
 
 # -----------------------------------------------------------------------------
 
-# One hot encoding to use softmax
+# One hot encoding transformation to use softmax
 def one_hot_trans(x):
-
     return torch.nn.functional.one_hot(torch.tensor(x), num_classes=5)
 
 # -----------------------------------------------------------------------------
 
-# Class to load stamps
+# Class to load alerts
 class Dataset_stamps(torch.utils.data.Dataset):
 
-    def __init__(self, pickle, dataset, transform=None, one_hot_encoding=True):
+    def __init__(
+            self,
+            pickle,
+            dataset,
+            transform=None,
+            one_hot_encoding=True,
+            discarted_features=[13,14,15]
+            ):
 
+        # Load parameters
         self.pickle = pickle
         self.dataset = dataset
+        self.discarted_features = discarted_features
 
+
+        # Apply transformation for images
         if (transform is None):
             self.transform = transforms.Compose([transforms.Lambda(img_float2int),
                                                 transforms.ToPILImage()
@@ -89,6 +76,8 @@ class Dataset_stamps(torch.utils.data.Dataset):
                                                 transforms.ToPILImage(),
                                                 transform])
 
+
+        # Apply transformation for labels
         if (one_hot_encoding):
             self.target_transform = transforms.Compose([transforms.Lambda(one_hot_trans)])
 
@@ -105,19 +94,24 @@ class Dataset_stamps(torch.utils.data.Dataset):
         # Get items
         image = self.pickle[self.dataset]['images'][idx]
 
-        feature = torch.from_numpy(np.array(
-            self.pickle[self.dataset]['features'][idx],
-            dtype=np.float32
-            ))
+        # Get features
+        feature_numpy = (np.array(self.pickle[self.dataset]['features'][idx],
+                                 dtype=np.float32))
 
+        # Normalization
+        feature_numpy = (feature_numpy - mean_features) / std_features
+
+        # Features are deleted and converted from numpy to torch
+        feature = torch.from_numpy(np.delete(feature_numpy, self.discarted_features))
+
+        # Get labels
         label = self.pickle[self.dataset]['labels'][idx]
 
-        # Transformations
+        # Transformations are applied
         image = self.transform(image)
         label = self.target_transform(label)
 
         return image, feature, label
-
 
 # -----------------------------------------------------------------------------
 
@@ -126,8 +120,8 @@ class Dataset_stamps(torch.utils.data.Dataset):
 class BalancedBatchSampler(BatchSampler):
 
     """
-    BatchSampler - from a MNIST-like dataset, samples n_classes and within these classes samples n_samples.
-    Returns batches of size n_classes * n_samples
+    BatchSampler - from a MNIST-like dataset, samples n_classes and within
+    these classes samples n_samples. Return batches of size n_classes * n_samples
     """
 
     def __init__(self, dataset, n_classes, n_samples):
