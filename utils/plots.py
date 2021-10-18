@@ -1,59 +1,64 @@
-import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-from utils.dataset import feature_names
 from utils.dataset import label_names
 
 # -----------------------------------------------------------------------------
 
-def stamps_plot(data, type_set, index):
-    
-    # Loads source's data
-    label = data['Train']['labels'][index]
-    features = data['Train']['features'][index]
-    img = data['Train']['images'][index]
-    
-    # Prints image's label
-    print("Label: {0}".format(label_names[label]))
-    
-    # Dataframe with features
-    d = {'Feature': feature_names, 'Value': features[3:]}
-    df = pd.DataFrame(data=d)
-    
-    # Plot of science, reference and difference images
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15,15))
-    
-    ax1.set_title("Science")
-    ax1.imshow(img[:,:,0])
-    ax1.axis('off')
-    
-    ax2.set_title("Reference")
-    ax2.imshow(img[:,:,1])
-    ax2.axis('off')
-    
-    ax3.set_title("Difference")
-    ax3.imshow(img[:,:,2])
-    ax3.axis('off')
-    
-    # Displays images and features
-    plt.show()
-    display(df)
-
-# -----------------------------------------------------------------------------
-
+# Plot confusion matrix
 def plot_confusion_matrix(confusion_matrix, title, file):
 
-    ax = sns.heatmap(confusion_matrix, vmin=0, vmax=1, annot=True, fmt='.2f');
+    # Plot confusion matrix
+    ax = sns.heatmap(confusion_matrix, vmin=0, vmax=1, annot=True, fmt='.3f')
 
+    # Set title and labes
     ax.set_title(title)
     ax.set_xlabel('Predicted label')
     ax.set_ylabel('True label')
 
-    # set ticklabels
+    # Set Ticklabels
     ax.xaxis.set_ticklabels(label_names)
     ax.yaxis.set_ticklabels(label_names)
 
+    plt.tight_layout()
+
+    # Save image
+    plt.savefig(file, dpi=180)
+    plt.clf()
+
+# -----------------------------------------------------------------------------
+
+# Plot confusion matrix with mean and standard deviation
+def plot_confusion_matrix_mean_std(cmm, cms, title, file):
+    
+    # Plot confusion matrix mean
+    ax = sns.heatmap(cmm, vmin=0, vmax=1)
+
+    # Write mean and standard deviation
+    for i in range(cmm.shape[0]):
+        for j in range(cms.shape[1]):
+
+            # Write
+            plt.text(0.5 + j,
+                     0.5 + i,
+                     f'{cmm[i, j]:.3f}$\pm${cms[i, j]:.3f}',
+                     horizontalalignment="center",
+                     verticalalignment="center",
+                     fontsize=7,
+                     color="black" if cmm[i, j] > 0.5 else "white")
+
+    # Set title and labes
+    ax.set_title(title)
+    ax.set_xlabel('Predicted label')
+    ax.set_ylabel('True label')
+
+    # Set Ticklabels
+    ax.xaxis.set_ticklabels(label_names)
+    ax.yaxis.set_ticklabels(label_names)
+
+    plt.tight_layout()
+
+    # Save image
     plt.savefig(file, dpi=180)
     plt.clf()
 
