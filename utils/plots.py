@@ -10,6 +10,7 @@ def plot_confusion_matrix(confusion_matrix, title, file):
 
     # Plot confusion matrix
     ax = sns.heatmap(confusion_matrix, vmin=0, vmax=1, annot=True, fmt='.3f')
+    ax.set_aspect("equal")
 
     # Set title and labes
     ax.set_title(title)
@@ -33,6 +34,7 @@ def plot_confusion_matrix_mean_std(cmm, cms, title, file):
     
     # Plot confusion matrix mean
     ax = sns.heatmap(cmm, vmin=0, vmax=1)
+    ax.set_aspect("equal")
 
     # Write mean and standard deviation
     for i in range(cmm.shape[0]):
