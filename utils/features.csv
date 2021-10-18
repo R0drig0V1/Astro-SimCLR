@@ -1,23 +1,26 @@
-sgscore_1
-sgscore_2
-sgscore_3
-distpsnr_1
-distpsnr_2
-distpsnr_3
+sgscore1
+distpsnr1
+sgscore2
+distpsnr2
+sgscore3
+distpsnr3
 isdiffpos
 fwhm
 magpsf
 sigmapsf
-RA
-DEC
+ra
+dec
 diffmaglim
+rb
+distnr
+magnr
 classtar
 ndethist
 ncovhist
+ecl_lat
+ecl_long
+gal_lat
+gal_long
+non_detections
 chinr
 sharpnr
-Ecliptic coordinates RA
-Ecliptic coordinates DEC
-Galactic coordinates RA
-Galactic coordinates DEC
-approx non-detections
