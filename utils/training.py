@@ -18,6 +18,7 @@ from utils.dataset import Dataset_stamps, BalancedBatchSampler
 from utils.plots import plot_confusion_matrix
 from utils.transformations import Astro_Augmentation_SimCLR, Augmentation_SimCLR, Resize_img
 
+
 # -----------------------------------------------------------------------------
 
 # Dataset is loaded
@@ -40,14 +41,12 @@ class Supervised_Cross_Entropy(pl.LightningModule):
         self.beta_loss = beta_loss
         self.lr = lr
         self.optimizer = optimizer
-
-        # Initialize P-stamp network
-        self.model = P_stamps_net(self.drop_rate,
-                                  n_features=5,
-                                  last_act_function='Softmax')
-
         self.balanced_batch = balanced_batch
 
+        # Initialize P-stamp network
+        self.model = P_stamps_net(self.drop_rate)
+
+        # Save hyperparameters
         self.save_hyperparameters()
 
 
@@ -57,11 +56,13 @@ class Supervised_Cross_Entropy(pl.LightningModule):
         return y_pred
 
 
+    # Training loop
     def training_step(self, batch, batch_idx):
 
         return self.prediction_target_loss(batch, batch_idx)
 
 
+    # End of training loop
     def training_epoch_end(self, outputs):
 
         y_pred = torch.cat([x['y_pred'] for x in outputs], dim=0)
@@ -78,11 +79,13 @@ class Supervised_Cross_Entropy(pl.LightningModule):
         return None
 
 
+    # Validation loop
     def validation_step(self, batch, batch_idx):
 
         return self.prediction_target_loss(batch, batch_idx)
 
 
+    # End of validation loop
     def validation_epoch_end(self, outputs):
 
         y_pred = torch.cat([x['y_pred'] for x in outputs], dim=0)
@@ -100,142 +103,116 @@ class Supervised_Cross_Entropy(pl.LightningModule):
         return None
 
 
-    def test_step(self, batch, batch_idx):
-
-        return self.prediction_target_loss(batch, batch_idx)
-
-
-    def test_epoch_end(self, outputs):
-
-        y_pred = torch.cat([x['y_pred'] for x in outputs], dim=0)
-        y_true = torch.cat([x['y_true'] for x in outputs], dim=0)
-        avg_loss = torch.stack([x['loss'] for x in outputs]).mean()
-
-        metrics = self.metrics(y_pred, y_true)
-
-        self.logger.experiment.add_scalar("Loss/Test", avg_loss, self.current_epoch)
-        self.logger.experiment.add_scalar("Accuracy/Test", metrics['Accuracy'], self.current_epoch)
-        self.logger.experiment.add_scalar("Precision/Test", metrics['Precision'], self.current_epoch)
-        self.logger.experiment.add_scalar("Recall/Test", metrics['Recall'], self.current_epoch)
-
-        return None
-
-
+    # Compute y_pred, y_true and loss for the batch
     def prediction_target_loss(self, batch, batch_idx):
 
-        # Training_step defined the train loop
+        # Evaluate batch
         x_img, x_feat, y_true = batch
         y_pred = self.forward(x_img, x_feat)
         loss = self.criterion(y_pred, y_true)
 
-        # Transforms to scalar labels
+        # Transform to scalar labels
         y_true = torch.argmax(y_true, dim=1)
         y_pred = torch.argmax(y_pred, dim=1)
 
         return {'y_pred': y_pred, 'y_true': y_true, 'loss': loss}
 
 
+    # Compute accuracy, precision and recall
     def metrics(self, y_pred, y_true):
 
-        # Inicializes metrics
+        # Inicialize metrics
         metric_collection = MetricCollection([
             Accuracy(num_classes=5),
             Precision(num_classes=5, average='macro'),
             Recall(num_classes=5, average='macro')
             ]).to(y_pred.device)
 
-        # Inicializes confusion matrix
-        conf_matrix = ConfusionMatrix(num_classes=5, normalize='true').to(y_pred.device)
-
-        # Computes metrics
+        # Compute metrics
         metrics = metric_collection(y_pred, y_true)
 
         return metrics
 
 
-    def conf_mat_val(self):
+    # Compute confusion matrix and accuracy
+    def confusion_matrix(self, dataset):
 
-        outputs = []
+        # Load dataset
+        if (dataset=='Train'):
+            dataloader = self.train_dataloader()
 
+        elif (dataset=='Validation'):
+            dataloader = self.val_dataloader()
+
+        elif (dataset=='Test'):
+            dataloader = self.test_dataloader()
+
+
+        # evaluation mode
         self.model.eval()
 
-        for idx, batch in enumerate(self.val_dataloader()):
 
-            # Training_step defined the train loop
+        # save y_true and y_pred of dataloader
+        outputs = []
+
+
+        # Iterate dataloader
+        for idx, batch in enumerate(dataloader):
+
+            # Evaluation loop
             x_img, x_feat, y_true = batch
 
+            # Evaluate batch
             with torch.no_grad():
                 y_pred = self.forward(x_img, x_feat)
 
+            # Save output
             outputs.append({'y_true':y_true, 'y_pred':y_pred})
 
 
+        # Concatenate results
         y_pred = torch.cat([x['y_pred'] for x in outputs], dim=0)
         y_true = torch.cat([x['y_true'] for x in outputs], dim=0)
 
-        # Transforms to scalar labels
+
+        # Transform output to scalar labels
         y_true = torch.argmax(y_true, dim=1).cpu()
         y_pred = torch.argmax(y_pred, dim=1).cpu()
 
-        # Inicializes accuraccy and confusion matrix
+
+        # Inicialize accuraccy and confusion matrix
         accuracy = Accuracy(num_classes=5).cpu()
-        conf_matrix = ConfusionMatrix(num_classes=5, normalize='true').cpu()
+        conf_matrix_func = ConfusionMatrix(num_classes=5, normalize='true').cpu()
 
-        acc = accuracy(y_pred, y_true) * 100
-        conf_mat = conf_matrix(y_pred, y_true)
 
-        title = 'Confusion matrix P-stamps (P-stamps loss)\n Accuracy:{0:.2f}%'.format(acc)
-        file = 'Figures/confusion_matrix_CE_Validation.png'
+        # Compute accuracy and confusion matrix
+        acc = accuracy(y_pred, y_true)
+        conf_mat = conf_matrix_func(y_pred, y_true)
+
+        return acc, conf_mat
+
+
+    # Plot confusion matrix
+    def plot_confusion_matrix(self, dataset):
+
+        # Compute accuracy and confusion matrix
+        acc, conf_mat = self.confusion_matrix(dataset=dataset)
+
+        # Plot confusion matrix for dataset
+        title = f'Confusion matrix P-stamps (P-stamps loss)\n Accuracy {dataset}:{acc:.3f}'
+        file = f'Figures/confusion_matrix_CE_{dataset}.png'
         plot_confusion_matrix(conf_mat, title, file)
 
         return None
 
 
-    def conf_mat_test(self):
-
-        outputs = []
-
-        self.model.eval()
-
-        for idx, batch in enumerate(self.test_dataloader()):
-
-            # Training_step defined the train loop
-            x_img, x_feat, y_true = batch
-
-            with torch.no_grad():
-                y_pred = self.forward(x_img, x_feat)
-
-            outputs.append({'y_true':y_true, 'y_pred':y_pred})
-
-
-        y_pred = torch.cat([x['y_pred'] for x in outputs], dim=0)
-        y_true = torch.cat([x['y_true'] for x in outputs], dim=0)
-
-        # Transforms to scalar labels
-        y_true = torch.argmax(y_true, dim=1).cpu()
-        y_pred = torch.argmax(y_pred, dim=1).cpu()
-
-        # Inicializes accuraccy and confusion matrix
-        accuracy = Accuracy(num_classes=5).cpu()
-        conf_matrix = ConfusionMatrix(num_classes=5, normalize='true').cpu()
-
-        acc = accuracy(y_pred, y_true) * 100
-        conf_mat = conf_matrix(y_pred, y_true)
-
-        title = 'Confusion matrix P-stamps (P-stamps loss)\n Accuracy:{0:.2f}%'.format(acc)
-        file = 'Figures/confusion_matrix_CE_Test.png'
-        plot_confusion_matrix(conf_mat, title, file)
-
-        return None
-
-
+    # Inicialize loss function
     def setup(self, stage=None):
-
         self.criterion = P_stamps_loss(self.batch_size, self.beta_loss)
 
 
+    # Prepare datasets
     def prepare_data(self):
-
 
         # Data reading
         self.training_data = Dataset_stamps(
@@ -261,8 +238,10 @@ class Supervised_Cross_Entropy(pl.LightningModule):
         return None
 
 
+    # Dataloader of train dataset
     def train_dataloader(self):
 
+        # dataloader with same samples of each class
         if self.balanced_batch:
 
             batch_sampler = BalancedBatchSampler(self.training_data,
@@ -275,7 +254,7 @@ class Supervised_Cross_Entropy(pl.LightningModule):
                                           batch_sampler=batch_sampler)
 
         else:
-            # Data loader
+            
             train_dataloader = DataLoader(self.training_data,
                                           batch_size=self.batch_size,
                                           shuffle=True,
@@ -286,19 +265,19 @@ class Supervised_Cross_Entropy(pl.LightningModule):
         return train_dataloader
 
 
+    # Dataloader of validation dataset
     def val_dataloader(self):
 
-        # Data loader
-        validation_dataloader = DataLoader(self.validation_data,
+        val_dataloader = DataLoader(self.validation_data,
                                            batch_size=100,
                                            num_workers=config.workers)
 
-        return validation_dataloader
+        return val_dataloader
 
 
+    # Dataloader of test dataset
     def test_dataloader(self):
 
-        # Data loader
         test_dataloader = DataLoader(self.test_data,
                                      batch_size=100,
                                      num_workers=config.workers)
@@ -306,6 +285,7 @@ class Supervised_Cross_Entropy(pl.LightningModule):
         return test_dataloader
 
 
+    # Configuration of optimizer
     def configure_optimizers(self):
 
         if self.optimizer == "AdamW":
@@ -363,11 +343,11 @@ class CLR_a(pl.LightningModule):
 
         if (self.encoder_name == 'pstamps'):
 
-            # Initialize P-stamp network (Part A)
-            encoder = P_stamps_net_a()
+            # Initialize P-stamp network
+            encoder = P_stamps_net_SimCLR()
 
             # Output features of the encoder
-            self.n_features = encoder.fc1.out_features
+            self.n_features = encoder.fc3.out_features
 
             # Initialize SimCLR network
             self.model = CLR(encoder=encoder,
@@ -472,7 +452,8 @@ class CLR_a(pl.LightningModule):
                 data,
                 'Train',
                 transform=augmentation,
-                one_hot_encoding=False)
+                one_hot_encoding=False,
+                discarted_features=[13,14,15])
 
 
         # Data reading
@@ -480,7 +461,8 @@ class CLR_a(pl.LightningModule):
                 data,
                 'Validation',
                 transform=augmentation,
-                one_hot_encoding=False)
+                one_hot_encoding=False,
+                discarted_features=[13,14,15])
 
 
     def train_dataloader(self):
@@ -499,12 +481,12 @@ class CLR_a(pl.LightningModule):
     def val_dataloader(self):
 
         # Data loader
-        validation_dataloader = DataLoader(self.validation_data_aug,
+        val_dataloader = DataLoader(self.validation_data_aug,
                                            batch_size=100,
                                            shuffle=True,
                                            num_workers=config.workers)
 
-        return validation_dataloader
+        return val_dataloader
 
 
     def configure_optimizers(self):
@@ -530,7 +512,7 @@ class CLR_a(pl.LightningModule):
 class CLR_b(pl.LightningModule):
 
     def __init__(self, clr_model, image_size, batch_size, beta_loss, lr,
-                 drop_rate, optimizer, with_features):
+                 optimizer, with_features):
         super().__init__()
         
 
@@ -540,7 +522,6 @@ class CLR_b(pl.LightningModule):
         self.batch_size = batch_size
         self.beta_loss = beta_loss
         self.lr = lr
-        self.drop_rate = drop_rate
         self.optimizer = optimizer
         self.with_features = with_features
 
@@ -550,28 +531,12 @@ class CLR_b(pl.LightningModule):
 
 
         # dataset features are included to predict
-        n_features_dataset = 26 if with_features else 0
+        n_features_dataset = 23 if with_features else 0
 
 
-        # Part B of P_stamps net
-        if (self.encoder_name == 'pstamps'):
-
-            n_features = self.clr_model.n_features + n_features_dataset
-            self.model = P_stamps_net_b(drop_rate=self.drop_rate, n_features=n_features)
-
-            
-        # Initialize Linear classifier
-        elif (self.encoder_name == 'resnet18'):
-
-            n_features = self.clr_model.n_features + n_features_dataset
-            self.model = Linear_classifier(n_features=n_features, n_classes=5)
-
-
-        # Initialize Linear classifier for resnet50
-        elif(self.encoder_name == 'resnet50'):
-
-            n_features = self.clr_model.n_features  + n_features_dataset
-            self.model = Linear_classifier(n_features=n_features, n_classes=5)
+        # Initialize classifier
+        n_features = self.clr_model.n_features + n_features_dataset
+        self.model = Linear_classifier(n_features=n_features, n_classes=5)
 
 
         self.save_hyperparameters(
@@ -579,7 +544,6 @@ class CLR_b(pl.LightningModule):
             "batch_size",
             "beta_loss",
             "lr",
-            "drop_rate",
             "optimizer",
             "with_features"
         )
@@ -808,21 +772,24 @@ class CLR_b(pl.LightningModule):
                             data,
                             'Train',
                             transform=Resize_img(size=self.image_size),
-                            one_hot_encoding=True)
+                            one_hot_encoding=True,
+                            discarted_features=[13,14,15])
 
         # Data reading
         self.validation_data = Dataset_stamps(
                             data,
                             'Validation',
                             transform=Resize_img(size=self.image_size),
-                            one_hot_encoding=True)
+                            one_hot_encoding=True,
+                            discarted_features=[13,14,15])
 
         # Data reading
         self.test_data = Dataset_stamps(
                             data,
                             'Test',
                             transform=Resize_img(size=self.image_size),
-                            one_hot_encoding=True)
+                            one_hot_encoding=True,
+                            discarted_features=[13,14,15])
 
 
     def train_dataloader(self):
@@ -841,11 +808,11 @@ class CLR_b(pl.LightningModule):
     def val_dataloader(self):
 
         # Data loader
-        validation_dataloader = DataLoader(self.validation_data,
+        val_dataloader = DataLoader(self.validation_data,
                                            batch_size=100,
                                            num_workers=config.workers)
 
-        return validation_dataloader
+        return val_dataloader
 
 
     def test_dataloader(self):
