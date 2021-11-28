@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import re 
 
+# -----------------------------------------------------------------------------
 
 # Return names of hyperparameter columns of dataframe
 def hyperparameter_columns(df):
@@ -33,7 +34,7 @@ def summary(df):
 
 
 # Return the list of the checkpoints of the best hyperparamter combination
-def folder_best_hyperparameters(df):
+def path_best_hyperparameters(df):
 
 	# Names of hyperparameter columns of dataframe
 	hyper_columns = hyperparameter_columns(df)
@@ -61,29 +62,10 @@ def folder_best_hyperparameters(df):
 	# For each realization of the hyperparameter combination
 	for exp_folder in folders:
 
-		# Save folder of the best checkpoint
-		best_folder = ''
-
-		# Save epoch of the best checkpoint (later checkpoint is better)
-		best_epoch = 0
-
-		# Iterate the folders inside the experiment
-		for folder in os.listdir(exp_folder):
-
-			# If the folder contents a checkpoint
-			if 'checkpoint_' in folder:
-
-				# From the name extract the epoch
-				epoch = int(re.search(r'epoch=(.*?)-', folder).group(1))
-
-				# Update epoch and folder
-				if (epoch >= best_epoch) :
-					best_epoch = epoch
-					best_folder = folder
-
 		# Save checkpoint folder
-		checkpoint_path = os.path.join(exp_folder, best_folder, "checkpoint.ckpt")
+		checkpoint_path = os.path.join(exp_folder, "checkpoint.ckpt")
 		checkpoint_paths.append(checkpoint_path)
 
 	return checkpoint_paths
 
+# -----------------------------------------------------------------------------
