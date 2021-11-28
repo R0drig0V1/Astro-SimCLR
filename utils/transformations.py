@@ -1,6 +1,27 @@
+import torch
 import torchvision
 
 from utils.random_resized_center_crop import RandomResizedCenterCrop
+from utils.gaussian_blur import GaussianBlur
+
+# ------------------------------------------------------------------------------
+
+class RandomRotation:
+
+    """
+    Random rotation 
+    """
+
+    def __init__(self):
+        pass
+
+    def __call__(self, x):
+
+        # 90 degree rotation applied
+        times = torch.randint(4, (1,))[0]
+
+        return torch.rot90(x, times, [1, 2])
+
 
 # ------------------------------------------------------------------------------
 
@@ -39,8 +60,15 @@ class Augmentation_SimCLR:
                 # Apply gray scale
                 torchvision.transforms.RandomGrayscale(p=0.2),
 
+                # Blur image
+                #GaussianBlur(kernel_size=int(0.1 * size)),
+
                 # Transform image to tensor
-                torchvision.transforms.ToTensor()
+                torchvision.transforms.ToTensor(),
+
+                # Random rotation
+                RandomRotation()
+
             ])
 
 
@@ -79,6 +107,43 @@ class Astro_Augmentation_SimCLR:
                 # Apply color transformation
                 torchvision.transforms.RandomApply([color_jitter], p=0.8),
 
+                # Blur image
+                #GaussianBlur(kernel_size=int(0.1 * size)),
+
+                # Transform image to tensor
+                torchvision.transforms.ToTensor(),
+
+                # Random rotation
+                RandomRotation()
+            ])
+
+
+    def __call__(self, x):
+        return self.augmentation(x), self.augmentation(x)
+
+# ------------------------------------------------------------------------------
+
+class Jitter_Astro_Aug:
+    """
+    A stochastic jitter augmentation.
+    """
+
+    def __init__(self, size):
+        
+        # Constant for color transformation
+        s = 1
+
+        # Color transformation: brightness, contrast, saturation ,hue
+        color_jitter = torchvision.transforms.ColorJitter(0.8 * s, 0.8 * s, 0.8 * s, 0)
+        
+        self.augmentation = torchvision.transforms.Compose([
+
+                # Center crop
+                torchvision.transforms.CenterCrop(size=size),
+
+                # Apply color transformation
+                torchvision.transforms.RandomApply([color_jitter], p=0.8),
+
                 # Transform image to tensor
                 torchvision.transforms.ToTensor()
             ])
@@ -87,6 +152,113 @@ class Astro_Augmentation_SimCLR:
     def __call__(self, x):
         return self.augmentation(x), self.augmentation(x)
 
+# ------------------------------------------------------------------------------
+
+class Jitter_Default_Aug:
+    """
+    A stochastic jitter augmentation.
+    """
+
+    def __init__(self, size):
+        
+        # Constant for color transformation
+        s = 1
+
+        # Color transformation: brightness, contrast, saturation ,hue
+        color_jitter = torchvision.transforms.ColorJitter(0.8 * s, 0.8 * s, 0.8 * s, 0.2 * s)
+        
+        self.augmentation = torchvision.transforms.Compose([
+
+                # Center crop
+                torchvision.transforms.CenterCrop(size=size),
+
+                # Apply color transformation
+                torchvision.transforms.RandomApply([color_jitter], p=0.8),
+
+                # Transform image to tensor
+                torchvision.transforms.ToTensor()
+            ])
+
+
+    def __call__(self, x):
+        return self.augmentation(x), self.augmentation(x)
+
+
+# ------------------------------------------------------------------------------
+
+class Crop_Astro_Aug:
+    """
+    A stochastic center crop augmentation.
+    """
+
+    def __init__(self, size):
+        
+
+        self.augmentation = torchvision.transforms.Compose([
+
+                # Random center crop and random aspect ratio is applied. This
+                # crop is finally resized to the given size.
+                RandomResizedCenterCrop(scale=(0.08, 1.0), size=size),
+
+                # Transform image to tensor
+                torchvision.transforms.ToTensor(),
+            ])
+
+
+    def __call__(self, x):
+        return self.augmentation(x), self.augmentation(x)
+
+# ------------------------------------------------------------------------------
+
+class Crop_Default_Aug:
+    """
+    A stochastic crop augmentation.
+    """
+
+    def __init__(self, size):
+        
+
+        self.augmentation = torchvision.transforms.Compose([
+
+                # Random crop and random aspect ratio is applied. This crop is
+                # finally resized to the given size.
+                torchvision.transforms.RandomResizedCrop(scale=(0.08, 1.0), size=size),
+
+                # Transform image to tensor
+                torchvision.transforms.ToTensor(),
+            ])
+
+
+    def __call__(self, x):
+        return self.augmentation(x), self.augmentation(x)
+
+# ------------------------------------------------------------------------------
+
+class Rotation_Aug:
+    """
+    A stochastic rotation augmentation.
+    """
+
+    def __init__(self, size):
+        
+        self.augmentation = torchvision.transforms.Compose([
+
+                # Center crop
+                torchvision.transforms.CenterCrop(size=size),
+
+                # Random horizontal flip
+                torchvision.transforms.RandomHorizontalFlip(),
+
+                # Transform image to tensor
+                torchvision.transforms.ToTensor(),
+
+                # Random rotation
+                RandomRotation()
+            ])
+
+
+    def __call__(self, x):
+        return self.augmentation(x), self.augmentation(x)
 
 # ------------------------------------------------------------------------------
 
