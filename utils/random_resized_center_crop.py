@@ -3,10 +3,10 @@ import random
 import torchvision
 import warnings
 
-from PIL import Image
+#from PIL import Image
+from torchvision.transforms import InterpolationMode
 
 import torchvision.transforms.functional as F
-
 
 # ------------------------------------------------------------------------------
 
@@ -27,7 +27,7 @@ class RandomResizedCenterCrop(object):
         interpolation: Default: PIL.Image.BILINEAR
     """
 
-    def __init__(self, size, scale=(0.08, 1.0), ratio=(3. / 4., 4. / 3.), interpolation=Image.BILINEAR):
+    def __init__(self, size, scale=(0.08, 1.0), ratio=(3. / 4., 4. / 3.), interpolation: InterpolationMode = InterpolationMode.BILINEAR):
         if isinstance(size, tuple):
             self.size = size
         else:
@@ -56,7 +56,7 @@ class RandomResizedCenterCrop(object):
 
         """
 
-        width, height = _get_image_size(img)
+        width, height = img.size
         area = height * width
 
         for attempt in range(10):
