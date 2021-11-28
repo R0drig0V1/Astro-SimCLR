@@ -3,13 +3,13 @@ import ray
 import warnings
 
 import numpy as np
+import pandas as pd
 import pytorch_lightning as pl
 
-from utils.args import Args
 from utils.config import config, resources_per_trial
 from utils.plots import plot_confusion_matrix_mean_std
 from utils.repeater import hyperparameter_columns, summary
-from utils.repeater import folder_best_hyperparameters
+from utils.repeater import path_best_hyperparameters
 
 from utils.training import Supervised_Cross_Entropy
 
@@ -30,19 +30,14 @@ from ray.tune.suggest.hyperopt import HyperOptSearch
 
 # -----------------------------------------------------------------------------
 
-# Last version of pytorch is unstable
-#warnings.filterwarnings("ignore")
-
-# Sets seed
-#pl.utilities.seed.seed_everything(seed=1, workers=False)
-
 # Requirement for Ray
 os.environ['TUNE_DISABLE_STRICT_METRIC_CHECKING'] = '1'
 os.environ['TUNE_DISABLE_AUTO_CALLBACK_LOGGERS'] = '1'
+#os.environ['CUDA_VISIBLE_DEVICES'] = '0,3'
 
 # -----------------------------------------------------------------------------
 
-def train_mnist_tune(config_hyper, max_epochs=100, gpus=1):
+def ce_trainer(config_hyper, max_epochs=100, gpus=1):
 
     """
     Train the Supervised Cross Entropy model with the hyperparameters in
@@ -55,18 +50,30 @@ def train_mnist_tune(config_hyper, max_epochs=100, gpus=1):
     drop_rate      = config_hyper['drop_rate']
     beta_loss      = config_hyper['beta_loss']
     lr             = config_hyper['lr']
-    balanced_batch = config_hyper['balanced_batch']
     optimizer      = config_hyper['optimizer']
+    with_features  = config_hyper['with_features']
+    balanced_batch = config_hyper['balanced_batch']
+    augmentation   = config_hyper['augmentation']
 
 
     # Early stop criterion
     early_stop_callback = EarlyStopping(
         monitor="accuracy_val",
         min_delta=0.001,
-        patience=40,
+        patience=70,
         mode="max",
         check_finite=True,
-        divergence_threshold=0.3
+        divergence_threshold=0.1
+    )
+
+
+    # Save checkpoint
+    checkpoint_callback = ModelCheckpoint(
+        monitor="accuracy_val",
+        dirpath=".",
+        filename="checkpoint",
+        save_top_k=1,
+        mode="max"
     )
 
 
@@ -85,14 +92,6 @@ def train_mnist_tune(config_hyper, max_epochs=100, gpus=1):
     )
 
 
-    # Save checkpoint
-    tune_checkpoint = TuneReportCheckpointCallback(
-        metrics={"accuracy": "accuracy_val"},
-        filename="checkpoint.ckpt",
-        on="validation_end"
-    )
-
-
     # Initialize pytorch_lightning module
     model = Supervised_Cross_Entropy(
         image_size=image_size,
@@ -101,7 +100,9 @@ def train_mnist_tune(config_hyper, max_epochs=100, gpus=1):
         beta_loss=beta_loss,
         lr=lr,
         optimizer=optimizer,
-        balanced_batch=balanced_batch
+        with_features=with_features,
+        balanced_batch=balanced_batch,
+        augmentation=augmentation
     )
 
 
@@ -112,8 +113,8 @@ def train_mnist_tune(config_hyper, max_epochs=100, gpus=1):
         benchmark=True,
         callbacks=[
             early_stop_callback,
-            tune_report,
-            tune_checkpoint
+            checkpoint_callback,
+            tune_report
         ],
         logger=tb_logger,
         progress_bar_refresh_rate=False,
@@ -133,18 +134,19 @@ def trial_name_creator(trial):
 
 # -----------------------------------------------------------------------------
 
-
-def tune_mnist_asha(num_samples=10, max_epochs=100, cpus_per_trial=1, gpus_per_trial=1):
+def ce_tune(num_samples, max_epochs, cpus_per_trial=1, gpus_per_trial=1):
 
     # Hyperparameters of model
     config_hyper = {
         "image_size": tune.choice([21]),
-        "batch_size": tune.choice([35, 70, 140]),
-        "drop_rate": tune.choice([0.25, 0.5, 0.75]),
+        "batch_size": tune.choice([15, 30, 45, 60, 75]),
+        "drop_rate": tune.choice([0.2, 0.5, 0.8]),
         "beta_loss": tune.loguniform(1e-4, 1e+1),
         "lr": tune.loguniform(1e-4, 1e-1),
+        "optimizer": tune.choice(['AdamW', 'SGD', 'LARS']),
+        "with_features": tune.choice([True]),
         "balanced_batch": tune.choice([True, False]),
-        "optimizer": tune.choice(['AdamW', 'SGD', 'LARS'])
+        "augmentation": tune.choice([False])
     }
 
 
@@ -152,11 +154,13 @@ def tune_mnist_asha(num_samples=10, max_epochs=100, cpus_per_trial=1, gpus_per_t
     parameter_columns = [
         "image_size",
         "batch_size",
-        "lr",
         "drop_rate",
         "beta_loss",
+        "lr",
+        "optimizer",
+        "with_features",
         "balanced_batch",
-        "optimizer"]
+        "augmentation"]
 
 
     # Scheduler
@@ -176,7 +180,7 @@ def tune_mnist_asha(num_samples=10, max_epochs=100, cpus_per_trial=1, gpus_per_t
 
     # Function with trainer and parameters
     params = tune.with_parameters(
-        train_mnist_tune,
+        ce_trainer,
         max_epochs=max_epochs,
         gpus=gpus_per_trial
     )
@@ -202,8 +206,6 @@ def tune_mnist_asha(num_samples=10, max_epochs=100, cpus_per_trial=1, gpus_per_t
         resources_per_trial={"cpu": cpus_per_trial, "gpu": gpus_per_trial},
         metric="accuracy",
         mode="max",
-        keep_checkpoints_num=1,
-        checkpoint_score_attr="accuracy",
         config=config_hyper,
         num_samples=num_samples*repeat,
         scheduler=scheduler,
@@ -213,6 +215,7 @@ def tune_mnist_asha(num_samples=10, max_epochs=100, cpus_per_trial=1, gpus_per_t
         trial_name_creator=trial_name_creator,
         trial_dirname_creator=trial_name_creator,
         verbose=1,
+        max_failures=2,
         callbacks=[tune_csv_logger, tune_json_logger],
         search_alg=re_search_alg
     )
@@ -229,16 +232,16 @@ def tune_mnist_asha(num_samples=10, max_epochs=100, cpus_per_trial=1, gpus_per_t
     df_summary.to_csv('results/summary_tuning_ce.csv', float_format='%.6f')
 
     # Checkpoints of the best hyperparameter combination
-    folders = folder_best_hyperparameters(df)
+    checkpoints = path_best_hyperparameters(df)
 
-    return folders
+    return checkpoints
 
 # -----------------------------------------------------------------------------
 
 # Hyperparameters tunning
-folders = tune_mnist_asha(
-    num_samples=30,
-    max_epochs=250,
+checkpoints = ce_tune(
+    num_samples=35,
+    max_epochs=350,
     cpus_per_trial=resources_per_trial.cpus,
     gpus_per_trial=resources_per_trial.gpus
     )
@@ -246,11 +249,14 @@ folders = tune_mnist_asha(
 # -----------------------------------------------------------------------------
 
 # Save accuracies and confusion matrixes for different initial conditions
-acc_array = []
-conf_mat_array = []
+acc_array_val = []
+conf_mat_array_val = []
+acc_array_test = []
+conf_mat_array_test = []
+
 
 # Train for different initial conditions
-for checkpoint_path in folders:
+for checkpoint_path in checkpoints:
 
     # Load weights
     sce = Supervised_Cross_Entropy.load_from_checkpoint(checkpoint_path)
@@ -259,23 +265,37 @@ for checkpoint_path in folders:
     sce.prepare_data()
 
     # Compute metrics
-    acc, conf_mat = sce.confusion_matrix(dataset='Test')
+    acc_test, conf_mat_test = sce.confusion_matrix(dataset='Test')
+    acc_val, conf_mat_val = sce.confusion_matrix(dataset='Validation')
 
     # Save metrics
-    acc_array.append(acc)
-    conf_mat_array.append(conf_mat)
+    acc_array_val.append(acc_val)
+    conf_mat_array_val.append(conf_mat_val)
+    acc_array_test.append(acc_test)
+    conf_mat_array_test.append(conf_mat_test)
 
 
 # Compute mean and standard deviation of accuracy and confusion matrix
-acc_mean = np.mean(acc_array, axis=0)
-acc_std = np.std(acc_array, axis=0)
-conf_mat_mean = np.mean(conf_mat_array, axis=0)
-conf_mat_std = np.std(conf_mat_array, axis=0)
+acc_mean_val = np.mean(acc_array_val, axis=0)
+acc_std_val = np.std(acc_array_val, axis=0)
+conf_mat_mean_val = np.mean(conf_mat_array_val, axis=0)
+conf_mat_std_val = np.std(conf_mat_array_val, axis=0)
 
+acc_mean_test = np.mean(acc_array_test, axis=0)
+acc_std_test = np.std(acc_array_test, axis=0)
+conf_mat_mean_test = np.mean(conf_mat_array_test, axis=0)
+conf_mat_std_test = np.std(conf_mat_array_test, axis=0)
 
-# Plot confusion matrix
-title = f'Confusion matrix P-stamps (P-stamps loss)\n Accuracy Test:{acc_mean:.3f}$\pm${acc_std:.3f}'
+# -----------------------------------------------------------------------------
+
+# Plot confusion matrix (validation)
+title = f'Confusion matrix Stamps classifier\n Accuracy Validation:{acc_mean_val:.3f}$\pm${acc_std_val:.3f}'
+file = 'Figures/confusion_matrix_CE_Validation.png'
+plot_confusion_matrix_mean_std(conf_mat_mean_val, conf_mat_std_val, title, file)
+
+# Plot confusion matrix (test)
+title = f'Confusion matrix Stamps classifier\n Accuracy Test:{acc_mean_test:.3f}$\pm${acc_std_test:.3f}'
 file = 'Figures/confusion_matrix_CE_Test.png'
-plot_confusion_matrix_mean_std(conf_mat_mean, conf_mat_std, title, file)
+plot_confusion_matrix_mean_std(conf_mat_mean_test, conf_mat_std_test, title, file)
 
 # -----------------------------------------------------------------------------
