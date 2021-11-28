@@ -1,354 +1,166 @@
 import os
-import pickle
-import sys
-import torch
-import torchmetrics
-import torchvision
-import warnings
 
 import numpy as np
 import pytorch_lightning as pl
 
-from utils.args import Args
 from utils.config import config
-from utils.training import CLR_a, CLR_b
+from utils.plots import plot_confusion_matrix_mean_std
+from utils.training import SimCLR
 
+from box import Box
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
 
 # -----------------------------------------------------------------------------
 
-# Last version of pytorch is unstable
-#warnings.filterwarnings("ignore")
-
-# Sets seed
-pl.utilities.seed.seed_everything(seed=1, workers=False)
+gpus = [3]
 
 # -----------------------------------------------------------------------------
 
-# Dataset is loaded
-with open('dataset/td_ztf_stamp_17_06_20.pkl', 'rb') as f:
-    data = pickle.load(f)
-
-# -----------------------------------------------------------------------------
-
-def entrena_clr(args_clr_a, args_clr_b):
+def training_simclr(args_simclr):
 
     # Saves checkpoint
-    checkpoint_callback_a = ModelCheckpoint(
-        monitor="loss_val",
-        dirpath=os.path.join(config.model_path),
-        filename="clr_a-loss_val{loss_val:.3f}",
-        save_top_k=1,
-        mode="min"
-    )
-
-
-    # Defining the logger object
-    logger_a = TensorBoardLogger(
-        save_dir='tb_logs',
-        name='clr_a'
-    )
-
-
-    # Early stop criterion
-    early_stop_callback_a = EarlyStopping(
-        monitor="loss_val",
-        mode="min",
-        patience=70,
-        check_finite=True
-    )
-
-
-    # Inicializes classifier
-    clr_a = CLR_a(
-        encoder_name=args_clr_a.encoder_name,
-        image_size=args_clr_a.image_size,
-        astro_augmentation=args_clr_a.astro_augmentation,
-        batch_size=args_clr_a.batch_size,
-        projection_dim=args_clr_a.projection_dim,
-        temperature=args_clr_a.temperature,
-        lr=args_clr_a.lr,
-        optimizer=args_clr_a.optimizer,
-        method=args_clr_a.method
-    )
- 
-    # Trainer
-    trainer = pl.Trainer(
-        max_epochs=args_clr_a.max_epochs,
-        gpus=config.gpus,
-        benchmark=True,
-        stochastic_weight_avg=False,
-        callbacks=[checkpoint_callback_a, early_stop_callback_a],
-        logger=logger_a
-    )
-
-
-    # Training
-    trainer.fit(clr_a)
-
-    # -------------------------------------------------------------------------
-
-    # Path of best model
-    path = checkpoint_callback_a.best_model_path
-
-    # Loads weights
-    clr_a = CLR_a.load_from_checkpoint(path)
-
-    # -----------------------------------------------------------------------------
-
-    # Saves checkpoint
-    checkpoint_callback_b = ModelCheckpoint(
+    checkpoint_callback = ModelCheckpoint(
         monitor="accuracy_val",
         dirpath=os.path.join(config.model_path),
-        filename="clr_b-acc_val{accuracy_val:.3f}",
+        filename="simclr-accuracy_val{accuracy_val:.3f}",
         save_top_k=1,
         mode="max"
     )
 
 
-    # Defining the logger object
-    logger_b = TensorBoardLogger(
-        save_dir='tb_logs',
-        name='clr_b'
+    # Early stop criterion
+    early_stop_callback = EarlyStopping(
+        monitor="accuracy_val",
+        min_delta=0.0005,
+        patience=200,
+        mode="max",
+        check_finite=True,
+        divergence_threshold=0.05
     )
 
 
-    # Early stop criterion
-    early_stop_callback_b = EarlyStopping(
-        monitor="accuracy_val",
-        mode="max",
-        min_delta=0.002,
-        patience=30,
-        divergence_threshold=0.4,
-        check_finite=True
+    # Define the logger object
+    logger = TensorBoardLogger(
+        save_dir='tb_logs',
+        name='simclr'
     )
 
 
     # Inicialize classifier
-    clr_b = CLR_b(
-        clr_model=clr_a,
-        image_size=args_clr_b.image_size,
-        batch_size=args_clr_b.batch_size,
-        beta_loss=args_clr_b.beta_loss,
-        lr=args_clr_b.lr,
-        drop_rate=args_clr_b.drop_rate,
-        optimizer=args_clr_b.optimizer,
-        with_features=args_clr_b.with_features,
-    )
-
+    simclr = SimCLR(
+        encoder_name=args_simclr.encoder_name,
+        method=args_simclr.method,
+        image_size=args_simclr.image_size,
+        astro_augmentation=args_simclr.astro_augmentation,
+        projection_dim=args_simclr.projection_dim,
+        temperature=args_simclr.temperature,
+        lr_encoder=args_simclr.lr_encoder,
+        batch_size_encoder=args_simclr.batch_size_encoder,
+        optimizer_encoder=args_simclr.optimizer_encoder,
+        beta_loss=args_simclr.beta_loss,
+        lr_classifier=args_simclr.lr_classifier,
+        batch_size_classifier=args_simclr.batch_size_classifier,
+        optimizer_classifier=args_simclr.optimizer_classifier,
+        with_features=args_simclr.with_features)
+ 
 
     # Trainer
     trainer = pl.Trainer(
-        max_epochs=args_clr_b.max_epochs,
-        gpus=config.gpus,
+        max_epochs=args_simclr.max_epochs,
+        gpus=gpus,
         benchmark=True,
         stochastic_weight_avg=False,
-        callbacks=[checkpoint_callback_b, early_stop_callback_b],
-        logger=logger_b
+        callbacks=[checkpoint_callback, early_stop_callback],
+        logger=logger
     )
 
 
     # Training
-    trainer.fit(clr_b)
-
-    # -------------------------------------------------------------------------
+    trainer.fit(simclr)
 
     # Path of best model
-    path = checkpoint_callback_b.best_model_path
+    path = checkpoint_callback.best_model_path
 
     # Loads weights
-    clr_b = CLR_b.load_from_checkpoint(path, clr_model=clr_a)
+    sce = SimCLR.load_from_checkpoint(path)
 
-    # Load dataset and computes confusion matrixes
-    clr_b.prepare_data()
-    clr_b.conf_mat_val()
-    clr_b.conf_mat_test()
+    # Load dataset
+    sce.prepare_data()
 
-    return None
+    # Compute metrics
+    acc_val, conf_mat_val = sce.confusion_matrix(dataset='Validation')
+    acc_test, conf_mat_test = sce.confusion_matrix(dataset='Test')
+
+    return (acc_val, conf_mat_val), (acc_test, conf_mat_test)
 
 # -----------------------------------------------------------------------------
 
-
-# Hyperparameters self-supervised
-args_clr_a = Args({
+# Hyperparameters
+args = Box({
+    'max_epochs': 10,
     'encoder_name': 'pstamps',
     'method': 'supcon',
-    'batch_size': 500,
     'image_size': 21,
-    'astro_augmentation':True,
-    'max_epochs': 800,
-    'optimizer': "LARS",
-    'lr': 1,
+    'astro_augmentation': True,
+    'projection_dim': 64,
     'temperature': 0.128,
-    'projection_dim': 64
-})
-
-# Hyperparameters linear classifier
-args_clr_b = Args({
-    'batch_size': 100,
-    'image_size': args_clr_a.image_size,
-    'max_epochs': 120,
-    'optimizer': "SGD",
-    'lr': 1e-3,
-    'drop_rate': 0.5,
+    'lr_encoder': 1,
+    'batch_size_encoder': 500,
+    'optimizer_encoder': 'LARS',
     'beta_loss': 0.2,
-    'with_features': True,
+    'lr_classifier': 1e-3,
+    'batch_size_classifier': 100,
+    'optimizer_classifier': 'SGD',
+    'with_features':True
 })
 
+# Save accuracies and confusion matrixes for different initial conditions
+acc_array_val = []
+conf_mat_array_val = []
+acc_array_test = []
+conf_mat_array_test = []
 
-entrena_clr(args_clr_a, args_clr_b)
+# Train for different initial conditions
+for _ in range(5):
 
+    # Train and compute metrics
+    (acc_val, conf_mat_val), (acc_test, conf_mat_test) = training_simclr(args)
 
-# -----------------------------------------------------------------------------
-
-# Hyperparameters self-supervised
-args_clr_a = Args({
-    'encoder_name': 'resnet18',
-    'method': 'supcon',
-    'batch_size': 500,
-    'image_size': 21,
-    'max_epochs': 800,
-    'optimizer': "LARS",
-    'lr': 10,
-    'temperature': 2.410,
-    'projection_dim': 64
-})
-
-# Hyperparameters linear classifier
-args_clr_b = Args({
-    'batch_size': 100,
-    'image_size': args_clr_a.image_size,
-    'max_epochs': 120,
-    'optimizer': "SGD",
-    'lr': 1e-3,
-    'drop_rate': 0.5,
-    'beta_loss': 0.2,
-    'with_features': True,
-})
+    # Save metrics
+    acc_array_val.append(acc_val)
+    conf_mat_array_val.append(conf_mat_val)
+    acc_array_test.append(acc_test)
+    conf_mat_array_test.append(conf_mat_test)
 
 
-entrena_clr(args_clr_a, args_clr_b)
+# Compute mean and standard deviation of accuracy and confusion matrix
+acc_mean_val = np.mean(acc_array_val, axis=0)
+acc_std_val = np.std(acc_array_val, axis=0)
+conf_mat_mean_val = np.mean(conf_mat_array_val, axis=0)
+conf_mat_std_val = np.std(conf_mat_array_val, axis=0)
 
-# -----------------------------------------------------------------------------
-
-# Hyperparameters self-supervised
-args_clr_a = Args({
-    'encoder_name': 'resnet50',
-    'method': 'supcon',
-    'batch_size': 500,
-    'image_size': 21,
-    'max_epochs': 800,
-    'optimizer': "LARS",
-    'lr': 0.1,
-    'temperature': 6.063,
-    'projection_dim': 64
-})
-
-# Hyperparameters linear classifier
-args_clr_b = Args({
-    'batch_size': 100,
-    'image_size': args_clr_a.image_size,
-    'max_epochs': 120,
-    'optimizer': "SGD",
-    'lr': 1e-3,
-    'drop_rate': 0.5,
-    'beta_loss': 0.2,
-    'with_features': True,
-})
+acc_mean_test = np.mean(acc_array_test, axis=0)
+acc_std_test = np.std(acc_array_test, axis=0)
+conf_mat_mean_test = np.mean(conf_mat_array_test, axis=0)
+conf_mat_std_test = np.std(conf_mat_array_test, axis=0)
 
 
-entrena_clr(args_clr_a, args_clr_b)
+# Plot confusion matrix (validation)
+# ---------------------------------
+title = f"""Confusion matrix SimCLR classifier\n
+            (with features, sup, astro-aug, Stamps)\n
+            Accuracy Validation:{acc_mean_val:.3f}$\pm${acc_std_val:.3f}"""
+file = 'Figures/confusion_matrix_Simclr-Stamps-Validation-with_features-sup-astro_aug.png'
+plot_confusion_matrix_mean_std(conf_mat_mean_val, conf_mat_std_val, title, file)
 
-# -----------------------------------------------------------------------------
-
-# Hyperparameters self-supervised
-args_clr_a = Args({
-    'encoder_name': 'pstamps',
-    'method': 'simclr',
-    'batch_size': 350,
-    'image_size': 21,
-    'max_epochs': 800,
-    'optimizer': "LARS",
-    'lr': 0.1,
-    'temperature': 0.000707,
-    'projection_dim': 64
-})
-
-# Hyperparameters linear classifier
-args_clr_b = Args({
-    'batch_size': 100,
-    'image_size': args_clr_a.image_size,
-    'max_epochs': 120,
-    'optimizer': "SGD",
-    'lr': 1e-3,
-    'drop_rate': 0.5,
-    'beta_loss': 0.2,
-    'with_features': True,
-})
-
-
-entrena_clr(args_clr_a, args_clr_b)
-
-# -----------------------------------------------------------------------------
-
-# Hyperparameters self-supervised
-args_clr_a = Args({
-    'encoder_name': 'resnet18',
-    'method': 'simclr',
-    'batch_size': 350,
-    'image_size': 21,
-    'max_epochs': 800,
-    'optimizer': "LARS",
-    'lr': 100,
-    'temperature': 0.779,
-    'projection_dim': 64
-})
-
-# Hyperparameters linear classifier
-args_clr_b = Args({
-    'batch_size': 100,
-    'image_size': args_clr_a.image_size,
-    'max_epochs': 120,
-    'optimizer': "SGD",
-    'lr': 1e-3,
-    'drop_rate': 0.5,
-    'beta_loss': 0.2,
-    'with_features': True,
-})
-
-
-entrena_clr(args_clr_a, args_clr_b)
-
-# -----------------------------------------------------------------------------
-
-# Hyperparameters self-supervised
-args_clr_a = Args({
-    'encoder_name': 'resnet50',
-    'method': 'simclr',
-    'batch_size': 350,
-    'image_size': 21,
-    'max_epochs': 800,
-    'optimizer': "LARS",
-    'lr': 10,
-    'temperature': 6.063,
-    'projection_dim': 64
-})
-
-# Hyperparameters linear classifier
-args_clr_b = Args({
-    'batch_size': 100,
-    'image_size': args_clr_a.image_size,
-    'max_epochs': 120,
-    'optimizer': "SGD",
-    'lr': 1e-3,
-    'drop_rate': 0.5,
-    'beta_loss': 0.2,
-    'with_features': True,
-})
-
-
-entrena_clr(args_clr_a, args_clr_b)
+# Plot confusion matrix (test)
+# ----------------------------
+title = f"""Confusion matrix SimCLR classifier\n
+            (with features, sup, astro-aug, Stamps)\n
+            Accuracy Test:{acc_mean_test:.3f}$\pm${acc_std_test:.3f}"""
+file = 'Figures/confusion_matrix_Simclr-Stamps-Test-with_features-sup-astro_aug.png'
+plot_confusion_matrix_mean_std(conf_mat_mean_test, conf_mat_std_test, title, file)
 
 # -----------------------------------------------------------------------------
