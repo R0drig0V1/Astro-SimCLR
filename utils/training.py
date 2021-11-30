@@ -342,7 +342,6 @@ class SimCLR_classifier(pl.LightningModule):
     def __init__(self, simclr_model, with_features):
         super().__init__()
 
-
         # Hyperparameters of class are saved
         self.simclr_model = simclr_model
         self.image_size = self.simclr_model.image_size
@@ -352,20 +351,12 @@ class SimCLR_classifier(pl.LightningModule):
         self.optimizer = self.simclr_model.optimizer_classifier
         self.with_features = with_features
 
-
-        # Useful hyperparameters of encoder
-        self.encoder_name = self.simclr_model.encoder_name 
-        self.encoder_loss = self.simclr_model.method
-
-
         # dataset features are included to predict
         n_features_dataset = 23 if with_features else 0
-
 
         # Initialize classifier
         n_features = self.simclr_model.n_features_encoder + n_features_dataset
         self.classifier = Linear_classifier(input_size=n_features, n_classes=5)
-
 
         self.save_hyperparameters(
             "with_features"
@@ -1056,5 +1047,301 @@ class SimCLR(pl.LightningModule):
 
 
         return [optimizer_encoder, optimizer_classifier]
+
+# -----------------------------------------------------------------------------
+
+class Fine_SimCLR(pl.LightningModule):
+
+    def __init__(self, simclr_model, lr, batch_size, with_features):
+        super().__init__()
+
+
+        # Hyperparameters of class are saved
+        self.image_size = simclr_model.image_size
+        self.optimizer = simclr_model.optimizer_classifier
+        self.beta_loss = simclr_model.beta_loss
+        self.lr = lr
+        self.batch_size = batch_size
+        self.with_features = with_features
+
+
+        # dataset features are included to predict
+        n_features_dataset = 23 if with_features else 0
+
+        # Number of features (linear classifier)
+        n_features = simclr_model.n_features_encoder + n_features_dataset
+
+
+        # Model
+        self.model = torch.nn.Sequential(
+            simclr_model.CLR.encoder,
+            Linear_classifier(input_size=n_features, n_classes=5)
+        )
+
+
+        self.save_hyperparameters(
+            "lr",
+            "batch_size",
+            "with_features"
+        )
+
+
+    def forward(self, x_img, x_feat):
+
+        # The encoder is used to compute the features
+        h = self.model[0](x_img)
+
+        # Features computed from image and features of dataset are concatenated
+        if (self.with_features): x = torch.cat((h, x_feat), dim=1)
+
+        # Features of dataset are not used
+        else: x = h
+
+        y_pred = self.model[1](x)
+
+        return y_pred
+
+
+    def training_step(self, batch, batch_idx):
+
+        return self.prediction_target_loss(batch, batch_idx)
+
+
+    def training_epoch_end(self, outputs):
+
+        y_pred = torch.cat([x['y_pred'] for x in outputs], dim=0)
+        y_true = torch.cat([x['y_true'] for x in outputs], dim=0)
+        avg_loss = torch.stack([x['loss'] for x in outputs]).mean()
+
+        metrics = self.metrics(y_pred, y_true)
+
+        self.logger.experiment.add_scalar("Loss/Train", avg_loss, self.current_epoch)
+        self.logger.experiment.add_scalar("Accuracy/Train", metrics['Accuracy'], self.current_epoch)
+        self.logger.experiment.add_scalar("Precision/Train", metrics['Precision'], self.current_epoch)
+        self.logger.experiment.add_scalar("Recall/Train", metrics['Recall'], self.current_epoch)
+
+        return None
+
+
+    def validation_step(self, batch, batch_idx):
+
+        return self.prediction_target_loss(batch, batch_idx)
+
+
+    def validation_epoch_end(self, outputs):
+
+
+        y_pred = torch.cat([x['y_pred'] for x in outputs], dim=0)
+        y_true = torch.cat([x['y_true'] for x in outputs], dim=0)
+        avg_loss = torch.stack([x['loss'] for x in outputs]).mean()
+
+        metrics = self.metrics(y_pred, y_true)
+
+        self.logger.experiment.add_scalar("Loss/Validation", avg_loss, self.current_epoch)
+        self.logger.experiment.add_scalar("Accuracy/Validation", metrics['Accuracy'], self.current_epoch)
+        self.logger.experiment.add_scalar("Precision/Validation", metrics['Precision'], self.current_epoch)
+        self.logger.experiment.add_scalar("Recall/Validation", metrics['Recall'], self.current_epoch)
+        self.log('accuracy_val', metrics['Accuracy'], logger=False)
+
+        return None
+
+
+    def test_step(self, batch, batch_idx):
+
+        return self.prediction_target_loss(batch, batch_idx)
+
+
+    def test_epoch_end(self, outputs):
+
+        y_pred = torch.cat([x['y_pred'] for x in outputs], dim=0)
+        y_true = torch.cat([x['y_true'] for x in outputs], dim=0)
+        avg_loss = torch.stack([x['loss'] for x in outputs]).mean()
+
+        metrics = self.metrics(y_pred, y_true)
+
+        self.logger.experiment.add_scalar("Loss/Test", avg_loss, self.current_epoch)
+        self.logger.experiment.add_scalar("Accuracy/Test", metrics['Accuracy'], self.current_epoch)
+        self.logger.experiment.add_scalar("Precision/Test", metrics['Precision'], self.current_epoch)
+        self.logger.experiment.add_scalar("Recall/Test", metrics['Recall'], self.current_epoch)
+
+        return None
+
+
+    def prediction_target_loss(self, batch, batch_idx):
+
+        # Training_step defined the train loop
+        x_img, x_feat, y_true = batch
+
+        y_pred = self.forward(x_img, x_feat)
+        loss = self.criterion(y_pred, y_true)
+
+        # Transforms to scalar labels
+        y_true = torch.argmax(y_true, dim=1)
+        y_pred = torch.argmax(y_pred, dim=1)
+
+        return {'y_pred': y_pred, 'y_true': y_true, 'loss': loss}
+
+
+    def metrics(self, y_pred, y_true):
+
+        # Inicialize metrics
+        metric_collection = MetricCollection([
+            Accuracy(num_classes=5),
+            Precision(num_classes=5, average='macro'),
+            Recall(num_classes=5, average='macro')
+            ]).to(y_pred.device)
+
+        # Computes metrics
+        metrics = metric_collection(y_pred, y_true)
+
+        return metrics
+
+
+    def confusion_matrix(self, dataset):
+
+        # Load dataset
+        if (dataset=='Train'):
+            dataloader = self.train_dataloader()
+
+        elif (dataset=='Validation'):
+            dataloader = self.val_dataloader()
+
+        elif (dataset=='Test'):
+            dataloader = self.test_dataloader()
+
+
+        # Evaluation mode
+        self.model.eval()
+
+
+        # save y_true and y_pred of dataloader
+        outputs = []
+
+
+        # Iterate dataloader
+        for idx, batch in enumerate(dataloader):
+
+            # Evaluation loop
+            x_img, x_feat, y_true = batch
+
+            # Evaluate batch
+            with torch.no_grad():
+                y_pred = self.forward(x_img, x_feat)
+
+            # Save output
+            outputs.append({'y_true':y_true, 'y_pred':y_pred})
+
+
+        # Concatenate results
+        y_pred = torch.cat([x['y_pred'] for x in outputs], dim=0)
+        y_true = torch.cat([x['y_true'] for x in outputs], dim=0)
+
+
+        # Transform output to scalar labels
+        y_true = torch.argmax(y_true, dim=1).cpu()
+        y_pred = torch.argmax(y_pred, dim=1).cpu()
+
+
+        # Inicialize accuraccy and confusion matrix
+        accuracy = Accuracy(num_classes=5).cpu()
+        conf_matrix_func = ConfusionMatrix(num_classes=5, normalize='true').cpu()
+
+
+        # Compute accuracy and confusion matrix
+        acc = accuracy(y_pred, y_true).numpy()
+        conf_mat = conf_matrix_func(y_pred, y_true).numpy()
+
+        return acc, conf_mat
+
+
+    def setup(self, stage=None):
+
+        self.criterion = P_stamps_loss(self.batch_size, self.beta_loss)
+
+
+    def prepare_data(self):
+
+        # Data reading
+        self.training_data = Dataset_stamps(
+                            pickle=data,
+                            dataset='Train',
+                            image_size=self.image_size,
+                            image_transformation=None,
+                            image_original_and_augmentated=False,
+                            one_hot_encoding=True,
+                            discarted_features=[13,14,15])
+
+        # Data reading
+        self.validation_data = Dataset_stamps(
+                            pickle=data,
+                            dataset='Validation',
+                            image_size=self.image_size,
+                            image_transformation=None,
+                            image_original_and_augmentated=False,
+                            one_hot_encoding=True,
+                            discarted_features=[13,14,15])
+
+        # Data reading
+        self.test_data = Dataset_stamps(
+                            pickle=data,
+                            dataset='Test',
+                            image_size=self.image_size,
+                            image_transformation=None,
+                            image_original_and_augmentated=False,
+                            one_hot_encoding=True,
+                            discarted_features=[13,14,15])
+
+
+    def train_dataloader(self):
+
+        # Data loader
+        train_dataloader = DataLoader(
+            self.training_data,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=config.workers,
+            pin_memory=False,
+            drop_last=True)
+
+        return train_dataloader
+
+
+    def val_dataloader(self):
+
+        # Data loader
+        val_dataloader = DataLoader(
+            self.validation_data,
+            batch_size=100,
+            num_workers=config.workers)
+
+        return val_dataloader
+
+
+    def test_dataloader(self):
+
+        # Data loader
+        test_dataloader = DataLoader(
+            self.test_data,
+            batch_size=100,
+            num_workers=config.workers)
+
+        return test_dataloader
+
+
+    def configure_optimizers(self):
+
+        if self.optimizer == "AdamW":
+            optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
+
+        elif self.optimizer == "Adam":
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+
+        elif self.optimizer == "SGD":
+            optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr)
+
+        elif self.optimizer == "LARS":            
+            optimizer = pl_bolts.optimizers.LARS(self.model.parameters(), lr=self.lr)
+
+        return optimizer
 
 # -----------------------------------------------------------------------------
