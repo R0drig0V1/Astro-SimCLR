@@ -22,8 +22,8 @@ class P_stamps_loss(nn.Module):
         N = targets.size(0)
 
         # Loss average
-        loss = - torch.sum(targets * torch.log(outputs))
-        loss += self.beta * torch.sum(outputs * torch.log(outputs))
+        loss = - torch.sum(targets * torch.log(torch.clamp(outputs, min=1e-18)))
+        loss += self.beta * torch.sum(outputs * torch.log(torch.clamp(outputs, min=1e-18)))
         loss /= N
 
         return loss
