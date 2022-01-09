@@ -9,7 +9,7 @@ import pytorch_lightning as pl
 from utils.config import config
 from utils.plots import plot_confusion_matrix_mean_std
 from utils.training import SimCLR, SimCLR_classifier, Fine_SimCLR
-from utils.repeater import hyperparameter_columns
+from utils.repeater_simclr_lib import hyperparameter_columns
 
 from box import Box
 from pytorch_lightning.callbacks import ModelCheckpoint
@@ -44,7 +44,7 @@ label_encoder = {
 }
 
 label_method ={
-    'supcon': ['self-sup','self_sup'],
+    'supcon': ['sup-simclr','sup_simclr'],
     'simclr': ['simclr', 'simclr']
 }
 
@@ -222,7 +222,7 @@ Accuracy Validation:{acc_mean_val:.3f}$\pm${acc_std_val:.3f}"""
         # ----------------------------
         title = f"""Confusion matrix SimCLR (fine-tuning)
 ({label_features[with_features][0]}, {label_method[method][0]}, {label_aug[astro_augmentation][0]}, {label_encoder[encoder_name]})
-Accuracy Test:{acc_mean_val:.3f}$\pm${acc_std_val:.3f}"""
+Accuracy Test:{acc_mean_test:.3f}$\pm${acc_std_test:.3f}"""
         file = f"Figures/confusion_matrix_fine_SimCLR-Test-{label_features[with_features][1]}-{label_method[method][1]}-{label_aug[astro_augmentation][1]}-{label_encoder[encoder_name]}.png"
         plot_confusion_matrix_mean_std(conf_mat_mean_test, conf_mat_std_test, title, file)
 
