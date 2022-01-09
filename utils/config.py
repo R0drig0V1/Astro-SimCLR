@@ -1,7 +1,7 @@
-from utils.args import Args
+from box import Box
 
 # Configurations
-config = Args({'num_nodes': 1,
+config = Box({'num_nodes': 1,
                'cpus': 1,
                'gpus': 1,
                'workers': 4,
@@ -9,7 +9,7 @@ config = Args({'num_nodes': 1,
                })
 
 # Configuration RAY
-resources_per_trial = Args({"cpus": 3,
+resources_per_trial = Box({"cpus": 3,
                             "gpus": 1})
 
 # -----------------------------------------------------------------------------
