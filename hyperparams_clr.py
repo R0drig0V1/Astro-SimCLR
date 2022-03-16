@@ -8,8 +8,8 @@ import pytorch_lightning as pl
 
 from utils.config import config, resources_per_trial
 from utils.plots import plot_confusion_matrix_mean_std
-from utils.repeater import hyperparameter_columns, summary
-from utils.repeater import path_best_hyperparameters
+from utils.repeater_lib import hyperparameter_columns, summary
+from utils.repeater_lib import path_best_hyperparameters
 
 from utils.training import SimCLR
 
@@ -33,7 +33,7 @@ from ray.tune.suggest.hyperopt import HyperOptSearch
 # Requirement for Ray
 os.environ['TUNE_DISABLE_STRICT_METRIC_CHECKING'] = '1'
 os.environ['TUNE_DISABLE_AUTO_CALLBACK_LOGGERS'] = '1'
-#os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
 
 # -----------------------------------------------------------------------------
 
@@ -48,7 +48,7 @@ def simclr_trainer(config_hyper, max_epochs=100, gpus=1):
     encoder_name          = config_hyper['encoder_name']
     method                = config_hyper['method']
     image_size            = config_hyper['image_size']
-    astro_augmentation    = config_hyper['astro_augmentation']
+    augmentation          = config_hyper['augmentation']
     projection_dim        = config_hyper['projection_dim']
     temperature           = config_hyper['temperature']
     lr_encoder            = config_hyper['lr_encoder']
@@ -61,24 +61,33 @@ def simclr_trainer(config_hyper, max_epochs=100, gpus=1):
     with_features         = config_hyper['with_features']
 
 
+#    # Early stop criterion
+#    early_stop_callback = EarlyStopping(
+#        monitor="accuracy_val",
+#        min_delta=0.002,
+#        patience=30,
+#        mode="max",
+#        check_finite=True,
+#        divergence_threshold=0.1
+#    )
+
     # Early stop criterion
     early_stop_callback = EarlyStopping(
-        monitor="accuracy_val",
-        min_delta=0.0008,
-        patience=100,
-        mode="max",
-        check_finite=True,
-        divergence_threshold=0.1
+        monitor="loss_enc",
+        min_delta=0.002,
+        patience=30,
+        mode="min",
+        check_finite=True
     )
 
 
     # Save checkpoint
     checkpoint_callback = ModelCheckpoint(
-        monitor="accuracy_val",
+        monitor="loss_enc",
         dirpath=".",
         filename="checkpoint",
         save_top_k=1,
-        mode="max"
+        mode="min"
     )
 
 
@@ -92,7 +101,9 @@ def simclr_trainer(config_hyper, max_epochs=100, gpus=1):
 
     # Target for ray_tune
     tune_report = TuneReportCallback(
-        metrics={"accuracy": "accuracy_val"},
+        metrics={
+            "accuracy": "accuracy_val",
+            "loss_enc": "loss_enc"},
         on="validation_end"
     )
 
@@ -102,7 +113,7 @@ def simclr_trainer(config_hyper, max_epochs=100, gpus=1):
         encoder_name=encoder_name,
         method=method,
         image_size=image_size,
-        astro_augmentation=astro_augmentation,
+        augmentation=augmentation,
         projection_dim=projection_dim,
         temperature=temperature,
         lr_encoder=lr_encoder,
@@ -112,7 +123,8 @@ def simclr_trainer(config_hyper, max_epochs=100, gpus=1):
         lr_classifier=lr_classifier,
         batch_size_classifier=batch_size_classifier,
         optimizer_classifier=optimizer_classifier,
-        with_features=with_features)
+        with_features=with_features
+    )
 
 
     # Trainer
@@ -147,16 +159,16 @@ def simclr_tune(num_samples, max_epochs, cpus_per_trial=1, gpus_per_trial=1):
 
     # Hyperparameters of model
     config_hyper = {
-    'encoder_name': tune.choice(['pstamps', 'resnet18']),
-    'method': tune.choice(['supcon', 'simclr']),
-    'image_size': tune.choice([21]),
-    'astro_augmentation': tune.choice([True, False]),
-    'projection_dim': tune.choice([100]),
-    'temperature': tune.loguniform(1e-4, 1e+1),
-    'lr_encoder': tune.loguniform(1e-4, 1e+1),
-    'batch_size_encoder': tune.choice([200, 350, 500]),
-    'optimizer_encoder': tune.choice(['AdamW', 'SGD', 'LARS']),
-    'beta_loss': tune.loguniform(1e-4, 1e-1),
+    'encoder_name': tune.choice(['pstamps']),# 'resnet18']),
+    'method': tune.choice(['supcon']),# 'simclr']),
+    'image_size': tune.choice([27]),
+    'augmentation': tune.choice(['simclr']), #'astro']),
+    'projection_dim': tune.choice([300]),
+    'temperature': tune.loguniform(5e-2, 3e-1),
+    'lr_encoder': tune.loguniform(1e-1, 1e+1),
+    'batch_size_encoder': tune.choice([150, 350, 550]),
+    'optimizer_encoder': tune.choice(['LARS']),# 'AdamW', 'SGD']),
+    'beta_loss': tune.loguniform(1e-2, 1e+1),
     'lr_classifier': tune.choice([0.00712]),
     'batch_size_classifier': tune.choice([70]),
     'optimizer_classifier':  tune.choice(['SGD']),
@@ -166,18 +178,18 @@ def simclr_tune(num_samples, max_epochs, cpus_per_trial=1, gpus_per_trial=1):
 
     # Name of hyperparameters
     parameter_columns = {
-        'encoder_name': 'encoder',
+        'encoder_name': 'enc',
         'method': 'method',
-        'image_size': 'img_size',
-        'astro_augmentation': 'astro_aug',
+        'image_size': 'img',
+        'augmentation': 'aug',
         'projection_dim': 'proj_dim',
         'temperature': 'temp',
         'lr_encoder': 'lr_enc',
-        'batch_size_encoder': 'batch_size_enc',
+        'batch_size_encoder': 'batch_enc',
         'optimizer_encoder': 'opt_enc',
         'beta_loss': 'beta_loss',
         'lr_classifier': 'lr_cla',
-        'with_features': 'features'
+        'with_features': 'feat'
         }
 
 
@@ -192,7 +204,11 @@ def simclr_tune(num_samples, max_epochs, cpus_per_trial=1, gpus_per_trial=1):
     # Report progress
     reporter = CLIReporter(
         parameter_columns=parameter_columns,
-        metric_columns=["accuracy", "training_iteration"]
+        metric_columns={
+            "accuracy": "acc",
+            "loss_enc": "loss_enc",
+            "training_iteration": "iter"
+        }
     )
 
 
@@ -214,7 +230,7 @@ def simclr_tune(num_samples, max_epochs, cpus_per_trial=1, gpus_per_trial=1):
 
 
     # Repeater to train with different seeds
-    repeat = 4
+    repeat = 1
     re_search_alg = Repeater(search_alg, repeat=repeat, set_index=True)
 
 
@@ -259,8 +275,8 @@ def simclr_tune(num_samples, max_epochs, cpus_per_trial=1, gpus_per_trial=1):
 
 # Hyperparameters tunning
 checkpoints = simclr_tune(
-    num_samples=25,
-    max_epochs=900,
+    num_samples=15,
+    max_epochs=700,
     cpus_per_trial=resources_per_trial.cpus,
     gpus_per_trial=resources_per_trial.gpus
     )
@@ -309,12 +325,12 @@ conf_mat_std_test = np.std(conf_mat_array_test, axis=0)
 
 # Plot confusion matrix (validation)
 title = f'Confusion matrix SimCLR\n Accuracy Validation:{acc_mean_val:.3f}$\pm${acc_std_val:.3f}'
-file = 'Figures/confusion_matrix_SimCLR_Validation.png'
+file = 'figures/confusion_matrix_SimCLR_Validation.png'
 plot_confusion_matrix_mean_std(conf_mat_mean_val, conf_mat_std_val, title, file)
 
 # Plot confusion matrix (test)
 title = f'Confusion matrix SimCLR\n Accuracy Test:{acc_mean_test:.3f}$\pm${acc_std_test:.3f}'
-file = 'Figures/confusion_matrix_SimCLR_Test.png'
+file = 'figures/confusion_matrix_SimCLR_Test.png'
 plot_confusion_matrix_mean_std(conf_mat_mean_test, conf_mat_std_test, title, file)
 
 # -----------------------------------------------------------------------------
