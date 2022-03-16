@@ -1,4 +1,5 @@
 from .models import Linear_classifier
+from .models import Three_layers_classifier
 from .models import Identity
 from .models import P_stamps_net
 from .models import P_stamps_net_SimCLR
