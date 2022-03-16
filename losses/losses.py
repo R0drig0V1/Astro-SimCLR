@@ -174,7 +174,7 @@ class SupConLoss(nn.Module):
         mask = mask * mask_not_diag
 
         # compute log_prob
-        log_prob = sim - torch.log((exp_sim * mask_not_diag).sum(1, keepdim=True)) - sim_max
+        log_prob = sim - torch.log(torch.clamp((exp_sim * mask_not_diag).sum(1, keepdim=True), min=1e-18))
 
         # compute mean of log-likelihood over positive
         mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)
@@ -183,3 +183,5 @@ class SupConLoss(nn.Module):
         loss = - mean_log_prob_pos.mean()
 
         return loss
+
+#------------------------------------------------------------------------------
