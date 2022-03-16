@@ -16,13 +16,15 @@ from torchmetrics import MetricCollection, Accuracy, Precision, Recall, Confusio
 from utils.config import config
 from utils.dataset import Dataset_stamps, BalancedBatchSampler
 from utils.plots import plot_confusion_matrix
-from utils.transformations import Augmentation_SimCLR, Resize_img
-from utils.transformations import Astro_Augmentation_SimCLR
-from utils.transformations import Jitter_Astro_Aug
-from utils.transformations import Jitter_Default_Aug
-from utils.transformations import Crop_Astro_Aug
-from utils.transformations import Crop_Default_Aug
-from utils.transformations import Rotation_Aug
+from utils.transformations import SimCLR_augmentation
+from utils.transformations import Astro_augmentation
+from utils.transformations import Jitter_astro
+from utils.transformations import Jitter_simclr
+from utils.transformations import Crop_astro
+from utils.transformations import Crop_simclr
+from utils.transformations import Rotation
+from utils.transformations import Gaussian_blur
+from utils.transformations import Resize_img
 
 # -----------------------------------------------------------------------------
 
@@ -44,7 +46,7 @@ class Supervised_Cross_Entropy(pl.LightningModule):
             optimizer,
             with_features=True,
             balanced_batch=False,
-            augmentation=False):
+            augmentation='without_aug'):
 
         super().__init__()
         
@@ -230,13 +232,31 @@ class Supervised_Cross_Entropy(pl.LightningModule):
     # Prepare datasets
     def prepare_data(self):
 
-        if self.augmentation == 'astro':
-            augmentation = Augmentation_SimCLR(size=self.image_size)
+        if self.augmentation == 'simclr':
+            augmentation = SimCLR_augmentation(size=self.image_size)
 
-        elif self.augmentation == 'default':
-            augmentation = Astro_Augmentation_SimCLR(size=self.image_size)
+        elif self.augmentation == 'astro':
+            augmentation = Astro_augmentation(size=self.image_size)
 
-        elif self.augmentation == False:
+        elif self.augmentation == 'jitter_astro':
+            augmentation = Jitter_astro(size=self.image_size)
+
+        elif self.augmentation == 'jitter_simclr':
+            augmentation = Jitter_simclr(size=self.image_size)
+
+        elif self.augmentation == 'crop_astro':
+            augmentation = Crop_astro(size=self.image_size)
+
+        elif self.augmentation == 'crop_simclr':
+            augmentation = Crop_simclr(size=self.image_size)
+            
+        elif self.augmentation == 'rotation':
+            augmentation = Rotation(size=self.image_size)
+
+        elif self.augmentation == 'blur':
+            augmentation = Gaussian_blur(size=self.image_size)
+            
+        elif self.augmentation == 'without_aug':
             augmentation = None
 
 
@@ -634,7 +654,7 @@ class SimCLR(pl.LightningModule):
             encoder_name,
             method,
             image_size,
-            astro_augmentation,
+            augmentation,
             projection_dim,
             temperature,
             lr_encoder,
@@ -653,7 +673,7 @@ class SimCLR(pl.LightningModule):
         self.encoder_name = encoder_name
         self.method = method
         self.image_size = image_size
-        self.astro_augmentation = astro_augmentation
+        self.augmentation = augmentation
         self.projection_dim = projection_dim
         self.temperature = temperature
         self.lr_encoder = lr_encoder
@@ -664,7 +684,7 @@ class SimCLR(pl.LightningModule):
         self.batch_size_classifier = batch_size_classifier
         self.optimizer_classifier = optimizer_classifier
         self.with_features = with_features
-        self.batch_size = batch_size_encoder
+
 
         # Encoder loss
         if (self.method=='supcon'):
@@ -688,7 +708,8 @@ class SimCLR(pl.LightningModule):
             self.encoder = P_stamps_net_SimCLR()
 
             # Output features of the encoder
-            self.n_features_encoder = self.encoder.fc3.out_features
+            #self.n_features_encoder = self.encoder.fc3.out_features
+            self.n_features_encoder = self.encoder.bn1.num_features
 
 
         elif (self.encoder_name == 'resnet18'):
@@ -721,12 +742,24 @@ class SimCLR(pl.LightningModule):
             input_size=self.n_features_encoder,
             projection_size=self.projection_dim)
 
-
         # Initialize classifier
         input_size_classifier = self.n_features_encoder + n_features_dataset
-        self.classifier = Linear_classifier(
-            input_size=input_size_classifier,
-            n_classes=5)
+
+
+        if (self.encoder_name == 'pstamps'):
+
+            self.classifier = Three_layers_classifier(
+                input_size_f1=input_size_classifier,
+                input_size_f2=64,
+                input_size_f3=64,
+                n_classes=5,
+                drop_rate=0.5)
+
+        elif ('resnet' in self.encoder_name):
+
+            self.classifier = Linear_classifier(
+                input_size=input_size_classifier,
+                n_classes=5)
 
 
         # Save hyperparameters
@@ -795,6 +828,7 @@ class SimCLR(pl.LightningModule):
         y_pred = torch.cat([x['y_pred'] for x in outputs], dim=0)
         y_true = torch.cat([x['y_true'] for x in outputs], dim=0)
         avg_loss = torch.stack([x['loss_sum'] for x in outputs]).mean()
+        loss_enc = torch.stack([x['loss_enc'] for x in outputs]).mean()
 
         metrics = self.metrics(y_pred, y_true)
 
@@ -803,6 +837,7 @@ class SimCLR(pl.LightningModule):
         self.logger.experiment.add_scalar("Precision/Validation", metrics['Precision'], self.current_epoch)
         self.logger.experiment.add_scalar("Recall/Validation", metrics['Recall'], self.current_epoch)
         self.log('accuracy_val', metrics['Accuracy'], logger=False)
+        self.log('loss_enc', loss_enc, logger=False)
 
         return None
 
@@ -817,7 +852,7 @@ class SimCLR(pl.LightningModule):
         # Compute loss of encoder
         loss_encoder = self.criterion_encoder(z_i, z_j, y_true)
 
-        # Conpute loss of classifier
+        # Compute loss of classifier
         y_pred_sub = y_pred[:,:self.batch_size_classifier]
         y_true_sub = torch.nn.functional.one_hot(y_true, num_classes=5)[:,:self.batch_size_classifier]
         loss_classifier = self.criterion_classifier(y_pred_sub, y_true_sub)
@@ -828,11 +863,19 @@ class SimCLR(pl.LightningModule):
         # Transform to scalar labels
         y_pred = torch.argmax(y_pred, dim=1)
 
-        if optimizer_idx==0:
-            return {'y_pred': y_pred, 'y_true': y_true, 'loss': loss_encoder, 'loss_sum':loss.detach()}
+        if optimizer_idx == 0:
+            return {'y_pred': y_pred,
+                    'y_true': y_true,
+                    'loss': loss_encoder,
+                    'loss_enc' : loss_encoder.detach(),
+                    'loss_sum':loss.detach()}
 
-        elif optimizer_idx==1:
-            return {'y_pred': y_pred, 'y_true': y_true, 'loss': loss_classifier, 'loss_sum':loss.detach()}
+        elif optimizer_idx == 1:
+            return {'y_pred': y_pred,
+                    'y_true': y_true,
+                    'loss': loss_classifier,
+                    'loss_enc': loss_encoder.detach(),
+                    'loss_sum':loss.detach()}
 
 
     # Compute accuracy, precision and recall
@@ -927,26 +970,29 @@ class SimCLR(pl.LightningModule):
     # Prepare datasets
     def prepare_data(self):
 
-        if self.astro_augmentation==True:
-            augmentation = Augmentation_SimCLR(size=self.image_size)
+        if self.augmentation == 'simclr':
+            augmentation = SimCLR_augmentation(size=self.image_size)
 
-        elif self.astro_augmentation==False:
-            augmentation = Astro_Augmentation_SimCLR(size=self.image_size)
+        elif self.augmentation == 'astro':
+            augmentation = Astro_augmentation(size=self.image_size)
 
-        elif self.astro_augmentation=='Jitter_astro':
-            augmentation = Jitter_Astro_Aug(size=self.image_size)
+        elif self.augmentation == 'jitter_astro':
+            augmentation = Jitter_astro(size=self.image_size)
 
-        elif self.astro_augmentation=='Jitter_default':
-            augmentation = Jitter_Default_Aug(size=self.image_size)
+        elif self.augmentation == 'jitter_simclr':
+            augmentation = Jitter_simclr(size=self.image_size)
 
-        elif self.astro_augmentation=='Crop_astro':
-            augmentation = Crop_Astro_Aug(size=self.image_size)
+        elif self.augmentation == 'crop_astro':
+            augmentation = Crop_astro(size=self.image_size)
 
-        elif self.astro_augmentation=='Crop_default':
-            augmentation = Crop_Default_Aug(size=self.image_size)
+        elif self.augmentation == 'crop_simclr':
+            augmentation = Crop_simclr(size=self.image_size)
             
-        elif self.astro_augmentation=='Rotation':
-            augmentation = Rotation_Aug(size=self.image_size)
+        elif self.augmentation == 'rotation':
+            augmentation = Rotation(size=self.image_size)
+
+        elif self.augmentation == 'blur':
+            augmentation = Gaussian_blur(size=self.image_size)
 
         # Data reading
         self.training_data_aug = Dataset_stamps(
@@ -986,7 +1032,7 @@ class SimCLR(pl.LightningModule):
         # Data loader
         train_dataloader = DataLoader(
             self.training_data_aug,
-            batch_size=self.batch_size,
+            batch_size=self.batch_size_encoder,
             shuffle=True,
             num_workers=config.workers,
             pin_memory=False,
@@ -1052,16 +1098,25 @@ class SimCLR(pl.LightningModule):
 
 class Fine_SimCLR(pl.LightningModule):
 
-    def __init__(self, simclr_model, lr, batch_size, with_features):
+    def __init__(
+            self,
+            simclr_model,
+            batch_size,
+            drop_rate,
+            beta_loss,
+            lr,
+            optimizer,
+            with_features=True):
         super().__init__()
 
 
         # Hyperparameters of class are saved
         self.image_size = simclr_model.image_size
-        self.optimizer = simclr_model.optimizer_classifier
-        self.beta_loss = simclr_model.beta_loss
-        self.lr = lr
         self.batch_size = batch_size
+        self.drop_rate = drop_rate
+        self.beta_loss = beta_loss
+        self.lr = lr
+        self.optimizer = optimizer
         self.with_features = with_features
 
 
@@ -1073,15 +1128,31 @@ class Fine_SimCLR(pl.LightningModule):
 
 
         # Model
-        self.model = torch.nn.Sequential(
-            simclr_model.CLR.encoder,
-            Linear_classifier(input_size=n_features, n_classes=5)
-        )
+        if (simclr.encoder_name == 'pstamps'):
+            self.model = torch.nn.Sequential(
+                simclr_model.CLR.encoder,
+                Linear_classifier(input_size=n_features, n_classes=5)
+            )
+
+        elif ('resnet' in simclr.encoder_name):
+            self.model = torch.nn.Sequential(
+                simclr_model.CLR.encoder,
+                Three_layers_classifier(
+                    input_size_f1=n_features,
+                    input_size_f2=64,
+                    input_size_f3=64,
+                    n_classes=5,
+                    drop_rate=drop_rate)
+            )
+
 
 
         self.save_hyperparameters(
-            "lr",
             "batch_size",
+            "drop_rate",
+            "beta_loss",
+            "lr",
+            "optimizer",
             "with_features"
         )
 
