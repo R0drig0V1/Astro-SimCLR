@@ -10,7 +10,6 @@ np.random.seed(0)
 
 # GitHub: sthalles / SimCLR / data_aug / gaussian_blur.py
 
-
 class GaussianBlur(object):
 
     """

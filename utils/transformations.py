@@ -6,7 +6,7 @@ from utils.gaussian_blur import GaussianBlur
 
 # ------------------------------------------------------------------------------
 
-class RandomRotation:
+class Random_rotation:
 
     """
     Random rotation 
@@ -26,7 +26,7 @@ class RandomRotation:
 # ------------------------------------------------------------------------------
 
 # SimCLR augmentation
-class Augmentation_SimCLR:
+class SimCLR_augmentation:
 
     """
     A stochastic data augmentation module that transforms any given data
@@ -61,13 +61,13 @@ class Augmentation_SimCLR:
                 torchvision.transforms.RandomGrayscale(p=0.2),
 
                 # Blur image
-                #GaussianBlur(kernel_size=int(0.1 * size)),
+                torchvision.transforms.RandomApply([GaussianBlur(kernel_size=int(0.1 * size))], p=0.5),
 
                 # Transform image to tensor
                 torchvision.transforms.ToTensor(),
 
                 # Random rotation
-                RandomRotation()
+                Random_rotation()
 
             ])
 
@@ -79,7 +79,7 @@ class Augmentation_SimCLR:
 # ------------------------------------------------------------------------------
 
 # SimCLR augmentation for astronomy
-class Astro_Augmentation_SimCLR:
+class Astro_augmentation:
 
     """
     A stochastic data augmentation module for astronomy that transforms any
@@ -108,13 +108,13 @@ class Astro_Augmentation_SimCLR:
                 torchvision.transforms.RandomApply([color_jitter], p=0.8),
 
                 # Blur image
-                #GaussianBlur(kernel_size=int(0.1 * size)),
+                torchvision.transforms.RandomApply([GaussianBlur(kernel_size=int(0.1 * size))], p=0.5),
 
                 # Transform image to tensor
                 torchvision.transforms.ToTensor(),
 
                 # Random rotation
-                RandomRotation()
+                Random_rotation()
             ])
 
 
@@ -123,7 +123,7 @@ class Astro_Augmentation_SimCLR:
 
 # ------------------------------------------------------------------------------
 
-class Jitter_Astro_Aug:
+class Jitter_astro:
     """
     A stochastic jitter augmentation.
     """
@@ -154,7 +154,7 @@ class Jitter_Astro_Aug:
 
 # ------------------------------------------------------------------------------
 
-class Jitter_Default_Aug:
+class Jitter_simclr:
     """
     A stochastic jitter augmentation.
     """
@@ -186,7 +186,7 @@ class Jitter_Default_Aug:
 
 # ------------------------------------------------------------------------------
 
-class Crop_Astro_Aug:
+class Crop_astro:
     """
     A stochastic center crop augmentation.
     """
@@ -210,7 +210,7 @@ class Crop_Astro_Aug:
 
 # ------------------------------------------------------------------------------
 
-class Crop_Default_Aug:
+class Crop_simclr:
     """
     A stochastic crop augmentation.
     """
@@ -234,7 +234,7 @@ class Crop_Default_Aug:
 
 # ------------------------------------------------------------------------------
 
-class Rotation_Aug:
+class Rotation:
     """
     A stochastic rotation augmentation.
     """
@@ -253,7 +253,35 @@ class Rotation_Aug:
                 torchvision.transforms.ToTensor(),
 
                 # Random rotation
-                RandomRotation()
+                Random_rotation()
+            ])
+
+
+    def __call__(self, x):
+        return self.augmentation(x), self.augmentation(x)
+
+# ------------------------------------------------------------------------------
+
+class Gaussian_blur:
+    """
+    A stochastic gaussian blur.
+    """
+
+    def __init__(self, size):
+        
+        # Constant for kernel
+        s = 0.1
+        
+        self.augmentation = torchvision.transforms.Compose([
+
+                # Center crop
+                torchvision.transforms.CenterCrop(size=size),
+
+                # Blur image
+                torchvision.transforms.RandomApply([GaussianBlur(kernel_size=int(0.1 * size))], p=0.5),
+
+                # Transform image to tensor
+                torchvision.transforms.ToTensor()
             ])
 
 
