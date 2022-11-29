@@ -1,6 +1,7 @@
 import os
 import ray
 import warnings
+import shutil
 
 import numpy as np
 import pandas as pd
@@ -8,9 +9,8 @@ import pytorch_lightning as pl
 
 from utils.config import config, resources_per_trial
 from utils.plots import plot_confusion_matrix_mean_std
-from utils.repeater import hyperparameter_columns, summary
-from utils.repeater import path_best_hyperparameters
-
+from utils.repeater_lib import hyperparameter_columns, summary
+from utils.repeater_lib import path_best_hyperparameters
 from utils.training import Supervised_Cross_Entropy
 
 from pytorch_lightning.callbacks import ModelCheckpoint
@@ -30,10 +30,33 @@ from ray.tune.suggest.hyperopt import HyperOptSearch
 
 # -----------------------------------------------------------------------------
 
+import logging
+logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
+
+import warnings
+warnings.filterwarnings("ignore")
+
+# -----------------------------------------------------------------------------
+
 # Requirement for Ray
 os.environ['TUNE_DISABLE_STRICT_METRIC_CHECKING'] = '1'
 os.environ['TUNE_DISABLE_AUTO_CALLBACK_LOGGERS'] = '1'
-#os.environ['CUDA_VISIBLE_DEVICES'] = '0,3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2'
+
+# -----------------------------------------------------------------------------
+
+class ModelCheckpoint_V2(ModelCheckpoint):
+
+    def __init__(self, monitor, dirpath, filename, save_top_k, mode):
+        super().__init__(monitor=monitor,
+                         dirpath=dirpath,
+                         filename=filename,
+                         save_top_k=save_top_k,
+                         mode=mode)
+
+    def _get_metric_interpolated_filepath_name(self, monitor_candidates, trainer, del_filepath) -> str:
+        return self.format_checkpoint_name(monitor_candidates)
+
 
 # -----------------------------------------------------------------------------
 
@@ -121,6 +144,7 @@ def ce_trainer(config_hyper, max_epochs=100, gpus=1):
         weights_summary=None
     )
 
+
     # Training
     trainer.fit(model)
 
@@ -138,15 +162,15 @@ def ce_tune(num_samples, max_epochs, cpus_per_trial=1, gpus_per_trial=1):
 
     # Hyperparameters of model
     config_hyper = {
-        "image_size": tune.choice([21]),
+        "image_size": tune.choice([27]),
         "batch_size": tune.choice([15, 30, 45, 60, 75]),
         "drop_rate": tune.choice([0.2, 0.5, 0.8]),
-        "beta_loss": tune.loguniform(1e-4, 1e+1),
-        "lr": tune.loguniform(1e-4, 1e-1),
-        "optimizer": tune.choice(['AdamW', 'SGD', 'LARS']),
+        "beta_loss": tune.loguniform(1e-4, 1),
+        "lr": tune.loguniform(5e-5, 5e-3),
+        "optimizer": tune.choice(['AdamW', 'SGD']),
         "with_features": tune.choice([True]),
-        "balanced_batch": tune.choice([True, False]),
-        "augmentation": tune.choice([False])
+        "balanced_batch": tune.choice([False]),
+        "augmentation": tune.choice(['without_aug'])
     }
 
 
@@ -157,10 +181,8 @@ def ce_tune(num_samples, max_epochs, cpus_per_trial=1, gpus_per_trial=1):
         "drop_rate",
         "beta_loss",
         "lr",
-        "optimizer",
-        "with_features",
-        "balanced_batch",
-        "augmentation"]
+        "optimizer"
+        ]
 
 
     # Scheduler
@@ -191,8 +213,23 @@ def ce_tune(num_samples, max_epochs, cpus_per_trial=1, gpus_per_trial=1):
     tune_json_logger = JsonLoggerCallback()
 
     
+    current_best_params = [{
+        "image_size": 27,
+        "batch_size": 75,
+        "drop_rate": 0.2,
+        "beta_loss": 0.5,
+        "lr": 0.001,
+        "optimizer": 'AdamW',
+        "with_features": True,
+        "balanced_batch": False,
+        "augmentation": 'without_aug'
+        }]
+
     # Searcher
-    search_alg = HyperOptSearch(metric="accuracy", mode="max")
+    search_alg = HyperOptSearch(
+        metric="accuracy",
+        mode="max",
+        points_to_evaluate=current_best_params)
 
 
     # Repeater to train with different seeds
@@ -228,7 +265,7 @@ def ce_tune(num_samples, max_epochs, cpus_per_trial=1, gpus_per_trial=1):
     df.to_csv('results/hyperparameter_tuning_ce.csv', float_format='%.6f')
 
     # Summary of hyperparameter tuning
-    df_summary = summary(df)
+    df_summary = summary(df, metric="accuracy")
     df_summary.to_csv('results/summary_tuning_ce.csv', float_format='%.6f')
 
     # Checkpoints of the best hyperparameter combination
@@ -240,8 +277,8 @@ def ce_tune(num_samples, max_epochs, cpus_per_trial=1, gpus_per_trial=1):
 
 # Hyperparameters tunning
 checkpoints = ce_tune(
-    num_samples=35,
-    max_epochs=350,
+    num_samples=20,
+    max_epochs=220,
     cpus_per_trial=resources_per_trial.cpus,
     gpus_per_trial=resources_per_trial.gpus
     )
@@ -290,12 +327,43 @@ conf_mat_std_test = np.std(conf_mat_array_test, axis=0)
 
 # Plot confusion matrix (validation)
 title = f'Confusion matrix Stamps classifier\n Accuracy Validation:{acc_mean_val:.3f}$\pm${acc_std_val:.3f}'
-file = 'Figures/confusion_matrix_CE_Validation.png'
+file = 'figures/confusion_matrix_CE_Validation.png'
 plot_confusion_matrix_mean_std(conf_mat_mean_val, conf_mat_std_val, title, file)
 
 # Plot confusion matrix (test)
 title = f'Confusion matrix Stamps classifier\n Accuracy Test:{acc_mean_test:.3f}$\pm${acc_std_test:.3f}'
-file = 'Figures/confusion_matrix_CE_Test.png'
+file = 'figures/confusion_matrix_CE_Test.png'
 plot_confusion_matrix_mean_std(conf_mat_mean_test, conf_mat_std_test, title, file)
+
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+
+# Dataframe with results
+df = pd.read_csv('results/hyperparameter_tuning_ce.csv', index_col=0)
+
+# Summary of hyperparameter tuning
+df_summary = pd.read_csv('results/summary_tuning_ce.csv', index_col=0)
+
+# Names of hyperparameter columns of dataframe
+hyper_columns = hyperparameter_columns(df)
+
+# -----------------------------------------------------------------------------
+
+# Dataframe of the best hyperparameters for each combination in hyper
+df_best_ce = df_summary.loc[df_summary['mean'].idxmax()].reset_index(drop=True)
+
+# Mask of the best hyperparamter combination
+where = 1
+for hyper_name, opt_hyper in zip(hyper_columns, df_best_ce):
+    where = where & (df[hyper_name] == opt_hyper)
+
+# Folders of the best hyperparameter combination
+folder = list(df['logdir'][where])[0]
+
+# Load the hyperparamters of the model
+hparams_path = os.path.join(folder, "hparams.yaml")
+
+# Copy the best hyperparameters's set
+shutil.copy(hparams_path, "results/hparams_best_ce.yaml")
 
 # -----------------------------------------------------------------------------

@@ -1,6 +1,8 @@
 import os
 import ray
+import shutil
 import warnings
+import yaml
 
 import numpy as np
 import pandas as pd
@@ -17,8 +19,9 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers import TensorBoardLogger
 
-from ray import tune
+from box import Box
 
+from ray import tune
 from ray.tune import CLIReporter
 from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
 from ray.tune.integration.pytorch_lightning import TuneReportCallback
@@ -30,19 +33,42 @@ from ray.tune.suggest.hyperopt import HyperOptSearch
 
 # -----------------------------------------------------------------------------
 
+import logging
+logging.getLogger("pytorch_lightning").setLevel(logging.WARNING)
+
+import warnings
+warnings.filterwarnings("ignore")
+
+# -----------------------------------------------------------------------------
+
 # Requirement for Ray
 os.environ['TUNE_DISABLE_STRICT_METRIC_CHECKING'] = '1'
 os.environ['TUNE_DISABLE_AUTO_CALLBACK_LOGGERS'] = '1'
-os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2'
+
+# -----------------------------------------------------------------------------
+
+# Load the hyperparamters of the model
+file = open("results/hparams_best_ce.yaml", 'r')
+hparams = Box(yaml.load(file, Loader=yaml.FullLoader))
+
+# -----------------------------------------------------------------------------
+
+class ModelCheckpoint_V2(ModelCheckpoint):
+
+    def __init__(self, monitor, dirpath, filename, save_top_k, mode):
+        super().__init__(monitor=monitor,
+                         dirpath=dirpath,
+                         filename=filename,
+                         save_top_k=save_top_k,
+                         mode=mode)
+
+    def _get_metric_interpolated_filepath_name(self, monitor_candidates, trainer, del_filepath) -> str:
+        return self.format_checkpoint_name(monitor_candidates)
 
 # -----------------------------------------------------------------------------
 
 def simclr_trainer(config_hyper, max_epochs=100, gpus=1):
-
-    """
-    Train the Supervised Cross Entropy model with the hyperparameters in
-    config_hyper.
-    """
 
     # Model's hyperparameters
     encoder_name          = config_hyper['encoder_name']
@@ -58,36 +84,27 @@ def simclr_trainer(config_hyper, max_epochs=100, gpus=1):
     lr_classifier         = config_hyper['lr_classifier']
     batch_size_classifier = config_hyper['batch_size_classifier']
     optimizer_classifier  = config_hyper['optimizer_classifier']
+    drop_rate_classifier  = config_hyper['drop_rate_classifier']
     with_features         = config_hyper['with_features']
 
 
-#    # Early stop criterion
-#    early_stop_callback = EarlyStopping(
-#        monitor="accuracy_val",
-#        min_delta=0.002,
-#        patience=30,
-#        mode="max",
-#        check_finite=True,
-#        divergence_threshold=0.1
-#    )
-
     # Early stop criterion
     early_stop_callback = EarlyStopping(
-        monitor="loss_enc",
-        min_delta=0.002,
-        patience=30,
-        mode="min",
+        monitor="accuracy_val",
+        min_delta=0.001,
+        patience=70,
+        mode="max",
         check_finite=True
     )
 
 
     # Save checkpoint
     checkpoint_callback = ModelCheckpoint(
-        monitor="loss_enc",
+        monitor="accuracy_val",
         dirpath=".",
         filename="checkpoint",
         save_top_k=1,
-        mode="min"
+        mode="max"
     )
 
 
@@ -103,7 +120,7 @@ def simclr_trainer(config_hyper, max_epochs=100, gpus=1):
     tune_report = TuneReportCallback(
         metrics={
             "accuracy": "accuracy_val",
-            "loss_enc": "loss_enc"},
+            "loss_enc": "loss_enc_val"},
         on="validation_end"
     )
 
@@ -123,6 +140,7 @@ def simclr_trainer(config_hyper, max_epochs=100, gpus=1):
         lr_classifier=lr_classifier,
         batch_size_classifier=batch_size_classifier,
         optimizer_classifier=optimizer_classifier,
+        drop_rate_classifier=drop_rate_classifier,
         with_features=with_features
     )
 
@@ -159,20 +177,21 @@ def simclr_tune(num_samples, max_epochs, cpus_per_trial=1, gpus_per_trial=1):
 
     # Hyperparameters of model
     config_hyper = {
-    'encoder_name': tune.choice(['pstamps']),# 'resnet18']),
-    'method': tune.choice(['supcon']),# 'simclr']),
-    'image_size': tune.choice([27]),
-    'augmentation': tune.choice(['simclr']), #'astro']),
+    'encoder_name': tune.choice(['pstamps']),
+    'method': tune.choice(['simclr']),
+    'image_size': tune.choice([hparams.image_size]),
+    'augmentation': tune.choice(['simclr']),
     'projection_dim': tune.choice([300]),
-    'temperature': tune.loguniform(5e-2, 3e-1),
-    'lr_encoder': tune.loguniform(1e-1, 1e+1),
-    'batch_size_encoder': tune.choice([150, 350, 550]),
-    'optimizer_encoder': tune.choice(['LARS']),# 'AdamW', 'SGD']),
-    'beta_loss': tune.loguniform(1e-2, 1e+1),
-    'lr_classifier': tune.choice([0.00712]),
-    'batch_size_classifier': tune.choice([70]),
-    'optimizer_classifier':  tune.choice(['SGD']),
-    'with_features': tune.choice([True])
+    'temperature': tune.loguniform(0.05, 0.15),
+    'lr_encoder': tune.loguniform(0.05, 1.0),
+    'batch_size_encoder': tune.choice([550]),
+    'optimizer_encoder': tune.choice(['LARS']),
+    'beta_loss': tune.choice([hparams.beta_loss]),
+    'lr_classifier': tune.choice([hparams.lr]),
+    'batch_size_classifier': tune.choice([hparams.batch_size]),
+    'optimizer_classifier':  tune.choice([hparams.optimizer]),
+    'drop_rate_classifier': tune.choice([hparams.drop_rate]),
+    'with_features': tune.choice([False])
     }
 
 
@@ -186,10 +205,7 @@ def simclr_tune(num_samples, max_epochs, cpus_per_trial=1, gpus_per_trial=1):
         'temperature': 'temp',
         'lr_encoder': 'lr_enc',
         'batch_size_encoder': 'batch_enc',
-        'optimizer_encoder': 'opt_enc',
-        'beta_loss': 'beta_loss',
-        'lr_classifier': 'lr_cla',
-        'with_features': 'feat'
+        'optimizer_encoder': 'opt_enc'
         }
 
 
@@ -230,7 +246,7 @@ def simclr_tune(num_samples, max_epochs, cpus_per_trial=1, gpus_per_trial=1):
 
 
     # Repeater to train with different seeds
-    repeat = 1
+    repeat = 5
     re_search_alg = Repeater(search_alg, repeat=repeat, set_index=True)
 
 
@@ -252,7 +268,8 @@ def simclr_tune(num_samples, max_epochs, cpus_per_trial=1, gpus_per_trial=1):
         max_failures=2,
         raise_on_failed_trial=False, 
         callbacks=[tune_csv_logger, tune_json_logger],
-        search_alg=re_search_alg
+        search_alg=re_search_alg#,
+        #resume=True
     )
 
 
@@ -263,7 +280,7 @@ def simclr_tune(num_samples, max_epochs, cpus_per_trial=1, gpus_per_trial=1):
     df.to_csv('results/hyperparameter_tuning_simclr.csv', float_format='%.6f')
 
     # Summary of hyperparameter tuning
-    df_summary = summary(df)
+    df_summary = summary(df, metric="accuracy")
     df_summary.to_csv('results/summary_tuning_simclr.csv', float_format='%.6f')
 
     # Checkpoints of the best hyperparameter combination
@@ -276,7 +293,7 @@ def simclr_tune(num_samples, max_epochs, cpus_per_trial=1, gpus_per_trial=1):
 # Hyperparameters tunning
 checkpoints = simclr_tune(
     num_samples=15,
-    max_epochs=700,
+    max_epochs=850,
     cpus_per_trial=resources_per_trial.cpus,
     gpus_per_trial=resources_per_trial.gpus
     )
@@ -324,13 +341,48 @@ conf_mat_std_test = np.std(conf_mat_array_test, axis=0)
 # -----------------------------------------------------------------------------
 
 # Plot confusion matrix (validation)
-title = f'Confusion matrix SimCLR\n Accuracy Validation:{acc_mean_val:.3f}$\pm${acc_std_val:.3f}'
-file = 'figures/confusion_matrix_SimCLR_Validation.png'
+title = f"""Confusion matrix SimCLR classifier
+(Without features, Simclr-aug, Stamps)
+Accuracy Validation:{acc_mean_val:.3f}$\pm${acc_std_val:.3f}"""
+file = f"figures/confusion_matrix_SimCLR-Validation-without_features-simclr_aug.png"
 plot_confusion_matrix_mean_std(conf_mat_mean_val, conf_mat_std_val, title, file)
 
 # Plot confusion matrix (test)
-title = f'Confusion matrix SimCLR\n Accuracy Test:{acc_mean_test:.3f}$\pm${acc_std_test:.3f}'
-file = 'figures/confusion_matrix_SimCLR_Test.png'
+title = f"""Confusion matrix SimCLR classifier
+(Without features, Simclr-aug, Stamps)
+Accuracy Test:{acc_mean_test:.3f}$\pm${acc_std_test:.3f}"""
+file = f"figures/confusion_matrix_SimCLR-Test-without_features-simclr_aug.png"
 plot_confusion_matrix_mean_std(conf_mat_mean_test, conf_mat_std_test, title, file)
+
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+
+# Dataframe with results
+df = pd.read_csv('results/hyperparameter_tuning_simclr.csv', index_col=0)
+
+# Summary of hyperparameter tuning
+df_summary = pd.read_csv('results/summary_tuning_simclr.csv', index_col=0)
+
+# Names of hyperparameter columns of dataframe
+hyper_columns = hyperparameter_columns(df)
+
+# -----------------------------------------------------------------------------
+
+# Dataframe of the best hyperparameters for each combination in hyper
+df_best_clr = df_summary.loc[df_summary['mean'].idxmax()].reset_index(drop=True)
+
+# Mask of the best hyperparamter combination
+where = 1
+for hyper_name, opt_hyper in zip(hyper_columns, df_best_clr):
+    where = where & (df[hyper_name] == opt_hyper)
+
+# Folders of the best hyperparameter combination
+folder = list(df['logdir'][where])[0]
+
+# Load the hyperparamters of the model
+hparams_path = os.path.join(folder, "hparams.yaml")
+
+# Copy the best hyperparameters's set
+shutil.copy(hparams_path, "results/hparams_best_simclr.yaml")
 
 # -----------------------------------------------------------------------------
