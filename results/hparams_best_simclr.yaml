@@ -1,0 +1,15 @@
+augmentation: simclr
+batch_size_classifier: 60
+batch_size_encoder: 150
+beta_loss: 0.06421167982111942
+drop_rate_classifier: 0.2
+encoder_name: pstamps
+image_size: 27
+lr_classifier: 0.001956409593991059
+lr_encoder: 12.258059613629328
+method: simclr
+optimizer_classifier: AdamW
+optimizer_encoder: LARS
+projection_dim: 300
+temperature: 0.17910250439416514
+with_features: false

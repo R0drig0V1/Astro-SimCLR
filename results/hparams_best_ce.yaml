@@ -1,0 +1,9 @@
+augmentation: without_aug
+balanced_batch: false
+batch_size: 45
+beta_loss: 0.016063800410738464
+drop_rate: 0.2
+image_size: 27
+lr: 0.002495379490073152
+optimizer: AdamW
+with_features: true

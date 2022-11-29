@@ -1,9 +1,0 @@
-,config/astro_augmentation,config/batch_size_classifier,config/batch_size_encoder,config/beta_loss,config/encoder_name,config/image_size,config/lr_classifier,config/lr_encoder,config/method,config/optimizer_classifier,config/optimizer_encoder,config/projection_dim,config/temperature,config/with_features,mean,std
-0,False,70,500,0.014634,pstamps,21,0.007120,0.026402,simclr,SGD,SGD,100,0.000143,True,0.865500,0.001915
-1,True,70,200,0.008640,pstamps,21,0.007120,0.060746,simclr,SGD,SGD,100,0.017617,True,0.886000,0.001633
-2,False,70,350,0.000887,pstamps,21,0.007120,9.397029,supcon,SGD,LARS,100,0.459976,True,0.915000,0.003464
-3,True,70,350,0.002231,pstamps,21,0.007120,0.000513,supcon,SGD,AdamW,100,0.009503,True,0.903500,0.006403
-4,False,70,350,0.004871,resnet18,21,0.007120,0.305436,simclr,SGD,SGD,100,0.067550,True,0.892500,0.011475
-5,True,70,350,0.015738,resnet18,21,0.007120,2.668672,simclr,SGD,SGD,100,0.062566,True,0.889000,0.002000
-6,False,70,500,0.004408,resnet18,21,0.007120,0.008431,supcon,SGD,AdamW,100,0.034224,True,0.910000,0.002828
-7,True,70,200,0.096739,resnet18,21,0.007120,0.000401,supcon,SGD,AdamW,100,3.192847,True,0.891500,0.005260

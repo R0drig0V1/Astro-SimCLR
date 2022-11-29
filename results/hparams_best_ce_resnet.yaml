@@ -1,0 +1,8 @@
+augmentation: rotation_v3
+balanced_batch: false
+batch_size: 30
+beta_loss: 0.001323714497724708
+image_size: 63
+lr: 0.0015313744573543094
+optimizer: AdamW
+with_features: false
