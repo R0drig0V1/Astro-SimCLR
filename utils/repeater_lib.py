@@ -22,13 +22,13 @@ def hyperparameter_columns(df):
 
 
 # Create summary of hyperparamter combinations (compute mean and std)
-def summary(df):
+def summary(df, metric="accuracy"):
 
 	# Names of hyperparameter columns of dataframe
 	hyper_columns = hyperparameter_columns(df)
 
 	# Compute mean and std of accuracies
-	df_summary = df.groupby(hyper_columns)["accuracy"].agg([np.mean, np.std]).reset_index()
+	df_summary = df.groupby(hyper_columns)[metric].agg([np.mean, np.std]).reset_index()
 
 	return df_summary
 
