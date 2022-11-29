@@ -16,15 +16,21 @@ class P_stamps_loss(nn.Module):
         # Entropy regulatization constant
         self.beta = beta
 
-    def forward(self, outputs, targets):
+        # loss
+        self.loss = nn.CrossEntropyLoss()
 
-        # Number of samples per batch
-        N = targets.size(0)
+        # logsoftmax
+        self.logsoftmax = nn.LogSoftmax(dim=1)
+
+
+    def forward(self, logits, targets):
+
+        # compute log soft max
+        log_soft = self.logsoftmax(logits)
 
         # Loss average
-        loss = - torch.sum(targets * torch.log(torch.clamp(outputs, min=1e-18)))
-        loss += self.beta * torch.sum(outputs * torch.log(torch.clamp(outputs, min=1e-18)))
-        loss /= N
+        loss = self.loss(logits, torch.argmax(targets, dim=1))
+        loss -= self.beta * self.loss(logits, torch.exp(log_soft))
 
         return loss
 
@@ -123,7 +129,6 @@ class NT_Xent(nn.Module):
 #------------------------------------------------------------------------------
 
 # Github: HobbitLong / SupContrast / losses.py
-
 
 class SupConLoss(nn.Module):
 
