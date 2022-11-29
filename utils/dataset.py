@@ -1,5 +1,6 @@
 import csv
 import torch
+import pickle
 
 import pandas as pd
 import numpy as np
@@ -23,33 +24,6 @@ feature_names = ['sgscore1', 'distpsnr1', 'sgscore2', 'distpsnr2', 'sgscore3',
 
 # -----------------------------------------------------------------------------
 
-# Dataset is loaded
-#with open('dataset/td_ztf_stamp_17_06_20.pkl', 'rb') as f:
-#    data = pickle.load(f)
-
-# Mean and std to normalize
-#mean_features = np.mean(np.array(features, dtype=np.float32), axis=0)
-#std_features = np.std(np.array(features, dtype=np.float32), axis=0)
-
-
-mean_features = np.array([-0.2873714, 0.11175089, -0.03527644, -0.00055827,
-                          -0.00971938, 0.00157936, 0.5222817, 0.0454788,
-                          0.02194207, -0.04955371, -0.02466081, 0.02335262,
-                          -0.0385435, 0.01949287, 0.09752761, 0.14096506,
-                          0.09265201, -0.10308222, 0.02861715, 0.00802673,
-                          -0.02782944, -0.01558139, 0.00917627, 0.03677692,
-                          0.33868203, 0.2191507], dtype=np.float32)
-
-std_features = np.array([1.0836236, 1.0093966, 0.99515635, 0.9982329,
-                         0.996767, 0.994433, 0.91449946, 0.9764465,
-                         0.90470445, 0.964727,1.0097935, 0.9968355,
-                         0.9727092, 1.0060825, 1.0007532,0.9736594,
-                         0.95906055, 0.9262455, 1.0111927, 1.0210558,
-                         1.0055873, 1.0252767, 0.97880936, 1.0133779,
-                         1.332348, 1.254867], dtype=np.float32)
-
-# -----------------------------------------------------------------------------
-
 # Change the format of image, from np.float [0,1] to np.int8 (0,255)
 def img_float2int(img):
 
@@ -63,6 +37,54 @@ def img_float2int(img):
 # One hot encoding transformation to use softmax
 def one_hot_trans(x):
     return torch.nn.functional.one_hot(torch.tensor(x), num_classes=5)
+
+# -----------------------------------------------------------------------------
+
+def repair_non_squared_stamp(stamp: np.ndarray,
+                             xpos: int,
+                             ypos: int) -> np.ndarray:
+
+    """
+    Fill with `np.nan` a misshaped stamps.
+    """
+
+    height, width, _ = stamp.shape
+    
+    if ((height == 63) & (width == 63)):
+        return stamp
+    
+    if (height != 63):
+        nan_pad = np.empty((63 - height, width, 3))
+        nan_pad[:] = np.nan
+        if ypos < 40.0:
+            stamp = np.concatenate([nan_pad, stamp], axis=0) 
+        else:
+            stamp = np.concatenate([stamp, nan_pad], axis=0)
+            
+    if (width != 63):
+        nan_pad = np.empty((63, 63 - width, 3))
+        nan_pad[:] = np.nan
+        if xpos < 40.0:
+            stamp = np.concatenate([nan_pad, stamp], axis=1)
+        else:
+            stamp = np.concatenate([stamp, nan_pad], axis=1)
+    return stamp
+
+# -----------------------------------------------------------------------------
+
+def preprocess_stamps(stamp: np.ndarray,
+                      nan_val: float) -> np.ndarray:
+
+    """
+    Returns a preprocessed stamp; get a stamp with values between 0 and 1. Normalization.
+    """
+    
+    stamp_image = np.nan_to_num(stamp, nan=np.nan, posinf=np.nan, neginf=np.nan)
+    stamp_image = stamp_image - np.nanmin(stamp_image, axis=(0,1))
+    stamp_image = stamp_image / (np.nanmax(stamp_image, axis=(0,1)) + 0.000001)
+    stamp_image = np.nan_to_num(stamp_image, nan=nan_val, posinf=nan_val, neginf=nan_val)
+    
+    return stamp_image
 
 # -----------------------------------------------------------------------------
 
@@ -88,6 +110,9 @@ class Dataset_stamps(torch.utils.data.Dataset):
         self.image_original_and_augmentated = image_original_and_augmentated
         self.discarted_features = discarted_features
 
+        # Mean and std to normalize
+        #self.mean_features = np.mean(np.array(self.pickle['Train']['features'], dtype=np.float32), axis=0)
+        #self.std_features = np.std(np.array(self.pickle['Train']['features'], dtype=np.float32), axis=0)
 
         # Base transformation for images
         self.base_transformation = transforms.Compose([
@@ -129,7 +154,7 @@ class Dataset_stamps(torch.utils.data.Dataset):
                                  dtype=np.float32))
 
         # Normalization
-        feature_numpy = (feature_numpy - mean_features) / std_features
+        #feature_numpy = (feature_numpy - self.mean_features) / self.std_features
 
         # Features are deleted and converted from numpy to torch
         feature = torch.from_numpy(np.delete(feature_numpy, self.discarted_features))
@@ -157,6 +182,157 @@ class Dataset_stamps(torch.utils.data.Dataset):
         # Batch for encoder training
         else:
             return image_b, feature, label
+
+# -----------------------------------------------------------------------------
+
+# Class to load alerts of ZTF
+class Dataset_stamps_v2(torch.utils.data.Dataset):
+
+    def __init__(
+            self,
+            path,
+            dataset,
+            image_size,
+            image_transformation=None,
+            image_original_and_augmentated=True,
+            one_hot_encoding=True,
+            discarted_features=[13,14,15]
+            ):
+
+
+        # Load parameters
+        with open(path, 'rb') as f:
+            self.dataset = pickle.load(f)[dataset]
+
+
+        self.additional_transformation = image_transformation is not None
+        self.image_original_and_augmentated = image_original_and_augmentated
+        self.discarted_features = discarted_features
+
+        # Mean and std to normalize
+        #self.mean_features = np.mean(np.array(self.dataset['features'], dtype=np.float32), axis=0)
+        #self.std_features = np.std(np.array(self.dataset['features'], dtype=np.float32), axis=0)
+
+        # Base transformation for images
+        self.base_transformation = transforms.Compose([
+                transforms.Lambda(img_float2int),
+                transforms.ToPILImage(),
+                Resize_img(size=image_size)
+                ])
+
+
+        # Additional transformation
+        if (self.additional_transformation):
+
+            self.transformation = transforms.Compose([
+                transforms.Lambda(img_float2int),
+                transforms.ToPILImage(),
+                image_transformation
+                ])
+
+
+        # Apply transformation for labels
+        if (one_hot_encoding):
+            self.target_transform = transforms.Compose([transforms.Lambda(one_hot_trans)])
+
+        else:
+            self.target_transform = transforms.Compose([])
+
+
+    def __len__(self):
+        return len(self.dataset['labels'])
+
+
+    def __getitem__(self, idx):
+
+        # Get items
+        image = self.dataset['images'][idx]
+
+        # Get features
+        feature_numpy = (np.array(self.dataset['features'][idx],
+                                 dtype=np.float32))
+
+        # Normalization
+        #feature_numpy = (feature_numpy - self.mean_features) / self.std_features
+
+        # Features are deleted and converted from numpy to torch
+        feature = torch.from_numpy(np.delete(feature_numpy, self.discarted_features))
+
+        # Get labels
+        label = self.dataset['labels'][idx]
+
+        # Base transformation for images is applied
+        image_b = self.base_transformation(image)
+
+        # Transformation for labels
+        label = self.target_transform(label)
+
+
+        # Batch for simultaneous training of encoder and classifier
+        if (self.additional_transformation and self.image_original_and_augmentated):
+            image_t = self.transformation(image)
+            return image_b, image_t, feature, label
+
+        # Batch for stamps classifier with augmentations
+        elif (self.additional_transformation and self.image_original_and_augmentated==False):
+            image_t = self.transformation(image)[0]
+            return image_t, feature, label
+
+        # Batch for encoder training
+        else:
+            return image_b, feature, label
+
+
+# -----------------------------------------------------------------------------
+
+# Class to load alerts of ZTF
+class Dataset_simclr(torch.utils.data.Dataset):
+
+    def __init__(
+            self,
+            path,
+            dataset,
+            image_size,
+            image_transformation=None):
+
+
+        # Load parameters
+        with open(path, 'rb') as f:
+            self.dataset = pickle.load(f)[dataset]
+
+
+        self.additional_transformation = image_transformation is not None
+
+
+        # Base transformation for images
+        self.base_transformation = transforms.Compose([
+            transforms.Lambda(img_float2int),
+            transforms.ToPILImage(),
+            Resize_img(size=image_size)
+            ])
+
+
+        # Additional transformation
+        if (self.additional_transformation):
+
+            self.transformation = transforms.Compose([
+                transforms.Lambda(img_float2int),
+                transforms.ToPILImage(),
+                image_transformation
+                ])
+
+
+    def __len__(self):
+        return len(self.dataset['images'])
+
+
+    def __getitem__(self, idx):
+
+        # Get items
+        image = self.dataset['images'][idx]
+
+        return self.transformation(image)
+
 
 # -----------------------------------------------------------------------------
 
@@ -217,5 +393,38 @@ class BalancedBatchSampler(BatchSampler):
 
     def __len__(self):
         return len(self.dataset) // self.batch_size
+
+# -----------------------------------------------------------------------------
+
+
+class Batch_sampler_step(BatchSampler):
+
+    def __init__(self, n_data, steps, batch_size):
+
+    
+        self.n_data = n_data
+        self.steps = steps
+        self.batch_size = batch_size
+
+        self.aux_data_loader = DataLoader(torch.arange(n_data), batch_size=batch_size, shuffle=True, drop_last=True)
+
+
+    def __iter__(self):
+
+        self.s = 0
+
+        while (self.s < self.steps):
+
+            for batch in self.aux_data_loader:
+
+                yield batch
+                self.s += 1
+
+                if (self.s == self.steps):
+                    break
+
+
+    def __len__(self):
+        return self.steps
 
 # -----------------------------------------------------------------------------
