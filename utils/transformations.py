@@ -972,6 +972,37 @@ class Rotation_v3:
     def __call__(self, x):
         return self.augmentation(x), self.augmentation(x)
 
+
+# ------------------------------------------------------------------------------
+
+class Center_crop_rotation:
+    """
+    A stochastic centered crop and rotation.
+    """
+
+    def __init__(self, size):
+        
+        self.augmentation = torchvision.transforms.Compose([
+
+                # Random rotation
+                torchvision.transforms.RandomRotation(180, expand=False),
+
+                # Center crop
+                RandomResizedCenterCrop(scale=(0.1, 0.5), size=size),
+
+                # Random horizontal flip
+                torchvision.transforms.RandomHorizontalFlip(),
+
+                # Transform image to tensor
+                torchvision.transforms.ToTensor()
+
+            ])
+
+
+    def __call__(self, x):
+        return self.augmentation(x), self.augmentation(x)
+
+
 # ------------------------------------------------------------------------------
 
 class Gaussian_blur:

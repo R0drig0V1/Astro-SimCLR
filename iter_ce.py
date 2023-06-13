@@ -47,11 +47,13 @@ label_aug = {
     #'jitter_astro'                 : ["Jitter-astro",           "jitter_astro"],
     #'jitter_astro_v2'              : ["Jitter-astro v2",        "jitter_astro_v2"],
     #'jitter_astro_v3'              : ["Jitter-astro v3",        "jitter_astro_v3"],
+    #'gray_scale'                   : ["Gray-scale",             "gray_scale"],
     #'crop_simclr'                  : ["Crop-simclr",            "crop_simclr"],
     #'crop_astro'                   : ["Crop-astro",             "crop_astro"],
     #'rotation'                     : ["Rotation",               "rotation"],
     #'rotation_v2'                  : ["Rotation-v2",            "rotation_v2"],
-    'rotation_v3'                  : ["Rotation-v3",            "rotation_v3"],
+    #'rotation_v3'                  : ["Rotation-v3",            "rotation_v3"],
+    #'crop_rotation'                : ["Crop-rotation",          "crop_rotation"],
     #'blur'                         : ["Blur",                   "blur"],
     #'perspective'                  : ["Random perspective",     "pers"],
     #'rot_perspective'              : ["Rot-Perspective",        "rot_pers"],
@@ -70,7 +72,7 @@ label_aug = {
     }
 
 label_features = {
-    True: ["With features", "with_features"],
+    #True: ["With features", "with_features"],
     False: ["Without features", "without_features"]
     }
 
@@ -88,16 +90,14 @@ def training_ce(hparams, name_checkpoint, name_tb, data_path):
     early_stop_callback = EarlyStopping(
         monitor="accuracy_val",
         min_delta=0.001,
-        patience=70,
-        mode="max",
-        check_finite=True,
-        divergence_threshold=0.1
+        patience=40,
+        mode="max"
     )
 
     # Save checkpoint
     checkpoint_callback = ModelCheckpoint_V2(
         monitor="accuracy_val",
-        dirpath=os.path.join(config.model_path, "CE_red"),
+        dirpath=os.path.join(config.model_path, "CE_fixed"),
         filename=f"checkpoint_{name_checkpoint}",
         save_top_k=1,
         mode="max"
@@ -106,7 +106,7 @@ def training_ce(hparams, name_checkpoint, name_tb, data_path):
     # Define the logger object
     tb_logger = TensorBoardLogger(
         save_dir='tb_logs',
-        name='ce_red',
+        name='ce_fixed',
         version=name_tb
     )
 
@@ -118,10 +118,8 @@ def training_ce(hparams, name_checkpoint, name_tb, data_path):
         max_epochs=220,
         gpus=gpus,
         benchmark=True,
-        stochastic_weight_avg=False,
         callbacks=[checkpoint_callback, early_stop_callback],
         logger=tb_logger,
-        #progress_bar_refresh_rate=False,
         weights_summary=None
     )
 

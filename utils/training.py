@@ -39,11 +39,13 @@ from utils.transformations import Jitter_astro
 from utils.transformations import Jitter_astro_v2
 from utils.transformations import Jitter_astro_v3
 from utils.transformations import Jitter_simclr
+from utils.transformations import RandomGrayscale
 from utils.transformations import Crop_astro
 from utils.transformations import Crop_simclr
 from utils.transformations import Rotation
 from utils.transformations import Rotation_v2
 from utils.transformations import Rotation_v3
+from utils.transformations import Center_crop_rotation
 from utils.transformations import Gaussian_blur
 from utils.transformations import RandomPerspective
 from utils.transformations import RotationPerspective
@@ -284,6 +286,9 @@ class Supervised_Cross_Entropy(pl.LightningModule):
         elif self.augmentation == 'jitter_simclr':
             augmentation = Jitter_simclr(size=self.image_size)
 
+        elif self.augmentation == 'gray_scale':
+            augmentation = RandomGrayscale(size=self.image_size)
+
         elif self.augmentation == 'crop_astro':
             augmentation = Crop_astro(size=self.image_size)
 
@@ -298,6 +303,9 @@ class Supervised_Cross_Entropy(pl.LightningModule):
 
         elif self.augmentation == 'rotation_v3':
             augmentation = Rotation_v3(size=self.image_size)
+
+        elif self.augmentation == 'crop_rotation':
+            augmentation = Center_crop_rotation(size=self.image_size)
 
         elif self.augmentation == 'blur':
             augmentation = Gaussian_blur(size=self.image_size)
@@ -691,6 +699,9 @@ class Supervised_Cross_Entropy_Resnet(pl.LightningModule):
         elif self.augmentation == 'jitter_simclr':
             augmentation = Jitter_simclr(size=self.image_size)
 
+        elif self.augmentation == 'gray_scale':
+            augmentation = RandomGrayscale(size=self.image_size)
+
         elif self.augmentation == 'crop_astro':
             augmentation = Crop_astro(size=self.image_size)
 
@@ -705,6 +716,9 @@ class Supervised_Cross_Entropy_Resnet(pl.LightningModule):
 
         elif self.augmentation == 'rotation_v3':
             augmentation = Rotation_v3(size=self.image_size)
+
+        elif self.augmentation == 'crop_rotation':
+            augmentation = Center_crop_rotation(size=self.image_size)
 
         elif self.augmentation == 'blur':
             augmentation = Gaussian_blur(size=self.image_size)
@@ -1112,6 +1126,9 @@ class SimCLR_classifier(pl.LightningModule):
 
         elif self.augmentation == 'rotation_v3':
             augmentation = Rotation_v3(size=self.image_size)
+
+        elif self.augmentation == 'crop_rotation':
+            augmentation = Center_crop_rotation(size=self.image_size)
 
         elif self.augmentation == 'blur':
             augmentation = Gaussian_blur(size=self.image_size)
@@ -3727,6 +3744,9 @@ class Fine_SimCLR(pl.LightningModule):
 
         elif self.augmentation == 'rotation_v3':
             augmentation = Rotation_v3(size=self.image_size)
+
+        elif self.augmentation == 'crop_rotation':
+            augmentation = Center_crop_rotation(size=self.image_size)
 
         elif self.augmentation == 'blur':
             augmentation = Gaussian_blur(size=self.image_size)
