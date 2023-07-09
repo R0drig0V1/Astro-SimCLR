@@ -108,7 +108,7 @@ class P_stamps_net(nn.Module):
     def __init__(self, drop_rate, with_features):
         super().__init__()
 
-        kernel = 3
+        kernel = 5
 
         if kernel == 3:
             padding = 1
@@ -132,11 +132,10 @@ class P_stamps_net(nn.Module):
         self.fc1 = nn.Linear(2304, 64)
 
         if self.with_features:
-            self.bn1 = nn.BatchNorm1d(87)
-            self.fc2 = nn.Linear(87, 64)
+            self.bn1 = nn.BatchNorm1d(23)
+            self.fc2 = nn.Linear(64+23, 64)
 
         else:
-            self.bn1 = nn.BatchNorm1d(64)
             self.fc2 = nn.Linear(64, 64)
 
         self.drop = nn.Dropout(p=drop_rate)
@@ -171,13 +170,12 @@ class P_stamps_net(nn.Module):
         r4 = self.conv(torch.rot90(x_img, 3, [2, 3]))
 
         x_img = (r1 + r2 + r3 + r4) / 4
+        #x_img = x_img * (1/torch.norm(x_img, dim=1, keepdim=True))
 
-        if self.with_features: x = torch.cat((x_img, x_feat), dim=1)
+        if self.with_features: x = torch.cat((x_img, self.bn1(x_feat)), dim=1)
         else: x = x_img
 
-        x = self.bn1(x)
-        x = F.relu(self.fc2(x))
-        x = self.drop(x)
+        x = F.relu(self.drop(self.fc2(x)))
         x = F.relu(self.fc3(x))
         x = self.fc4(x)
 
@@ -344,11 +342,11 @@ class CLR(nn.Module):
         # We use a MLP with one hidden layer to obtain
         # z_i = g(h_i) = W(2)σ(W(1)h_i) where σ is a ReLU non-linearity.
         self.projector = nn.Sequential(
-            nn.Linear(input_size, projection_size, bias=False),
+            nn.Linear(input_size, projection_size, bias=True),
             nn.ReLU(),
-            nn.Linear(projection_size, projection_size, bias=False),
+            nn.Linear(projection_size, projection_size, bias=True),
             nn.ReLU(),
-            nn.Linear(projection_size, projection_size, bias=False),
+            nn.Linear(projection_size, projection_size, bias=True),
             #nn.ReLU(),
             #nn.Linear(projection_size, projection_size, bias=False),
         )
@@ -359,12 +357,9 @@ class CLR(nn.Module):
         h_j = self.encoder(x_img_j, *x_feat)
 
         # Spherical normalization
-        h_i = h_i * (1/torch.norm(h_i, dim=1, keepdim=True))
-        h_j = h_j * (1/torch.norm(h_j, dim=1, keepdim=True))
+        z_i = self.projector(h_i * (1/torch.norm(h_i, dim=1, keepdim=True)))
+        z_j = self.projector(h_j * (1/torch.norm(h_j, dim=1, keepdim=True)))
 
-        z_i = self.projector(h_i)
-        z_j = self.projector(h_j)
-        
         return h_i, h_j, z_i, z_j
 
 # -----------------------------------------------------------------------------

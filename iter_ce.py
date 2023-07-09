@@ -25,7 +25,7 @@ warnings.filterwarnings("ignore")
 
 # -----------------------------------------------------------------------------
 
-gpus = [3]
+gpus = [0]
 
 # -----------------------------------------------------------------------------
 
@@ -67,7 +67,7 @@ label_aug = {
     #'elastic_grid'                 : ["Elastic-Grid",           "elastic_grid"],
     #'elastic_prespective'          : ["Elastic-Perspective",    "elastic_pers"],
     #'grid_perspective'             : ["Grid-Perspective",       "grid_pers"],
-    #'rot_elastic_grid_perspective' : ["Rot-Elastic-Grid-Pers",  "rot_elastic_grid_pers"]
+    #'rot_elastic_grid_perspective' : ["Rot-Elastic-Grid-Pers",  "rot_elastic_grid_pers"],
     'without_aug'                  : ["Without-aug",       "without_aug"]
     }
 
@@ -97,7 +97,7 @@ def training_ce(hparams, name_checkpoint, name_tb, data_path):
     # Save checkpoint
     checkpoint_callback = ModelCheckpoint_V2(
         monitor="accuracy_val",
-        dirpath=os.path.join(config.model_path, "CE_fixed"),
+        dirpath=os.path.join(config.model_path, "Sup_stamp"),
         filename=f"checkpoint_{name_checkpoint}",
         save_top_k=1,
         mode="max"
@@ -106,7 +106,7 @@ def training_ce(hparams, name_checkpoint, name_tb, data_path):
     # Define the logger object
     tb_logger = TensorBoardLogger(
         save_dir='tb_logs',
-        name='ce_fixed',
+        name='Sup_stamp',
         version=name_tb
     )
 
@@ -152,9 +152,9 @@ hparams = Box(yaml.load(hparams_file, Loader=yaml.FullLoader))
 # -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
 
-paths = {1: "dataset/td_ztf_stamp_17_06_20_sup_1.pkl",
-         10: "dataset/td_ztf_stamp_17_06_20_sup_10.pkl",
-         100: "dataset/td_ztf_stamp_17_06_20_sup_100.pkl"
+paths = {#1: "dataset/td_ztf_stamp_17_06_20_sup_1.pkl",
+         #10: "dataset/td_ztf_stamp_17_06_20_sup_10.pkl",
+         100: "dataset/td_ztf_stamp_17_06_20.pkl"
          }
 
 # -----------------------------------------------------------------------------
@@ -205,7 +205,7 @@ for augmentation in tqdm(label_aug.keys(), desc='Augmentations', unit= "aug"):
             title = f"""Confusion matrix Stamps classifier (labels {p}%)
 ({label_features[with_features][0]}, {label_aug[augmentation][0]})
 Accuracy Validation:{acc_mean_val:.3f}$\pm${acc_std_val:.3f}"""
-            file = f"figures/confusion_matrix_CE-frac_{p}-Validation-{label_features[with_features][1]}-{label_aug[augmentation][1]}.png"
+            file = f"figures/Stamps-{p}-Validation-{label_features[with_features][1]}-{label_aug[augmentation][1]}.png"
             plot_confusion_matrix_mean_std(conf_mat_mean_val, conf_mat_std_val, title, file)
 
             # Plot confusion matrix (test)
@@ -213,7 +213,7 @@ Accuracy Validation:{acc_mean_val:.3f}$\pm${acc_std_val:.3f}"""
             title = f"""Confusion matrix Stamps classifier (labels {p}%)
 ({label_features[with_features][0]}, {label_aug[augmentation][0]})
 Accuracy Test:{acc_mean_test:.3f}$\pm${acc_std_test:.3f}"""
-            file = f"figures/confusion_matrix_CE-frac_{p}-Test-{label_features[with_features][1]}-{label_aug[augmentation][1]}.png"
+            file = f"figures/Stamps-{p}-Test-{label_features[with_features][1]}-{label_aug[augmentation][1]}.png"
             plot_confusion_matrix_mean_std(conf_mat_mean_test, conf_mat_std_test, title, file)
 
 # -----------------------------------------------------------------------------
