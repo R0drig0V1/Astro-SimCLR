@@ -684,13 +684,38 @@ class Astro_augmentation_v9:
         s = 1
 
         # Color transformation: brightness, contrast, saturation ,hue
-        color_jitter = torchvision.transforms.ColorJitter(0.8 * s, 0.8 * s, 0.8 * s, 0)
+        color_jitter = torchvision.transforms.ColorJitter(0.8 * s, 0.8 * s, 0.8 * s, 0.2 * s)
+
+        new_transform = al.Compose([al.ElasticTransform(p=0.3,
+                                                        alpha=50,
+                                                        sigma=120 * 0.05,
+                                                        alpha_affine=50 * 0.03,
+                                                        border_mode=cv2.BORDER_CONSTANT,
+                                                        interpolation=cv2.INTER_CUBIC),
         
+                                   al.GridDistortion(p=0.3,
+                                                     num_steps=5,
+                                                     distort_limit=0.3,
+                                                     border_mode=cv2.BORDER_CONSTANT,
+                                                     interpolation=cv2.INTER_CUBIC)])
+
         self.augmentation = torchvision.transforms.Compose([
+
+                # Random rotation
+                torchvision.transforms.RandomRotation(180, expand=False),
 
                 # Random center crop and random aspect ratio is applied. This
                 # crop is finally resized to the given size.
                 RandomResizedCenterCrop(scale=(0.18, 0.5), size=size),
+
+                # Grid distortion
+                torchvision.transforms.Lambda(lambda x: np.array(x)),
+                torchvision.transforms.Lambda(lambda x: new_transform(image=x)['image']),
+                torchvision.transforms.Lambda(lambda x: np.uint8(np.round(x))),
+                torchvision.transforms.ToPILImage(),
+
+                # RandomPerspective
+                torchvision.transforms.RandomPerspective(distortion_scale=0.5, p=0.3),
 
                 # Random horizontal flip
                 torchvision.transforms.RandomHorizontalFlip(),
@@ -698,16 +723,16 @@ class Astro_augmentation_v9:
                 # Apply color transformation
                 torchvision.transforms.RandomApply([color_jitter], p=0.8),
 
+                # Apply gray scale
+                torchvision.transforms.RandomGrayscale(p=0.2),
+
                 # Blur image
                 torchvision.transforms.RandomApply([GaussianBlur(kernel_size=int(0.1 * size))], p=0.5),
 
                 # Transform image to tensor
                 torchvision.transforms.ToTensor(),
 
-                # Random rotation
-                Random_rotation()
             ])
-
 
     def __call__(self, x):
         return self.augmentation(x), self.augmentation(x)
