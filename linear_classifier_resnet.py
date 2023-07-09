@@ -6,7 +6,7 @@ import pytorch_lightning as pl
 
 from utils.config import config
 from utils.plots import plot_confusion_matrix_mean_std
-from utils.training import SimCLR_classifier, SimCLR_encoder_classifier_2_datasets
+from utils.training import SimCLR_classifier, SimCLR
 
 from box import Box
 from tqdm import tqdm
@@ -25,7 +25,7 @@ warnings.filterwarnings("ignore")
 
 # -----------------------------------------------------------------------------
 
-gpus = [1]
+gpus = [0]
 
 # -----------------------------------------------------------------------------
 
@@ -37,10 +37,6 @@ label_encoder = {
     'resnet50': 'resnet50'
 }
 
-label_method ={
-    'supcon': ['sup-simclr','sup_simclr'],
-    'simclr': ['simclr', 'simclr']
-}
 
 label_aug = {
     #'astro'                        : ["Astro-aug",              "astro_aug"],
@@ -64,7 +60,7 @@ label_aug = {
     #'crop_astro'                   : ["Crop-astro",             "crop_astro"],
     #'rotation'                     : ["Rotation",               "rotation"],
     #'rotation_v2'                  : ["Rotation-v2",            "rotation_v2"],
-    'rotation_v3'                  : ["Rotation-v3",            "rotation_v3"],
+    #'rotation_v3'                  : ["Rotation-v3",            "rotation_v3"],
     #'blur'                         : ["Blur",                   "blur"],
     #'perspective'                  : ["Random perspective",     "pers"],
     #'rot_perspective'              : ["Rot-Perspective",        "rot_pers"],
@@ -131,10 +127,6 @@ label_features = {
 # -----------------------------------------------------------------------------
 
 # Load the hyperparamters of the model
-hparams_file = open("results/hparams_best_simclr.yaml", 'r')
-hparams_simclr = Box(yaml.load(hparams_file, Loader=yaml.FullLoader))
-
-# Load the hyperparamters of the model
 hparams_file = open("results/hparams_best_ce.yaml", 'r')
 hparams = Box(yaml.load(hparams_file, Loader=yaml.FullLoader))
 
@@ -148,13 +140,13 @@ class ModelCheckpoint_V2(ModelCheckpoint):
 # -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
 
-def training_simclr_classifier(simclr_model, augmentation, name_checkpoint, name_tb, with_features, data_path):
+def training_simclr_classifier(simclr_model, augmentation, rep, p, with_features, data_path):
 
     # Saves checkpoint
     checkpoint_callback = ModelCheckpoint_V2(
         monitor="accuracy_val",
-        dirpath=os.path.join(config.model_path, "Linear_classifier_resnet18_27"),
-        filename=f"checkpoint_{name_checkpoint}",
+        dirpath=os.path.join(config.model_path, f"LC"),
+        filename=f"checkpoint_{p}_{simclr.encoder_name}_{simclr.image_size}_{simclr.augmentation}_{augmentation}_{label_features[with_features][1]}_{rep}",
         save_top_k=1,
         mode="max"
     )
@@ -164,20 +156,17 @@ def training_simclr_classifier(simclr_model, augmentation, name_checkpoint, name
     early_stop_callback = EarlyStopping(
         monitor="accuracy_val",
         min_delta=0.001,
-        patience=70,
-        mode="max",
-        check_finite=True,
-        divergence_threshold=0.1
+        patience=40,
+        mode="max"
     )
 
 
     # Define the logger object
     logger = TensorBoardLogger(
         save_dir='tb_logs',
-        name='linear_classifier_resnet18_27',
-        version=name_tb
+        name=f'LC',
+        version=f"{p}_{simclr.encoder_name}_{simclr.image_size}_{simclr.augmentation}_{augmentation}_{label_features[with_features][1]}_{rep}"
     )
-
 
     # Inicialize classifier
     simclr_classifier = SimCLR_classifier(
@@ -227,13 +216,15 @@ def training_simclr_classifier(simclr_model, augmentation, name_checkpoint, name
 # -----------------------------------------------------------------------------
 
 # Augmentations simclr
-simclr_augs = ["astro8"]
+simclr_augs = ["astro8"]#"astro2", "astro9", "simclr"]#, "simclr2"]"astro8"
+encoder = "resnet18"
+image_size = 27
 
 # -----------------------------------------------------------------------------
 
 paths = {1: "dataset/td_ztf_stamp_17_06_20_sup_1.pkl",
          10: "dataset/td_ztf_stamp_17_06_20_sup_10.pkl",
-         100: "dataset/td_ztf_stamp_17_06_20_sup_100.pkl"
+         100: "dataset/td_ztf_stamp_17_06_20.pkl"
          }
 
 # -----------------------------------------------------------------------------
@@ -254,7 +245,7 @@ for augmentation in tqdm(label_aug.keys(), desc='Augmentations', unit= "aug"):
             # Train for different initial conditions
             for simclr_aug in simclr_augs:
                 
-                folders = [f"/home/rvidal/weights/SimCLR_300_resnet_27/checkpoint_{simclr_aug}_{i+1}.ckpt" for i in range(3)]
+                folders = [f"../weights/SimCLR_{encoder}_{image_size}_{simclr_aug}/checkpoint_{i}.ckpt" for i in range(1)]
 
                 for rep, exp_folder in enumerate(folders):
 
@@ -262,17 +253,13 @@ for augmentation in tqdm(label_aug.keys(), desc='Augmentations', unit= "aug"):
                     checkpoint_path = os.path.join(exp_folder)
 
                     # Load weights
-                    simclr = SimCLR_encoder_classifier_2_datasets.load_from_checkpoint(checkpoint_path)
-
-                    # Train and compute metrics
-                    name_checkpoint = f"{p}_{simclr.augmentation}_{augmentation}_{label_features[with_features][0]}_{rep+1}"
-                    name_tb = f"{p}_{simclr.augmentation}_{augmentation}_{label_features[with_features][0]}"
+                    simclr = SimCLR.load_from_checkpoint(checkpoint_path)
 
                     (acc_val, conf_mat_val), (acc_test, conf_mat_test) = training_simclr_classifier(
                         simclr, 
                         augmentation,
-                        name_checkpoint,
-                        name_tb,
+                        rep,
+                        p,
                         with_features,
                         paths[p])
 
@@ -294,24 +281,22 @@ for augmentation in tqdm(label_aug.keys(), desc='Augmentations', unit= "aug"):
                 conf_mat_mean_test = np.mean(conf_mat_array_test, axis=0)
                 conf_mat_std_test = np.std(conf_mat_array_test, axis=0)
 
-                encoder_name = simclr.encoder_name
-
 
                 # Plot confusion matrix (validation)
                 # ---------------------------------
                 title = f"""Confusion matrix linear classifier (labels {p}%)
-({label_features[with_features][0]}, {label_aug2[simclr.augmentation][0]}, {label_aug2[augmentation][0]}, {label_encoder[encoder_name]})
+({label_features[with_features][0]}, {label_aug2[simclr.augmentation][0]}, {label_aug2[augmentation][0]}, {label_encoder[encoder]})
 Accuracy Validation:{acc_mean_val:.3f}$\pm${acc_std_val:.3f}"""
-                file = f"figures/confusion_matrix_linear_classifier_300_frac_{p}-Validation-{label_features[with_features][1]}-{label_aug2[simclr.augmentation][1]}-{label_aug2[augmentation][1]}-{label_encoder[encoder_name]}_27.png"
+                file = f"figures/LC-{label_encoder[encoder]}-{p}-Validation-{label_features[with_features][1]}-{label_aug2[simclr.augmentation][1]}-{label_aug2[augmentation][1]}-{image_size}.png"
                 plot_confusion_matrix_mean_std(conf_mat_mean_val, conf_mat_std_val, title, file)
 
 
                 # Plot confusion matrix (test)
                 # ----------------------------
                 title = f"""Confusion matrix linear classifier (labels {p}%)
-({label_features[with_features][0]}, {label_aug2[simclr.augmentation][0]}, {label_aug2[augmentation][0]}, {label_encoder[encoder_name]})
+({label_features[with_features][0]}, {label_aug2[simclr.augmentation][0]}, {label_aug2[augmentation][0]}, {label_encoder[encoder]})
 Accuracy Test:{acc_mean_test:.3f}$\pm${acc_std_test:.3f}"""
-                file = f"figures/confusion_matrix_linear_classifier_300_frac_{p}-Test-{label_features[with_features][1]}-{label_aug2[simclr.augmentation][1]}-{label_aug2[augmentation][1]}-{label_encoder[encoder_name]}_27.png"
+                file = f"figures/LC-{label_encoder[encoder]}-{p}-Test-{label_features[with_features][1]}-{label_aug2[simclr.augmentation][1]}-{label_aug2[augmentation][1]}-{image_size}.png"
                 plot_confusion_matrix_mean_std(conf_mat_mean_test, conf_mat_std_test, title, file)
 
 # -----------------------------------------------------------------------------
