@@ -6,7 +6,7 @@ import pytorch_lightning as pl
 
 from utils.config import config
 from utils.plots import plot_confusion_matrix_mean_std
-from utils.training import SimCLR #SimCLR_encoder_classifier_2_datasets
+from utils.training import SimCLR
 
 from box import Box
 from tqdm import tqdm
