@@ -31,53 +31,21 @@ gpus = [0]
 
 # -----------------------------------------------------------------------------
 
-# labels of encoders
-label_encoder = {
-    'pstamps': 'Stamps',
-    'resnet18': 'Resnet18',
-    'resnet34': 'Resnet34',
-    'resnet50': 'Resnet50',
-    'resnet152': 'Resnet152'
-}
-
-label_aug = {
-    #'astro'                        : ["Astro-aug",              "astro_aug"],
-    #'astro0'                       : ["Astro-aug-v0",           "astro_aug_v0"],
-    #'astro2'                       : ["Astro-aug-v2",           "astro_aug_v2"],
-    #'astro3'                       : ["Astro-aug-v3",           "astro_aug_v3"],
-    #'astro4'                       : ["Astro-aug-v4",           "astro_aug_v4"],
-    #'astro5'                       : ["Astro-aug-v5",           "astro_aug_v5"],
-    #'astro6'                       : ["Astro-aug-v6",           "astro_aug_v6"],
-    #'astro7'                       : ["Astro-aug-v7",           "astro_aug_v7"],
-    'astro8'                       : ["Astro-aug-v8",           "astro_aug_v8"],
-    #'astro9'                       : ["Astro-aug-v9",           "astro_aug_v9"],
-    #'simclr'                       : ["Simclr-aug",             "simclr_aug"],
-    #'simclr2'                      : ["Simclr-aug-v2",          "simclr_aug_v2"],
-    #'simclr3'                      : ["Simclr-aug-v3",          "simclr_aug_v3"],
-    #'jitter_simclr'                : ["Jitter-simclr",          "jitter_simclr"],
-    #'jitter_astro'                 : ["Jitter-astro",           "jitter_astro"],
-    #'jitter_astro_v2'              : ["Jitter-astro v2",        "jitter_astro_v2"],
-    #'jitter_astro_v3'              : ["Jitter-astro v3",        "jitter_astro_v3"],
-    #'crop_simclr'                  : ["Crop-simclr",            "crop_simclr"],
-    #'crop_astro'                   : ["Crop-astro",             "crop_astro"],
-    #'rotation'                     : ["Rotation",               "rotation"],
-    #'rotation_v2'                  : ["Rotation-v2",            "rotation_v2"],
-    #'rotation_v3'                  : ["Rotation-v3",            "rotation_v3"],
-    #'blur'                         : ["Blur",                   "blur"],
-    #'perspective'                  : ["Random perspective",     "pers"],
-    #'rot_perspective'              : ["Rot-Perspective",        "rot_pers"],
-    #'rot_perspective_blur'         : ["Rot-Perspective-Blur",   "rot_pers_blur"]
-    #'grid_distortion'              : ["Grid distortion",        "grid"],
-    #'rot_grid'                     : ["Rot-Grid",               "rot_grid"],
-    #'rot_grid_blur'                : ["Rot-Grid-Blur",          "rot_grid_blur"],
-    #'elastic_transform'            : ["Elastic transformation", "elastic"]
-    #'rot_elastic'                  : ["Rot-Elastic",            "rot_elastic"],
-    #'rot_elastic_blur'             : ["Rot-Elastic-Blur",       "rot_elastic_blur"],
-    #'elastic_grid'                 : ["Elastic-Grid",           "elastic_grid"],
-    #'elastic_prespective'          : ["Elastic-Perspective",    "elastic_pers"],
-    #'grid_perspective'             : ["Grid-Perspective",       "grid_pers"],
-    #'rot_elastic_grid_perspective' : ["Rot-Elastic-Grid-Pers",  "rot_elastic_grid_pers"]
-    }
+augmentations = [
+    #'astro',
+    #'astro0',
+    #'astro2',
+    #'astro3',
+    #'astro4',
+    #'astro5',
+    #'astro6',
+    'astro7',
+    #'astro8',
+    #'astro9',
+    #'simclr',
+    'simclr2',
+    #'simclr3',
+    ]
 
 # -----------------------------------------------------------------------------
 
@@ -121,7 +89,7 @@ def training_simclr(hparams, rep):
 
     # Trainer
     trainer = pl.Trainer(
-        max_epochs=800,
+        max_epochs=400,
         gpus=gpus,
         benchmark=True,
         callbacks=[
@@ -158,8 +126,8 @@ hparams = Box({
 # -----------------------------------------------------------------------------
 
 # Train for different augmentations
-for augmentation in tqdm(label_aug.keys(), desc='Augmentations', unit= "aug"):
-    for rep in tqdm(range(2,3), leave=False, desc='Repetion', unit="rep"):
+for augmentation in tqdm(augmentations, desc='Augmentations', unit= "aug"):
+    for rep in tqdm(range(1,2), leave=False, desc='Repetion', unit="rep"):
 
         hparams.augmentation = augmentation
         training_simclr(hparams, rep)
