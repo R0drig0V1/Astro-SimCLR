@@ -86,102 +86,6 @@ def preprocess_stamps(stamp: np.ndarray,
     
     return stamp_image
 
-# -----------------------------------------------------------------------------
-
-# Class to load alerts of ZTF
-class Dataset_stamps(torch.utils.data.Dataset):
-
-    def __init__(
-            self,
-            pickle,
-            dataset,
-            image_size,
-            image_transformation=None,
-            image_original_and_augmentated=True,
-            one_hot_encoding=True,
-            discarted_features=[13,14,15]
-            ):
-
-
-        # Load parameters
-        self.pickle = pickle
-        self.dataset = dataset
-        self.additional_transformation = image_transformation is not None
-        self.image_original_and_augmentated = image_original_and_augmentated
-        self.discarted_features = discarted_features
-
-        # Mean and std to normalize
-        #self.mean_features = np.mean(np.array(self.pickle['Train']['features'], dtype=np.float32), axis=0)
-        #self.std_features = np.std(np.array(self.pickle['Train']['features'], dtype=np.float32), axis=0)
-
-        # Base transformation for images
-        self.base_transformation = transforms.Compose([
-                transforms.Lambda(img_float2int),
-                transforms.ToPILImage(),
-                Resize_img(size=image_size)
-                ])
-
-
-        # Additional transformation
-        if (self.additional_transformation):
-
-            self.transformation = transforms.Compose([
-                transforms.Lambda(img_float2int),
-                transforms.ToPILImage(),
-                image_transformation
-                ])
-
-
-        # Apply transformation for labels
-        if (one_hot_encoding):
-            self.target_transform = transforms.Compose([transforms.Lambda(one_hot_trans)])
-
-        else:
-            self.target_transform = transforms.Compose([])
-
-
-    def __len__(self):
-        return len(self.pickle[self.dataset]['labels'])
-
-
-    def __getitem__(self, idx):
-
-        # Get items
-        image = self.pickle[self.dataset]['images'][idx]
-
-        # Get features
-        feature_numpy = (np.array(self.pickle[self.dataset]['features'][idx],
-                                 dtype=np.float32))
-
-        # Normalization
-        #feature_numpy = (feature_numpy - self.mean_features) / self.std_features
-
-        # Features are deleted and converted from numpy to torch
-        feature = torch.from_numpy(np.delete(feature_numpy, self.discarted_features))
-
-        # Get labels
-        label = self.pickle[self.dataset]['labels'][idx]
-
-        # Base transformation for images is applied
-        image_b = self.base_transformation(image)
-
-        # Transformation for labels
-        label = self.target_transform(label)
-
-
-        # Batch for simultaneous training of encoder and classifier
-        if (self.additional_transformation and self.image_original_and_augmentated):
-            image_t = self.transformation(image)
-            return image_b, image_t, feature, label
-
-        # Batch for stamps classifier with augmentations
-        elif (self.additional_transformation and self.image_original_and_augmentated==False):
-            image_t = self.transformation(image)[0]
-            return image_t, feature, label
-
-        # Batch for encoder training
-        else:
-            return image_b, feature, label
 
 # -----------------------------------------------------------------------------
 
@@ -239,6 +143,16 @@ class Dataset_stamps_v2(torch.utils.data.Dataset):
             self.target_transform = transforms.Compose([])
 
 
+        if False:
+            self.dic_classes = {0:[], 1:[], 2:[], 3:[], 4:[]}
+
+            for i, c in enumerate(self.dataset['labels']):
+                self.dic_classes[c].append(i)
+
+        else:
+            self.dic_classes = None
+
+
     def __len__(self):
         return len(self.dataset['labels'])
 
@@ -248,8 +162,13 @@ class Dataset_stamps_v2(torch.utils.data.Dataset):
         # Get items
         image = self.dataset['images'][idx]
 
+        # Get labels
+        label = self.dataset['labels'][idx]
+
+        idx_aug = np.random.choice(self.dic_classes[label]) if self.dic_classes else idx
+
         # Get features
-        feature_numpy = (np.array(self.dataset['features'][idx],
+        feature_numpy = (np.array(self.dataset['features'][idx_aug],
                                  dtype=np.float32))
 
         # Normalization
@@ -258,8 +177,7 @@ class Dataset_stamps_v2(torch.utils.data.Dataset):
         # Features are deleted and converted from numpy to torch
         feature = torch.from_numpy(np.delete(feature_numpy, self.discarted_features))
 
-        # Get labels
-        label = self.dataset['labels'][idx]
+
 
         # Base transformation for images is applied
         image_b = self.base_transformation(image)
@@ -298,7 +216,7 @@ class Dataset_simclr(torch.utils.data.Dataset):
 
         # Load parameters
         with open(path, 'rb') as f:
-            self.dataset = pickle.load(f)[dataset]
+            self.dataset = pickle.load(f)[dataset]['images']
 
 
         self.additional_transformation = image_transformation is not None
@@ -323,108 +241,11 @@ class Dataset_simclr(torch.utils.data.Dataset):
 
 
     def __len__(self):
-        return len(self.dataset['images'])
+        return len(self.dataset)
 
 
     def __getitem__(self, idx):
+        return self.transformation(self.dataset[idx])
 
-        # Get items
-        image = self.dataset['images'][idx]
-
-        return self.transformation(image)
-
-
-# -----------------------------------------------------------------------------
-
-#https://discuss.pytorch.org/t/load-the-same-number-of-data-per-class/65198
-
-class BalancedBatchSampler(BatchSampler):
-
-    """
-    BatchSampler - from a MNIST-like dataset, samples n_classes and within
-    these classes samples n_samples. Return batches of size n_classes * n_samples
-    """
-
-    def __init__(self, dataset, n_classes, n_samples):
-
-        loader = DataLoader(dataset)
-
-        self.labels_list = []
-
-        for _, (_, _, label) in enumerate(loader):
-            self.labels_list.append(int(torch.argmax(label)))
-
-        self.labels = torch.LongTensor(self.labels_list)
-        self.labels_set = list(set(self.labels.numpy()))
-        self.label_to_indices = {label: np.where(self.labels.numpy() == label)[0]
-                                 for label in self.labels_set}
-
-        for l in self.labels_set:
-            np.random.shuffle(self.label_to_indices[l])
-
-        self.used_label_indices_count = {label: 0 for label in self.labels_set}
-        self.count = 0
-        self.n_classes = n_classes
-        self.n_samples = n_samples
-        self.dataset = dataset
-        self.batch_size = self.n_samples * self.n_classes
-
-
-    def __iter__(self):
-
-        self.count = 0
-
-        while self.count + self.batch_size < len(self.dataset):
-            classes = np.random.choice(self.labels_set, self.n_classes, replace=False)
-
-            indices = []
-            for class_ in classes:
-
-                indices.extend(self.label_to_indices[class_][self.used_label_indices_count[class_]:self.used_label_indices_count[class_] + self.n_samples])
-                self.used_label_indices_count[class_] += self.n_samples
-
-                if self.used_label_indices_count[class_] + self.n_samples > len(self.label_to_indices[class_]):
-                    np.random.shuffle(self.label_to_indices[class_])
-                    self.used_label_indices_count[class_] = 0
-
-            yield indices
-            self.count += self.n_classes * self.n_samples
-
-
-    def __len__(self):
-        return len(self.dataset) // self.batch_size
-
-# -----------------------------------------------------------------------------
-
-
-class Batch_sampler_step(BatchSampler):
-
-    def __init__(self, n_data, steps, batch_size):
-
-    
-        self.n_data = n_data
-        self.steps = steps
-        self.batch_size = batch_size
-
-        self.aux_data_loader = DataLoader(torch.arange(n_data), batch_size=batch_size, shuffle=True, drop_last=True)
-
-
-    def __iter__(self):
-
-        self.s = 0
-
-        while (self.s < self.steps):
-
-            for batch in self.aux_data_loader:
-
-                yield batch
-                self.s += 1
-
-                if (self.s == self.steps):
-                    break
-
-
-    def __len__(self):
-        return self.steps
 
 # -----------------------------------------------------------------------------
