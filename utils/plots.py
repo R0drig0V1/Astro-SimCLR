@@ -6,10 +6,10 @@ from utils.dataset import label_names
 # -----------------------------------------------------------------------------
 
 # Plot confusion matrix
-def plot_confusion_matrix(confusion_matrix, title, file):
+def plot_confusion_matrix(cm, title, file):
 
     # Plot confusion matrix
-    ax = sns.heatmap(confusion_matrix, vmin=0, vmax=1, annot=True, fmt='.3f')
+    ax = sns.heatmap(100*cm, vmin=0, vmax=100, annot=True, fmt='.1f')
     ax.set_aspect("equal")
 
     # Set title and labes
@@ -33,7 +33,7 @@ def plot_confusion_matrix(confusion_matrix, title, file):
 def plot_confusion_matrix_mean_std(cmm, cms, title, file):
     
     # Plot confusion matrix mean
-    ax = sns.heatmap(cmm, vmin=0, vmax=1)
+    ax = sns.heatmap(100*cmm, vmin=0, vmax=100)
     ax.set_aspect("equal")
 
     # Write mean and standard deviation
@@ -43,7 +43,7 @@ def plot_confusion_matrix_mean_std(cmm, cms, title, file):
             # Write
             plt.text(0.5 + j,
                      0.5 + i,
-                     f'{cmm[i, j]:.3f}$\pm${cms[i, j]:.3f}',
+                     f'{100*cmm[i, j]:.1f}$\pm${100*cms[i, j]:.1f}',
                      horizontalalignment="center",
                      verticalalignment="center",
                      fontsize=7,
