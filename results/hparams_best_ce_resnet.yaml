@@ -1,5 +1,4 @@
 augmentation: rotation_v3
-balanced_batch: false
 batch_size: 30
 beta_loss: 0.001323714497724708
 image_size: 63
