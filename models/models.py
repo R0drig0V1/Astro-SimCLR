@@ -44,7 +44,6 @@ class Three_layers_classifier(nn.Module):
     def __init__(self, input_size_f1, input_size_f2, input_size_f3, n_classes, drop_rate):
         super().__init__()
 
-        #self.bn1 = nn.BatchNorm1d(input_size_f1)
         self.fc1 = nn.Linear(input_size_f1, input_size_f2)
         self.drop = nn.Dropout(p=drop_rate)
         self.fc2 = nn.Linear(input_size_f2, input_size_f3)
@@ -52,43 +51,12 @@ class Three_layers_classifier(nn.Module):
 
     def forward(self, x):
 
-        #x = self.bn1(x)
         x = F.relu(self.fc1(x))
         x = self.drop(x)
         x = F.relu(self.fc2(x))
-        #y = F.softmax(self.fc3(x), dim=1)
         y = self.fc3(x)
 
         return y
-
-# -----------------------------------------------------------------------------
-
-class Three_layers_classifier2(nn.Module):
-
-    def __init__(self, input_size_f1, input_size_f2, input_size_f3, n_classes, drop_rate):
-        super().__init__()
-
-        #self.bn1 = nn.BatchNorm1d(input_size_f1)
-        self.fc1 = nn.Linear(input_size_f1, input_size_f2)
-        self.drop1 = nn.Dropout(p=drop_rate)
-        self.bn = nn.BatchNorm1d(input_size_f2)
-        self.fc2 = nn.Linear(input_size_f2, input_size_f3)
-        self.drop2 = nn.Dropout(p=drop_rate)
-        self.fc3 = nn.Linear(input_size_f3, n_classes)
-
-    def forward(self, x):
-
-        #x = self.bn1(x)
-        x = F.relu(self.fc1(x))
-        #x = self.drop1(x)
-        x = self.bn(x)
-        #x = F.relu(self.fc2(x))
-        #x = self.fc2(x)
-        #x = self.drop2(x)
-        #y = F.softmax(self.fc3(x), dim=1)
-        x = self.fc3(x)
-
-        return x
 
 # -----------------------------------------------------------------------------
 
@@ -102,8 +70,8 @@ class Identity(nn.Module):
 
 # -----------------------------------------------------------------------------
 
-# P-stamp implementation
-class P_stamps_net(nn.Module):
+# Stamp classifier Carrasco et al.
+class Stamp_classifier(nn.Module):
 
     def __init__(self, drop_rate, with_features):
         super().__init__()
@@ -175,7 +143,7 @@ class P_stamps_net(nn.Module):
         if self.with_features: x = torch.cat((x_img, self.bn1(x_feat)), dim=1)
         else: x = x_img
 
-        x = F.relu(self.drop(self.fc2(x)))
+        x = self.drop(F.relu(self.fc2(x)))
         x = F.relu(self.fc3(x))
         x = self.fc4(x)
 
@@ -183,77 +151,13 @@ class P_stamps_net(nn.Module):
 
 # -----------------------------------------------------------------------------
 
-# P-stamp implementation
-class P_stamps_net_SimCLR(nn.Module):
-
-    def __init__(self):
-        super().__init__()
-        
-        kernel = 3
-
-        if kernel == 3:
-            padding = 1
-
-        elif kernel == 5: 
-            padding = 2
-
-        elif kernel == 7:
-            padding = 3
-
-        self.conv1 = nn.Conv2d(3, 32, 4)
-        self.conv2 = nn.Conv2d(32, 32, kernel, padding=padding)
-        self.pool1 = nn.MaxPool2d(2, stride=2)
-        self.conv3 = nn.Conv2d(32, 64, kernel, padding=padding)
-        self.conv4 = nn.Conv2d(64, 64, kernel, padding=padding)
-        self.conv5 = nn.Conv2d(64, 64, kernel, padding=padding)
-        self.pool2 = nn.MaxPool2d(2, stride=2)
-        self.fl1 = nn.Flatten()
-        self.fc1 = nn.Linear(2304, 128, bias=False)
-        self.bn1 = nn.BatchNorm1d(128)
-        #self.fc2 = nn.Linear(64, 64)
-        #self.fc3 = nn.Linear(64, 64)
-
-
-    def conv(self, x):
-
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = self.pool1(x)
-        x = F.relu(self.conv3(x))
-        x = F.relu(self.conv4(x))
-        x = F.relu(self.conv5(x))
-        x = self.pool2(x)
-        x = self.fl1(x)
-        x = F.relu(self.fc1(x))
-
-        return x
-
-
-    def forward(self, x_img):
-
-        r1 = self.conv(torch.rot90(x_img, 0, [2, 3]))
-        r2 = self.conv(torch.rot90(x_img, 1, [2, 3]))
-        r3 = self.conv(torch.rot90(x_img, 2, [2, 3]))
-        r4 = self.conv(torch.rot90(x_img, 3, [2, 3]))
-
-        x = (r1 + r2 + r3 + r4) / 4
-
-        x = self.bn1(x)
-        #x = F.relu(self.fc2(x))
-        #x = F.relu(self.fc3(x))
-
-        return x
-
-
-# -----------------------------------------------------------------------------
-
-# P-stamp implementation
-class P_stamps_net_SimCLR_v2(nn.Module):
+# Stamp classifier encoder for simclr
+class Stamp_encoder(nn.Module):
 
     def __init__(self, k=1):
         super().__init__()
         
-        kernel = 3
+        kernel = 5
 
         if kernel == 3:
             padding = 1
@@ -293,10 +197,7 @@ class P_stamps_net_SimCLR_v2(nn.Module):
         output = maxpool_output_shape(output, kernel_size=2, stride=2)
 
         self.fl1 = nn.Flatten()
-        self.fc1 = nn.Linear(self.c2*output[0]*output[1], self.linear_output, bias=False)
-        self.bn1 = nn.BatchNorm1d(self.linear_output)
-        #self.fc2 = nn.Linear(64, 64)
-        #self.fc3 = nn.Linear(64, 64)
+        self.fc1 = nn.Linear(self.c2*output[0]*output[1], self.linear_output)
 
 
     def conv(self, x):
@@ -323,10 +224,6 @@ class P_stamps_net_SimCLR_v2(nn.Module):
 
         x = (r1 + r2 + r3 + r4) / 4
 
-        x = self.bn1(x)
-        #x = F.relu(self.fc2(x))
-        #x = F.relu(self.fc3(x))
-
         return x
 
 # -----------------------------------------------------------------------------
@@ -347,8 +244,6 @@ class CLR(nn.Module):
             nn.Linear(projection_size, projection_size, bias=True),
             nn.ReLU(),
             nn.Linear(projection_size, projection_size, bias=True),
-            #nn.ReLU(),
-            #nn.Linear(projection_size, projection_size, bias=False),
         )
 
     def forward(self, x_img_i, x_img_j, *x_feat):
