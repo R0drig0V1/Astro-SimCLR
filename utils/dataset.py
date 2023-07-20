@@ -98,7 +98,6 @@ class Dataset_stamps_v2(torch.utils.data.Dataset):
             dataset,
             image_size,
             image_transformation=None,
-            image_original_and_augmentated=True,
             one_hot_encoding=True,
             discarted_features=[13,14,15]
             ):
@@ -108,49 +107,34 @@ class Dataset_stamps_v2(torch.utils.data.Dataset):
         with open(path, 'rb') as f:
             self.dataset = pickle.load(f)[dataset]
 
-
-        self.additional_transformation = image_transformation is not None
-        self.image_original_and_augmentated = image_original_and_augmentated
         self.discarted_features = discarted_features
 
         # Mean and std to normalize
         #self.mean_features = np.mean(np.array(self.dataset['features'], dtype=np.float32), axis=0)
         #self.std_features = np.std(np.array(self.dataset['features'], dtype=np.float32), axis=0)
 
-        # Base transformation for images
-        self.base_transformation = transforms.Compose([
-                transforms.Lambda(img_float2int),
-                transforms.ToPILImage(),
-                Resize_img(size=image_size)
-                ])
-
-
-        # Additional transformation
-        if (self.additional_transformation):
-
+        if image_transformation:
             self.transformation = transforms.Compose([
                 transforms.Lambda(img_float2int),
                 transforms.ToPILImage(),
-                image_transformation
-                ])
+                image_transformation.augmentation
+            ])
 
+        else: 
+            self.transformation = transforms.Compose([
+                transforms.Lambda(img_float2int),
+                transforms.ToPILImage(),
+                Resize_img(size=image_size)
+            ])
 
         # Apply transformation for labels
         if (one_hot_encoding):
-            self.target_transform = transforms.Compose([transforms.Lambda(one_hot_trans)])
+            self.dataset['labels'] = one_hot_trans(self.dataset['labels'])
 
         else:
-            self.target_transform = transforms.Compose([])
+            self.dataset['labels'] = torch.tensor(self.dataset['labels'])
 
-
-        if False:
-            self.dic_classes = {0:[], 1:[], 2:[], 3:[], 4:[]}
-
-            for i, c in enumerate(self.dataset['labels']):
-                self.dic_classes[c].append(i)
-
-        else:
-            self.dic_classes = None
+        self.dataset['features'] = torch.from_numpy(np.delete(np.array(self.dataset['features'], dtype=np.float32), self.discarted_features, axis=1))
 
 
     def __len__(self):
@@ -159,47 +143,19 @@ class Dataset_stamps_v2(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
 
-        # Get items
+        # Get images
         image = self.dataset['images'][idx]
 
         # Get labels
         label = self.dataset['labels'][idx]
 
-        idx_aug = np.random.choice(self.dic_classes[label]) if self.dic_classes else idx
-
         # Get features
-        feature_numpy = (np.array(self.dataset['features'][idx_aug],
-                                 dtype=np.float32))
+        feature = self.dataset['features'][idx]
 
         # Normalization
         #feature_numpy = (feature_numpy - self.mean_features) / self.std_features
 
-        # Features are deleted and converted from numpy to torch
-        feature = torch.from_numpy(np.delete(feature_numpy, self.discarted_features))
-
-
-
-        # Base transformation for images is applied
-        image_b = self.base_transformation(image)
-
-        # Transformation for labels
-        label = self.target_transform(label)
-
-
-        # Batch for simultaneous training of encoder and classifier
-        if (self.additional_transformation and self.image_original_and_augmentated):
-            image_t = self.transformation(image)
-            return image_b, image_t, feature, label
-
-        # Batch for stamps classifier with augmentations
-        elif (self.additional_transformation and self.image_original_and_augmentated==False):
-            image_t = self.transformation(image)[0]
-            return image_t, feature, label
-
-        # Batch for encoder training
-        else:
-            return image_b, feature, label
-
+        return self.transformation(image), feature, label
 
 # -----------------------------------------------------------------------------
 
