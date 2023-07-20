@@ -118,13 +118,17 @@ class NT_Xent(nn.Module):
 
         # Zero labels because positives are the first sample
         labels = torch.zeros(N, dtype=torch.long, device=positive_samples.device)
-        logits = torch.cat((positive_samples, negative_samples), dim=1)
+        logits = torch.cat((torch.zeros_like(positive_samples), negative_samples), dim=1)
 
         # Computes mean loss
-        loss = self.criterion(logits, labels)
+        loss = self.criterion(logits, labels) - torch.sum(positive_samples)
         loss /= N
 
-        return loss
+        with torch.no_grad():
+            neg = torch.mean(negative_samples) * self.temperature
+            pos = torch.mean(positive_samples) * self.temperature
+
+        return loss, pos, neg
 
 #------------------------------------------------------------------------------
 
