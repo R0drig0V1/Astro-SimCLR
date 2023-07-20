@@ -1,8 +1,8 @@
 augmentation: without_aug
-batch_size: 64 #45
-beta_loss: 0.5 #0.016063800410738464
-drop_rate: 0.5 #0.2
+batch_size: 45
+beta_loss: 0.016063800410738464
+drop_rate: 0.2
 image_size: 27
-lr: 0.001 #0.002495379490073152
-optimizer: Adam #AdamW
+lr: 0.002495379490073152
+optimizer: Adam
 with_features: true
