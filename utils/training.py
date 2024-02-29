@@ -1,27 +1,24 @@
 import torch
 import pickle
 
-
 import utils.dataset
 import torchvision
 
 import numpy as np
 import pytorch_lightning as pl
-#import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 
-from losses import P_stamps_loss, NT_Xent#, SupConLoss
+from losses import P_stamps_loss, NT_Xent
 from models import *
 
-from timm.scheduler import CosineLRScheduler #TanhLRScheduler, 
+from timm.scheduler import CosineLRScheduler
 from torch.utils.data import Dataset, DataLoader
 from torchmetrics import MetricCollection, Accuracy, Precision, Recall, ConfusionMatrix
 
 from sklearn.manifold import TSNE
-#from umap import UMAP
 
 from utils.config import config
-from utils.dataset import Dataset_stamps, Dataset_stamps_v2, Dataset_simclr, BalancedBatchSampler, Batch_sampler_step
+from utils.dataset import Dataset_stamps_v2, Dataset_simclr
 from utils.lars import LARS
 from utils.plots import plot_confusion_matrix
 
@@ -78,7 +75,6 @@ class Supervised_Cross_Entropy(pl.LightningModule):
             lr,
             optimizer,
             with_features=True,
-            balanced_batch=False,
             augmentation='without_aug',
             data_path='dataset/td_ztf_stamp_17_06_20.pkl'):
 
@@ -92,12 +88,11 @@ class Supervised_Cross_Entropy(pl.LightningModule):
         self.lr = lr
         self.optimizer = optimizer
         self.with_features = with_features
-        self.balanced_batch = balanced_batch
         self.augmentation = augmentation
         self.data_path = data_path
 
         # Initialize P-stamp network
-        self.model = P_stamps_net(self.drop_rate, self.with_features)
+        self.model = Stamp_classifier(self.drop_rate, self.with_features)
 
         # Save hyperparameters
         self.save_hyperparameters()
@@ -253,12 +248,12 @@ class Supervised_Cross_Entropy(pl.LightningModule):
     def plot_confusion_matrix(self, dataset):
 
         # Compute accuracy and confusion matrix
-        acc, conf_mat = self.confusion_matrix(dataset=dataset)
+        acc, cm = self.confusion_matrix(dataset=dataset)
 
         # Plot confusion matrix for dataset
         title = f'Confusion matrix P-stamps (P-stamps loss)\n Accuracy {dataset}:{acc:.3f}'
         file = f'Figures/confusion_matrix_CE_{dataset}.png'
-        plot_confusion_matrix(conf_mat, title, file)
+        plot_confusion_matrix(cm, title, file)
 
         return None
 
@@ -362,7 +357,6 @@ class Supervised_Cross_Entropy(pl.LightningModule):
                             'Train',
                             image_size=self.image_size,
                             image_transformation=augmentation,
-                            image_original_and_augmentated=False,
                             one_hot_encoding=True,
                             discarted_features=[13,14,15])
 
@@ -390,26 +384,13 @@ class Supervised_Cross_Entropy(pl.LightningModule):
     # Dataloader of train dataset
     def train_dataloader(self):
 
-        # dataloader with same samples of each class
-        if self.balanced_batch:
 
-            batch_sampler = BalancedBatchSampler(self.training_data,
-                                                 n_classes=5,
-                                                 n_samples=self.batch_size//5)
-
-            train_dataloader = DataLoader(self.training_data,
-                                          num_workers=config.workers,
-                                          pin_memory=False,
-                                          batch_sampler=batch_sampler)
-
-        else:
-            
-            train_dataloader = DataLoader(self.training_data,
-                                          batch_size=self.batch_size,
-                                          shuffle=True,
-                                          num_workers=config.workers,
-                                          pin_memory=False,
-                                          drop_last=True)
+        train_dataloader = DataLoader(self.training_data,
+                                      batch_size=self.batch_size,
+                                      shuffle=True,
+                                      num_workers=config.workers,
+                                      pin_memory=False,
+                                      drop_last=True)
 
         return train_dataloader
 
@@ -446,9 +427,6 @@ class Supervised_Cross_Entropy(pl.LightningModule):
         elif self.optimizer == "SGD":
             optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr)
 
-        elif self.optimizer == "LARS":            
-            optimizer = pl_bolts.optimizers.LARS(self.model.parameters(), lr=self.lr)
-
         return optimizer
 
 # -----------------------------------------------------------------------------
@@ -463,7 +441,6 @@ class Supervised_Cross_Entropy_Resnet(pl.LightningModule):
             lr,
             optimizer,
             with_features=True,
-            balanced_batch=False,
             augmentation='without_aug',
             data_path='dataset/td_ztf_stamp_17_06_20.pkl',
             resnet_model='resnet18',
@@ -478,33 +455,41 @@ class Supervised_Cross_Entropy_Resnet(pl.LightningModule):
         self.lr = lr
         self.optimizer = optimizer
         self.with_features = with_features
-        self.balanced_batch = balanced_batch
         self.augmentation = augmentation
         self.data_path = data_path
 
 
         if resnet_model=='resnet18':
-            model = torchvision.models.resnet18()
+            feature_extractor = torchvision.models.resnet18()
 
         elif resnet_model=='resnet50':
-            model = torchvision.models.resnet50()
+            feature_extractor = torchvision.models.resnet50()
 
         elif resnet_model=='resnet152':
-            model = torchvision.models.resnet152()
+            feature_extractor = torchvision.models.resnet152()
 
-
-        # dataset features are included to predict
-        n_features_dataset = 23 if with_features else 0
 
         # Number of features (linear classifier)
-        n_features = model.fc.in_features + n_features_dataset
+        n_features = feature_extractor.fc.in_features + (23 if with_features else 0)
+        feature_extractor.fc = Identity()
 
-        model.fc = Identity()
 
-        self.feature_extractor = model
-        self.linear_classifier = Linear_classifier(
-            input_size=n_features,
-            n_classes=5)
+        if self.with_features:
+            self.model = torch.nn.Sequential(
+                    feature_extractor,
+                    torch.nn.BatchNorm1d(23),
+                    Linear_classifier(
+                        input_size=n_features,
+                        n_classes=5)
+            )
+
+        else:
+            self.model = torch.nn.Sequential(
+                    feature_extractor,
+                    Linear_classifier(
+                        input_size=n_features,
+                        n_classes=5)
+            )
 
 
         # Save hyperparameters
@@ -513,13 +498,13 @@ class Supervised_Cross_Entropy_Resnet(pl.LightningModule):
 
     def forward(self, x_img, x_feat):
 
-        x_img  = self.feature_extractor(x_img)
+        x_img  = self.model[0](x_img)
 
         if self.with_features:
-            return self.linear_classifier(torch.cat((x_img, x_feat), dim=1))
+            return self.model[2](torch.cat((x_img, self.model[1](x_feat)), dim=1))
 
         else:
-            return self.linear_classifier(x_img)
+            return self.model[1](x_img)
 
 
     # Training loop
@@ -564,7 +549,7 @@ class Supervised_Cross_Entropy_Resnet(pl.LightningModule):
         self.logger.experiment.add_scalar("Accuracy/Validation", metrics['Accuracy'], self.current_epoch)
         self.logger.experiment.add_scalar("Precision/Validation", metrics['Precision'], self.current_epoch)
         self.logger.experiment.add_scalar("Recall/Validation", metrics['Recall'], self.current_epoch)
-        self.log('accuracy_val', metrics['Accuracy'], logger=False)
+        self.log('accuracy_val', metrics['Accuracy'], logger=False, prog_bar=True)
 
         return None
 
@@ -617,8 +602,7 @@ class Supervised_Cross_Entropy_Resnet(pl.LightningModule):
 
 
         # evaluation mode
-        self.feature_extractor.eval()
-        self.linear_classifier.eval()
+        self.model.eval()
 
 
         # save y_true and y_pred of dataloader
@@ -666,12 +650,12 @@ class Supervised_Cross_Entropy_Resnet(pl.LightningModule):
     def plot_confusion_matrix(self, dataset):
 
         # Compute accuracy and confusion matrix
-        acc, conf_mat = self.confusion_matrix(dataset=dataset)
+        acc, cm = self.confusion_matrix(dataset=dataset)
 
         # Plot confusion matrix for dataset
         title = f'Confusion matrix Resnet18 (P-stamps loss)\n Accuracy {dataset}:{acc:.3f}'
         file = f'Figures/confusion_matrix_CE_Resnet18_{dataset}.png'
-        plot_confusion_matrix(conf_mat, title, file)
+        plot_confusion_matrix(cm, title, file)
 
         return None
 
@@ -775,7 +759,6 @@ class Supervised_Cross_Entropy_Resnet(pl.LightningModule):
                             'Train',
                             image_size=self.image_size,
                             image_transformation=augmentation,
-                            image_original_and_augmentated=False,
                             one_hot_encoding=True,
                             discarted_features=[13,14,15])
 
@@ -802,27 +785,13 @@ class Supervised_Cross_Entropy_Resnet(pl.LightningModule):
 
     # Dataloader of train dataset
     def train_dataloader(self):
-
-        # dataloader with same samples of each class
-        if self.balanced_batch:
-
-            batch_sampler = BalancedBatchSampler(self.training_data,
-                                                 n_classes=5,
-                                                 n_samples=self.batch_size//5)
-
-            train_dataloader = DataLoader(self.training_data,
-                                          num_workers=config.workers,
-                                          pin_memory=False,
-                                          batch_sampler=batch_sampler)
-
-        else:
             
-            train_dataloader = DataLoader(self.training_data,
-                                          batch_size=self.batch_size,
-                                          shuffle=True,
-                                          num_workers=config.workers,
-                                          pin_memory=False,
-                                          drop_last=True)
+        train_dataloader = DataLoader(self.training_data,
+                                      batch_size=self.batch_size,
+                                      shuffle=True,
+                                      num_workers=config.workers,
+                                      pin_memory=False,
+                                      drop_last=True)
 
         return train_dataloader
 
@@ -851,16 +820,13 @@ class Supervised_Cross_Entropy_Resnet(pl.LightningModule):
     def configure_optimizers(self):
 
         if self.optimizer == "AdamW":
-            optimizer = torch.optim.AdamW(list(self.feature_extractor.parameters())+ list(self.linear_classifier.parameters()), lr=self.lr)
+            optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, betas=(0.5, 0.9))
 
         elif self.optimizer == "Adam":
-            optimizer = torch.optim.Adam(list(self.feature_extractor.parameters())+ list(self.linear_classifier.parameters()), lr=self.lr)
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr, betas=(0.5, 0.9))
 
         elif self.optimizer == "SGD":
-            optimizer = torch.optim.SGD(list(self.feature_extractor.parameters())+ list(self.linear_classifier.parameters()), lr=self.lr)
-
-        elif self.optimizer == "LARS":            
-            optimizer = pl_bolts.optimizers.LARS(list(self.feature_extractor.parameters())+ list(self.linear_classifier.parameters()), lr=self.lr)
+            optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr)
 
         return optimizer
 
@@ -868,7 +834,7 @@ class Supervised_Cross_Entropy_Resnet(pl.LightningModule):
 # -----------------------------------------------------------------------------
 
 
-class SimCLR_classifier(pl.LightningModule):
+class Linear_classifier(pl.LightningModule):
 
     def __init__(
             self,
@@ -1186,7 +1152,6 @@ class SimCLR_classifier(pl.LightningModule):
                             'Train',
                             image_size=self.image_size,
                             image_transformation=augmentation,
-                            image_original_and_augmentated=False,
                             one_hot_encoding=True,
                             discarted_features=[13,14,15])
 
@@ -1250,16 +1215,13 @@ class SimCLR_classifier(pl.LightningModule):
     def configure_optimizers(self):
 
         if self.optimizer == "AdamW":
-            optimizer = torch.optim.AdamW(self.classifier.parameters(), lr=self.lr)#, betas=(0.5, 0.9))
+            optimizer = torch.optim.AdamW(self.classifier.parameters(), lr=self.lr, betas=(0.5, 0.9))
 
         elif self.optimizer == "Adam":
-            optimizer = torch.optim.Adam(self.classifier.parameters(), lr=self.lr)#, betas=(0.5, 0.9))
+            optimizer = torch.optim.Adam(self.classifier.parameters(), lr=self.lr, betas=(0.5, 0.9))
 
         elif self.optimizer == "SGD":
             optimizer = torch.optim.SGD(self.classifier.parameters(), lr=self.lr)
-
-        elif self.optimizer == "LARS":            
-            optimizer = pl_bolts.optimizers.LARS(self.classifier.parameters(), lr=self.lr)
 
         return optimizer
 
@@ -1287,7 +1249,6 @@ class SimCLR(pl.LightningModule):
 
         # Hyperparameters of class are saved
         self.encoder_name = encoder_name
-        self.method = method
         self.image_size = image_size
         self.augmentation = augmentation
         self.projection_dim = projection_dim
@@ -1300,17 +1261,13 @@ class SimCLR(pl.LightningModule):
 
 
         # Encoder loss
-        if (self.method=='supcon'):
-            self.criterion_encoder = SupConLoss(self.temperature)
-
-        elif (self.method == 'simclr'):
-            self.criterion_encoder = NT_Xent(self.batch_size_encoder, self.temperature)
+        self.criterion_encoder = NT_Xent(self.batch_size_encoder, self.temperature)
 
 
-        if (self.encoder_name == 'pstamps'):
+        if ('stamp' in self.encoder_name):
 
             # Initialize P-stamp network
-            self.encoder = P_stamps_net_SimCLR_v2(k=1.0)
+            self.encoder = Stamp_encoder(k=float(self.encoder_name[5:]))
 
             # Output features of the encoder
             self.n_features_encoder = self.encoder.bn1.num_features
@@ -1621,7 +1578,6 @@ class SimCLR(pl.LightningModule):
             dataset='Validation',
             image_size=self.image_size,
             image_transformation=None,
-            image_original_and_augmentated=False,
             one_hot_encoding=False,
             discarted_features=[13,14,15])
 
@@ -1632,7 +1588,6 @@ class SimCLR(pl.LightningModule):
             dataset='Test',
             image_size=self.image_size,
             image_transformation=None,
-            image_original_and_augmentated=False,
             one_hot_encoding=False,
             discarted_features=[13,14,15])
 
@@ -1683,7 +1638,7 @@ class SimCLR(pl.LightningModule):
         aux_scheduler = CosineLRScheduler(optimizer_encoder,
                                           warmup_t=5,
                                           warmup_lr_init=self.lr_encoder/3,
-                                          t_initial=850,
+                                          t_initial=350,
                                           cycle_limit=1,
                                           lr_min=0.0001)
 
@@ -1699,7 +1654,7 @@ class SimCLR(pl.LightningModule):
 # -----------------------------------------------------------------------------
 
 
-class Fine_SimCLR(pl.LightningModule):
+class Fine_tuning(pl.LightningModule):
 
     def __init__(
             self,
@@ -1736,30 +1691,47 @@ class Fine_SimCLR(pl.LightningModule):
 
         # Model
         if (simclr_model.encoder_name == 'pstamps'):
-            #if (with_features):
-            self.model = torch.nn.Sequential(
-                simclr_model.CLR.encoder,
-                Three_layers_classifier(
-                    input_size_f1=n_features,
-                    input_size_f2=64,
-                    input_size_f3=64,
-                    n_classes=5,
-                    drop_rate=drop_rate)
-                )
+            if self.with_features:
+                self.model = torch.nn.Sequential(
+                    simclr_model.CLR.encoder,
+                    torch.nn.BatchNorm1d(23),
+                    Three_layers_classifier(
+                        input_size_f1=n_features,
+                        input_size_f2=64,
+                        input_size_f3=64,
+                        n_classes=5,
+                        drop_rate=drop_rate)
+                    )
 
-            #else:
-            #    self.model = torch.nn.Sequential(
-            #        simclr_model.CLR.encoder,
-            #        simclr_model.classifier)
+            else:
+                self.model = torch.nn.Sequential(
+                    simclr_model.CLR.encoder,
+                    Three_layers_classifier(
+                        input_size_f1=n_features,
+                        input_size_f2=64,
+                        input_size_f3=64,
+                        n_classes=5,
+                        drop_rate=drop_rate)
+                    )
 
 
         elif ('resnet' in simclr_model.encoder_name):
-            self.model = torch.nn.Sequential(
-                simclr_model.CLR.encoder,
-                Linear_classifier(
-                    input_size=n_features,
-                    n_classes=5)
-            )
+            if self.with_features:
+                self.model = torch.nn.Sequential(
+                    simclr_model.CLR.encoder,
+                    torch.nn.BatchNorm1d(23),
+                    Linear_classifier(
+                        input_size=n_features,
+                        n_classes=5)
+                )
+
+            else:
+                self.model = torch.nn.Sequential(
+                    simclr_model.CLR.encoder,
+                    Linear_classifier(
+                        input_size=n_features,
+                        n_classes=5)
+                )
 
 
 
@@ -1780,12 +1752,12 @@ class Fine_SimCLR(pl.LightningModule):
         h = self.model[0](x_img)
 
         # Features computed from image and features of dataset are concatenated
-        if (self.with_features): x = torch.cat((h, x_feat), dim=1)
+        if self.with_features:
+            x = torch.cat((h, self.model[1](x_feat)), dim=1)
+            logits = self.model[2](x)
 
-        # Features of dataset are not used
-        else: x = h
-
-        logits = self.model[1](x)
+        else:
+            logits = self.model[1](h)
 
         return logits
 
@@ -2044,7 +2016,6 @@ class Fine_SimCLR(pl.LightningModule):
                             dataset='Train',
                             image_size=self.image_size,
                             image_transformation=augmentation,
-                            image_original_and_augmentated=False,
                             one_hot_encoding=True,
                             discarted_features=[13,14,15])
 
@@ -2054,7 +2025,6 @@ class Fine_SimCLR(pl.LightningModule):
                             dataset='Validation',
                             image_size=self.image_size,
                             image_transformation=None,
-                            image_original_and_augmentated=False,
                             one_hot_encoding=True,
                             discarted_features=[13,14,15])
 
@@ -2064,7 +2034,6 @@ class Fine_SimCLR(pl.LightningModule):
                             dataset='Test',
                             image_size=self.image_size,
                             image_transformation=None,
-                            image_original_and_augmentated=False,
                             one_hot_encoding=True,
                             discarted_features=[13,14,15])
 
@@ -2110,16 +2079,13 @@ class Fine_SimCLR(pl.LightningModule):
     def configure_optimizers(self):
 
         if self.optimizer == "AdamW":
-            optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=0.1)
+            optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, betas=(0.5, 0.9))
 
         elif self.optimizer == "Adam":
-            optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr, betas=(0.5, 0.9))
 
         elif self.optimizer == "SGD":
             optimizer = torch.optim.SGD(self.model.parameters(), lr=self.lr)
-
-        elif self.optimizer == "LARS":            
-            optimizer = pl_bolts.optimizers.LARS(self.model.parameters(), lr=self.lr)
 
         return optimizer
 
