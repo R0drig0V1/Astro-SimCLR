@@ -4,7 +4,7 @@ from box import Box
 config = Box({'num_nodes': 1,
                'cpus': 1,
                'gpus': 1,
-               'workers': 4,
+               'workers': 1,
                'model_path': "../weights"
                })
 
