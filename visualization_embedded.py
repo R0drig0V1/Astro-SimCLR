@@ -21,25 +21,20 @@ class ModelCheckpoint_V2(ModelCheckpoint):
 
 # -----------------------------------------------------------------------------
 
-simclr_augs = ["astro2", "astro8", "simclr", "simclr2"]
+simclr_augs = ["astro2", "astro8", "astro9", "simclr", "simclr2"]
 encoder = "resnet18"
 image_size = 27
 
 # -----------------------------------------------------------------------------
 
 for simclr_aug in simclr_augs:
-    for rep in range(1):
+    for rep in range(3):
 
         # Load weights
         simclr = SimCLR.load_from_checkpoint(f"../weights/SimCLR_{encoder}_{image_size}_{simclr_aug}/checkpoint_{rep}.ckpt")
 
         # Load dataset
         simclr.prepare_data_fast()
-
-        # Plot visualization (validation)
-        # ---------------------------------
-        #file = f'figures/tsne_Validation_{encoder}_{image_size}_{simclr_aug}_{rep}.png'
-        #simclr.plot_tSNE('Validation', file, feats_in_plot=100)
 
         # Plot visualization (test)
         # ----------------------------
