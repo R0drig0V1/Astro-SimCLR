@@ -42,7 +42,7 @@ label_aug = {
     #'astro9'                       : ["Astro V9",               "astro9"],
     #'simclr'                       : ["Simclr",                 "simclr"],
     #'simclr2'                      : ["Simclr V2",              "simclr2"],
-    #'simclr3'                      : ["Simclr V3",              "simclr3"]
+    #'simclr3'                      : ["Simclr V3",              "simclr3"],
     #'jitter_simclr'                : ["Jitter-simclr",          "jitter_simclr"],
     #'jitter_astro'                 : ["Jitter-astro",           "jitter_astro"],
     #'jitter_astro_v2'              : ["Jitter-astro V2",        "jitter_astro_v2"],
@@ -50,7 +50,7 @@ label_aug = {
     #'gray_scale'                   : ["Gray-scale",             "gray_scale"],
     #'crop_simclr'                  : ["Crop-simclr",            "crop_simclr"],
     #'crop_astro'                   : ["Crop-astro",             "crop_astro"],
-    #'rotation_v3'                  : ["Rotation",               "rotation"],
+    'rotation_v3'                  : ["Rotation",               "rotation"],
     #'crop_rotation'                : ["Crop-rotation",          "crop_rotation"],
     #'blur'                         : ["Blur",                   "blur"],
     #'perspective'                  : ["Random perspective",     "pers"],
@@ -70,7 +70,7 @@ label_aug = {
     }
 
 label_features = {
-    #True: ["With metadata", "with_metadata"],
+    True: ["With metadata", "with_metadata"],
     False: ["Without metadata", "without_metadata"]
     }
 
@@ -150,8 +150,8 @@ hparams = Box(yaml.load(hparams_file, Loader=yaml.FullLoader))
 # -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
 
-paths = {#1: "dataset/td_ztf_stamp_17_06_20_sup_1.pkl",
-         #10: "dataset/td_ztf_stamp_17_06_20_sup_10.pkl",
+paths = {1: "dataset/td_ztf_stamp_17_06_20_sup_1.pkl",
+         10: "dataset/td_ztf_stamp_17_06_20_sup_10.pkl",
          100: "dataset/td_ztf_stamp_17_06_20.pkl"
          }
 

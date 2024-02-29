@@ -31,7 +31,7 @@ gpus = [0]
 
 # labels of encoders
 label_encoder = {
-    'pstamps': 'Stamps',
+    'stamp': 'Stamp',
     'resnet18': 'Resnet18',
     'resnet34': 'Resnet34',
     'resnet50': 'Resnet50',
@@ -51,7 +51,7 @@ label_aug = {
     #'astro9'                       : ["Astro V9",               "astro9"],
     #'simclr'                       : ["Simclr",                 "simclr"],
     #'simclr2'                      : ["Simclr V2",              "simclr2"],
-    #'simclr3'                      : ["Simclr V3",              "simclr3"]
+    #'simclr3'                      : ["Simclr V3",              "simclr3"],
     #'jitter_simclr'                : ["Jitter-simclr",          "jitter_simclr"],
     #'jitter_astro'                 : ["Jitter-astro",           "jitter_astro"],
     #'jitter_astro_v2'              : ["Jitter-astro V2",        "jitter_astro_v2"],

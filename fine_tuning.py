@@ -8,7 +8,7 @@ import pytorch_lightning as pl
 
 from utils.config import config
 from utils.plots import plot_confusion_matrix_mean_std
-from utils.training import SimCLR_encoder_classifier_2_datasets, SimCLR_classifier, Fine_SimCLR
+from utils.training import SimCLR, Fine_tuning
 from utils.repeater_lib import hyperparameter_columns
 
 from box import Box
@@ -28,47 +28,42 @@ warnings.filterwarnings("ignore")
 
 # -----------------------------------------------------------------------------
 
-gpus = [3]
+gpus = [0]
 
 # -----------------------------------------------------------------------------
 
 # labels for image names
 label_encoder = {
-    'pstamps': 'Stamps',
+    'stamp1': 'Stamp1',
     'resnet18': 'Resnet18',
     'resnet34': 'Resnet34',
     'resnet50': 'Resnet50',
     'resnet152': 'Resnet152'
 }
 
-label_method ={
-    'supcon': ['sup-simclr','sup_simclr'],
-    'simclr': ['simclr', 'simclr']
-}
 
 label_aug = {
-    #'astro'                        : ["Astro-aug",              "astro_aug"],
-    #'astro0'                       : ["Astro-aug-v0",           "astro_aug_v0"],
-    #'astro2'                       : ["Astro-aug-v2",           "astro_aug_v2"]
-    #'astro3'                       : ["Astro-aug-v3",           "astro_aug_v3"],
-    #'astro4'                       : ["Astro-aug-v4",           "astro_aug_v4"]
-    #'astro5'                       : ["Astro-aug-v5",           "astro_aug_v5"],
-    #'astro6'                       : ["Astro-aug-v6",           "astro_aug_v6"]
-    #'astro7'                       : ["Astro-aug-v7",           "astro_aug_v7"]
-    #'astro8'                       : ["Astro-aug-v8",           "astro_aug_v8"]
-    #'astro9'                       : ["Astro-aug-v9",           "astro_aug_v9"],
-    #'simclr'                       : ["Simclr-aug",             "simclr_aug"],
-    #'simclr2'                      : ["Simclr-aug-v2",          "simclr_aug_v2"],
-    #'simclr3'                      : ["Simclr-aug-v3",          "simclr_aug_v3"]
+    #'astro'                        : ["Astro",                  "astro"],
+    #'astro0'                       : ["Astro V0",               "astro0"],
+    #'astro2'                       : ["Astro V2",               "astro2"],
+    #'astro3'                       : ["Astro V3",               "astro3"],
+    #'astro4'                       : ["Astro V4",               "astro4"],
+    #'astro5'                       : ["Astro V5",               "astro5"],
+    #'astro6'                       : ["Astro V6",               "astro6"],
+    #'astro7'                       : ["Astro V7",               "astro7"],
+    #'astro8'                       : ["Astro V8",               "astro8"],
+    #'astro9'                       : ["Astro V9",               "astro9"],
+    #'simclr'                       : ["Simclr",                 "simclr"],
+    #'simclr2'                      : ["Simclr V2",              "simclr2"],
+    #'simclr3'                      : ["Simclr V3",              "simclr3"],
     #'jitter_simclr'                : ["Jitter-simclr",          "jitter_simclr"],
     #'jitter_astro'                 : ["Jitter-astro",           "jitter_astro"],
-    #'jitter_astro_v2'              : ["Jitter-astro v2",        "jitter_astro_v2"],
-    #'jitter_astro_v3'              : ["Jitter-astro v3",        "jitter_astro_v3"],
+    #'jitter_astro_v2'              : ["Jitter-astro V2",        "jitter_astro_v2"],
+    #'jitter_astro_v3'              : ["Jitter-astro V3",        "jitter_astro_v3"],
     #'crop_simclr'                  : ["Crop-simclr",            "crop_simclr"],
     #'crop_astro'                   : ["Crop-astro",             "crop_astro"],
-    #'rotation'                     : ["Rotation",               "rotation"],
-    #'rotation_v2'                  : ["Rotation-v2",            "rotation_v2"],
-    'rotation_v3'                  : ["Rotation-v3",            "rotation_v3"],
+    #'rotation_v3'                  : ["Rotation",               "rotation"],
+    #'crop_rotation'                : ["Crop-rotation",          "crop_rotation"],
     #'blur'                         : ["Blur",                   "blur"],
     #'perspective'                  : ["Random perspective",     "pers"],
     #'rot_perspective'              : ["Rot-Perspective",        "rot_pers"],
@@ -83,32 +78,30 @@ label_aug = {
     #'elastic_prespective'          : ["Elastic-Perspective",    "elastic_pers"],
     #'grid_perspective'             : ["Grid-Perspective",       "grid_pers"],
     #'rot_elastic_grid_perspective' : ["Rot-Elastic-Grid-Pers",  "rot_elastic_grid_pers"]
-    'without_aug'                  : ["Without-aug",            "without_aug"]
+    'without_aug'                  : ["Without augmentation",    "without_aug"]
     }
 
 label_aug2 = {
-    'astro'                        : ["Astro-aug",              "astro_aug"],
-    'astro0'                       : ["Astro-aug-v0",           "astro_aug_v0"],
-    'astro2'                       : ["Astro-aug-v2",           "astro_aug_v2"],
-    'astro3'                       : ["Astro-aug-v3",           "astro_aug_v3"],
-    'astro4'                       : ["Astro-aug-v4",           "astro_aug_v4"],
-    'astro5'                       : ["Astro-aug-v5",           "astro_aug_v5"],
-    'astro6'                       : ["Astro-aug-v6",           "astro_aug_v6"],
-    'astro7'                       : ["Astro-aug-v7",           "astro_aug_v7"],
-    'astro8'                       : ["Astro-aug-v8",           "astro_aug_v8"],
-    'astro9'                       : ["Astro-aug-v9",           "astro_aug_v9"],
-    'simclr'                       : ["Simclr-aug",             "simclr_aug"],
-    'simclr2'                      : ["Simclr-aug-v2",          "simclr_aug_v2"],
-    'simclr3'                      : ["Simclr-aug-v3",          "simclr_aug_v3"],
+    'astro'                        : ["Astro",                  "astro"],
+    'astro0'                       : ["Astro-v0",               "astro0"],
+    'astro2'                       : ["Astro-v2",               "astro2"],
+    'astro3'                       : ["Astro-v3",               "astro3"],
+    'astro4'                       : ["Astro-v4",               "astro4"],
+    'astro5'                       : ["Astro-v5",               "astro5"],
+    'astro6'                       : ["Astro-v6",               "astro6"],
+    'astro7'                       : ["Astro-v7",               "astro7"],
+    'astro8'                       : ["Astro-v8",               "astro8"],
+    'astro9'                       : ["Astro-v9",               "astro9"],
+    'simclr'                       : ["Simclr",                 "simclr"],
+    'simclr2'                      : ["Simclr-v2",              "simclr2"],
+    'simclr3'                      : ["Simclr-v3",              "simclr3"],
     'jitter_simclr'                : ["Jitter-simclr",          "jitter_simclr"],
     'jitter_astro'                 : ["Jitter-astro",           "jitter_astro"],
     'jitter_astro_v2'              : ["Jitter-astro v2",        "jitter_astro_v2"],
     'jitter_astro_v3'              : ["Jitter-astro v3",        "jitter_astro_v3"],
     'crop_simclr'                  : ["Crop-simclr",            "crop_simclr"],
     'crop_astro'                   : ["Crop-astro",             "crop_astro"],
-    'rotation'                     : ["Rotation",               "rotation"],
-    'rotation_v2'                  : ["Rotation-v2",            "rotation_v2"],
-    'rotation_v3'                  : ["Rotation-v3",            "rotation_v3"],
+    'rotation_v3'                  : ["Rotation",               "rotation"],
     'blur'                         : ["Blur",                   "blur"],
     'perspective'                  : ["Random perspective",     "pers"],
     'rot_perspective'              : ["Rot-Perspective",        "rot_pers"],
@@ -128,16 +121,12 @@ label_aug2 = {
 
 
 label_features = {
-    False: ["without features", "without_feat"],
-    True: ["with features", "with_feat"]
+    True: ["With metadata", "with_metadata"],
+    #False: ["Without metadata", "without_metadata"]
 }
 
 # -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
-
-# Load the hyperparamters of the model
-hparams_file = open("results/hparams_best_simclr.yaml", 'r')
-hparams_simclr = Box(yaml.load(hparams_file, Loader=yaml.FullLoader))
 
 # Load the hyperparamters of the model
 hparams_file = open("results/hparams_best_ce.yaml", 'r')
@@ -152,13 +141,13 @@ class ModelCheckpoint_V2(ModelCheckpoint):
 
 # -----------------------------------------------------------------------------
 
-def training_fine_simclr(simclr_model, augmentation, name_checkpoint, name_tb, data_path):
+def training_fine_simclr(simclr_model, augmentation, rep, p, with_features, data_path):
 
     # Saves checkpoint
     checkpoint_callback = ModelCheckpoint_V2(
         monitor="accuracy_val",
-        dirpath=os.path.join(config.model_path, "Fine_tuning_300_resnet50_27"),
-        filename=f"checkpoint_{name_checkpoint}",
+        dirpath=os.path.join(config.model_path, "FT"),
+        filename=f"checkpoint_{p}_{simclr.encoder_name}_{simclr.image_size}_{simclr.augmentation}_{augmentation}_{label_features[with_features][1]}_{rep}",
         save_top_k=1,
         mode="max"
     )
@@ -168,23 +157,21 @@ def training_fine_simclr(simclr_model, augmentation, name_checkpoint, name_tb, d
     early_stop_callback = EarlyStopping(
         monitor="accuracy_val",
         min_delta=0.001,
-        patience=70,
-        mode="max",
-        check_finite=True,
-        divergence_threshold=0.1
+        patience=40,
+        mode="max"
     )
 
 
     # Define the logger object
     logger = TensorBoardLogger(
         save_dir='tb_logs',
-        name='finetuning_300_resnet50_27',
-        version=name_tb
+        name='FT',
+        version=f"{p}_{simclr.encoder_name}_{simclr.image_size}_{simclr.augmentation}_{augmentation}_{label_features[with_features][1]}_{rep}"
     )
 
 
     # Inicialize classifier
-    fine_simclr = Fine_SimCLR(
+    fine_tuning = Fine_tuning(
         simclr_model,
         batch_size=hparams.batch_size,
         drop_rate=hparams.drop_rate,
@@ -210,44 +197,45 @@ def training_fine_simclr(simclr_model, augmentation, name_checkpoint, name_tb, d
 
 
     # Training
-    trainer.fit(fine_simclr)
+    trainer.fit(fine_tuning)
 
     # Path of best model
     path = checkpoint_callback.best_model_path
 
     # Loads weights
-    fine_simclr = Fine_SimCLR.load_from_checkpoint(path, simclr_model=simclr_model)
+    fine_tuning = Fine_tuning.load_from_checkpoint(path, simclr_model=simclr_model)
 
     # Load dataset
-    fine_simclr.prepare_data()
+    fine_tuning.prepare_data()
 
     # Compute metrics
-    acc_val, conf_mat_val = fine_simclr.confusion_matrix(dataset='Validation')
-    acc_test, conf_mat_test = fine_simclr.confusion_matrix(dataset='Test')
+    acc_val, conf_mat_val = fine_tuning.confusion_matrix(dataset='Validation')
+    acc_test, conf_mat_test = fine_tuning.confusion_matrix(dataset='Test')
 
     return (acc_val, conf_mat_val), (acc_test, conf_mat_test)
 
 # -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
 
-# Dataframe of the best hyperparameters for each combination in hyper
-trials = ["checkpoint_astro8_1.ckpt", "checkpoint_astro8_2.ckpt", "checkpoint_astro8_3.ckpt"]#, "checkpoint_astro2_4.ckpt", "checkpoint_astro2_5.ckpt"]
-folders = [f"/home/rvidal/weights/SimCLR_300_resnet_50_27/{trial}" for trial in trials]
+# Augmentations simclr
+simclr_augs = ["astro8"]#"astro2", "astro9", "simclr"]#, "simclr2"]"astro8"
+encoder = "resnet18"
+image_size = 27
 
 # -----------------------------------------------------------------------------
 
 paths = {1: "dataset/td_ztf_stamp_17_06_20_sup_1.pkl",
          10: "dataset/td_ztf_stamp_17_06_20_sup_10.pkl",
-         100: "dataset/td_ztf_stamp_17_06_20_sup_100.pkl"
+         100: "dataset/td_ztf_stamp_17_06_20.pkl"
          }
 
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
     
-
 # Train for different augmentations
-for with_features in tqdm(label_features.keys(), leave=False, desc='Features', unit="feat"):
-    for p in tqdm(paths.keys(), desc='dataset\'s fraction', unit= "p"):
-        for augmentation in tqdm(label_aug.keys(), desc='Augmentations', unit= "aug"):
+for augmentation in tqdm(label_aug.keys(), desc='Augmentations', unit= "aug"):
+    for with_features in tqdm(label_features.keys(), leave=False, desc='Features', unit="feat"):
+        for p in tqdm(paths.keys(), desc='dataset\'s fraction', unit= "p"):
 
             # Save accuracies and confusion matrixes for different initial conditions
             acc_array_val = []
@@ -255,58 +243,65 @@ for with_features in tqdm(label_features.keys(), leave=False, desc='Features', u
             acc_array_test = []
             conf_mat_array_test = []
 
+
             # Train for different initial conditions
-            for rep, exp_folder in enumerate(folders):
+            for simclr_aug in simclr_augs:
+                
+                folders = [f"../weights/SimCLR_{encoder}_{image_size}_{simclr_aug}/checkpoint_{i}.ckpt" for i in range(1)]
 
-                # Checkpoint path
-                checkpoint_path = os.path.join(exp_folder)
-
-                # Load weights
-                simclr = SimCLR_encoder_classifier_2_datasets.load_from_checkpoint(checkpoint_path)
-
-                # Train and compute metrics
-                name_checkpoint = f"{p}_{simclr.augmentation}_{augmentation}_{label_features[with_features][0]}_{rep+1}"
-                name_tb = f"{p}_{simclr.augmentation}_{augmentation}_{label_features[with_features][0]}"
-                (acc_val, conf_mat_val), (acc_test, conf_mat_test) = training_fine_simclr(simclr, augmentation, name_checkpoint, name_tb, paths[p])
+                for rep, exp_folder in enumerate(folders):
 
 
-                # Save metrics
-                acc_array_val.append(acc_val)
-                conf_mat_array_val.append(conf_mat_val)
-                acc_array_test.append(acc_test)
-                conf_mat_array_test.append(conf_mat_test)
+                    # Checkpoint path
+                    checkpoint_path = os.path.join(exp_folder)
+
+                    # Load weights
+                    simclr = SimCLR.load_from_checkpoint(checkpoint_path)
+
+                    (acc_val, conf_mat_val), (acc_test, conf_mat_test) = training_fine_simclr(
+                        simclr,
+                        augmentation,
+                        rep,
+                        p,
+                        with_features,
+                        paths[p])
 
 
-            # Compute mean and standard deviation of accuracy and confusion matrix
-            acc_mean_val = np.mean(acc_array_val, axis=0)
-            acc_std_val = np.std(acc_array_val, axis=0)
-            conf_mat_mean_val = np.mean(conf_mat_array_val, axis=0)
-            conf_mat_std_val = np.std(conf_mat_array_val, axis=0)
-
-            acc_mean_test = np.mean(acc_array_test, axis=0)
-            acc_std_test = np.std(acc_array_test, axis=0)
-            conf_mat_mean_test = np.mean(conf_mat_array_test, axis=0)
-            conf_mat_std_test = np.std(conf_mat_array_test, axis=0)
-
-            encoder_name = simclr.encoder_name
+                    # Save metrics
+                    acc_array_val.append(acc_val)
+                    conf_mat_array_val.append(conf_mat_val)
+                    acc_array_test.append(acc_test)
+                    conf_mat_array_test.append(conf_mat_test)
 
 
-            # Plot confusion matrix (validation)
-            # ---------------------------------
-            title = f"""Confusion matrix (fine-tuning) (labels {p}%)
-({label_features[with_features][0]}, {label_aug2[simclr.augmentation][0]}, {label_aug[augmentation][0]}, {label_encoder[encoder_name]})
-Accuracy Validation:{acc_mean_val:.3f}$\pm${acc_std_val:.3f}"""
-            file = f"figures/confusion_matrix_fine_tuning-300_27-frac_{p}-Validation-{label_features[with_features][1]}-{label_aug2[simclr.augmentation][1]}-{label_aug[augmentation][1]}-{encoder_name}.png"
-            plot_confusion_matrix_mean_std(conf_mat_mean_val, conf_mat_std_val, title, file)
+                # Compute mean and standard deviation of accuracy and confusion matrix
+                acc_mean_val = np.mean(acc_array_val, axis=0)
+                acc_std_val = np.std(acc_array_val, axis=0)
+                conf_mat_mean_val = np.mean(conf_mat_array_val, axis=0)
+                conf_mat_std_val = np.std(conf_mat_array_val, axis=0)
+
+                acc_mean_test = np.mean(acc_array_test, axis=0)
+                acc_std_test = np.std(acc_array_test, axis=0)
+                conf_mat_mean_test = np.mean(conf_mat_array_test, axis=0)
+                conf_mat_std_test = np.std(conf_mat_array_test, axis=0)
 
 
-            # Plot confusion matrix (test)
-            # ----------------------------
-            title = f"""Confusion matrix (fine-tuning) (labels {p}%)
-({label_features[with_features][0]}, {label_aug2[simclr.augmentation][0]}, {label_aug[augmentation][0]}, {label_encoder[encoder_name]})
-Accuracy Test:{acc_mean_test:.3f}$\pm${acc_std_test:.3f}"""
-            file = f"figures/confusion_matrix_fine_tuning-300_27-frac_{p}-Test-{label_features[with_features][1]}-{label_aug2[simclr.augmentation][1]}-{label_aug[augmentation][1]}-{encoder_name}.png"
-            plot_confusion_matrix_mean_std(conf_mat_mean_test, conf_mat_std_test, title, file)
+                # Plot confusion matrix (validation)
+                # ---------------------------------
+                title = f"""Confusion matrix fine-tuning (labels {p}%)
+({label_features[with_features][0]}, {label_aug2[simclr.augmentation][0]}, {label_aug2[augmentation][0]}, {label_encoder[encoder]})
+Accuracy Validation:{100*acc_mean_val:.1f}$\pm${100*acc_std_val:.1f}"""
+                file = f"figures/FT-{label_encoder[encoder]}-{p}-Validation-{label_features[with_features][1]}-{label_aug2[simclr.augmentation][1]}-{label_aug2[augmentation][1]}-{image_size}.png"
+                plot_confusion_matrix_mean_std(conf_mat_mean_val, conf_mat_std_val, title, file)
+
+
+                # Plot confusion matrix (test)
+                # ----------------------------
+                title = f"""Confusion matrix fine-tuning (labels {p}%)
+({label_features[with_features][0]}, {label_aug2[simclr.augmentation][0]}, {label_aug2[augmentation][0]}, {label_encoder[encoder]})
+Accuracy Test:{100*acc_mean_test:.1f}$\pm${100*acc_std_test:.1f}"""
+                file = f"figures/FT-{label_encoder[encoder]}-{p}-Test-{label_features[with_features][1]}-{label_aug2[simclr.augmentation][1]}-{label_aug2[augmentation][1]}-{image_size}.png"
+                plot_confusion_matrix_mean_std(conf_mat_mean_test, conf_mat_std_test, title, file)
 
 # -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
