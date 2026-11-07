@@ -168,6 +168,22 @@ needs.
 Each task is one PR off `main`, small enough for one development agent. 1.2–1.5 run in
 parallel once 1.1 is merged.
 
+**Portability rule (user requirement, 2026-11-07; applies to every task):** the same code
+runs on CPU, Apple MPS and NVIDIA CUDA, on arm64 and x86_64, with no code change. Only the
+`accelerator` setting changes (`auto` by default).
+- No device names (`"cuda"`, `.cuda()`, `get_device()`) outside the Lightning `Trainer`
+  configuration. Tensors follow their inputs (`device=x.device`), and models are moved by
+  Lightning.
+- No numerical result may depend on the CPU architecture:
+  - fixtures compare values with the plan's tolerances;
+  - seeded randomness that is not portable (torch's vectorised CPU `normal_` differs
+    between x86 and arm64, as PR #3 showed) is never compared against a fixture.
+- CI runs `scripts/check.sh` on `ubuntu-latest` (x86_64) **and** `macos-latest` (arm64),
+  both with the `cpu` extra. A test that touches devices runs on CPU everywhere and on MPS
+  or CUDA when available (`pytest.mark.skipif`), never only on one of them.
+- The CI matrix is added by the next task that touches `.github/workflows/ci.yml`, or as a
+  small integrator-dispatched chore before task 1.6, whichever comes first.
+
 **Exception to the CLAUDE.md refactor rule (stated here, and to be repeated in each PR):**
 the legacy modules stay in the tree and in `extend-exclude` until 1.8, as the
 characterization oracle. Before 1.8, `main` is tagged `legacy-final`.
