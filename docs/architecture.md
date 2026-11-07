@@ -63,7 +63,10 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
 `astro-simclr: error: ...` line and exits with 2.
 
 - `show-config` (1.1): prints the resolved settings as YAML (itself a valid settings file).
-- Planned: `inspect-data`, `make-synthetic`, `prepare-data` (1.2); `pretrain`,
+- `inspect-data PATH [--json]`, `make-synthetic --out DIR [--n-per-split N] [--seed S]`
+  and `prepare-data PKL [--out DIR] [--overwrite]` (1.2; see the `data` section). Data
+  errors print one `astro-simclr: error: ...` line and exit with 1.
+- Planned: `pretrain`,
   `linear-eval`, `fine-tune`, `train-supervised`, `compare-reference`, `preflight` (1.7).
 
 ## `augmentations` (protocol in 1.1; transforms in 1.5)
@@ -80,11 +83,69 @@ says it is deferred.
 
 ## `data` (task 1.2)
 
-Planned: `src/astro_simclr/data/`. The legacy preprocessing (`repair_non_squared_stamp`,
-`preprocess_stamps`, `img_float2int`), the one-view `StampDataset` and the paired
-`ContrastiveDataset` on the `Augmentation` protocol, the lenient pickle loader (the only
-place that unpickles), and the prepared `.npy` layout that training reads. Schemas:
-`docs/data.md`.
+`src/astro_simclr/data/`. File schemas, provenance and the workflow are in
+[`docs/data.md`](data.md).
+
+```
+pickle ──read_pickle──► validate ──► StampData ──write_prepared──► OUT/<stem>/*.npy + meta.json
+ (once, trusted machine: prepare-data)                                        │
+                                       StampData ◄──load_prepared (mmap, no pickle)┘
+                                           │
+                       StampDataset / ContrastiveDataset (+ an Augmentation)
+```
+
+- `schema`: the constants (`LABEL_NAMES`, the 26 `FEATURE_NAMES`, `DISCARDED_FEATURES`
+  13–15, `SPLITS`, `STAMP_SHAPE`), `SplitData` (uint8 images, int64 labels, float64
+  features; `None` for the unlabelled pretraining Train split), `StampData` (kind
+  `classifier` or `pretraining`, three splits), and the errors `DataError` ⊃
+  `SchemaError` (names file, split and key), `TruncatedFileError`.
+- `preprocessing`: the three legacy functions with the same arithmetic (fixtures, `atol`
+  1e-6), plus `stamp_to_uint8`, the checked `img_float2int` that the loader uses.
+- `pickle_loader`: `read_pickle` is the only unpickling call of the package. It checks the
+  final STOP opcode first, so a truncated multi-GB file fails in milliseconds, and its
+  unpickler resolves only numpy's array, dtype and scalar globals (numpy 1.x and 2.x
+  names). `validate` is lenient about containers (list or ndarray, object feature arrays,
+  numpy or Python ints) and strict about content. Each stamp is converted to uint8 in its
+  *stored* dtype, one at a time, so peak memory is the unpickled object plus the uint8 copy.
+- `prepared`: `prepare` / `write_prepared` write `OUT/<pickle stem>/{Train,Validation,Test}/
+  {images,labels,features}.npy` and `meta.json` (source name, size, SHA-256; kind; schema;
+  dtype, shape and SHA-256 of every file; class counts). The directory is built as
+  `.<stem>.partial` and renamed at the end; `--overwrite` replaces only a directory that is
+  itself a prepared layout. No timestamps, so the output is deterministic. `load_prepared`
+  uses `np.load(allow_pickle=False, mmap_mode="r")` and checks dtypes, shapes, label range
+  and feature finiteness against the schema and `meta.json`; `verify_prepared` re-hashes.
+- `datasets` (the only torch module): `StampDataset` returns `(augmentation.view(stamp),
+  features, label)`. Features are float32, with the discarded columns removed (23 by
+  default). The label is one-hot int64 by default, or an int64 scalar with `one_hot=False`.
+  `ContrastiveDataset` returns `augmentation.pair(stamp)`. Each item gets a writable copy
+  of its stamp, never a view of the memory map.
+- `synthetic`: `make_synthetic` writes the four pickles with the real containers and
+  dtypes, and a rotation-invariant class pattern inside the central 27×27 crop (a
+  nearest-centroid classifier gets ≥ 0.95). Its numpy `Generator` is seeded explicitly,
+  because it builds files rather than training randomness. The same seed gives the same
+  bytes on the same machine and numpy version (no fixture compares them across machines).
+- `inspection`: `summarize` / `format_summary`, behind `inspect-data [--json]`. Inspecting
+  is also a full check (schema validation, or `meta.json` plus hashes). The preflight's
+  data manifest (1.7) is built from these summaries.
+
+The CLI imports these modules inside its handlers, so `show-config` does not import them;
+`data/__init__.py` does not re-export the torch datasets.
+
+Behaviour changes against the legacy code (no legacy flag: none of them changes the
+values loaded from a valid file):
+
+- The datasets no longer unpickle in `__init__` or convert per item. The conversion happens
+  once, at load time, with the same `img_float2int` arithmetic, in the stored dtype. This
+  is verified bit-exact on all 61,872 stamps of the three complete real files.
+- The loader rejects what the legacy code silently accepted: stamps outside [0, 1] or with
+  NaN/inf (`np.uint8` of such values is undefined), non-63×63×3 stamps, non-integer or
+  out-of-range labels, non-finite features, missing or unexpected keys, and pickles that
+  reference non-numpy globals.
+- The legacy `Dataset_simclr` crashed without an augmentation (`self.transformation` was
+  never set). `ContrastiveDataset` always requires one.
+- `repair_non_squared_stamp` raises a clear `ValueError` for stamps larger than 63 or not
+  (H, W, 3). The legacy code raised numpy's "negative dimensions" error or a concatenate
+  error.
 
 ## `losses` (task 1.3)
 
