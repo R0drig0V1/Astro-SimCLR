@@ -285,7 +285,7 @@ This design was verified with uv 0.11 on toy projects (plan review, round 2).
     `img_float2int`), not merely the same as the new loader.
   - `make-synthetic` is deterministic: the same seed gives the same bytes.
 
-### 1.3 Losses (after 1.1)
+### 1.3 Losses (after 1.1) — done (PR #2, merged as 49e9831, 2026-11-07)
 
 - Port `NT_Xent` and `P_stamps_loss` to `src/astro_simclr/losses.py`.
 - The mask is built from the actual batch size.
