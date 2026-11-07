@@ -122,6 +122,11 @@ python_version = "3.12"
 strict = true
 files = ["src", "tests"]
 
+# torchvision ships no type information (no py.typed marker); its API is used as Any.
+[[tool.mypy.overrides]]
+module = ["torchvision", "torchvision.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["--strict-markers", "--cov", "--cov-report=term-missing"]
