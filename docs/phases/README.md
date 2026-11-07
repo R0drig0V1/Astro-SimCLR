@@ -6,4 +6,4 @@ sessions list completed tasks in their PR body instead of ticking them here.
 
 | Phase | File | Status |
 |-------|------|--------|
-| 1. Refactor legacy code into `src/astro_simclr/` | _to be written_ | planned |
+| 1. Runnable, tested package (refactor legacy code into `src/astro_simclr/`) | [01-runnable-package.md](01-runnable-package.md) | planned |
