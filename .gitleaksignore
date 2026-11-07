@@ -1,7 +1,9 @@
 # gitleaks false positives (read by the gitleaks job in .github/workflows/quality.yml).
-# All four are conda build strings in the legacy env.yml (e.g. "oauthlib=3.1.1=pyhd8ed1ab_0")
-# matched by the generic-api-key rule; none is a credential.
+# The first four are conda package build strings in the legacy env.yml, matched by the
+# generic-api-key rule; none is a credential. The last one is an example of such a string
+# that an earlier version of this comment quoted.
 0e0124f66b3774e4a50b0488cb90ab5571a9bd28:env.yml:generic-api-key:10
 0e6a949921c489e3f85a70bf41992ad1e9bd3c74:env.yml:generic-api-key:31
 0e6a949921c489e3f85a70bf41992ad1e9bd3c74:env.yml:generic-api-key:60
 0e6a949921c489e3f85a70bf41992ad1e9bd3c74:env.yml:generic-api-key:85
+ec677073d0ab90d575ebafd4b4b1bd1156855bff:.gitleaksignore:generic-api-key:2
