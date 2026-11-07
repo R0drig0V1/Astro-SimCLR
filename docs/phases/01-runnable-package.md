@@ -317,7 +317,7 @@ This design was verified with uv 0.11 on toy projects (plan review, round 2).
   - The default formula matches the legacy fixtures.
   - `P_stamps_loss` equals CE − β·H(softmax) on hand-computed cases.
 
-### 1.4 Models (after 1.1)
+### 1.4 Models (after 1.1) — done (PR #3, merged as 0c880fe, 2026-11-07)
 
 - Port `Stamp_encoder`, `Stamp_classifier`, `CLR`, `Linear_classifier`,
   `Three_layers_classifier` and `Identity` to `src/astro_simclr/models.py`.
