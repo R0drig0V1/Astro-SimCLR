@@ -70,13 +70,36 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
 
 `Augmentation`, a runtime-checkable `Protocol` with `view(img)` (one augmented view) and
 `pair(img)` (two independent views, the SimCLR positive pair). Input: a `Stamp`, a uint8
-array of shape (H, W, 3) (the output of the legacy `img_float2int`). Output: float tensors
-of shape (3, H', W'). The datasets (1.2) depend only on this protocol, never on a concrete
-transform.
+array of shape (H, W, 3) (the output of the legacy `img_float2int`). Output: float32
+tensors of shape (3, size, size) with values k/255 in [0, 1]. The datasets (1.2) depend
+only on this protocol, never on a concrete transform.
 
-Task 1.5 adds the registry keyed by the legacy names (`simclr`, `simclr2`, `astro7`,
-`astro8`, `rotation_v3`, `without_aug`); any other legacy name fails with an error that
-says it is deferred.
+- `get_augmentation(name, size)` builds a `PipelineAugmentation` from the registry
+  `AUGMENTATIONS`, keyed by the legacy names: `simclr` (`SimCLR_augmentation`), `simclr2`
+  (`SimCLR_augmentation_v2`), `astro7` / `astro8` (`Astro_augmentation_v7` / `_v8`),
+  `rotation_v3` (`Rotation_v3`) and `without_aug` (`Resize_img`: centre crop, the
+  validation/test transform). Each converts the stamp to a PIL image and runs the legacy
+  torchvision pipeline in the legacy order; `pair` calls `view` twice, first view first.
+- The 33 other legacy names (`DEFERRED_AUGMENTATIONS`, mostly albumentations/OpenCV
+  variants) raise `DeferredAugmentationError`; any other name raises
+  `UnknownAugmentationError` listing the valid names (both are `ValueError`s).
+- Ported building blocks: `RandomResizedCenterCrop` (draws from Python `random`),
+  `GaussianBlur` (sigma from `np.random`, `F.conv2d` with the legacy float32 kernel),
+  `RandomRot90` (torch).
+- **Randomness:** the transforms use the global torch, numpy and Python generators. Seed
+  them with `lightning.seed_everything(seed, workers=True)`; DataLoader workers are seeded
+  by Lightning's `pl_worker_init_function`, which the Trainer injects (a DataLoader built
+  outside a Trainer must pass it as `worker_init_fn`). Same seed → identical batches, with
+  0 or more workers (tested with 0 and 2).
+- **Characterization:** `tests/fixtures/augmentations/legacy_views.npz`, from
+  `scripts/characterize/augmentations/generate.py` (legacy classes, sizes 27 and 63). The
+  port must match it pixel for pixel, except for rare off-by-one levels after the blur's
+  float conv (CPU-dependent last bit, then uint8 truncation).
+- **Behaviour changes:** `RandomResizedCenterCrop` raises `ValueError` on a reversed
+  `scale`/`ratio` (the legacy class only warned); the legacy `np.random.seed(0)` at import
+  of `utils/gaussian_blur.py` is gone; `GaussianBlur` no longer builds `nn.Conv2d` modules,
+  whose weight init consumed torch random numbers at construction (the transforms' outputs
+  for a given generator state are unchanged).
 
 ## `data` (task 1.2)
 
@@ -179,8 +202,32 @@ count):
 
 ## `optim` (task 1.5)
 
-Planned: `src/astro_simclr/optim.py`. LARS (device-agnostic; legacy `.ge(0)` by default,
-`.gt(0)` behind a flag) and the cosine-with-warmup schedule that replaces timm.
+`src/astro_simclr/optim.py`: the SimCLR pretraining optimizer and LR schedule.
+
+- `LARS(params, *, lr, momentum=0.9, use_nesterov=False, weight_decay=0.0, eeta=0.001,
+  legacy_trust_ratio=True)`: port of `utils/lars.py` (classic momentum). The legacy SimCLR
+  call is `LARS(params, lr=lr, weight_decay=0.0, momentum=0.9, use_nesterov=True)`.
+- `cosine_warmup_lr(epoch, base_lr, ...)` and `cosine_warmup_scheduler(optimizer,
+  base_lr, ...)` (a `LambdaLR`, stepped once per epoch) reimplement the legacy timm 0.6.x
+  `CosineLRScheduler` (warmup 5 epochs from `lr/3`, no warmup prefix, `t_initial` 350, one
+  cycle, `lr_min` 1e-4 afterwards). timm is not a dependency.
+- **Characterization:** `tests/fixtures/optim/legacy_optim.npz`, from
+  `scripts/characterize/optim/generate.py` (legacy LARS, two steps, with/without Nesterov
+  and weight decay; the optimizer's `param_groups[0]["lr"]` for epochs 0–400 under timm
+  0.6.13, lr 0.258 and 1.258). Tolerance `atol=1e-6`.
+- **Behaviour changes:**
+  - device-agnostic (the legacy `get_device()` returned -1 on CPU and crashed, and would
+    have mapped MPS to `cuda:N`);
+  - `legacy_trust_ratio=False` uses `.gt(0)` instead of the always-true `.ge(0)`: a zero
+    gradient (legacy: NaN parameter) and a zero weight (legacy: never updated) get trust
+    ratio 1. The default keeps the legacy behaviour, because the fix changes ResNet
+    results;
+  - `add_(tensor, alpha=)` replaces the deprecated `add_(scalar, tensor)` overload;
+  - hyperparameters come from each param group (legacy: partly from instance attributes;
+    identical with one group); `p.grad` is no longer modified in place by weight decay;
+  - dropped: the unused `epoch` argument/counter of `step`, the unimplemented
+    `classic_momentum=False` and the never-consulted `exclude_from_*` lists; the closure
+    runs under `torch.enable_grad()` and the step under `torch.no_grad()`.
 
 ## Lightning modules (task 1.6)
 
