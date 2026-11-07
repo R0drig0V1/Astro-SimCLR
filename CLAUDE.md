@@ -26,7 +26,7 @@ env.yml            legacy conda environment (Python 3.8, CUDA); uv + pyproject.t
 docs/        architecture, phases/ (the plan), decisions/ (ADRs), plan-reviews/
 scripts/     check.sh (all checks), integrator.sh; optional worktree-setup.sh, verify-reset.sh
 .claude/     settings.json (enables the multi-agent-herdr plugin), multi-agent-herdr.json
-             (base branch, integrator name), prompts/integrator.md
+             (base branch, integrator name `integrator-astro-simclr`), prompts/integrator.md
 ```
 
 The workflow itself (skills, agents, guard hooks, notifications, `new-worktree.sh`,
@@ -86,8 +86,9 @@ integrator.
 - **Main worktree (this checkout) = integrator only.** One agent, launched with
   `scripts/integrator.sh` inside herdr (sets `CLAUDE_ROLE=integrator`, appends the
   adversarial-auditor prompt `.claude/prompts/integrator.md`); its herdr agent name is
-  `integrator_name` (here `integrator`). It runs `/multi-agent-herdr:integrate`: verify each
-  open PR merged onto the base branch, push green ones, bounce the rest. It never develops.
+  `integrator_name` (here `integrator-astro-simclr`: herdr names are unique per server, so
+  the name carries the repository). It runs `/multi-agent-herdr:integrate`: verify each open
+  PR merged onto the base branch, push green ones, bounce the rest. It never develops.
   The plugin's hooks block any other session from changing it: Edit/Write in the main
   worktree, and in the shell git commits/checkouts, file writes, dependency installs, pushes
   to `main`, the base branch or `protected_branches`, and `gh pr merge`.
