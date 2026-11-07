@@ -332,7 +332,7 @@ This design was verified with uv 0.11 on toy projects (plan review, round 2).
   - Parameter counts match the legacy classes, including the historical `pstamps`.
   - Forward outputs with fixed weights match the fixtures.
 
-### 1.5 Augmentations, LARS and the LR schedule (after 1.1)
+### 1.5 Augmentations, LARS and the LR schedule (after 1.1) — done (PR #4, merged as 404bb00, 2026-11-07)
 
 - Port, on the `Augmentation` protocol, exactly `simclr`, `simclr2`, `astro7`, `astro8`,
   `rotation_v3` and `without_aug`. These are the names the active entry points and R1–R4
