@@ -23,8 +23,10 @@ jupyter_examples/  exploratory notebooks; results/ saved metrics and figures
 env.yml            legacy conda environment (Python 3.8, CUDA); uv + pyproject.toml replace it
 .github/           CI (check.sh), quality (zizmor, actionlint, gitleaks, pip-audit), CodeQL,
                    Scorecard, Dependabot; from python-template (.copier-answers.yml)
-docs/        architecture, phases/ (the plan), decisions/ (ADRs), plan-reviews/
-scripts/     check.sh (all checks), integrator.sh; optional worktree-setup.sh, verify-reset.sh
+docs/        architecture.md (one section per module), phases/ (the plan), decisions/
+             (ADRs), plan-reviews/
+scripts/     check.sh (all checks), check-torch-wheels.sh (ADR 0001 lock assertions),
+             integrator.sh; optional worktree-setup.sh, verify-reset.sh
 .claude/     settings.json (enables the multi-agent-herdr plugin), multi-agent-herdr.json
              (base branch, integrator name `integrator-astro-simclr`), prompts/integrator.md
 ```
@@ -40,7 +42,9 @@ inside herdr (https://herdr.dev).
 scripts/check.sh                   # lint + types + tests; must stay green (edit it per project)
 scripts/integrator.sh              # launch the integrator agent (inside herdr, main worktree)
 /multi-agent-herdr:dispatch <type>/<name> <task>   # integrator: start a development agent
-uv sync                            # .venv with the package and dev tools (Python 3.12)
+uv sync --locked                   # .venv with the package and dev tools (Python 3.12)
+uv sync --locked --extra cpu       # CPU torch (CI); then UV_NO_SYNC=1 for every uv run (ADR 0001)
+uv run astro-simclr --help         # the CLI (src/astro_simclr/cli.py)
 uv run ruff format . && uv run ruff check --fix .   # fix formatting and most lint findings
 uvx copier@9.19.1 update           # pull python-template improvements (clean tree only)
 ```
@@ -61,7 +65,8 @@ uvx copier@9.19.1 update           # pull python-template improvements (clean tr
   ruff, mypy strict and coverage. When a legacy module is migrated, remove it from
   `extend-exclude` (or delete it) in the same PR; never widen the exclusions or lower the
   thresholds without a reason in the PR. Runtime dependencies go in `pyproject.toml`
-  (`uv add`), never in `env.yml`.
+  (`uv add`), never in `env.yml`. torch/torchvision pins and extras follow ADR 0001.
+- **Typing:** mypy strict; `# type: ignore[override]` only on Lightning hook overrides.
 - **Python changes semantics, not only style:** keep training results reproducible (seeds,
   splits, augmentations) unless the PR says otherwise.
 

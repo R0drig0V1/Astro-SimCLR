@@ -9,7 +9,32 @@ license-files = ["LICENSE"]
 authors = [
     { name = "Rodrigo Vidal" },
 ]
-dependencies = []
+dependencies = [
+    "lightning>=2,<3",
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.4",
+    "pyyaml>=6.0.3",
+    "tensorboard>=2.21.0",
+    "torch>=2.14,<2.15",
+    "torchmetrics>=1.9.0",
+    "torchvision==0.29.*",
+]
+
+# Accelerator-specific torch wheels (ADR 0001). Without an extra, torch comes from PyPI: MPS
+# on macOS, CUDA 13 on Linux (driver >= 580). `cpu` is for CI and machines without a GPU;
+# `cu126` is for NVIDIA drivers older than 580. The two extras conflict (see [tool.uv]).
+[project.optional-dependencies]
+cpu = [
+    "torch>=2.14,<2.15",
+    "torchvision==0.29.*",
+]
+cu126 = [
+    "torch>=2.14,<2.15",
+    "torchvision==0.29.*",
+]
+
+[project.scripts]
+astro-simclr = "astro_simclr.cli:main"
 
 [dependency-groups]
 # Development tools, pinned exactly by uv.lock and updated by Dependabot.
@@ -19,11 +44,45 @@ dev = [
     "pytest>=9.2.0",
     "pytest-cov>=7.1.0",
     "pre-commit>=4.7.0",
+    "types-pyyaml>=6.0.12.20261103",
 ]
 
 [build-system]
 requires = ["uv_build>=0.13.6,<0.14"]
 build-backend = "uv_build"
+
+[tool.uv]
+# The extras are mutually exclusive, so uv locks one fork per extra plus the default (PyPI).
+# With a single extra, or without this conflict, the default install would resolve to the
+# extra's index too (plan review 2026-11-07, finding 2.1).
+conflicts = [
+    [
+        { extra = "cpu" },
+        { extra = "cu126" },
+    ],
+]
+
+# Both torch and torchvision must come from the same index, or their ABIs do not match.
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu126", extra = "cu126" },
+]
+torchvision = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu126", extra = "cu126" },
+]
+
+# explicit = true: only the packages mapped above are ever looked up on these indexes.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
 
 [tool.ruff]
 line-length = 100

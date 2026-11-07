@@ -13,6 +13,13 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
+    # torch/torchvision stay on the newest minor that has CPU, CUDA-12 and CUDA-13 builds;
+    # raised by hand with a note in ADR 0001 (docs/decisions/). Patches still flow.
+    ignore:
+      - dependency-name: torch
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: torchvision
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
       python-minor-patch:
         update-types: [minor, patch]
