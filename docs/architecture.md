@@ -121,9 +121,61 @@ Behaviour changes against the legacy code:
 
 ## `models` (task 1.4)
 
-Planned: `src/astro_simclr/models.py`. The stamp encoders and classifiers, `CLR`, the
-linear and three-layer heads, the historical `pstamps` network, and the encoder factory
-(`stamp<k>`, `pstamps`, `resnet18/34/50/152`).
+`src/astro_simclr/models.py`, ported from the legacy `models/models.py`. Every class keeps
+its legacy attribute names, so `state_dict` keys are identical and legacy weights load with
+`strict=True`; modules are also created in the legacy order, so a given seed gives the
+legacy initial weights.
+
+| Class | Legacy name | Notes |
+|---|---|---|
+| `StampEncoder(k)` | `Stamp_encoder` (`stamp<k>`) | widths `int(32k)`/`2·int(32k)`, 5×5 kernels, `out_features = int(128k)`, mean of the 4 rotations after ReLU |
+| `PStampsEncoder(k=1.0)` | `P_stamps_net_SimCLR_v2` from `b357b43^` (`pstamps`) | 3×3 kernels, `fc1` without bias, rotation mean through `bn1` |
+| `StampClassifier(drop_rate, with_features)` | `Stamp_classifier` | Carrasco-Davis et al. 2021; 23 features through `bn1`, 5 logits |
+| `SimCLRNet(encoder, input_size, projection_size)` | `CLR` | 3-layer projector on `h / ‖h‖`; returns `(h_i, h_j, z_i, z_j)` |
+| `LinearClassifier`, `ThreeLayerClassifier` | `Linear_classifier`, `Three_layers_classifier` | heads; `LinearClassifier` keeps the `model.` key prefix |
+| `Identity` | `Identity` | alias of `torch.nn.Identity` |
+
+**`pstamps` provenance.** `P_stamps_net_SimCLR_v2` was removed in `b357b43`; the port comes
+from its parent (`c5c7e6f`). It is the encoder of the only recorded 300k-alert SimCLR run
+(`31b10c9:iter_clr_stamps_300.py`, `encoder_name: pstamps`), the settings of reference run R3.
+
+**`build_encoder(name) -> Encoder(module, out_features)`** replaces the `if/elif` chains of
+the legacy `SimCLR`. Names: `stamp<k>` (any positive `k`, e.g. `stamp1`, `stamp0.5`),
+`pstamps`, `resnet18`, `resnet34`, `resnet50`, `resnet152` (torchvision, no pretrained
+weights, `fc` replaced by `Identity`). `out_features` is what the encoder declares: the
+stamp encoders' `out_features`, the ResNets' `fc.in_features`.
+
+**Input size.** The stamp networks accept only (N, 3, 27, 27): `fc1` is sized for that
+crop. Anything else raises `ValueError` naming the expected shape. The ResNets accept 27
+and 63 (any size ≥ 27).
+
+**Characterization.** `scripts/characterize/models/generate.py` runs the legacy classes
+(read with `git show` at `b357b43` and `c5c7e6f`) in an isolated torch 2.14.1 environment
+and writes `tests/fixtures/models/*.npz`: parameter count, a fingerprint of the seeded
+initialisation, inputs and eval-mode outputs with the deterministic weights of
+`tests/model_weights.py` (independent of the RNG). `tests/test_models.py` checks them with
+`rtol=1e-4, atol=1e-5`. The seeded-init fingerprint is checked only for the stamp networks
+and heads, whose default init uses `uniform_` and is portable across CPUs. The ResNets'
+`kaiming_normal_` goes through torch's vectorised CPU `normal_`, which differs between x86
+(AVX) and arm64 (NEON) for the same seed, so their fixtures are checked by parameter count
+and fixed-weight forward pass only.
+
+**Behaviour changes against the legacy code** (none changes a forward pass or a parameter
+count):
+
+- The factory reads `out_features` instead of `encoder.bn1.num_features`, so every
+  `stamp<k>` encoder works (legacy: `AttributeError`), and `pstamps` is matched before
+  `stamp<k>` (legacy: `'stamp' in name` sent it to `float('s')`). Unknown names raise
+  `ValueError` listing the valid ones (legacy: `AttributeError` on an unset encoder).
+  `k` too small for one channel raises `ValueError`.
+- `resnet34` is new (the legacy chain had 18, 50 and 152).
+- Stamp networks reject non-27×27 input with `ValueError` (legacy: a matmul shape error
+  in `fc1`).
+- `StampClassifier.forward(x_img, x_feat=None)`: `x_feat` is optional without features
+  (legacy: required and ignored) and its shape is checked with features.
+- `SimCLRNet.forward(x_i, x_j)` drops the unused `*x_feat` of `CLR.forward`.
+- Dropped: the dead `kernel == 3/7` branches and the public `conv_output_shape` /
+  `maxpool_output_shape` helpers (now private).
 
 ## `optim` (task 1.5)
 
