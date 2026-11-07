@@ -172,7 +172,7 @@ parallel once 1.1 is merged.
 the legacy modules stay in the tree and in `extend-exclude` until 1.8, as the
 characterization oracle. Before 1.8, `main` is tagged `legacy-final`.
 
-### 1.1 Foundations (blocks all others)
+### 1.1 Foundations (blocks all others) — done (PR #1, merged as e8b9249, 2026-11-07)
 
 **Dependencies**
 
@@ -480,18 +480,34 @@ This design was verified with uv 0.11 on toy projects (plan review, round 2).
 
 - ~~**NT-Xent denominator**~~: decided 2026-11-07. The legacy formula is the default and
   the paper's formula is behind a flag (task 1.3).
-- **Where are the four pickles?** Do they still exist, are they accessible, and how big
-  are they? The legacy CSVs show runs on the lab servers `deepspace` and `deepsleep`, which
-  makes them the most likely place for both the data and a GPU.
+- **Data received 2026-11-07** (Google Drive export, kept untracked in `dataset/`, with a
+  local `SHA256SUMS`). Checked statically with `pickletools` and the final STOP opcode;
+  nothing was unpickled.
+
+  | File | Size | State |
+  |---|---|---|
+  | `td_ztf_stamp_17_06_20_sup_1.pkl` | 69 MB | complete |
+  | `td_ztf_stamp_17_06_20_sup_10.pkl` | 279 MB | complete |
+  | `td_ztf_stamp_17_06_20_red-002.pkl` | 2.3 GB | complete; keys `Train`/`Validation`/`Test` × `images`/`labels`/`features`; float32 stamps. Not named in the plan: probably the "red" (reduced) set behind the `*_red_frac_*` figures |
+  | `td_ztf_stamp_17_06_20_sup_100-001.pkl` | 3.2 GB | **truncated**: no STOP opcode, and only `Train` (images, features) before the end of the file. Needs a fresh download |
+  | `td_ztf_stamp_simclr_300.pkl` | — | **missing** (the 300k-alert pretraining set R3 needs) |
+
+  Still open: the full 100 % file and the 300k pretraining set. Where do they live
+  (`deepspace`/`deepsleep`)?
 - **Data governance:** may the ZTF/ALeRCE pickles be uploaded to third-party clouds (Colab,
   Kaggle, RunPod)? Only the synthetic level-2 run is free of this question.
-- **CE reference optimizer:** `hparams_best_ce.yaml` says Adam, but the tuned trials used
-  AdamW. Is AdamW the reference, as the plan assumes?
+- ~~**CE reference optimizer**~~: resolved 2026-11-07. The Drive copy of
+  `hparams_best_ce.yaml` says `optimizer: AdamW` and `balanced_batch: false`, so the repo's
+  `Adam` was a later hand edit. R1 uses AdamW.
 - **The SimCLR config:** is `hparams_best_simclr.yaml` (lr 12.26, batch 150)
   intentional, or a mistyped edit of the 300k run (lr 0.258, batch 550)? The plan assumes
   the latter.
-- **SimCLR numbers or checkpoints:** do any SimCLR / linear-eval numbers or the checkpoints
-  in `../weights` exist anywhere?
+- **SimCLR numbers or checkpoints:** partly answered 2026-11-07. The Drive export holds 574
+  confusion-matrix figures from 2022, with mean ± std accuracy in their titles. They cover
+  linear eval and fine-tuning for the 300k and "red" pretraining runs, stamp/ResNet encoders
+  and 1/10/100 % labels. Example: 300k, ResNet-50, astro-aug-v8, 1 % labels, with features:
+  test 0.839 ± 0.003. Turning them into a table would give R3 a real reference (backlog
+  candidate for 1.9a). The checkpoints in `../weights` are still not found.
 - **SupCon:** port it from history (`a187828`) in phase 1, or in the backlog? The default
   is the backlog.
 - **GPU for 1.9b:** which machine, and who runs it? Research (2026-11-07) estimates R1–R4 at
