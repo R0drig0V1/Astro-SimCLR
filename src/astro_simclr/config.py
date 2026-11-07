@@ -42,7 +42,7 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Settings:
-    """Hardware, paths, reproducibility and training protocol of one run.
+    """Hardware, paths, reproducibility, training protocol and loss options of one run.
 
     The protocol defaults are the legacy classifier values (``iter_ce_stamp.py``,
     ``linear_classifier.py`` and ``fine_tuning.py``); pretraining configs override them.
@@ -74,6 +74,10 @@ class Settings:
     monitor: str = "accuracy_val"
     #: Batch size of the validation and test loaders.
     eval_batch_size: int = 100
+    #: ``NT_Xent(legacy_denominator=...)``: True keeps the legacy denominator
+    #: ``1 + sum_neg exp(s_neg)``, so that runs stay comparable with ``results/``; False uses
+    #: the paper's ``exp(s_pos) + sum_neg exp(s_neg)`` (ADR 0002).
+    nt_xent_legacy_denominator: bool = True
 
     def __post_init__(self) -> None:
         """Check the values that a type alone cannot (ranges and names).
