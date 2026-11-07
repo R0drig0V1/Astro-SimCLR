@@ -38,3 +38,8 @@ def test_unknown_command_exits_2() -> None:
     with pytest.raises(SystemExit) as exc:
         main(["frobnicate"])
     assert exc.value.code == 2
+
+
+def test_nt_xent_denominator_flag_from_the_cli(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["show-config", "--set", "nt_xent_legacy_denominator=false"]) == 0
+    assert yaml.safe_load(capsys.readouterr().out)["nt_xent_legacy_denominator"] is False

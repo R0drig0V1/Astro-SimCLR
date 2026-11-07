@@ -22,6 +22,14 @@ def test_defaults_are_the_legacy_classifier_protocol() -> None:
     assert (settings.monitor, settings.eval_batch_size) == ("accuracy_val", 100)
 
 
+def test_nt_xent_denominator_defaults_to_legacy() -> None:
+    assert Settings().nt_xent_legacy_denominator is True
+    settings = load_settings(overrides=["nt_xent_legacy_denominator=false"])
+    assert settings.nt_xent_legacy_denominator is False
+    with pytest.raises(ConfigError, match="true or false"):
+        load_settings(overrides=["nt_xent_legacy_denominator=1"])
+
+
 def test_yaml_then_overrides(tmp_path: Path) -> None:
     path = tmp_path / "run.yaml"
     path.write_text("seed: 3\ndata_dir: /data\nmax_epochs: 10\naccelerator: cpu\n")
