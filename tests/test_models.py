@@ -84,7 +84,16 @@ def test_matches_legacy_fixture(case: str) -> None:
         np.testing.assert_allclose(got.numpy(), fixture[key], rtol=RTOL, atol=ATOL)
 
 
-@pytest.mark.parametrize("case", sorted(CASES))
+#: Cases whose default init draws only from ``uniform_`` (Conv2d/Linear defaults), which
+#: gives the same values on x86 and arm64 for a seed. The ResNets are left out: torchvision
+#: initialises their convolutions with ``kaiming_normal_``, and torch's vectorised CPU
+#: ``normal_`` (AVX vs NEON) is not bit-identical across architectures, so an arm64 fixture
+#: cannot pin their seeded init on x86 CI. Their parameter count and fixed-weight forward
+#: pass are still checked against the legacy fixtures.
+PORTABLE_INIT_CASES = sorted(case for case in CASES if not case.startswith("resnet"))
+
+
+@pytest.mark.parametrize("case", PORTABLE_INIT_CASES)
 def test_seeded_init_matches_legacy(case: str) -> None:
     # Modules are created in the legacy order, so a seed gives the legacy initial weights.
     fixture = np.load(FIXTURES / f"{case}.npz")

@@ -154,7 +154,11 @@ and 63 (any size ≥ 27).
 and writes `tests/fixtures/models/*.npz`: parameter count, a fingerprint of the seeded
 initialisation, inputs and eval-mode outputs with the deterministic weights of
 `tests/model_weights.py` (independent of the RNG). `tests/test_models.py` checks them with
-`rtol=1e-4, atol=1e-5`.
+`rtol=1e-4, atol=1e-5`. The seeded-init fingerprint is checked only for the stamp networks
+and heads, whose default init uses `uniform_` and is portable across CPUs. The ResNets'
+`kaiming_normal_` goes through torch's vectorised CPU `normal_`, which differs between x86
+(AVX) and arm64 (NEON) for the same seed, so their fixtures are checked by parameter count
+and fixed-weight forward pass only.
 
 **Behaviour changes against the legacy code** (none changes a forward pass or a parameter
 count):
