@@ -25,6 +25,11 @@ coverage.xml
 .vscode/
 
 ## Project
+# Run outputs (Lightning, TensorBoard, checkpoints)
+outputs/
+lightning_logs/
+tb_logs/
+*.ckpt
 *.DS_Store
 *.pyc
 *.ipynb_checkpoints/*

@@ -56,13 +56,28 @@ Requires [uv](https://docs.astral.sh/uv/). uv installs the Python of `.python-ve
 (3.12) and the exact tool versions of `uv.lock`.
 
 ```bash
-uv sync                      # create .venv with the project and its dev tools
+uv sync --locked             # create .venv with the project and its dev tools
 scripts/check.sh             # everything CI checks: ruff, ruff format, mypy, pytest + coverage
+uv run astro-simclr --help   # the command line (subcommands are added during phase 1)
 uv run ruff format . && uv run ruff check --fix .   # fix formatting and most lint findings
 uv run pre-commit install    # optional: ruff on every commit
 ```
 
 `scripts/check.sh` is the single definition of "green": CI runs exactly that script.
+
+### Torch build per machine
+
+`uv sync --locked` installs PyPI torch: MPS on macOS, CUDA 13 on Linux (NVIDIA driver
+>= 580). Elsewhere pick an extra, and from then on skip the automatic re-sync, which would
+put the default build back ([ADR 0001](docs/decisions/0001-torch-wheels-and-accelerators.md)):
+
+```bash
+uv sync --locked --extra cpu      # no GPU (what CI uses); --extra cu126 if the driver is < 580
+UV_NO_SYNC=1 scripts/check.sh     # or: uv run --no-sync astro-simclr ...
+scripts/check-torch-wheels.sh     # after touching the torch pins, extras or indexes
+```
+
+Package layout and module responsibilities: [docs/architecture.md](docs/architecture.md).
 
 ## Checks
 
@@ -72,6 +87,7 @@ uv run pre-commit install    # optional: ruff on every commit
 | ruff format | formatting | `scripts/check.sh`, CI |
 | mypy `strict` | type errors in `src/` and `tests/` | `scripts/check.sh`, CI |
 | pytest + coverage (branch, >= 80%) | regressions, untested code | `scripts/check.sh`, CI |
+| torch-wheel assertions | the lock no longer matches ADR 0001 (extras, labels, `nvidia-*`) | `scripts/check-torch-wheels.sh`, CI |
 | zizmor, actionlint | insecure or broken GitHub workflows | `quality.yml` |
 | gitleaks | secrets committed anywhere in the history | `quality.yml` |
 | pip-audit | known vulnerabilities in any `uv.lock` package (also weekly) | `quality.yml` |
