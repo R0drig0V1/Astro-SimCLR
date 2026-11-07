@@ -1,0 +1,15 @@
+# Optional local hooks (`uv run pre-commit install`): ruff with the versions pinned in uv.lock.
+# CI does not depend on them; scripts/check.sh is the definition of green.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --locked ruff check --fix
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --locked ruff format
+        language: system
+        types: [python]

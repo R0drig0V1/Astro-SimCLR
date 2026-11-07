@@ -49,3 +49,64 @@ conda activate simclr
 conda install -c anaconda ipykernel
 python -m ipykernel install --user --name=simclr
 ```
+
+## Development
+
+Requires [uv](https://docs.astral.sh/uv/). uv installs the Python of `.python-version`
+(3.12) and the exact tool versions of `uv.lock`.
+
+```bash
+uv sync                      # create .venv with the project and its dev tools
+scripts/check.sh             # everything CI checks: ruff, ruff format, mypy, pytest + coverage
+uv run ruff format . && uv run ruff check --fix .   # fix formatting and most lint findings
+uv run pre-commit install    # optional: ruff on every commit
+```
+
+`scripts/check.sh` is the single definition of "green": CI runs exactly that script.
+
+## Checks
+
+| Check | What it catches | Where |
+|---|---|---|
+| ruff (`E,F,W,I,B,UP,S,SIM,RUF,C90`) | bugs, imports, outdated syntax, Bandit security rules, complexity > 10 | `scripts/check.sh`, CI |
+| ruff format | formatting | `scripts/check.sh`, CI |
+| mypy `strict` | type errors in `src/` and `tests/` | `scripts/check.sh`, CI |
+| pytest + coverage (branch, >= 80%) | regressions, untested code | `scripts/check.sh`, CI |
+| zizmor, actionlint | insecure or broken GitHub workflows | `quality.yml` |
+| gitleaks | secrets committed anywhere in the history | `quality.yml` |
+| pip-audit | known vulnerabilities in any `uv.lock` package (also weekly) | `quality.yml` |
+| CodeQL (Python, Actions) | security vulnerabilities (Security tab) | `codeql.yml` |
+| OpenSSF Scorecard | supply-chain posture (score only) | `scorecard.yml` |
+| Dependabot | outdated dependencies and actions (7-day cooldown) | `dependabot.yml` |
+
+Thresholds live in `pyproject.toml` (`[tool.ruff.lint.mccabe]`, `[tool.coverage.report]`).
+Lower them only with a reason in the same pull request.
+
+## After creating the GitHub repository
+
+Some protections are repository settings, not files. Turn them on once (needs `gh` as an
+admin; `--dry-run` prints the calls):
+
+```bash
+scripts/setup-github.sh
+```
+
+It enables Dependabot alerts and security updates and requires actions pinned to a commit SHA, and private vulnerability reporting (SECURITY.md relies on
+it). Secret scanning and push protection are on by default for public repositories; keep
+CodeQL *default* setup off (`codeql.yml` is the advanced setup).
+
+## Updating from the template
+
+Generated from [python-template](https://github.com/R0drig0V1/python-template) with Copier.
+`uvx copier update` (on a clean working tree) brings later template changes (new checks,
+newer pinned actions) and asks before overwriting what you changed.
+
+## Manual bumps
+
+Dependabot updates `uv.lock` and the actions. By hand: the actionlint and gitleaks versions
+and sha256 in `.github/workflows/quality.yml` (from each release's checksums file), and the
+`version:` inputs of `setup-uv` and `zizmor-action`.
+
+## License
+
+[MIT](LICENSE).

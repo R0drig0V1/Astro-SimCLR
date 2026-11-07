@@ -1,0 +1,14 @@
+# Answers given to python-template; `uvx copier update` reads them. Do not edit by hand.
+_commit: df97fec
+_src_path: gh:R0drig0V1/python-template
+author_email: ''
+author_name: Rodrigo Vidal
+description: SimCLR and supervised contrastive learning on ZTF astronomical event
+    stamps
+github_owner: R0drig0V1
+license: MIT
+package_name: astro_simclr
+project_name: Astro-SimCLR
+project_slug: astro-simclr
+python_version: '3.12'
+visibility: public

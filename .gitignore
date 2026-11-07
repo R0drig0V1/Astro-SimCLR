@@ -1,3 +1,30 @@
+## python-template
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+
+# Tool caches and reports
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Local environment and editors
+.env
+.env.*
+!.env.example
+.DS_Store
+.idea/
+.vscode/
+
+## Project
 *.DS_Store
 *.pyc
 *.ipynb_checkpoints/*
@@ -183,3 +210,4 @@ TSWLatexianTemp*
 
 # KBibTeX
 *~[0-9]*
+.claude/settings.local.json

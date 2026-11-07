@@ -1,0 +1,10 @@
+{
+  "extraKnownMarketplaces": {
+    "claude-code-herdr": {
+      "source": { "source": "github", "repo": "R0drig0V1/claude-code-herdr" }
+    }
+  },
+  "enabledPlugins": {
+    "multi-agent-herdr@claude-code-herdr": true
+  }
+}

@@ -1,0 +1,35 @@
+# Dependabot version updates. Minor and patch updates are grouped so the queue stays short;
+# `cooldown` skips releases younger than seven days (a buffer against a compromised or yanked
+# release). Bumped by hand (README.md, "Manual bumps"): the actionlint and gitleaks versions
+# and checksums in quality.yml, and the uv/zizmor `version:` inputs of their actions.
+version: 2
+
+updates:
+  # Python dependencies and dev tools (pyproject.toml + uv.lock).
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: build
+
+  # The actions of .github/workflows/, pinned by commit SHA (Dependabot updates the SHA and
+  # its version comment).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci

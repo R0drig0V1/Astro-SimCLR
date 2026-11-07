@@ -1,0 +1,6 @@
+{
+  "$comment": "multi-agent-herdr settings (README, Configuration). These are the defaults; change base_branch when pull requests target an integration branch such as dev.",
+  "base_branch": "main",
+  "integrator_name": "integrator",
+  "protected_branches": []
+}
