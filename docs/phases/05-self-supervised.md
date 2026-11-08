@@ -156,7 +156,7 @@ tier 3. Phase 5 does not wait for 4.6–4.8.
   Asteroid come from CD21 Validation/Test only (phase 3 to confirm).
 
 ### 5.5 Later, gated by H1 (a separate phase)
-- Custom encoders: p4/p4m and multi-scale.
+- Custom encoders: p4/p4m and multi-scale; a **ViT-Ti with patch 7** (a 9×9 grid at 63 px) pretrained on 1–5M stamps (SimCLR with MoCo-v3 stabilisation for a like-for-like comparison; DINO or iBOT as ViT-native alternatives; MAE only with centre-aware masking). This is a 5090 job.
 - SupCon, as a 100 %-label arm.
 - Ablations: debiased contrastive loss, and multi-epoch positives (two alerts of one object
   as a pair).
