@@ -17,6 +17,14 @@ All inputs are per-stamp arrays of the *same* stamps, in the same order (paired)
   phase-3 benchmarks' **macro-F1** (task 3.2), which is not a mean of per-stamp scores:
   each resample recounts every run's confusion matrix and takes the difference of the
   seed-mean macro-F1s (:mod:`astro_simclr.protocol.benchmark_metrics`).
+- :func:`hierarchical_paired_bootstrap`: phase 5's interval (task 5.4) for arms trained on
+  the same stored **label subsets** (:mod:`astro_simclr.protocol.label_budgets`) and scored
+  on one evaluation set. Each resample draws the subsets with replacement, then the
+  evaluation **objects** within class with replacement (one draw shared by every subset and
+  both arms), and takes the mean over the drawn subsets of the paired difference of
+  balanced accuracy or (optionally prior-reweighted) macro-F1. Subsets and objects are
+  crossed (every subset is scored on every object), so the two levels are drawn
+  independently.
 - :func:`minimum_detectable_effect`: the smallest difference of a per-item rate (such as one
   class's recall) that a two-sided test at ``alpha`` detects with probability ``power``, on
   ``n`` independent items: paired (from the discordant fraction) or unpaired.
@@ -38,12 +46,15 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from statistics import NormalDist
-from typing import Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 import numpy as np
 import numpy.typing as npt
 
 from astro_simclr.protocol.benchmark_metrics import macro_f1_from_counts
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 __all__ = [
     "MAX_NON_INFERIORITY_MARGIN",
@@ -58,6 +69,7 @@ __all__ = [
     "adoption_decision",
     "balanced_accuracy",
     "check_margin",
+    "hierarchical_paired_bootstrap",
     "mcnemar",
     "minimum_detectable_effect",
     "non_inferiority_decision",
@@ -71,6 +83,8 @@ Metric = Literal["accuracy", "balanced_accuracy"]
 IntervalMetric = Literal["accuracy", "balanced_accuracy", "macro_f1"]
 Adoption = Literal["adopt", "worse", "inconclusive"]
 Screen = Literal["drop", "keep"]
+#: The metrics of :func:`hierarchical_paired_bootstrap`.
+SubsetMetric = Literal["balanced_accuracy", "macro_f1"]
 #: The CV decision rules: ``superiority`` (task 2.3) or ``non-inferiority`` (efficiency rows).
 Rule = Literal["superiority", "non-inferiority"]
 
@@ -309,6 +323,193 @@ def paired_bootstrap_macro_f1(
     alpha = 1 - confidence
     low, high = np.quantile(stats, [alpha / 2, 1 - alpha / 2])
     return BootstrapCI("macro_f1", observed, float(low), float(high), confidence, n_boot)
+
+
+def _object_rows(
+    truth: npt.NDArray[np.int64], groups: npt.ArrayLike | None
+) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+    """Per item its object index (0..n_objects-1), and each object's class.
+
+    Raises:
+        ValueError: if ``groups`` has another shape, or an object has items of two classes.
+    """
+    if groups is None:
+        return np.arange(truth.size, dtype=np.int64), truth
+    ids = np.asarray(groups)
+    if ids.shape != truth.shape:
+        raise ValueError(f"groups must have shape {truth.shape}, got {ids.shape}")
+    _, object_of = np.unique(ids, return_inverse=True)
+    object_of = object_of.reshape(-1).astype(np.int64)
+    n_objects = int(object_of.max()) + 1
+    low = np.full(n_objects, np.iinfo(np.int64).max, dtype=np.int64)
+    high = np.full(n_objects, -1, dtype=np.int64)
+    np.minimum.at(low, object_of, truth)
+    np.maximum.at(high, object_of, truth)
+    if np.any(low != high):
+        raise ValueError("an object (group) has items of two classes")
+    return object_of, low
+
+
+def _subset_metric(
+    counts: npt.NDArray[np.float64], metric: SubsetMetric, reference: npt.NDArray[np.float64] | None
+) -> npt.NDArray[np.float64]:
+    """The metric of stacked ``(..., C, C)`` confusion counts (true class on the rows)."""
+    support = counts.sum(axis=-1)
+    if metric == "balanced_accuracy":
+        tp = np.diagonal(counts, axis1=-2, axis2=-1)
+        recall = np.divide(tp, support, out=np.zeros_like(tp), where=support > 0)
+        present = support > 0
+        result: npt.NDArray[np.float64] = (recall * present).sum(axis=-1) / present.sum(axis=-1)
+        return result
+    if reference is not None:
+        scale = np.divide(reference, support, out=np.zeros_like(support), where=support > 0)
+        counts = counts * scale[..., None]
+    return macro_f1_from_counts(counts)
+
+
+def _hierarchical_draws(
+    rng: np.random.Generator,
+    rows: int,
+    n_runs: int,
+    by_class: Sequence[npt.NDArray[np.int64]],
+    n_objects: int,
+) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]:
+    """``rows`` resamples: the drawn subset indices ``(rows, R)`` and object counts ``(rows, M)``.
+
+    The draw order is part of the contract (the golden test replays it): the subsets
+    first, then the objects of each class in increasing class order.
+    """
+    subsets = rng.integers(0, n_runs, size=(rows, n_runs))
+    weights = np.zeros((rows, n_objects), dtype=np.float64)
+    offsets = (np.arange(rows) * n_objects)[:, None]
+    for objects in by_class:
+        draw = objects[rng.integers(0, objects.size, size=(rows, objects.size))]
+        weights += np.bincount((draw + offsets).ravel(), minlength=rows * n_objects).reshape(
+            rows, n_objects
+        )
+    return subsets, weights
+
+
+def _hierarchical_inputs(
+    predicted_baseline: npt.ArrayLike,
+    predicted_variant: npt.ArrayLike,
+    labels: npt.ArrayLike,
+    n_classes: int,
+    metric: SubsetMetric,
+    reference_counts: Sequence[float] | None,
+) -> tuple[
+    npt.NDArray[np.int64],
+    npt.NDArray[np.int64],
+    npt.NDArray[np.int64],
+    npt.NDArray[np.float64] | None,
+]:
+    """The checked labels, both arms' ``(R, N)`` predictions and the reference counts.
+
+    Raises:
+        ValueError: as :func:`hierarchical_paired_bootstrap`.
+    """
+    if metric not in ("balanced_accuracy", "macro_f1"):
+        raise ValueError(f"unknown metric {metric!r}; use balanced_accuracy or macro_f1")
+    if n_classes < 2:
+        raise ValueError(f"need at least 2 classes, got {n_classes}")
+    truth = np.asarray(labels)
+    if truth.ndim != 1 or truth.size == 0 or not np.issubdtype(truth.dtype, np.integer):
+        raise ValueError(f"labels must be a non-empty 1-D integer array, got {truth.shape}")
+    if truth.min() < 0 or truth.max() >= n_classes:
+        raise ValueError(f"labels must be in range({n_classes})")
+    truth = truth.astype(np.int64)
+    base = _run_labels(predicted_baseline, truth.size, n_classes, "baseline")
+    variant = _run_labels(predicted_variant, truth.size, n_classes, "variant")
+    if base.shape != variant.shape:
+        raise ValueError(f"the arms must be paired by subset: {base.shape} vs {variant.shape}")
+    reference = None
+    if reference_counts is not None:
+        reference = np.asarray(reference_counts, dtype=np.float64)
+        if (
+            reference.shape != (n_classes,)
+            or not np.all(np.isfinite(reference))
+            or np.any(reference < 0)
+            or reference.sum() <= 0
+        ):
+            raise ValueError(f"reference_counts must be {n_classes} non-negative finite counts")
+    return truth, base, variant, reference
+
+
+def hierarchical_paired_bootstrap(
+    predicted_baseline: npt.ArrayLike,
+    predicted_variant: npt.ArrayLike,
+    labels: npt.ArrayLike,
+    *,
+    n_classes: int,
+    metric: SubsetMetric = "balanced_accuracy",
+    groups: npt.ArrayLike | None = None,
+    reference_counts: Sequence[float] | None = None,
+    n_boot: int = 10_000,
+    confidence: float = 0.95,
+    seed: int = 0,
+) -> BootstrapCI:
+    """Percentile interval of the subset-mean paired metric difference, variant - baseline.
+
+    ``predicted_*`` have shape ``(R, N)``: row ``r`` holds the predicted labels, on the same
+    N evaluation items, of the arm trained on label subset ``r`` (the same stored subset for
+    both arms: that pairs them; at 100 % the rows may be seeds instead). ``labels`` are the
+    items' true classes and ``groups`` (optional) their object ids: the items of one object
+    are resampled together, and an object must have one class. With ``groups=None`` each
+    item is an object.
+
+    Statistic: ``mean_r [metric(variant_r) - metric(baseline_r)]``. Each of the ``n_boot``
+    resamples (module docstring) draws R subset indices with replacement, then, within each
+    class, as many objects as the class has, with replacement; every drawn subset of both
+    arms is scored on the same drawn objects (confusion counts weighted by multiplicity).
+    ``metric`` is ``balanced_accuracy`` (mean recall) or ``macro_f1``; with
+    ``reference_counts`` (one per class) the macro-F1 is prior-reweighted, each row of
+    every resampled confusion matrix rescaled to its reference count
+    (:func:`~astro_simclr.protocol.benchmark_metrics.reweighted_counts`; R5's headline
+    metric). Identical arms give exactly ``[0, 0]``. Deterministic for given inputs and
+    ``seed``. Memory: about ``8 x n_objects x 2R x C^2`` bytes.
+
+    Raises:
+        ValueError: on predictions that are not ``(R, N)`` integers in ``range(n_classes)``
+            with the same R on both sides, labels outside ``range(n_classes)``, an object
+            with two classes, ``n_classes < 2``, ``n_boot < 1``, a confidence outside
+            (0, 1), an unknown metric, or reference counts of another length, negative,
+            non-finite or summing to 0.
+    """
+    truth, base, variant, reference = _hierarchical_inputs(
+        predicted_baseline, predicted_variant, labels, n_classes, metric, reference_counts
+    )
+    if n_boot < 1 or not 0 < confidence < 1:
+        raise ValueError(f"need n_boot >= 1 and 0 < confidence < 1, got {n_boot}, {confidence}")
+    object_of, object_class = _object_rows(truth, groups)
+    n_objects = object_class.size
+    by_class = [np.flatnonzero(object_class == c).astype(np.int64) for c in np.unique(object_class)]
+    n_runs = base.shape[0]
+    runs = np.concatenate([base, variant])
+    cells = n_classes * n_classes
+    # Per object, one count column per (run, true class, predicted class): a resample's
+    # confusion counts of every run are one product with its object multiplicities.
+    indicator = np.zeros((n_objects, runs.shape[0] * cells), dtype=np.float64)
+    columns = truth[None, :] * n_classes + runs + (np.arange(runs.shape[0]) * cells)[:, None]
+    np.add.at(indicator, (np.tile(object_of, runs.shape[0]), columns.ravel()), 1.0)
+
+    def per_run_difference(weights: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        counts = (weights @ indicator).reshape(weights.shape[0], -1, n_classes, n_classes)
+        value = _subset_metric(counts, metric, reference)
+        result: npt.NDArray[np.float64] = value[:, n_runs:] - value[:, :n_runs]
+        return result
+
+    observed = float(per_run_difference(np.ones((1, n_objects)))[0].mean())
+    rng = np.random.default_rng(seed)
+    stats = np.empty(n_boot, dtype=np.float64)
+    block = max(1, _BLOCK // max(n_objects, runs.shape[0] * cells))
+    for start in range(0, n_boot, block):
+        rows = min(block, n_boot - start)
+        subsets, weights = _hierarchical_draws(rng, rows, n_runs, by_class, n_objects)
+        difference = per_run_difference(weights)
+        stats[start : start + rows] = np.take_along_axis(difference, subsets, axis=1).mean(axis=1)
+    alpha = 1 - confidence
+    low, high = np.quantile(stats, [alpha / 2, 1 - alpha / 2])
+    return BootstrapCI(metric, observed, float(low), float(high), confidence, n_boot)
 
 
 def minimum_detectable_effect(

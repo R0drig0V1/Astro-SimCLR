@@ -5,7 +5,9 @@
      src/astro_simclr/reference.py (CD21), the metrics JSON of src/astro_simclr/experiments.py.
      Design choices: docs/decisions/0004-evaluation-protocol.md. The last section, "Phase 3
      benchmark metrics" (task 3.2), documents src/astro_simclr/protocol/{alerts,grouping,
-     object_splits,benchmark_metrics,bench_report}.py; its choices are in ADR 0008. -->
+     object_splits,benchmark_metrics,bench_report}.py; its choices are in ADR 0008. The
+     section "Phase 5 label budgets" (task 5.4) documents src/astro_simclr/protocol/
+     {label_budgets,budget_parser,probe}.py and stats.hierarchical_paired_bootstrap. -->
 # Evaluation protocol (phase 2)
 
 Every phase-2 result (the replication of Carrasco-Davis et al. 2021, then every improvement)
@@ -634,3 +636,140 @@ that a two-sided test at α = 0.05 detects with 80 % power: `(z₀.₉₇₅ + z
 - Example: about 116 test objects at 72 % recall (RJ23's Satellite) give an unpaired MDE
   of about 16.4 points. R5's test set of about 8–9k objects gives far smaller MDEs on its
   large classes.
+
+## Phase 5 label budgets
+
+Task 5.4 of `docs/phases/05-self-supervised.md` (plan review F4): the evaluation machinery
+of the self-supervised phase. Does SSL pretraining help **with few labels**? Every arm (SSL,
+random init, scratch, ImageNet, Zoobot, ...) trains on the same stored label subsets, and
+the interval accounts for the variance between subsets as well as between test objects.
+Code: `src/astro_simclr/protocol/{label_budgets,budget_parser,probe}.py` and
+`stats.hierarchical_paired_bootstrap`.
+
+### The budgets and the subsets: `make-label-budgets`
+
+- **A budget counts labelled objects per class**: 10, 100 and 1,000 by default, plus 100 %.
+  It does not count alerts. A percentage budget would give the rare classes almost nothing,
+  and at 1 % the selection set would be larger than the training set (finding F4).
+- **Drawn from one training part only.** For the CD21 CV, that is each fold's training part
+  from the stored splits (`configs/splits/`), so the selection set, the evaluation part and
+  the unused stamps are never drawn. For R5, it is R5 Train from the stored object splits.
+  - The object is the fold's position group (1.5″, as `protocol.groups`), named by the
+    smallest pool index of its stamps in that training part.
+  - On R5, the object is the alert table's group key (`oid`).
+- **The draw.** For each part and repeat, the part's objects are put in a seeded order,
+  `default_rng([seed, 5, part, repeat])`. For each class, budget `b` takes the first `b`
+  objects in that order that have an alert of the class, with their alerts of that class.
+  - The budgets are **nested**: repeat `r` at 10 is inside repeat `r` at 100.
+  - Each subset holds exactly `b` objects of each class.
+  - The rare object with alerts of two classes counts once in each class. Its alerts of a
+    class it was not drawn for stay unlabelled.
+- **Repeats:** 20 per part and budget (`--repeats`), enough for the probe's ≥ 20 subsets.
+  Fine-tuning uses the first 10 at the lowest budget and the first 5 at the middle one.
+  - At 100 %, the subset is the whole training part, so it is not stored. Its repeats are
+    seeds (1 subset × 5 seeds).
+  - Arms are **paired by subset**: repeat `r` is the same file entry for every arm.
+- **Stored, then verified.** As for the splits, the stored file is the source of truth:
+  numpy does not promise one seeded permutation across versions.
+  - The file records the parent splits file's SHA-256 and the data fingerprint. On CD21,
+    that is the dataset identity of the splits file (source and label SHA-256, sizes). On
+    R5, it is the alert table's SHA-256.
+  - `verify-label-budgets` first verifies the parent on the data (`verify_splits` or
+    `verify_object_splits`). Then it checks that the file was drawn from that parent and
+    is well formed: exact objects per class, each of that class in the training part, and
+    selection sets of the stored size outside the subset.
+- **Stored file:** `configs/label-budgets/td_ztf_stamp_17_06_20_red-002-grouped.json`.
+  - It was made with `make-label-budgets` on the real data from the grouped CD21 splits
+    (seed 0; 5 folds × 20 repeats × budgets 10/100/1000, plus 100 %).
+  - It is about 3.7 MB: 500k object ids, dominated by the 1,000-per-class subsets.
+  - The R5 file is made the same way once R5's alert table and object splits exist
+    (task 3.5).
+
+```bash
+uv run astro-simclr make-label-budgets --out configs/label-budgets/td_ztf_stamp_17_06_20_red-002-grouped.json \
+    --splits configs/splits/td_ztf_stamp_17_06_20_red-002-grouped.json \
+    --data dataset/prepared/td_ztf_stamp_17_06_20_red-002
+uv run astro-simclr verify-label-budgets configs/label-budgets/td_ztf_stamp_17_06_20_red-002-grouped.json \
+    --splits configs/splits/td_ztf_stamp_17_06_20_red-002-grouped.json \
+    --data dataset/prepared/td_ztf_stamp_17_06_20_red-002
+# R5: --object-splits FILE --alerts ALERTS.csv instead of --splits/--data
+```
+
+### The selection set, or a fixed schedule
+
+The low budgets need a rule for when to stop and which hyperparameter to keep. That rule
+must be **the same for every arm**, and it never looks at the evaluation part.
+
+- **A selection set per budget** (the default). It is drawn from the same training part:
+  for each class, the next objects in the same order, skipping every object of the
+  subset, so no object is in both.
+  - Its size per class is `floor(0.2 × b)`, at most 20 % of the budget (the plan's cap):
+    2, 20 and 200.
+  - The size is lowered, if needed, to what the smallest class has left after the subset
+    in every part and repeat. So it is the same for every class, part and repeat.
+  - On CD21, SN has about 1,084 objects in a fold's training part. At 1,000, that leaves
+    83, so the stored sizes are **2 / 20 / 83**.
+  - At 100 %, the selection set is the part's own: the fold's 100-per-class selection set,
+    or R5's Validation selection half.
+- **The alternative: a fixed schedule** (`--selection-fraction 0`, no selection set). The
+  arms train for a declared epoch count, with the final checkpoint kept. The probe can use
+  this: it is a convex fit to convergence.
+  - It uses all of the budget's labels, and no early stopping can overfit a 2-per-class
+    selection set.
+  - In exchange, the epoch count is a hyperparameter fixed in advance for every arm. A
+    schedule tuned for one arm (for example, long for scratch, short for a pretrained
+    encoder) would bias the comparison.
+  - At 10 per class, a 2-object selection set is very noisy: its balanced accuracy moves in
+    steps of 10 points. For that budget, the fixed schedule is the more robust choice; the
+    choice is per arm family and is pre-registered (task 5.0c).
+
+### The interval: `stats.hierarchical_paired_bootstrap`
+
+- **Input:** the `(R, N)` predicted labels of each arm, where row `r` is the arm trained on
+  subset `r`. Both arms are scored on the same N evaluation items (R5 Test, or the CD21 test
+  set). The function also takes the true labels and, optionally, the items' object ids.
+- **One resample:**
+  1. Draw R subset indices with replacement.
+  2. Within each class, draw as many objects as the class has, with replacement. The items
+     of one object move together, and an object must have one class.
+  3. Score every drawn subset of both arms on the same drawn objects, with confusion counts
+     weighted by multiplicity.
+  4. Take the mean over the drawn subsets of the paired difference, variant − baseline.
+- **Why both levels.** Subsets and objects are *crossed*: every subset is scored on every
+  object. So the two levels are drawn independently, and one object draw is shared by all
+  subsets in a resample.
+  - Without the subset level, the interval ignores how much the result depends on which
+    10 labels were drawn (finding F4).
+  - Without the object level, it ignores the finite test set.
+- **The metric:** balanced accuracy, or macro-F1. With `reference_counts`, the macro-F1 is
+  prior-reweighted, which is R5's headline metric for H1.
+- **Properties.** Identical arms give exactly [0, 0]. The result is deterministic for a
+  given seed.
+- **Golden tests.** On a tiny case, every equally likely resample is listed and scored with
+  plain loops, so the exact bootstrap distribution is known; the Monte Carlo frequencies
+  must match it. In a second test, the function's own draws are replayed through the loop
+  reference.
+- **The CV folds.** Each fold has its own evaluation part, so a CV comparison is one
+  interval per fold (or one pooled over the folds' test predictions). The function does not
+  pool folds itself.
+
+### The probe: `protocol.probe.run_probes`
+
+- **Input:** stored embeddings `h` of shape (N, d), one row per pool index (CD21) or
+  alert-table row (R5), with their labels. The probe uses the resolved subsets
+  (`label_budgets.resolve`) and the evaluation rows of each part. Test rows can follow the
+  pool rows in the same array, and they are evaluation rows only.
+- **The fit.** For each subset, a multinomial logistic regression with plain cross-entropy
+  on the logits, plus `weight_decay / 2 · ||W||²` on the weights.
+  - The features are standardised with the labelled rows' statistics.
+  - It is fitted by full-batch L-BFGS from zero weights, in float64, on the CPU or a GPU.
+  - It is convex, so it needs no seed or schedule, and it is deterministic for a given
+    device and dtype.
+  - A fit at 1,000 per class takes about a second on a loaded laptop CPU.
+- **Weight decay.** One declared value is used as is. With a grid, the value is chosen on
+  each subset's selection set (balanced accuracy, the first best in grid order).
+- **Output:** balanced accuracy, macro-F1 and the reweighted macro-F1 on the evaluation
+  rows, plus the predictions.
+  - `paired_predictions` gives two arms' `(R, N)` predictions for the bootstrap.
+  - `summarise` gives the mean ± std over subsets per part and budget.
+- **Mode:** the probe serves the exploratory cells. Fine-tuning serves H1–H3 (plan 5.4).

@@ -50,6 +50,12 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   phase-2 results report (``docs/results-phase2.md``) as markdown from run directories:
   the replication and its CD21 gate, the screen and CV decisions, per-class recall,
   confusion matrices, throughput and provenance (always exit 0: a report);
+- phase-5 label budgets (task 5.4, :mod:`astro_simclr.protocol.label_budgets`):
+  ``make-label-budgets --out FILE (--splits FILE --data DIR | --object-splits FILE --alerts
+  CSV)`` writes the nested label-budget subsets and selection sets of every training part;
+  ``verify-label-budgets FILE`` with the same parent options exits 0 if the file belongs to
+  the verified parent, else 1. Registered by
+  :func:`astro_simclr.protocol.budget_parser.add_budget_commands`.
 - ``preflight`` (:mod:`astro_simclr.preflight`): exit 0 if no step failed, else 1.
 - the run registry (task A2, :mod:`astro_simclr.registry`): ``runs reindex [ROOT ...]``,
   ``runs ls``, ``runs show KEY`` and ``runs compare SPEC`` (by experiment spec); exit 1
@@ -119,6 +125,7 @@ from astro_simclr.config import (
     settings_to_plain,
 )
 from astro_simclr.hparams import COMMAND_DEFAULTS, COMMANDS, load_legacy_hparams
+from astro_simclr.protocol.budget_parser import add_budget_commands
 from astro_simclr.registry.parser import add_runs_command
 from astro_simclr.simclr.commands import add_simclr_commands
 
@@ -1681,6 +1688,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_archive_commands(commands)
     add_runs_command(commands)
     add_simclr_commands(commands)
+    add_budget_commands(commands)
     return parser
 
 

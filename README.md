@@ -167,7 +167,9 @@ uv run astro-simclr alerts-summary dataset/raw/td_ztf_stamp_17_06_20_red-002
 
 The method, the timings and the store layout are in [docs/data.md](docs/data.md) ("Raw
 alerts") and [ADR 0011](docs/decisions/0011-raw-alert-store.md). The other phase-3 tools are
-`make-object-splits`, `bench-report` and `leakage-audit`.
+`make-object-splits`, `bench-report` and `leakage-audit`. Phase 5's label budgets (task
+5.4) are `make-label-budgets` and `verify-label-budgets`
+([docs/evaluation-protocol.md](docs/evaluation-protocol.md), "Phase 5 label budgets").
 
 R5 (task 3.5) is built from the Zenodo labelled set, the Bright Transient Survey and the
 CD21 store above. One seeded alert is drawn per object before 2023. The build is resumable,
@@ -228,6 +230,7 @@ src/astro_simclr/   the package: data, models (paper model, p4/p4m variants), lo
 tests/              pytest suite (branch coverage >= 80 %)
 configs/reference/  R1-R4 legacy reference-run configs, with provenance
 configs/splits/     stored phase-2 decision splits (make-splits)
+configs/label-budgets/  stored phase-5 label-budget subsets (make-label-budgets)
 configs/runs/       nested configs for `astro-simclr run` (ADR 0017)
 results/            phase2/ (replication archive, augmentation inspections); 2021 tuning results
 docs/               architecture.md (one section per module), data.md, evaluation-protocol.md,
