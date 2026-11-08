@@ -166,7 +166,7 @@ uv run astro-simclr build-r5 ... --from-snapshot --out /tmp/R5 --expect dataset/
 ```
 
 The recipe and the outputs (deviation and era tables, frozen index) are in
-[docs/data.md](docs/data.md) ("R5") and [ADR 0018](docs/decisions/0018-r5-reconstruction.md).
+[docs/data.md](docs/data.md) ("R5") and [ADR 0020](docs/decisions/0020-r5-reconstruction.md).
 
 ## Repository map
 

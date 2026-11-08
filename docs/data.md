@@ -571,7 +571,7 @@ class):
 
 R5 is phase 3's 5-class, object-level benchmark (AGN, SN, VS, Asteroid, Bogus). It is
 built under RJ23's recipe from public sources only (code: `src/astro_simclr/r5/`;
-decisions: ADR 0018). It is reported as "on R5", never as RJ23's result.
+decisions: ADR 0020). It is reported as "on R5", never as RJ23's result.
 
 ### Sources
 
@@ -623,7 +623,7 @@ a known object). The drop causes are listed in `r5.select.CAUSES`.
     a CD21 Train row only to R5 Train; one with a CD21 Validation or Test row only to R5
     Validation or Test. A group with both is dropped.
   - So R5's Asteroid and Bogus Validation and Test come only from CD21's Validation and
-    Test, about 100 objects each (ADR 0018, Consequences).
+    Test, about 100 objects each (ADR 0020, Consequences).
 - **First-stamp view** (R5 Test only, as RJ23): the earliest eligible detection whose
   alert is a full 63×63 stamp.
 

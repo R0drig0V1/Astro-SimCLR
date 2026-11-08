@@ -1,5 +1,5 @@
-<!-- ADR 0018: how R5 is rebuilt from public sources under RJ23's recipe (task 3.5), and why. -->
-# 0018: The R5 reconstruction (task 3.5)
+<!-- ADR 0020: how R5 is rebuilt from public sources under RJ23's recipe (task 3.5), and why. -->
+# 0020: The R5 reconstruction (task 3.5)
 
 - **Status:** accepted (2026-11-08, phase 3, task 3.5)
 - **Implemented by:** `src/astro_simclr/r5/` (`recipe`, `sources`, `select`, `build`,

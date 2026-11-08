@@ -968,7 +968,7 @@ row per status. They cover:
 
 `src/astro_simclr/r5/`: builds R5, the phase-3 5-class object-level benchmark, under RJ23's
 recipe from public sources. The recipe, sources, commands and outputs are in
-[`docs/data.md`](data.md), "R5"; the decisions in ADR 0018. Nothing imports torch.
+[`docs/data.md`](data.md), "R5"; the decisions in ADR 0020. Nothing imports torch.
 
 ```
 r5-sources ──► sources (Zenodo archive streamed, MD5/size checked, CSV read unextracted;
