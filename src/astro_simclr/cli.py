@@ -8,6 +8,13 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
 - data (task 1.2, ``docs/data.md``): ``inspect-data``, ``make-synthetic``, ``prepare-data``
   (``--images float32``, task 2.1), and ``check-features`` (task 2.1: were the stored
   features standardised with M1's statistics? Exit 1 if not);
+- ``run CONFIG [--set section.key=value | key=value ...]`` (task 4.2,
+  :mod:`astro_simclr.config_tree`, ADR 0017): resolve a nested config (its preset or its
+  command's legacy one, the file, the dotted overrides, then the flat ones on the flat
+  view), lower it to the flat settings and train it with ``run_command`` (the Lightning
+  engine). A flat file needs ``--command``; ``--show`` prints the resolved config and its
+  config hash without training; ``--resume`` and ``--splits FILE --fold K | --screen`` as
+  below. The four training subcommands are its aliases until task 4.8;
 - training (task 1.7, :mod:`astro_simclr.experiments`): ``pretrain``, ``linear-eval``,
   ``fine-tune``, ``train-supervised``. Their settings resolve as: the ``Settings``
   defaults, the subcommand's legacy protocol (``hparams.COMMAND_DEFAULTS``), ``--preset``
@@ -58,7 +65,12 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   and Ctrl-C stop it after the current row and commit the batch (exit 128 + the signal
   number); a second signal forces the exit. ``alerts-summary RAW_DIR`` prints the counts per
   class and status, the acceptance and the duplicated candids: exit 0 if every split
-  shown reaches the acceptance, else 1.
+  shown reaches the acceptance, else 1. ``fetch-alerts --oids FILE --out DIR`` (task 3.5)
+  fetches detection lists and alerts by object id instead.
+- R5 (task 3.5, :mod:`astro_simclr.r5.cli`): ``r5-sources --out DIR`` snapshots the label
+  sources; ``build-r5`` builds the benchmark (online, ``--from-snapshot`` offline with
+  ``--expect build.json``, or ``--dry-run``): exit 0 when written, 1 when incomplete or
+  different from ``--expect``.
 
 The heavy modules (torch, Lightning) are imported inside the handlers, so ``show-config``
 and ``--help`` stay fast. A :class:`~astro_simclr.data.DataError` (bad, truncated or missing
@@ -362,10 +374,14 @@ def _split_request(args: argparse.Namespace) -> SplitRequest | None:
 
 
 def _train(args: argparse.Namespace) -> int:
+    command: str = args.command
+    return _execute(command, training_settings(command, args), args)
+
+
+def _execute(command: str, settings: Settings, args: argparse.Namespace) -> int:
+    """Run ``command`` with ``settings`` on the Lightning engine and print its summary."""
     from astro_simclr.experiments import METRICS_FILE, run_command
 
-    command: str = args.command
-    settings = training_settings(command, args)
     split = _split_request(args)
     metrics = run_command(command, settings, resume=args.resume, split=split)
     shown = {**metrics, "seconds_per_step": metrics.get("timing", {}).get("seconds_per_step")}
@@ -385,6 +401,61 @@ def _train(args: argparse.Namespace) -> int:
     )
     sys.stdout.write(f"{command}: {summary}; wrote {settings.output_dir / METRICS_FILE}\n")
     return 0
+
+
+def _run(args: argparse.Namespace) -> int:
+    """``astro-simclr run CONFIG``: resolve the nested config, then lower it and train."""
+    from astro_simclr.config_tree import config_sha256, config_to_plain, resolve_config
+
+    config = resolve_config(args.config_file, args.overrides, command=args.flat_command)
+    if args.show:
+        sys.stdout.write(f"# command: {config.command}\n# config hash: {config_sha256(config)}\n")
+        sys.stdout.write(yaml.safe_dump(config_to_plain(config), sort_keys=False))
+        return 0
+    # runtime.engine is "lightning" until the plain engine lands (tasks 4.1, 4.6; ADR 0014):
+    # the config lowers to the flat settings that today's run_command takes.
+    return _execute(config.command, config.to_settings(), args)
+
+
+def _add_run_command(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    run = commands.add_parser(
+        "run",
+        help="train from a nested config (task 4.2; the training subcommands are its aliases)",
+        description="Resolve a nested config (sections run, runtime, data, model, optim, "
+        "schedule, augment, eval; ADR 0017) and train it. Order: its preset (or its "
+        "command's legacy one), the file, --set section.key=value, then --set key=value on "
+        "the flat view. A flat settings file needs --command. The model decides the "
+        "training command; runtime.engine is lightning.",
+    )
+    run.add_argument("config_file", type=Path, metavar="CONFIG", help="nested or flat YAML")
+    run.add_argument(
+        "--set",
+        dest="overrides",
+        action="extend",
+        nargs="+",
+        default=[],
+        metavar="KEY=VALUE",
+        help="section.key=VALUE (an unknown path is an error) or a flat key=VALUE; "
+        "VALUE is parsed as YAML; repeatable",
+    )
+    run.add_argument(
+        "--command",
+        dest="flat_command",
+        choices=COMMANDS,
+        help="the training command of a flat CONFIG (a nested one names its model)",
+    )
+    run.add_argument(
+        "--show",
+        action="store_true",
+        help="print the resolved config and its config hash, and do not train",
+    )
+    run.add_argument(
+        "--resume",
+        metavar="PATH|auto",
+        help="continue from a checkpoint; auto: OUTPUT_DIR/checkpoints/last.ckpt if any",
+    )
+    _add_split_arguments(run)
+    run.set_defaults(handler=_run)
 
 
 #: ``train-supervised --preset`` choices (``presets.PRESETS``; spelled out here so that
@@ -435,7 +506,8 @@ def _add_training_commands(
             help=_TRAINING_HELP[command],
             description=f"{_TRAINING_HELP[command]}. Writes checkpoints, metrics.json and "
             "(classifiers) confusion-matrix figures under the output directory. Dry mode: "
-            "--set max_epochs=1 limit_train_batches=2 limit_val_batches=2.",
+            "--set max_epochs=1 limit_train_batches=2 limit_val_batches=2. An alias of "
+            "'astro-simclr run' on a flat config, kept until task 4.8.",
         )
         add_settings_arguments(sub)
         sub.add_argument(
@@ -1012,6 +1084,17 @@ def _add_oracle_commands(commands: argparse._SubParsersAction[argparse.ArgumentP
 
 
 def _fetch_alerts(args: argparse.Namespace) -> int:
+    """``fetch-alerts``: the by-oid mode with ``--oids``, else one prepared split."""
+    if args.oids is not None:
+        from astro_simclr.r5.cli import fetch_by_oid_command
+
+        return fetch_by_oid_command(args)
+    if args.dataset is None or args.split is None:
+        raise ConfigError("fetch-alerts needs --dataset and --split (or --oids)")
+    return _fetch_split_alerts(args)
+
+
+def _fetch_split_alerts(args: argparse.Namespace) -> int:
     import signal
 
     from astro_simclr.alerts.alerce import AlerceClient, make_client
@@ -1126,6 +1209,8 @@ def _alerts_summary(args: argparse.Namespace) -> int:
 
 def _add_alert_commands(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     from astro_simclr.data.schema import SPLITS
+    from astro_simclr.r5.cli import add_commands as add_r5_commands
+    from astro_simclr.r5.cli import add_fetch_by_oid_arguments
 
     fetch = commands.add_parser(
         "fetch-alerts",
@@ -1145,8 +1230,8 @@ def _add_alert_commands(commands: argparse._SubParsersAction[argparse.ArgumentPa
         metavar="DIR",
         help="the directory of prepared datasets (default: the data_dir setting)",
     )
-    fetch.add_argument("--dataset", required=True, metavar="NAME", help="prepared dataset name")
-    fetch.add_argument("--split", required=True, choices=SPLITS)
+    fetch.add_argument("--dataset", default=None, metavar="NAME", help="prepared dataset name")
+    fetch.add_argument("--split", default=None, choices=SPLITS)
     fetch.add_argument(
         "--out", type=Path, default=None, metavar="DIR", help="default: dataset/raw/NAME"
     )
@@ -1181,7 +1266,9 @@ def _add_alert_commands(commands: argparse._SubParsersAction[argparse.ArgumentPa
         help="rebuild offline from the raw responses stored in RAW_DIR/SPLIT (no network)",
     )
     fetch.add_argument("--quiet", action="store_true", help="no per-row progress on stderr")
+    add_fetch_by_oid_arguments(fetch)
     fetch.set_defaults(handler=_fetch_alerts)
+    add_r5_commands(commands)
 
     summary = commands.add_parser(
         "alerts-summary",
@@ -1215,6 +1302,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_settings_arguments(show)
     show.set_defaults(handler=_show_config)
     _add_data_commands(commands)
+    _add_run_command(commands)
     _add_training_commands(commands)
     _add_check_commands(commands)
     _add_oracle_commands(commands)
