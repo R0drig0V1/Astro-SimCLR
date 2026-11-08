@@ -124,7 +124,9 @@ IDENTITY_KEYS: Final[Mapping[str, str]] = {
 #: - a field added after canonical version 1, at the value that reproduces the behaviour
 #:   before it, so existing hashes and recorded manifests stay valid: ``feature_set: all``
 #:   (ADR 0016; every feature, as before the field), ``backbone_weights: none`` (ADR
-#:   0022; from scratch, the only initialisation before the field), and the ``rj23_*``
+#:   0022; from scratch, the only initialisation before the field), the hybrids' shape
+#:   flags at their defaults (plan row B9; read only by ``paper_arch: hybrid*``, which did
+#:   not exist before them, so every earlier config holds the defaults), and the ``rj23_*``
 #:   fields of task 3.4b at their defaults (they apply only to ``schedule: rj23``, which no
 #:   run had before them; an ``rj23`` run hashes the scenario only when it is not
 #:   ``full``, which is harmless: the schedule and learning rate already tell the presets
@@ -141,6 +143,10 @@ HASH_NEUTRAL_DEFAULTS: Final[Mapping[str, object]] = {
     "num_workers": 0,
     "feature_set": "all",
     "backbone_weights": "none",
+    "hybrid_dim": 64,
+    "hybrid_depth": 2,
+    "hybrid_heads": 4,
+    "hybrid_readout": "mean",
     "rj23_scenario": "full",
     "rj23_bn_position": "after_concat",
     "rj23_large_values": "paper",

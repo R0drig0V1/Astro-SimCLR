@@ -69,6 +69,12 @@ rot90_augment: false
 # The ConvNeXt backbone's initial weights (plan row B8; ADR 0022): from scratch. A ConvNeXt
 # run sets paper_arch convnext_atto / convnext_pico with image_size 63, and may set zoobot.
 backbone_weights: none
+# The conv-attention hybrids' shape (plan row B9): token width, encoder blocks, attention
+# heads and readout (mean or cls). Read only with paper_arch hybrid / hybrid_p4.
+hybrid_dim: 64
+hybrid_depth: 2
+hybrid_heads: 4
+hybrid_readout: mean
 # The alert features the head reads (a task 2.5 diagnostic; ADR 0016): all 23. A diagnostic
 # run sets position (the 6 sky coordinates) or none (images only).
 feature_set: all

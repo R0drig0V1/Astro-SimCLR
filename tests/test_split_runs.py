@@ -586,6 +586,17 @@ def test_resume_of_the_same_fold_continues(
         ({"paper_arch": "single", "rot90_augment": True, "feature_set": "none"}, {}),
         # Plan row B8 (ADR 0022): whole 63x63 stamps through the same roles.
         ({"paper_arch": "convnext_atto", "image_size": 63, "aug_feature_jitter": 0.1}, {"fold": 2}),
+        # Plan row B9: the conv-attention hybrids, with C5 on the crop and the context.
+        ({**_AUGMENT, "paper_arch": "hybrid", "hybrid_readout": "cls"}, {"fold": 1}),
+        (
+            {
+                "paper_arch": "hybrid_p4",
+                "context": "avgpool63",
+                "hybrid_dim": 32,
+                "hybrid_heads": 2,
+            },
+            {},
+        ),
     ],
     ids=[
         "p4-context-fold",
@@ -594,6 +605,8 @@ def test_resume_of_the_same_fold_continues(
         "position-augment-fold",
         "none-screen",
         "convnext-atto-fold",
+        "hybrid-cls-augment-fold",
+        "hybrid-p4-context-screen",
     ],
 )
 def test_variant_split_runs(

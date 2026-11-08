@@ -64,6 +64,20 @@ CONFIG_CASES: Final[Mapping[str, tuple[str, Mapping[str, object]]]] = {
         "train-supervised",
         {**_CD21, "paper_arch": "convnext_pico", "image_size": 63, "backbone_weights": "zoobot"},
     ),
+    # Plan row B9: the hybrids' shape flags are hash-neutral at their defaults only.
+    "carrasco2021+hybrid": ("train-supervised", {**_CD21, "paper_arch": "hybrid"}),
+    "carrasco2021+hybrid-p4-wide-cls": (
+        "train-supervised",
+        {
+            **_CD21,
+            "paper_arch": "hybrid_p4",
+            "group_fields": 16,
+            "hybrid_dim": 128,
+            "hybrid_depth": 4,
+            "hybrid_heads": 8,
+            "hybrid_readout": "cls",
+        },
+    ),
     # The legacy protocols (phase 1).
     "pretrain-legacy": ("pretrain", {}),
     "train-supervised-legacy": ("train-supervised", {}),

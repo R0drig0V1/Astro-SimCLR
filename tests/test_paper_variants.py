@@ -71,6 +71,11 @@ _FLAG_DEFAULTS: dict[str, object] = {
     "feature_set": "all",
     # The ConvNeXt backbone's initial weights (plan row B8; ADR 0022).
     "backbone_weights": "none",
+    # The conv-attention hybrids' shape (plan row B9).
+    "hybrid_dim": 64,
+    "hybrid_depth": 2,
+    "hybrid_heads": 4,
+    "hybrid_readout": "mean",
     # Plan rows C5 and C6 (ADR 0006).
     "aug_noise": 0.0,
     "aug_feature_jitter": 0.0,
@@ -383,7 +388,7 @@ def test_model_errors() -> None:
         build_paper_model("p8")
     with pytest.raises(ValueError, match="context must be one of"):
         build_paper_model("p4", context="avgpool41")
-    with pytest.raises(ValueError, match="group_fields applies to p4 and p4m only"):
+    with pytest.raises(ValueError, match="group_fields applies to p4, p4m and hybrid_p4 only"):
         build_paper_model("rot4", group_fields=8)
     with pytest.raises(ValueError, match="only the G-CNNs"):
         default_group_fields("rot4")
@@ -404,7 +409,16 @@ def test_model_errors() -> None:
         model(torch.zeros(2, 3, 21, 21), torch.zeros(2, 23))
     with pytest.raises(ValueError, match="x_feat"):
         model(torch.zeros(2, 6, 21, 21))
-    assert PAPER_ARCHS == ("rot4", "single", "p4", "p4m", "convnext_atto", "convnext_pico")
+    assert PAPER_ARCHS == (
+        "rot4",
+        "single",
+        "p4",
+        "p4m",
+        "convnext_atto",
+        "convnext_pico",
+        "hybrid",
+        "hybrid_p4",
+    )
     assert CONTEXTS == ("none", "avgpool63")
 
 
@@ -421,7 +435,9 @@ def test_settings_validate_the_variant_flags() -> None:
         _preset(paper_arch="p8")
     with pytest.raises(ConfigError, match="context 'avgpool41' is not one of"):
         _preset(context="avgpool41")
-    with pytest.raises(ConfigError, match="group_fields applies to paper_arch p4 or p4m only"):
+    with pytest.raises(
+        ConfigError, match="group_fields applies to paper_arch p4, p4m or hybrid_p4"
+    ):
         _preset(group_fields=8)
     with pytest.raises(ConfigError, match="group_fields must be >= 1"):
         _preset(paper_arch="p4m", group_fields=0)

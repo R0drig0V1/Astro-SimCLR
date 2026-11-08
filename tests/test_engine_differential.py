@@ -127,6 +127,12 @@ _FLAGS: list[Any] = [
     pytest.param({"feature_set": "none", "rot90_augment": True}, id="feature_set-none"),
     pytest.param({"fp32_precision": "tf32"}, id="fp32-tf32"),
     pytest.param(_AUGMENT, id="C5-C7-p4"),
+    # Plan row B9: the conv-attention hybrids (both trunks, both readouts).
+    pytest.param({"paper_arch": "hybrid", "hybrid_readout": "cls"}, id="hybrid-cls"),
+    pytest.param(
+        {"paper_arch": "hybrid_p4", "hybrid_dim": 32, "hybrid_heads": 2, "rot90_augment": True},
+        id="hybrid_p4",
+    ),
 ]
 
 #: Split runs: (flags, fold or None for the screen).
