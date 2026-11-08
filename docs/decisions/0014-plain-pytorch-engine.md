@@ -4,13 +4,15 @@
 - **Status:** accepted (2026-11-08, phase 4, task B0; plan review
   `docs/plan-reviews/2026-11-08-phase-4.md`, findings F1, F5, F6, F12, F14)
 - **Implemented by:** the contracts in `src/astro_simclr/engine/` (`task.py`, `policies.py`,
-  `checkpoint.py`, `device.py`, `data.py`, `randomness.py`); the loop itself in task 4.1,
-  the config in 4.2, the data tiers in 4.3, the tasks in 4.6
+  `checkpoint.py`, `device.py`, `data.py`, `randomness.py`); the loop itself in task 4.1
+  (`loop.py`, `precision.py`, `scalars.py`, `record.py`; amendment below), the config in
+  4.2, the data tiers in 4.3, the tasks in 4.6
 - **Amended by:** ADR 0018 (the data tiers, task 4.3: section 3's `pinned` tier pins the
   staging buffers, not the dataset; the shuffle granularity; the stream definition)
 - **Checked by:** `tests/test_engine_contracts.py` (the contracts, and the Lightning
-  reference facts of the checklist); the existing tests named in the checklist; the 4.7
-  equivalence gate once it exists
+  reference facts of the checklist); the existing tests named in the checklist;
+  `tests/test_engine_loop.py` (the loop); `tests/test_engine_differential.py` (the 4.7(a)
+  gate and the three resume tests, ported)
 
 ## Context
 
@@ -327,3 +329,58 @@ after which nothing new lands on Lightning.
   those tests go with Lightning, and the contract tests stay.
 - Revisit if the 4.7 gate cannot pass on CPU (an op whose CPU kernel is not deterministic
   across calls), or when a phase needs multi-GPU.
+
+## Amendment: task 4.1, the engine core (2026-11-08)
+
+The loop is `engine.loop.fit`, with `evaluate` / `evaluate_kept` for the final evaluation.
+Every checklist item is implemented as section 1 states it; the 4.7(a) differential test
+(`tests/test_engine_differential.py`) checks them bit for bit against today's Lightning
+path. Points the decision left open, settled here:
+
+1. **The loop takes a task factory**, not a task: `fit(build, ...)` applies the precision
+   and the flags, seeds, then calls `build()`, so C1's order (precision → seed → build on
+   the CPU) cannot be broken by a caller. The data sources are built by the caller; their
+   construction draws no random numbers.
+2. **The module ends with the last weights**; `evaluate_kept(task, result, sources, keep)`
+   evaluates `stop` first (the last weights), then loads the best and evaluates `best`.
+   This serves CD21 (`best`) and RJ23's `("stop", "best")` with one rule.
+3. **`best.pt` is not a `Checkpoint`.** It is `BestWeights` (`format_version`, `engine`,
+   `kind: "best"`, `identity`, `steps_done` = `best_step`, `monitor`, `score`, `model`,
+   `numerics`, `versions`): the weights of the best validation, as Lightning's weights-only
+   `best.ckpt`. `load_checkpoint` refuses it; `load_best` reads it.
+4. **`PolicyState` gains `stop_score`**, early stopping's own best (Lightning's
+   `EarlyStopping.best_score`, which differs from the monitor's best when `min_delta > 0`).
+   `CHECKPOINT_FORMAT` stays 1: no plain checkpoint existed before this task, and the
+   top-level key set is unchanged. `EarlyStop.update` is Lightning's
+   `_evaluate_stopping_criteria`, in its order and float32 tensor arithmetic (tested against
+   it).
+5. **Resume checks.** `check_identity` compares the run id and the split-run identity, not
+   the attempt (a resume after a failure is the next attempt, ADR 0015). Because the run id
+   holds the machine class and the engine, a resume on another machine class is refused.
+   `check_numerics` compares `fp32_precision` (the setting) and `deterministic`.
+6. **`last` at the end of training** is written only if this fit ran a step (Lightning's
+   `on_train_end` does not run when a resume starts at the horizon); `best` is written at the
+   end whenever there are best weights, which covers the resume at the horizon (C5).
+   Checkpoints are written atomically (a temporary file, then `os.replace`), for the
+   durable queue's `kill -9` (A3).
+7. **Only `loss_val` is monitored** by the plain loop for now (`ConfigError` otherwise):
+   the only monitor of the `carrasco2021` path. Tasks that select on other metrics (phase 5)
+   add them with their validation outputs.
+8. **Local scalars** are `scalars.jsonl`, one flushed line per validation (step, derived
+   epoch, `loss_val`, the mean training loss since the previous validation, `improved`,
+   horizon, wait count, seconds). The training loss is summed on the device and read at the
+   validation, which synchronises anyway, so it adds no per-step synchronisation. A resume
+   keeps the lines of steps up to the checkpoint's. There is no progress bar; an optional
+   stream gets one line per validation.
+9. **One precision implementation.** ADR 0010's `apply_fp32_precision` and
+   `fp32_precision_record` moved to `engine.precision` (the engine may not import
+   `training.runs`, which imports Lightning); `training.runs` delegates, with the same
+   behaviour.
+10. **The manifest** of a plain run is `runs.record.start_run(..., engine="plain")` with
+    `engine.record.machine_record(device)`, ended by `engine.record.recorded`. The loop
+    itself does not write it: it does not know the config (4.2); 4.6 wires both.
+
+The 4.7(a) test runs the paper classifier through a test adapter (`tests/_plain_paper.py`:
+`PaperClassifierModule` as a `Task`, its data from `experiments._build_paper` on the
+`device` tier), not 4.6's task. It uses `lr` 3e-2 so that every case extends the horizon
+and ends within a few dozen steps. It also passes on MPS with `deterministic=True`.

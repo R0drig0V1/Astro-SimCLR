@@ -490,10 +490,21 @@ phase-2-style decisions (select the checkpoint on one half, decide on the other)
 possible on the imbalanced 6-class set. `grouping.grouped_halves` does the same on any
 per-row arrays.
 
+**Constraints** (task 3.5, ADR 0020). `make_object_splits(..., allowed={group: splits})`
+restricts named groups to some splits. This is how R5 applies the matrix below: a group that
+holds a CD21 Train row goes only to R5 Train, and one with a CD21 Validation or Test row only
+to Validation or Test.
+- Within a class, the constrained groups are placed first, each in the allowed split
+  furthest below its target, then the free ones as above.
+- The file (format version 2) lists the constraints, and verification checks each one. The
+  bound is checked only for the classes without a constrained group, because constraints
+  can push a class past it. R5 reports the achieved fractions in `split_counts.csv`.
+- Without constraints the draw is unchanged. Version 1 files are still read.
+
 **The stored file is the source of truth**, as for the phase-2 splits.
 - It holds the table's fingerprint, the group key, the label names, the seed, the
-  fractions, the conflicts, the sorted group ids per split and per half, and the class
-  counts per part.
+  fractions, the conflicts, the constraints, the sorted group ids per split and per half,
+  and the class counts per part.
 - `verify_object_splits(splits, table)` refuses another table or group key. It also
   checks that every group is in exactly one split, that the conflicts and halves match,
   the bound, and the counts.

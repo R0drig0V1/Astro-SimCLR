@@ -103,6 +103,16 @@ uv run astro-simclr compare-reference $R/with-features/seed-{0..4} \
     --ref CD21 --oracle-report $R/m1_oracle.json
 ```
 
+The same runs from a nested config (task 4.2; ADR 0017), which has the same config hash:
+
+```bash
+uv run --no-sync astro-simclr run configs/runs/carrasco2021.yaml \
+    --set data.dir=dataset/prepared run.seed=$s run.output_dir=runs/replication/with-features/seed-$s
+```
+
+`--show` prints the resolved config and its hash without training; a 2.5 variant changes
+its section (`--set model.arch=p4`, `--set augment.flux_rescale=0.5`).
+
 `--preset carrasco2021-no-features` is the advisory without-features line (test
 0.8724 ± 0.0095 against the paper's 0.883 ± 0.006; `CD21: REPORT`). Training is not bitwise
 deterministic, so a rerun gives close but not identical numbers.
@@ -159,14 +169,31 @@ The method, the timings and the store layout are in [docs/data.md](docs/data.md)
 alerts") and [ADR 0011](docs/decisions/0011-raw-alert-store.md). The other phase-3 tools are
 `make-object-splits`, `bench-report` and `leakage-audit`.
 
+R5 (task 3.5) is built from the Zenodo labelled set, the Bright Transient Survey and the
+CD21 store above. One seeded alert is drawn per object before 2023. The build is resumable,
+and it rebuilds offline byte for byte:
+
+```bash
+uv run astro-simclr r5-sources --out dataset/r5/sources
+uv run astro-simclr build-r5 --sources dataset/r5/sources \
+    --cd21-raw dataset/raw/td_ztf_stamp_17_06_20_red-002 --fetched dataset/r5/fetched \
+    --out dataset/r5/R5 --quiet                 # add --dry-run first for the request count
+uv run astro-simclr build-r5 ... --from-snapshot --out /tmp/R5 --expect dataset/r5/R5/build.json
+```
+
+The recipe and the outputs (deviation and era tables, frozen index) are in
+[docs/data.md](docs/data.md) ("R5") and [ADR 0020](docs/decisions/0020-r5-reconstruction.md).
+
 ## Repository map
 
 ```
 src/astro_simclr/   the package: data, models (paper model, p4/p4m variants), losses,
-                    augmentations, training, protocol (splits, gates, comparisons), oracle, CLI
+                    augmentations, training, protocol (splits, gates, comparisons), oracle,
+                    alerts (raw-alert retrieval), r5 (the R5 build), CLI
 tests/              pytest suite (branch coverage >= 80 %)
 configs/reference/  R1-R4 legacy reference-run configs, with provenance
 configs/splits/     stored phase-2 decision splits (make-splits)
+configs/runs/       nested configs for `astro-simclr run` (ADR 0017)
 results/            phase2/ (replication archive, augmentation inspections); 2021 tuning results
 docs/               architecture.md (one section per module), data.md, evaluation-protocol.md,
                     phases/ (the plan), decisions/ (ADRs), plan-reviews/
