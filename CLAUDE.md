@@ -72,6 +72,20 @@ uvx copier@9.19.1 update           # pull python-template improvements (clean tr
 - **Typing:** mypy strict; `# type: ignore[override]` only on Lightning hook overrides.
 - **Python changes semantics, not only style:** keep training results reproducible (seeds,
   splits, augmentations) unless the PR says otherwise.
+- **New training flags are engine-free** (ADR 0012) until Lightning is removed (task 4.8).
+  Checklist for the author of a flag (a model variant, augmentation, sampler or schedule):
+  1. Write it as a pure function or a policy object outside both engines: no
+     `lightning` import, no `self.global_step` / `self.trainer` / `self.log` inside it. It
+     takes `step` (optimizer steps done before the step) as an argument.
+  2. Draw its randomness from `engine.randomness.host_generator` (per-sample parameters) or
+     `device_generator` (per-pixel fields, recorded as device-dependent), with a new
+     number in `RESERVED_STREAMS`; never from a global or unseeded generator.
+  3. Wire it into each engine with a thin adapter (today: the Lightning module; with 4.1:
+     the plain `Task`), and test the pure function directly.
+  4. Add it to the 4.7(a) CPU differential test's parametrisation once that test exists:
+     the flag must give bit-identical runs on both engines.
+  5. If it changes the numbers of an existing config, say so in the PR (and bump
+     `numerics_epoch` once task A0 lands); a non-faithful default is a preset deviation.
 
 ## Plan and workflow
 
