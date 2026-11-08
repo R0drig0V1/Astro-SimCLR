@@ -349,7 +349,26 @@ Results (`results/phase2/replication/m1_oracle.json`):
 - Leakage: the one `red` Train stamp also found in Validation or Test is removed **from
   Train only**. Validation and Test stay at 500, as in the paper.
 
-### 2.4 Replication runs (after the 2.2c pilot; manual)
+### 2.4 Replication runs (after the 2.2c pilot; manual) — with features done, **CD21 PASS (faithful)** (2026-11-08); without features running
+
+**Result (with features, GTX 1050, `cu126`, 5 seeds, code at da3e3ee):**
+
+| Seed | best_step | val_acc_best | test (at best) |
+|---|---|---|---|
+| 0 | 18,930 | 0.946 | 0.942 |
+| 1 | 4,210 | 0.940 | 0.946 |
+| 2 | 4,540 | 0.940 | 0.940 |
+| 3 | 4,430 | 0.944 | 0.938 |
+| 4 | 6,330 | 0.944 | 0.948 |
+| **mean ± std (ddof=1)** | | **0.9428 ± 0.0027** | **0.9428 ± 0.0041** |
+
+`astro-simclr compare-reference ... --ref CD21 --oracle-report results/phase2/replication/m1_oracle.json`
+exited 0 with `CD21: PASS (faithful)`: |Δ| = 0.0018 against the paper's 0.941 ± 0.004;
+SN test recall 0.872 ± 0.015 (needs 0.87 ± 0.04); validation 0.9428 (needs 0.950 ± 0.01);
+M1 oracle passed. About 26 minutes per run (0.050 s per step). The best steps (4.2k–6.3k,
+one outlier at 18.9k) match M1's best near 4.8k. No diagnostic was needed, so the list
+below stays unused. The without-features runs (advisory) are queued on the same machine.
+
 
 - `carrasco2021` with features, 5 seeds, plus without features, 5 seeds (advisory). Run on
   one machine: the 5090 if available, otherwise the 1050 overnight (about 45 minutes per
@@ -366,6 +385,18 @@ Results (`results/phase2/replication/m1_oracle.json`):
   checkpoints.
 
 ### 2.5 Improvements (after 2.4 reaches at least "acceptable")
+
+**Status:** unblocked by the 2.4 gate. Two prerequisites, in parallel:
+
+- **2.5-infra (CV training path).** `make-splits` writes the screen and the 5 CV folds, but
+  nothing trains or evaluates on them yet. Needed: `train-supervised --splits FILE
+  --fold K | --screen` (train on the fold's training part, select on its selection part,
+  predict its evaluation part; test untouched and not computed), and a `compare-variants`
+  mode that aggregates the folds and applies the superiority rule of 2.3 and the
+  non-inferiority rule below (balanced accuracy, paired bootstrap 95 % CI).
+- **2.5-models (B7, B2′, B1′).** The p4 / p4m single-pass models and the 63″ context
+  channels as flags of `paper_stamp_classifier`, with invariance unit tests, parameter
+  counts, and MAC counts.
 
 Decided: architecture first (see Decisions). The tables below separate the two lines.
 
