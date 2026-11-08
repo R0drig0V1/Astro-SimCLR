@@ -397,3 +397,28 @@ def test_cancel_manifest_without_a_manifest_is_a_no_op(tmp_path: Path) -> None:
     cancel_manifest(tmp_path)
     assert not list(tmp_path.iterdir())
     _ = read_manifest  # the manifest path is covered by test_queue_job.py
+
+
+def test_shutdown_records_jobs_that_already_ended(store: QueueStore, tmp_path: Path) -> None:
+    job = add_fake_job(store, tmp_path / "r1", "ok")
+    worker = _worker(store, tmp_path, Clock())
+    worker.step()
+    wait_for(lambda: (tmp_path / "r1" / "job_result.json").exists())
+    worker._running[job.job_id].process.wait()
+    worker.shutdown()
+    assert _job(store, job).status == "finished"
+
+
+def test_shutdown_stops_several_jobs_within_one_grace(store: QueueStore, tmp_path: Path) -> None:
+    import time
+
+    slots = [Slot("cpu", None, None, 1), Slot("cpu2", None, None, 1)]
+    jobs = [add_fake_job(store, tmp_path / f"r{i}", "stubborn") for i in (1, 2)]
+    worker = _worker(store, tmp_path, Clock(), slots=slots, grace_seconds=1.0)
+    worker.step()
+    assert len(worker.running_jobs) == 2
+    wait_for(lambda: all((tmp_path / f"r{i}" / "last").exists() for i in (1, 2)))
+    start = time.monotonic()
+    worker.shutdown()
+    assert time.monotonic() - start < 1.9  # one grace for both, not one each
+    assert {_job(store, job).status for job in jobs} == {"queued"}

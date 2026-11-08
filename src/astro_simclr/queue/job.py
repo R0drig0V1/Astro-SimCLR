@@ -2,44 +2,46 @@
 
 Both run with the code of the *submitted commit*, inside its per-SHA worktree on the runner
 (:mod:`~astro_simclr.queue.runner`), so the settings, presets and hashes are that commit's,
-not the runner's. The runner only ever calls them as argv arrays that name a spec file;
-no shell, no interpolated string (ADR 0016).
+not the runner's. The runner only ever calls them as argv arrays that name a spec file:
+no shell, no interpolated string (ADR 0018).
 
 - :func:`expand` (``spec expand SPEC --data-dir D --repo-root R``) prints, as JSON
   (:data:`EXPANSION_FORMAT`), the spec id and every cell with its run id and config hash.
   The run id needs the data's SHA-256 (from the prepared ``meta.json`` under ``D``) and the
-  splits file's (under ``R``), which is why it runs on the machine that has the data.
+  splits file's (under ``R``), which is why it runs on the machine that has the data. It
+  imports no torch.
 - :func:`run_cell` (``spec run-cell SPEC --cell KEY --attempt N --run-dir DIR --data-dir D
-  --repo-root R``) runs one cell with ``run_command`` and keeps its ``manifest.json``
-  (ADR 0015) up to date:
+  --repo-root R``) runs one cell:
 
   1. it takes an exclusive ``flock`` on ``DIR/.lock`` for its whole life, or exits with
      :data:`EXIT_BUSY` (75): two processes never write one run directory, even if a
      reaper mistook a live job for a dead one;
   2. it refuses a dirty or unknown git tree for a non-scratch spec (:data:`EXIT_REFUSED`);
-  3. a new run directory gets a ``queued`` manifest; an existing one is read and must hold
-     the same run id and attempt. A ``finished`` attempt exits 0 at once (a requeue after
-     the job finished but before the worker recorded it); a ``failed`` or ``cancelled``
-     one is refused; a ``running`` one is a crash (``kill -9``, a lost lease, a reboot) and
-     goes back to ``queued`` (the manifest's expired-lease transition);
-  4. ``running`` (with a machine record), then ``run_command(..., resume="auto")``: a
-     fresh start, or the continuation of ``checkpoints/last.ckpt``;
-  5. ``finished`` with the run's own machine record from ``metrics.json``, or ``failed``
-     on an exception (exit 1). SIGTERM, SIGINT or SIGHUP (a worker shutting down) put it
-     back to ``queued`` and exit with :data:`EXIT_TERMINATED` (143): the next run resumes;
-  6. it writes ``DIR/job_result.json`` with the peak device memory (CUDA's
+  3. it reads the manifest already in ``DIR``, if any. A ``finished`` attempt exits 0 at
+     once (a requeue after the job ended but before the worker recorded it); a
+     ``failed`` or ``cancelled`` one, or one of another run id or attempt, is refused;
+  4. ``run_command(..., resume="auto", queued=QueueAttempt(N, spec machine class))``: a
+     fresh start, or the continuation of ``checkpoints/last.ckpt``. ``run_command``
+     writes the manifest (task A1, ``runs.record``): ``queued -> running``, then
+     ``finished`` or ``failed``; an attempt left ``running`` by a crash goes
+     ``running -> queued -> running`` and keeps its start time;
+  5. SIGTERM, SIGINT or SIGHUP (the worker stopping it) end the process at once with
+     ``128 + signal`` and write nothing: the manifest stays ``running``, exactly as after
+     ``kill -9``, and the next start resumes it (``run_command`` would otherwise record
+     the attempt ``cancelled``, which is terminal);
+  6. ``QueueAttempt`` also carries the cell's run id (the expansion's): ``start_run``
+     refuses, before any step, to record another one. At the end it writes
+     ``DIR/job_result.json`` with the peak device memory (CUDA's
      ``max_memory_reserved``, ``null`` elsewhere), which the worker records for admission.
 
   ``ASTRO_SIMCLR_CONCURRENT_JOBS`` (set by the worker) is the manifest's
-  ``concurrent_jobs``.
+  ``concurrent_jobs`` (``runs.record``).
 
 The engine is ``lightning`` until task 4.8.
 """
 
 from __future__ import annotations
 
-import contextlib
-import dataclasses
 import fcntl
 import json
 import os
@@ -50,7 +52,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import FrameType
-from typing import Any, Final
+from typing import Final
 
 from astro_simclr.config import Settings
 from astro_simclr.data.files import atomic_write_bytes, sha256_file
@@ -62,21 +64,11 @@ from astro_simclr.runs.identity import (
     data_sha256,
     git_state,
     run_identity,
-    uv_lock_sha256,
 )
-from astro_simclr.runs.manifest import (
-    MANIFEST_FILE,
-    Manifest,
-    ManifestError,
-    new_manifest,
-    read_manifest,
-    transition,
-    write_manifest,
-)
+from astro_simclr.runs.manifest import MANIFEST_FILE, read_manifest
 from astro_simclr.runs.spec import Cell, ExperimentSpec, SpecError, load_spec
 
 __all__ = [
-    "CONCURRENT_JOBS_ENV",
     "ENGINE",
     "EXIT_BUSY",
     "EXIT_FAILED",
@@ -98,8 +90,6 @@ EXPANSION_FORMAT: Final = "astro-simclr-spec-expansion"
 LOCK_FILE: Final = ".lock"
 #: The job's result for the worker: the peak device memory.
 JOB_RESULT_FILE: Final = "job_result.json"
-#: Environment variable the worker sets: jobs sharing the device (the manifest's field).
-CONCURRENT_JOBS_ENV: Final = "ASTRO_SIMCLR_CONCURRENT_JOBS"
 
 #: Exit code of a run that failed (an exception in training).
 EXIT_FAILED: Final = 1
@@ -107,12 +97,8 @@ EXIT_FAILED: Final = 1
 EXIT_REFUSED: Final = 2
 #: Exit code when another process holds the run directory (``EX_TEMPFAIL``).
 EXIT_BUSY: Final = 75
-#: Exit code after SIGTERM, SIGINT or SIGHUP: the attempt is back to ``queued``.
+#: Exit code after SIGTERM (128 + 15); SIGINT and SIGHUP give 130 and 129.
 EXIT_TERMINATED: Final = 128 + signal.SIGTERM
-
-
-class _Terminated(BaseException):
-    """Raised by the signal handler: a BaseException, so no ``except Exception`` eats it."""
 
 
 def _splits_sha256(spec: ExperimentSpec, repo_root: Path) -> str | None:
@@ -211,15 +197,18 @@ def _locked(run_dir: Path) -> Iterator[bool]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+def _exit_now(signum: int, _frame: FrameType | None) -> None:
+    """End the process at once, writing nothing (module docstring, step 5)."""
+    # os.write, not sys.stderr: a buffered write in a handler can raise "reentrant call".
+    os.write(2, f"astro-simclr: signal {signum}: stopping; the attempt stays resumable\n".encode())
+    os._exit(128 + signum)
+
+
 @contextmanager
-def _signals_terminate() -> Iterator[None]:
-    """Turn SIGTERM, SIGINT and SIGHUP into :class:`_Terminated` while the run lasts."""
-
-    def handler(signum: int, _frame: FrameType | None) -> None:
-        raise _Terminated(signum)
-
+def _signals_exit() -> Iterator[None]:
+    """While the run lasts, SIGTERM, SIGINT and SIGHUP call :func:`_exit_now`."""
     names = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
-    previous = {signum: signal.signal(signum, handler) for signum in names}
+    previous = {signum: signal.signal(signum, _exit_now) for signum in names}
     try:
         yield
     finally:
@@ -227,107 +216,63 @@ def _signals_terminate() -> Iterator[None]:
             signal.signal(signum, old)
 
 
-def _start_machine(settings: Settings) -> dict[str, Any]:
-    """The machine record of a starting run (the device Lightning's ``auto`` will pick).
-
-    The finished manifest takes ``metrics.json``'s record instead, the device actually used.
-    """
-    import platform
-
-    import torch
-
-    from astro_simclr.training.runs import apply_fp32_precision, fp32_precision_record
-
-    apply_fp32_precision(settings)
-    wants = settings.accelerator
-    if wants in ("auto", "gpu", "cuda") and torch.cuda.is_available():
-        device = "cuda"
-    elif wants in ("auto", "gpu", "mps") and torch.backends.mps.is_available():
-        device = "mps"
-    else:
-        device = "cpu"
-    return {
-        "device": device,
-        "gpu": torch.cuda.get_device_name(0) if device == "cuda" else None,
-        "torch": torch.__version__,
-        "cuda": torch.version.cuda,
-        "platform": platform.platform(),
-        "processor": platform.machine(),
-        **fp32_precision_record(torch.device(device)),
-    }
-
-
 def _peak_memory(device: object) -> int | None:
     import torch
 
     if device != "cuda" or not torch.cuda.is_available():
         return None
-    return int(torch.cuda.max_memory_reserved())
+    return int(torch.cuda.max_memory_reserved())  # pragma: no cover - CUDA only
 
 
-def _concurrent_jobs() -> int:
-    try:
-        return max(1, int(os.environ.get(CONCURRENT_JOBS_ENV, "1")))
-    except ValueError:
-        return 1
-
-
-def _prepare_manifest(
-    run_dir: Path, fresh: Manifest, attempt: int
-) -> tuple[Manifest | None, str | None]:
-    """The ``queued`` manifest to start from, or ``(None, reason)`` to refuse / skip."""
+def _refusal(run_dir: Path, run_id: str, attempt: int) -> str | None:
+    """Why the manifest in ``run_dir`` stops this attempt (``"finished"``: done already)."""
     if not (run_dir / MANIFEST_FILE).is_file():
-        return fresh, None
+        return None
     existing = read_manifest(run_dir)
-    if existing.run_id != fresh.run_id or existing.attempt != attempt:
-        return None, (
+    if existing.run_id != run_id or existing.attempt != attempt:
+        return (
             f"{run_dir} holds run {existing.run_id[:16]} attempt {existing.attempt}, not "
-            f"{fresh.run_id[:16]} attempt {attempt}"
+            f"{run_id[:16]} attempt {attempt}"
         )
-    if existing.status == "running":  # a crash or a lost lease: resume
-        return transition(existing, "queued"), None
-    if existing.status == "queued":
-        return existing, None
-    return None, f"attempt is {existing.status}"
+    if existing.status in ("queued", "running"):
+        return None
+    return existing.status
 
 
 def _train(
     spec: ExperimentSpec,
     cell: Cell,
     settings: Settings,
-    queued: Manifest,
+    identity: RunIdentity,
     *,
+    attempt: int,
     run_dir: Path,
     repo_root: Path,
 ) -> int:
-    """Steps 4-6 of the module docstring, from a ``queued`` manifest; the exit code."""
+    """Steps 4-6 of the module docstring; the exit code."""
     from astro_simclr.experiments import run_command
     from astro_simclr.protocol.split_runs import SplitRequest
+    from astro_simclr.runs.record import QueueAttempt
 
-    manifest = transition(queued, "running", machine=_start_machine(settings))
-    write_manifest(run_dir, manifest)
     split = None
     if spec.splits is not None and cell.split is not None:
         fold = cell.split if isinstance(cell.split, int) else None
         split = SplitRequest(repo_root / spec.splits.file, fold)
+    queued = QueueAttempt(attempt=attempt, machine_class=spec.machine_class, run_id=identity.run_id)
     try:
-        with _signals_terminate():
-            metrics = run_command(
-                spec.command, settings, resume="auto", split=split, progress_bar=False
+        with _signals_exit():
+            run_command(
+                spec.command,
+                settings,
+                resume="auto",
+                split=split,
+                progress_bar=False,
+                queued=queued,
             )
-    except _Terminated:
-        write_manifest(run_dir, transition(manifest, "queued"))
-        return EXIT_TERMINATED
     except Exception:
         traceback.print_exc()
-        write_manifest(run_dir, transition(manifest, "failed"))
         return EXIT_FAILED
-    machine = metrics.get("machine")
-    if isinstance(machine, dict):
-        # metrics.json always has the manifest's machine keys; keep the start record if not.
-        with contextlib.suppress(ManifestError):
-            manifest = dataclasses.replace(manifest, machine=machine)
-    write_manifest(run_dir, transition(manifest, "finished"))
+    manifest = read_manifest(run_dir)
     device = manifest.machine["device"] if manifest.machine is not None else None
     result = {"format": "astro-simclr-job-result", "peak_memory_bytes": _peak_memory(device)}
     atomic_write_bytes(run_dir / JOB_RESULT_FILE, (json.dumps(result) + "\n").encode())
@@ -361,26 +306,19 @@ def run_cell(
             sys.stderr.write(f"astro-simclr: {run_dir} is held by another process\n")
             return EXIT_BUSY
         git = git_state(repo_root)
-        if not spec.scratch and (git.sha is None or git.dirty):
+        if not spec.scratch and (git.sha is None or git.dirty is not False):
+            state = "dirty" if git.dirty else "not a git tree (or git status failed)"
             sys.stderr.write(
-                f"astro-simclr: error: {repo_root} is {'dirty' if git.dirty else 'not a git tree'}"
-                f"; spec {spec.name} is not scratch\n"
+                f"astro-simclr: error: {repo_root} is {state}; spec {spec.name} is not scratch\n"
             )
             return EXIT_REFUSED
         identity = cell_identity(spec, cell, settings, repo_root=repo_root)
-        fresh = new_manifest(
-            spec.command,
-            settings,
-            identity,
-            git=git,
-            uv_lock_sha256=uv_lock_sha256(repo_root),
-            attempt=attempt,
-            concurrent_jobs=_concurrent_jobs(),
-        )
-        queued, reason = _prepare_manifest(run_dir, fresh, attempt)
-        if queued is None:
-            if reason == "attempt is finished":
-                return 0
-            sys.stderr.write(f"astro-simclr: error: {reason}\n")
+        refusal = _refusal(run_dir, identity.run_id, attempt)
+        if refusal == "finished":
+            return 0
+        if refusal is not None:
+            sys.stderr.write(f"astro-simclr: error: attempt refused: {refusal}\n")
             return EXIT_REFUSED
-        return _train(spec, cell, settings, queued, run_dir=run_dir, repo_root=repo_root)
+        return _train(
+            spec, cell, settings, identity, attempt=attempt, run_dir=run_dir, repo_root=repo_root
+        )

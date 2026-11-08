@@ -298,3 +298,37 @@ def test_choose_slot_prefers_the_least_loaded() -> None:
     chosen = choose_slot(slots, GIB, {"cuda:0": [GIB]})
     assert chosen is not None and chosen.name == "cuda:1"
     assert choose_slot(slots, None, {"cuda:0": [GIB], "cuda:1": [GIB]}) is None
+
+
+def test_reaper_requeue_needs_an_expired_lease(store: QueueStore, tmp_path: Path) -> None:
+    add_fake_job(store, tmp_path / "r1", "ok")
+    job = _claim(store, now=1.0)  # lease until 11
+    assert job is not None and job.lease_token is not None
+    assert (
+        store.requeue(job.job_id, job.lease_token, now=5.0, reason="x", expired_only=True) is None
+    )
+    assert store.requeue(job.job_id, job.lease_token, now=12.0, reason="x", expired_only=True) == (
+        "queued"
+    )
+
+
+def test_a_cancel_requested_job_is_not_requeued(store: QueueStore, tmp_path: Path) -> None:
+    add_fake_job(store, tmp_path / "r1", "ok")
+    job = _claim(store)
+    assert job is not None and job.lease_token is not None
+    store.cancel([job.job_id], now=2.0)
+    assert store.requeue(job.job_id, job.lease_token, now=3.0, reason="lease expired") == (
+        "cancelled"
+    )
+    cancelled = store.job(job.job_id)
+    assert cancelled is not None and cancelled.status == "cancelled"
+    assert cancelled.error == "cancelled (lease expired)"
+
+
+def test_spec_ids(store: QueueStore, tmp_path: Path) -> None:
+    store.add_spec("ab1", "a", tmp_path, scratch=False, now=0.0)
+    store.add_spec("ab2", "b", tmp_path, scratch=False, now=0.0)
+    store.add_spec("a_c", "c", tmp_path, scratch=False, now=0.0)
+    assert store.spec_ids("ab") == ["ab1", "ab2"]
+    assert store.spec_ids("ab1") == ["ab1"]
+    assert store.spec_ids("a_") == ["a_c"]

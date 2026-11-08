@@ -23,6 +23,14 @@ there:
 A manifest that cannot be read is an error before training (``ConfigError``): it is never
 silently replaced.
 
+**Queued runs** (task A3, :class:`QueueAttempt`). The queue names each attempt's directory
+and fixes its attempt number and machine class (the spec's, ADR 0015 rule 7) before the
+run starts; ``spec run-cell`` passes them through ``run_command(queued=...)``. Then the
+attempt is the queue's, not inferred: a fresh directory starts it, and a manifest of the
+same run id and attempt still ``queued`` or ``running`` (a ``kill -9``, a lost lease, a
+SIGTERM, a reboot) continues it, whether or not a ``last`` checkpoint was written yet. Any
+other manifest in the directory is an error (``ConfigError``).
+
 **Provenance.** The git state and the ``uv.lock`` SHA-256 are read from the source tree the
 package runs from (the checkout holding ``pyproject.toml``); an installed wheel has neither
 and records nulls. ``concurrent_jobs`` comes from the environment variable
@@ -64,6 +72,7 @@ from astro_simclr.runs.manifest import (
 
 __all__ = [
     "CONCURRENT_JOBS_ENV",
+    "QueueAttempt",
     "RunRecord",
     "concurrent_jobs_from_env",
     "source_root",
@@ -96,6 +105,21 @@ def concurrent_jobs_from_env(environ: Mapping[str, str] | None = None) -> int:
     if not raw.isdigit() or int(raw) < 1:
         raise ConfigError(f"{CONCURRENT_JOBS_ENV}={raw!r}: expected a positive integer")
     return int(raw)
+
+
+@dataclass(frozen=True, slots=True)
+class QueueAttempt:
+    """What the queue fixes of a run before it starts (module docstring, "Queued runs").
+
+    ``attempt`` is the attempt the run directory is named after; ``machine_class`` is the
+    spec's, recorded in the run id instead of the device's default class; ``run_id``, if
+    given, is the run id the queue expanded the cell to: ``start_run`` refuses another one
+    before training (hours later would waste the run).
+    """
+
+    attempt: int
+    machine_class: str
+    run_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -167,6 +191,7 @@ def start_run(
     root: Path | None = None,
     concurrent_jobs: int | None = None,
     at: str | None = None,
+    queued: QueueAttempt | None = None,
 ) -> RunRecord:
     """Write the ``running`` manifest of a run about to train; return its record.
 
@@ -176,11 +201,13 @@ def start_run(
     ``resumed`` whether the fit resumes from a checkpoint. ``root`` is the source checkout
     for the git state and ``uv.lock`` (default :func:`source_root`); ``concurrent_jobs``
     defaults to :func:`concurrent_jobs_from_env`. The attempt follows the module
-    docstring.
+    docstring; ``queued`` fixes it and the machine class ("Queued runs").
 
     Raises:
         ConfigError: if the manifest already in ``settings.output_dir`` cannot be read, or
-            ``ASTRO_SIMCLR_CONCURRENT_JOBS`` is invalid.
+            ``ASTRO_SIMCLR_CONCURRENT_JOBS`` is invalid; with ``queued``, if the run id is
+            not ``queued.run_id`` or the directory holds a manifest of another run,
+            attempt, or an ended attempt.
         DataError: if ``data`` is not a readable prepared layout.
         OSError: if a hashed file or the manifest cannot be read or written.
     """
@@ -191,7 +218,9 @@ def start_run(
         command,
         settings,
         data_sha256=data_sha256(data),
-        machine_class=default_machine_class(
+        machine_class=queued.machine_class
+        if queued is not None
+        else default_machine_class(
             str(machine["device"]),
             gpu if isinstance(gpu, str) else None,
             processor if isinstance(processor, str) else "",
@@ -201,30 +230,47 @@ def start_run(
         splits_sha256=None if split is None else sha256_file(split.file),
         pretrained_sha256=_pretrained_sha256(settings, pretrained_file),
     )
+    if queued is not None and queued.run_id is not None and queued.run_id != identity.run_id:
+        msg = (
+            f"this run's id is {identity.run_id}, but the queue expanded the cell to "
+            f"{queued.run_id}: the spec expansion and runs.record disagree"
+        )
+        raise ConfigError(msg)
     jobs = concurrent_jobs_from_env() if concurrent_jobs is None else concurrent_jobs
     previous = _existing(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
+    unfinished = previous is not None and previous.status in ("queued", "running")
+    same = previous is not None and previous.run_id == identity.run_id
     if (
-        previous is not None
-        and previous.run_id == identity.run_id
-        and resumed
-        and previous.status in ("queued", "running")
+        queued is not None
+        and previous is not None
+        and not (same and unfinished and previous.attempt == queued.attempt)
     ):
-        queued = previous if previous.status == "queued" else transition(previous, "queued", at=at)
+        msg = (
+            f"{run_dir} holds run {previous.run_id[:16]} attempt {previous.attempt} "
+            f"({previous.status}), not a resumable run {identity.run_id[:16]} attempt "
+            f"{queued.attempt}"
+        )
+        raise ConfigError(msg)
+    if previous is not None and same and unfinished and (resumed or queued is not None):
+        start = previous if previous.status == "queued" else transition(previous, "queued", at=at)
     else:
-        same = previous is not None and previous.run_id == identity.run_id
         checkout = source_root() if root is None else root
-        queued = new_manifest(
+        if queued is not None:
+            attempt = queued.attempt
+        else:
+            attempt = previous.attempt + 1 if same and previous is not None else 1
+        start = new_manifest(
             command,
             settings,
             identity,
             git=GitState(None, None) if checkout is None else git_state(checkout),
             uv_lock_sha256=None if checkout is None else uv_lock_sha256(checkout),
-            attempt=previous.attempt + 1 if same and previous is not None else 1,
+            attempt=attempt,
             concurrent_jobs=jobs,
             created_at=at,
         )
-    write_manifest(run_dir, queued)
-    running = transition(queued, "running", at=at, machine=machine)
+    write_manifest(run_dir, start)
+    running = transition(start, "running", at=at, machine=machine)
     write_manifest(run_dir, running)
     return RunRecord(run_dir, running)

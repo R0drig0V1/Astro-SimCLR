@@ -165,3 +165,20 @@ Every run of today's `run_command` now writes its manifest, with `engine: lightn
    `--allow-mixed-machines` is given, exactly as for machines and precision, and
    `compare-reference` warns. A new-engine variant is therefore compared only with a
    baseline rerun on the new engine.
+
+## Amendment: task A3 (2026-11-08)
+
+The queue (ADR 0018) names each attempt's directory, so `start_run` and `run_command` take
+`queued=QueueAttempt(attempt, machine_class, run_id)` from `spec run-cell`:
+
+- a run id other than `run_id` (the spec expansion's) is refused before training;
+
+- the attempt is the queue's, not inferred from the directory, and the machine class is
+  the spec's (rule 7), not the device's default;
+- a fresh directory starts that attempt; a manifest of the same run id and attempt still
+  `queued` or `running` continues it whether or not a `last` checkpoint exists (a job
+  killed before its first checkpoint must not open a new attempt in the same directory);
+- any other manifest in the directory (another run id or attempt, or an ended attempt) is
+  a `ConfigError`, before training.
+
+Runs launched by hand are unchanged.

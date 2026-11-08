@@ -169,7 +169,7 @@ of one run.
   YAML mapping without checking keys; `settings_to_plain` gives the plain (YAML/JSON) form
   that `show-config` prints and the metrics JSON records.
 
-## `cli` (task 1.1; subcommands from 1.2, 1.7 and 3.1)
+## `cli` (task 1.1; subcommands from 1.2, 1.7, 3.1 and A3)
 
 The `astro-simclr` console script (`[project.scripts]`). `main(argv)` returns the exit code,
 so tests call it in-process. Every subcommand registers in `build_parser()` and takes the
@@ -226,6 +226,11 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
 - `preflight (--synthetic | --data-dir DIR) [--accelerator cuda] [--runs R1,R2,R3,R4]
   [--set ...]` (see `preflight`): exit 0 if no step failed, else 1.
   `scripts/gpu-preflight.sh` is a thin `uv run --no-sync` wrapper.
+- `spec check|expand|run-cell` and `queue init|enqueue|paths|worker|status|cancel|service|
+  tmux|submit|sync` (task A3, see `queue` and `docs/queue.md`): `spec run-cell` exits with
+  the job's code (0 finished, 1 failed, 2 refused, 75 busy, 128 + a signal); the queue's
+  own errors (location, transport, runner, schema) print one line and exit 1, an invalid
+  spec exits 2.
 - Exit codes: 0 success; 1 unusable data (`DataError`) or a failed gate/preflight; 2 invalid
   settings or arguments, including an unavailable accelerator (`AcceleratorError`).
 
@@ -1745,6 +1750,91 @@ calls `record.start_run` and `RunRecord.end` around the fit (task A1).
   An unreadable manifest is a `ConfigError`, never overwritten. The git state and the
   `uv.lock` SHA-256 come from the source checkout (`source_root()`, `None` in an installed
   wheel). `concurrent_jobs` comes from `ASTRO_SIMCLR_CONCURRENT_JOBS` (default 1).
+  `queued=QueueAttempt(attempt, machine_class, run_id)` (task A3) makes it a queued run:
+  a run id other than `run_id` is refused before training; the
+  attempt and the machine class are the queue's, a fresh directory starts that attempt,
+  an unfinished manifest of the same run id and attempt continues it (with or without a
+  `last` checkpoint), and anything else in the directory is a `ConfigError`.
+- **`spec`** (task A3; ADR 0018; `docs/queue.md`): the experiment-spec format shared by
+  the queue and the registry (A2). `parse_spec` / `load_spec` validate a YAML file
+  (`astro-simclr-experiment-spec`, version 1: name, `train-supervised`, optional preset
+  and shared settings, arms as overrides, seeds, optional splits with folds or the screen,
+  machine class and uv extra, `scratch`) and resolve every arm once, so a bad setting
+  fails before anything is queued. `seed`, `data_dir`, `output_dir` and `pretrained` are
+  reserved. `ExperimentSpec.spec_id` is the SHA-256 of the canonical JSON of the parsed
+  content; `cells()` are arms × seeds × split parts (`Cell(arm, seed, split)`, key
+  `<arm>/s<seed>/<f<k>|screen|all>`); `arm_settings` resolves a cell like
+  `train-supervised` on the command line; `arm_config_sha256(arm)` is one config hash per
+  arm; `expected_run_ids` gives each cell's run id from the data and splits SHA-256.
+
+## `queue` (phase 4, task A3; ADR 0018)
+
+`src/astro_simclr/queue/` replaces the hand-written tmux/bash queues with experiment specs
+(`runs.spec`), a durable SQLite queue on the GPU machine and ssh submission. The user guide
+and the survival checklist are in `docs/queue.md`. Nothing imports torch at module level.
+
+- **`location`**: `check_queue_location(path)` refuses a queue file on a WSL Windows drive
+  (`/mnt/<letter>/`), on a mount whose type is in `UNSAFE_FSTYPES` (`9p`, `drvfs`, NFS,
+  CIFS, sshfs, ...; from `/proc/mounts`) or in a synced folder (`SYNCED_FOLDERS`: Dropbox,
+  OneDrive, iCloud, ...).
+- **`store`**: `QueueStore` over `$ASTRO_SIMCLR_HOME/queue/queue.sqlite` (WAL,
+  `synchronous=FULL`, `user_version` 1; a newer schema is refused). Tables `specs`,
+  `jobs` (one row per attempt of one cell: run id, attempt, run directory, cwd and argv,
+  status in the manifest's vocabulary, lease token / owner / expiry, host, boot id, pid,
+  slot, resumes, cancel flag, exit code) and `peak_memory` (the largest measured peak per
+  config hash and machine class). `claim` leases the head of the queue under
+  `BEGIN IMMEDIATE` if the admission callback gives it a slot (first in, first out);
+  `heartbeat`, `finish` and `requeue` name the lease token, so a worker whose lease was
+  taken over writes nothing; `requeue` counts resumes and fails a job past
+  `max_resumes` (5); `add_job` gives a run id its next attempt and skips one that is
+  queued, running or finished unless `new_attempt`.
+- **`admission`**: `Slot(name, gpu, capacity_bytes, max_jobs=1)`; `admits` and
+  `choose_slot` are pure: at most `max_jobs` per slot, an empty slot always admits, a job
+  joins others only if all of them and it have a measured peak and the sum fits under
+  `capacity × 0.9`.
+- **`job`**: the fixed entry point of the submitted commit. `expand` (`spec expand`)
+  prints the spec id and each cell's run id and config hash as JSON, without torch.
+  `run_cell` (`spec run-cell`) holds `DIR/.lock` (`flock`; exit 75 if held), refuses a
+  dirty tree for a non-scratch spec (exit 2), exits 0 for a finished attempt and refuses
+  an ended or foreign one, then calls `run_command(..., resume="auto",
+  queued=QueueAttempt(...))`; SIGTERM, SIGINT and SIGHUP end it at once without writing
+  (the manifest stays `running`, resumable like after `kill -9`). `QueueAttempt` carries
+  the cell's run id, which `start_run` checks before the first step; at the end it writes
+  `job_result.json` (peak CUDA memory).
+- **`worker`**: `Worker(store, machine_class, slots, log_dir, ...)`; each `step` renews its
+  leases (a lost one: kill the child, write nothing), handles cancel requests (SIGTERM,
+  then SIGKILL after the grace), collects exits (`outcome`: 0 finished; 75 retry after a
+  lease, not counted; a signal or `128 + signal` a counted requeue; anything else
+  failed), reaps expired leases of other workers (killing the orphan's process group first
+  when it is on this host and boot and its command line names the run directory, so a
+  recycled pid is never hit), and claims while a slot admits. Jobs start with
+  `Popen(argv, cwd, start_new_session=True)`, stdin closed, output appended to
+  `logs/<job>.log`, `CUDA_VISIBLE_DEVICES` and `ASTRO_SIMCLR_CONCURRENT_JOBS` set.
+  `shutdown` (SIGTERM, SIGHUP) records the jobs that already ended, sends SIGTERM to all
+  others, waits one grace period for them together and requeues them, uncounted. The
+  reaper re-reads a lease before killing and requeues only if it is still expired
+  (`requeue(expired_only=True)`); a requeued job whose cancel was asked for is cancelled.
+  `queue cancel --spec` needs a prefix matching exactly one spec (`store.spec_ids`).
+- **`runner`**: `RunnerConfig` (`$ASTRO_SIMCLR_HOME/runner.yaml`: repo, data_dir,
+  runs_root, uv). `ensure_worktree` checks a commit out into `worktrees/<sha>` (detached;
+  `git fetch origin` if missing). `enqueue` refuses a dirty worktree for a non-scratch
+  spec, runs `uv sync --locked [--extra X]`, writes `specs/<spec id>.yaml`, runs the
+  worktree's `spec expand` and queues one job per cell with the argv `<worktree>/.venv/
+  bin/astro-simclr spec run-cell ...` into `runs_root/<spec name>/<run id[:16]>-a<n>`.
+  Every command is an argv list.
+- **`remote`**: `SshTransport(host)` runs an argv as one `shlex.join` string after `--`
+  (ssh hands it to the remote shell) with stdin, and `pull`s with `rsync -a --partial`;
+  host names and remote paths are checked. `submit` refuses a dirty tree, an uncommitted
+  spec or an unpushed commit for a non-scratch spec, then sends `queue enqueue --sha HEAD -`
+  with the spec on stdin. `sync` asks `queue paths`, rsyncs the run directories without
+  checkpoints, locks or SQLite files, then the checkpoints the retention policy keeps for
+  finished attempts, then the specs, and runs `runs reindex <dest>` (skipped with a note
+  while the registry is absent).
+- **`service`**: the systemd user unit (`Restart=always`, `KillMode=mixed`,
+  `TimeoutStopSec=60`, `ExecStart` words quoted for systemd) and the tmux argvs, whose
+  targets are always `=<name>` (exact match: `-t screen25` matched `screen25c`).
+- **`cli`**: `spec check|expand|run-cell` and `queue init|enqueue|paths|worker|status|
+  cancel|service|tmux|submit|sync`; the queue's errors print one line and exit 1.
 
 ## `preflight` (task 1.7)
 

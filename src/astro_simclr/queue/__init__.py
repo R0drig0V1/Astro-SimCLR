@@ -1,10 +1,10 @@
-"""The durable run queue: experiment specs in, run directories out (phase 4, task A3; ADR 0016).
+"""The durable run queue: experiment specs in, run directories out (phase 4, task A3; ADR 0018).
 
 It replaces the hand-written tmux/bash queues. The pieces, from the laptop to the GPU:
 
 - :mod:`~astro_simclr.queue.remote`: ``queue submit`` checks the local tree (clean unless
   the spec is ``scratch``; the commit on a remote branch) and sends the spec over a
-  :class:`~astro_simclr.queue.remote.Transport` (ssh, or a fake one in the tests) to the
+  :class:`~astro_simclr.queue.remote.SshTransport` (ssh; a fake ssh in the tests) to the
   runner, as a fixed argv with the spec on stdin; ``queue sync`` rsyncs the run directories
   and the specs back and runs ``runs reindex`` (the registry, A2). SQLite is never copied.
 - :mod:`~astro_simclr.queue.runner`: on the GPU machine, ``queue enqueue`` checks the
@@ -19,8 +19,9 @@ It replaces the hand-written tmux/bash queues. The pieces, from the laptop to th
   group, renews its leases, requeues an expired lease (killing the orphan first) so that it
   resumes from ``last``.
 - :mod:`~astro_simclr.queue.job`: the fixed entry point a job runs, ``spec run-cell``,
-  inside the per-SHA worktree: one cell of a spec, with its ``manifest.json``
-  (ADR 0015) and a run-directory lock.
+  inside the per-SHA worktree: one cell of a spec under a run-directory lock, through
+  ``run_command`` (which writes its ``manifest.json``, ADR 0015) with the queue's attempt
+  and machine class (``runs.record.QueueAttempt``).
 - :mod:`~astro_simclr.queue.service`: a systemd user unit, or a tmux session found by its
   exact name, to host the worker.
 

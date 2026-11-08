@@ -1,4 +1,4 @@
-"""The durable queue: one SQLite file of jobs with heartbeat leases (task A3; ADR 0016).
+"""The durable queue: one SQLite file of jobs with heartbeat leases (task A3; ADR 0018).
 
 The file is ``$ASTRO_SIMCLR_HOME/queue/queue.sqlite`` on the runner (the GPU machine),
 checked by :func:`~astro_simclr.queue.location.check_queue_location` (a local disk, never
@@ -367,6 +367,15 @@ class QueueStore:
             row = db.execute("SELECT * FROM jobs WHERE job_id = ?", (cursor.lastrowid,)).fetchone()
         return _job(row), True
 
+    def spec_ids(self, prefix: str) -> list[str]:
+        """The spec ids that start with ``prefix``, sorted."""
+        escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        rows = self._db.execute(
+            "SELECT spec_id FROM specs WHERE spec_id LIKE ? ESCAPE '\\' ORDER BY spec_id",
+            (escaped + "%",),
+        ).fetchall()
+        return [str(row["spec_id"]) for row in rows]
+
     def job(self, job_id: int) -> Job | None:
         """The job ``job_id``, or ``None``."""
         row = self._db.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
@@ -501,20 +510,34 @@ class QueueStore:
         exit_code: int | None = None,
         not_before: float | None = None,
         count: bool = True,
+        expired_only: bool = False,
     ) -> Status | None:
         """Put a leased running job back in the queue, to resume from its ``last`` checkpoint.
 
-        ``count`` adds one to its requeues; past ``max_resumes`` it is ``failed`` instead.
+        ``count`` adds one to its requeues; past ``max_resumes`` it is ``failed`` instead. A
+        job whose cancellation was asked for is ``cancelled`` instead (its worker is gone).
+        ``expired_only`` (the reaper) writes only if the lease has expired by ``now``.
         Returns the new status, or ``None`` if the lease is lost (nothing written).
         """
         with self._write() as db:
-            row = db.execute(
-                "SELECT resumes, max_resumes FROM jobs WHERE job_id = ? AND lease_token = ? "
-                "AND status = 'running'",
-                (job_id, token),
-            ).fetchone()
+            query = (
+                "SELECT resumes, max_resumes, cancel_requested FROM jobs WHERE job_id = ? "
+                "AND lease_token = ? AND status = 'running'"
+            )
+            args: tuple[object, ...] = (job_id, token)
+            if expired_only:
+                query += " AND lease_expires < ?"
+                args = (*args, now)
+            row = db.execute(query, args).fetchone()
             if row is None:
                 return None
+            if row["cancel_requested"]:
+                db.execute(
+                    "UPDATE jobs SET status = 'cancelled', exit_code = ?, error = ?, ended_at = ?, "
+                    "lease_token = NULL, lease_expires = NULL WHERE job_id = ?",
+                    (exit_code, f"cancelled ({reason})", now, job_id),
+                )
+                return "cancelled"
             resumes = row["resumes"] + (1 if count else 0)
             if resumes > row["max_resumes"]:
                 db.execute(

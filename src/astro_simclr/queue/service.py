@@ -50,6 +50,12 @@ def _systemd_quote(arg: str) -> str:
     return f'"{escaped}"'
 
 
+def _environment(assignment: str) -> str:
+    """One ``Environment=`` value: quoted, ``%`` escaped; ``$`` is literal there."""
+    escaped = assignment.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+    return f'"{escaped}"'
+
+
 def systemd_unit(worker_argv: Sequence[str], *, home: Path, working_dir: Path) -> str:
     """The text of the worker's systemd user unit (module docstring).
 
@@ -65,8 +71,8 @@ def systemd_unit(worker_argv: Sequence[str], *, home: Path, working_dir: Path) -
             "",
             "[Service]",
             "Type=simple",
-            f"WorkingDirectory={working_dir}",
-            f"Environment={_systemd_quote(f'ASTRO_SIMCLR_HOME={home}')}",
+            f"WorkingDirectory={str(working_dir).replace('%', '%%')}",
+            f"Environment={_environment(f'ASTRO_SIMCLR_HOME={home}')}",
             f"ExecStart={exec_start}",
             "Restart=always",
             "RestartSec=10",

@@ -1,4 +1,4 @@
-"""The queue worker: claim, run, heartbeat, reap (task A3; ADR 0016).
+"""The queue worker: claim, run, heartbeat, reap (task A3; ADR 0018).
 
 One worker per machine runs the jobs of one machine class on its slots
 (:mod:`~astro_simclr.queue.admission`). Each :meth:`Worker.step`:
@@ -36,6 +36,7 @@ real processes on CPU (``tests/test_queue_worker.py``).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
@@ -49,7 +50,7 @@ from pathlib import Path
 from typing import IO, Final, Literal
 
 from astro_simclr.queue.admission import Slot, choose_slot
-from astro_simclr.queue.job import CONCURRENT_JOBS_ENV, EXIT_BUSY, JOB_RESULT_FILE
+from astro_simclr.queue.job import EXIT_BUSY, JOB_RESULT_FILE
 from astro_simclr.queue.store import Job, QueueStore
 from astro_simclr.runs.manifest import (
     TERMINAL_STATUSES,
@@ -58,6 +59,7 @@ from astro_simclr.runs.manifest import (
     transition,
     write_manifest,
 )
+from astro_simclr.runs.record import CONCURRENT_JOBS_ENV
 
 __all__ = [
     "DEFAULT_GRACE_SECONDS",
@@ -180,6 +182,12 @@ def kill_group(
         time.sleep(0.05)
 
 
+def _sweep(pgid: int) -> None:
+    """SIGKILL whatever is left of group ``pgid`` (a DataLoader worker outliving its leader)."""
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pgid, signal.SIGKILL)
+
+
 @dataclass
 class _Running:
     job: Job
@@ -257,11 +265,17 @@ class Worker:
     def shutdown(self) -> None:
         """Stop every job (SIGTERM, then SIGKILL after the grace) and requeue it at once."""
         self._stopping = True
-        for job_id in list(self._running):
-            entry = self._running.pop(job_id)
-            _stop(entry, grace=self.grace_seconds)
+        self._collect()  # jobs that already ended are recorded as such, not requeued
+        entries = [self._running.pop(job_id) for job_id in list(self._running)]
+        for entry in entries:  # every job gets SIGTERM first, then all are waited for
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(entry.process.pid, signal.SIGTERM)
+        deadline = time.monotonic() + self.grace_seconds
+        for entry in entries:
+            remaining = max(0.0, deadline - time.monotonic())
+            _stop(entry, grace=remaining)
             self.store.requeue(
-                job_id,
+                entry.job.job_id,
                 entry.token,
                 now=self.clock(),
                 reason="worker shut down",
@@ -292,6 +306,7 @@ class Worker:
             if code is None:
                 continue
             del self._running[job_id]
+            _sweep(entry.process.pid)
             entry.log.close()
             now = self.clock()
             if entry.cancelling:
@@ -326,6 +341,15 @@ class Worker:
         for job in self.store.expired(now=now):
             if job.job_id in self._running or job.lease_token is None:
                 continue  # our own lease (we stalled): the heartbeat renews it next step
+            # Re-read just before acting: the owner may have heartbeated since the snapshot.
+            current = self.store.job(job.job_id)
+            if (
+                current is None
+                or current.lease_token != job.lease_token
+                or current.lease_expires is None
+                or current.lease_expires >= self.clock()
+            ):
+                continue
             same_boot = job.host == self.host and job.boot_id == self.boot_id
             pid = job.pid
             if same_boot and pid is not None and process_runs(pid, job.run_dir):
@@ -335,8 +359,13 @@ class Worker:
                     grace=self.grace_seconds,
                     wait=lambda: not process_runs(pid, job.run_dir),  # noqa: B023
                 )
+                _sweep(pid)
             self.store.requeue(
-                job.job_id, job.lease_token, now=now, reason=f"lease of {job.lease_owner} expired"
+                job.job_id,
+                job.lease_token,
+                now=self.clock(),
+                reason=f"lease of {job.lease_owner} expired",
+                expired_only=True,
             )
 
     def _peaks(self) -> dict[str, list[int | None]]:
@@ -417,6 +446,7 @@ def _stop(entry: _Running, *, grace: float, first: signal.Signals = signal.SIGTE
     process = entry.process
     kill_group(process.pid, grace=grace, first=first, wait=lambda: process.poll() is not None)
     process.wait()
+    _sweep(process.pid)
     entry.log.close()
 
 

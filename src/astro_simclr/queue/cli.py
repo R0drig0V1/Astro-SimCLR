@@ -288,7 +288,14 @@ def _queue_cancel(args: argparse.Namespace) -> int:
     try:
         ids = list(args.job_ids)
         if args.spec is not None:
-            ids += [job.job_id for job in store.jobs(spec_id=args.spec)]
+            # Exactly one spec: a short or empty prefix must never cancel several.
+            matches = store.spec_ids(args.spec) if args.spec else []
+            if len(matches) != 1:
+                found = ", ".join(match[:12] for match in matches) or "none"
+                return _error(f"--spec {args.spec!r} must name exactly one spec (found {found})")
+            ids += [
+                job.job_id for job in store.jobs(spec_id=matches[0]) if job.spec_id == matches[0]
+            ]
         result = store.cancel(ids, now=time.time())
         for job_id, outcome in result.items():
             job = store.job(job_id)

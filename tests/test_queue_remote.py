@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import os
 import stat
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -178,9 +179,7 @@ def test_submit_run_and_sync(env: Env) -> None:
 def test_sync_runs_reindex(env: Env) -> None:
     calls: list[list[str]] = []
 
-    def commands(argv: list[str], **_kwargs: object) -> object:
-        import subprocess
-
+    def commands(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
         calls.append(list(argv))
         return subprocess.CompletedProcess(argv, 0, b"", b"")
 
@@ -191,22 +190,20 @@ def test_sync_runs_reindex(env: Env) -> None:
         env.tmp / "d",
         specs_dest=env.tmp / "s",
         remote_cli=CLI,
-        commands=commands,  # type: ignore[arg-type]
+        commands=commands,
     )
     assert report.reindexed is True
     assert calls == [
         [sys.executable, "-m", "astro_simclr.cli", "runs", "reindex", str(env.tmp / "d")]
     ]
 
-    def failing(argv: list[str], **_kwargs: object) -> object:
-        import subprocess
-
+    def failing(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
         return subprocess.CompletedProcess(argv, 1, b"", b"registry locked")
 
     with pytest.raises(SubmitError, match="registry locked"):
         sync(
             env.transport, env.tmp / "d", specs_dest=env.tmp / "s", remote_cli=CLI, commands=failing
-        )  # type: ignore[arg-type]
+        )
 
 
 def test_a_dropped_connection(env: Env) -> None:

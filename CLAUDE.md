@@ -23,7 +23,8 @@ jupyter_examples/  2021 exploratory notebooks (they import the legacy code: run 
 configs/reference/  R1-R4 reference-run configs (plan "Reference runs"), with provenance
 configs/splits/     stored phase-2 decision splits (make-splits; docs/evaluation-protocol.md)
 docs/        architecture.md (one section per module), phases/ (the plan), decisions/
-             (ADRs), plan-reviews/, evaluation-protocol.md (phase-2 rules), data.md
+             (ADRs), plan-reviews/, evaluation-protocol.md (phase-2 rules), data.md,
+             queue.md (the run queue: specs, worker, ssh submission, survival checklist)
 scripts/     characterize/ (fixture generators; legacy code via the legacy-final tag),
              check.sh (all checks), check-torch-wheels.sh (ADR 0001 lock assertions),
              gpu-preflight.sh (wraps `astro-simclr preflight`), integrator.sh; optional

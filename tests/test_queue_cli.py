@@ -110,6 +110,10 @@ def test_queue_init_status_cancel_paths(
     assert "running" in text and "queued" in text
     assert main(["queue", "status", "--json", "--spec", "s2"]) == 0
     assert [job["job_id"] for job in json.loads(_out(capsys))] == [waiting.job_id]
+    assert main(["queue", "cancel", "--spec", "s"]) == 1  # two specs match: nothing cancelled
+    assert "exactly one spec" in capsys.readouterr().err
+    assert main(["queue", "cancel", "--spec", ""]) == 1
+    capsys.readouterr()
     assert main(["queue", "cancel", "--spec", "s2", str(claimed.job_id)]) == 0
     text = _out(capsys)
     assert f"{claimed.job_id}: cancel requested" in text and f"{waiting.job_id}: cancelled" in text
@@ -187,11 +191,11 @@ def test_queue_service(
 
 def test_systemd_unit_quoting() -> None:
     unit = systemd_unit(
-        ["/a b/python", "100%", 'say "hi"', "$HOME"], home=Path("/h"), working_dir=Path("/w")
+        ["/a b/python", "100%", 'say "hi"', "$HOME"], home=Path("/h$x"), working_dir=Path("/w%")
     )
     assert 'ExecStart="/a b/python" "100%%" "say \\"hi\\"" "$$HOME"' in unit
-    assert "KillMode=mixed" in unit and "WorkingDirectory=/w" in unit
-    assert 'Environment="ASTRO_SIMCLR_HOME=/h"' in unit
+    assert "KillMode=mixed" in unit and "WorkingDirectory=/w%%" in unit
+    assert 'Environment="ASTRO_SIMCLR_HOME=/h$x"' in unit
     assert unit_path(Path("/c")) == Path("/c/systemd/user") / SERVICE_NAME
     assert service_commands("me")[-1] == ["loginctl", "enable-linger", "me"]
 

@@ -14,6 +14,7 @@ from astro_simclr.runs.identity import SCREEN, data_sha256
 from astro_simclr.runs.manifest import MANIFEST_FILE, ManifestError, read_manifest
 from astro_simclr.runs.record import (
     CONCURRENT_JOBS_ENV,
+    QueueAttempt,
     RunRecord,
     concurrent_jobs_from_env,
     source_root,
@@ -195,3 +196,63 @@ def test_the_machine_engine_must_agree(classifier_dir: Path, tmp_path: Path) -> 
             machine={**MACHINE, "engine": "plain"},
             root=tmp_path,
         )
+
+
+# --- queued runs (task A3) ----------------------------------------------------------------------
+
+
+def test_a_queued_run_takes_the_queues_attempt_and_machine_class(
+    classifier_dir: Path, tmp_path: Path
+) -> None:
+    settings = _settings(tmp_path)
+    queued = QueueAttempt(attempt=3, machine_class="cuda-nvidia-geforce-gtx-1050")
+    start_run(
+        "train-supervised",
+        settings,
+        data=classifier_dir,
+        machine=MACHINE,
+        root=tmp_path,
+        at=T0,
+        queued=queued,
+    )
+    manifest = read_manifest(settings.output_dir)
+    assert manifest.attempt == 3
+    assert manifest.identity.machine_class == "cuda-nvidia-geforce-gtx-1050"
+    # A crash before any checkpoint (resumed=False): the same attempt continues.
+    again = start_run(
+        "train-supervised",
+        settings,
+        data=classifier_dir,
+        machine=MACHINE,
+        root=tmp_path,
+        at=T1,
+        queued=queued,
+    )
+    assert (again.manifest.attempt, again.manifest.started_at) == (3, T0)
+    again.end("finished", at=T2)
+    # A finished attempt, or another attempt number, is never overwritten.
+    for attempt in (3, 4):
+        with pytest.raises(ConfigError, match="not a resumable run"):
+            start_run(
+                "train-supervised",
+                settings,
+                data=classifier_dir,
+                machine=MACHINE,
+                root=tmp_path,
+                queued=QueueAttempt(attempt=attempt, machine_class=queued.machine_class),
+            )
+
+
+def test_a_queued_run_with_another_run_id_is_refused(classifier_dir: Path, tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    queued = QueueAttempt(attempt=1, machine_class="cpu-arm64", run_id="0" * 64)
+    with pytest.raises(ConfigError, match="disagree"):
+        start_run(
+            "train-supervised",
+            settings,
+            data=classifier_dir,
+            machine=MACHINE,
+            root=tmp_path,
+            queued=queued,
+        )
+    assert not (settings.output_dir / MANIFEST_FILE).exists()
