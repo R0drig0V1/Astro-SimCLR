@@ -7,7 +7,8 @@ accuracies, because they pair the two variants stamp by stamp. Arrays (``np.save
 with ``allow_pickle=False``):
 
 =================  =====================  =================================================
-``probabilities``  float32 (N, 5)         softmax of the logits, columns in ``LABEL_NAMES``
+``probabilities``  float32 (N, C)         softmax of the logits, columns in label order
+                                          (``LABEL_NAMES``, C = 5, for phase 2)
 ``labels``         int64 (N,)             the true class of each stamp
 ``index``          int64 (N,)             the stamp's index in the evaluated set: its
                                           position in the split (file order) for a normal
@@ -16,6 +17,11 @@ with ``allow_pickle=False``):
 
 ``metrics.json["predictions"][stage]`` names the file and the evaluated set (``split``:
 ``Validation``, ``Test``, or a fold's evaluation part).
+
+The number of classes C is :attr:`Predictions.n_classes`, 5 (``len(LABEL_NAMES)``) by
+default, so every phase-2 file and check is unchanged; the phase-3 benchmarks (6 classes,
+:mod:`astro_simclr.protocol.bench_report`) pass ``n_classes=6``, and their ``index`` is the
+alert's ZTF ``candid``.
 """
 
 from __future__ import annotations
@@ -52,17 +58,22 @@ def predictions_file(stage: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class Predictions:
-    """The per-stamp output of one run on one evaluated set (module docstring)."""
+    """The per-stamp output of one run on one evaluated set (module docstring).
+
+    ``n_classes`` is the number of probability columns: 5 (phase 2) unless given.
+    """
 
     probabilities: npt.NDArray[np.float32]
     labels: npt.NDArray[np.int64]
     index: npt.NDArray[np.int64]
+    n_classes: int = len(LABEL_NAMES)
 
     def __post_init__(self) -> None:
         n = self.labels.shape[0] if self.labels.ndim == 1 else -1
-        if n <= 0 or self.probabilities.shape != (n, len(LABEL_NAMES)) or self.index.shape != (n,):
+        c = self.n_classes
+        if n <= 0 or c < 2 or self.probabilities.shape != (n, c) or self.index.shape != (n,):
             msg = (
-                f"predictions need probabilities (N, {len(LABEL_NAMES)}), labels (N,) and "
+                f"predictions need probabilities (N, {c}), labels (N,) and "
                 f"index (N,) with N > 0, got {self.probabilities.shape}, "
                 f"{self.labels.shape} and {self.index.shape}"
             )
@@ -94,8 +105,10 @@ def save_predictions(predictions: Predictions, path: Path) -> None:
         )
 
 
-def load_predictions(path: Path) -> Predictions:
+def load_predictions(path: Path, *, n_classes: int = len(LABEL_NAMES)) -> Predictions:
     """Read a predictions file (never unpickling: ``allow_pickle=False``).
+
+    ``n_classes`` is the expected number of probability columns (5 for phase 2).
 
     Raises:
         DataError: if the file is missing, unreadable, or lacks a key or has bad shapes.
@@ -110,6 +123,7 @@ def load_predictions(path: Path) -> Predictions:
             arrays["probabilities"].astype(np.float32),
             arrays["labels"].astype(np.int64),
             arrays["index"].astype(np.int64),
+            n_classes,
         )
     except ValueError as err:
         raise DataError(f"{path}: {err}") from None
@@ -119,12 +133,15 @@ def check_paired(runs: Sequence[Predictions]) -> None:
     """Check that every run evaluated the same stamps, in the same order, with the same labels.
 
     Raises:
-        ValueError: if ``runs`` is empty or two runs differ in ``index`` or ``labels``.
+        ValueError: if ``runs`` is empty or two runs differ in ``index``, ``labels`` or the
+            number of classes.
     """
     if not runs:
         raise ValueError("no predictions given")
     first = runs[0]
     for position, run in enumerate(runs[1:], start=1):
+        if run.n_classes != first.n_classes:
+            raise ValueError(f"run {position} has {run.n_classes} classes, run 0 {first.n_classes}")
         if not np.array_equal(run.index, first.index):
             raise ValueError(f"run {position} evaluated other stamps than run 0 (index differs)")
         if not np.array_equal(run.labels, first.labels):
@@ -142,7 +159,7 @@ def ensemble(runs: Sequence[Predictions]) -> Predictions:
     """
     check_paired(runs)
     mean = np.mean([run.probabilities.astype(np.float64) for run in runs], axis=0)
-    return Predictions(mean.astype(np.float32), runs[0].labels, runs[0].index)
+    return Predictions(mean.astype(np.float32), runs[0].labels, runs[0].index, runs[0].n_classes)
 
 
 def seed_mean_correct(runs: Sequence[Predictions]) -> npt.NDArray[np.float64]:
