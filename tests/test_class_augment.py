@@ -298,6 +298,7 @@ def test_moment_fwhm_is_the_fwhm_of_a_pixel_integrated_gaussian() -> None:
 def _synthetic_inputs(
     n: int = 8,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Rows: a = +1 (even) or -1 (odd); AGN, SN, VS, Asteroid, Bogus, Bogus, AGN, SN."""
     images, fits = _batch(n)
     features = torch.randn(n, 23)
     labels = torch.tensor([0, 1, 2, 3, _BOGUS, _BOGUS, 0, 1])[:n]
@@ -308,11 +309,21 @@ def _synthetic_inputs(
     return images, features, targets, fits
 
 
+def _centre_z(image: torch.Tensor) -> float:
+    """The centre pixel's z against the border median and MAD (the integrator's measure)."""
+    border = torch.from_numpy(~np.pad(np.ones((_SIDE - 4, _SIDE - 4), bool), 2))
+    values = image[border]
+    median = values.median()
+    mad = (values - median).abs().median() * 1.4826
+    return float((image[_SIDE // 2, _SIDE // 2] - median) / mad)
+
+
 def test_synthetic_rows_are_bogus_with_a_sharp_central_spike() -> None:
     images, features, targets, fits = _synthetic_inputs()
     rng = augment_rng(0, 0, SYNTHETIC_STREAM)
     out, feats, tgts, replaced = synthetic_bogus(images, features, targets, fits, 0.5, rng)
-    assert replaced.sum() == 4
+    # Sources: positive alerts (a > 0: even rows) that are not SN: rows 0, 2, 4 and 6.
+    assert replaced.tolist() == [True, False, True, False, True, False, True, False]
     rows = np.flatnonzero(replaced)
     assert torch.equal(tgts[rows].argmax(dim=1), torch.full((4,), _BOGUS))
     # Real stamps are never relabelled: the other rows are untouched.
@@ -324,19 +335,32 @@ def test_synthetic_rows_are_bogus_with_a_sharp_central_spike() -> None:
     centre = _SIDE // 2
     for row in rows:
         assert torch.equal(out[row, 1], images[row, 1])  # the template is unchanged
-        positive = bool(fits[row, 0] > 0)
-        # The donor is a real Bogus row whose isdiffpos matches the sign of a.
-        donor = 4 if positive else 5
-        assert torch.equal(feats[row], features[donor])
+        # The donor is the batch's positive-alert real Bogus.
+        assert torch.equal(feats[row], features[4])
         science, difference = out[row, 0], out[row, 2]
         assert science[centre, centre] == 1  # the spike is the science's maximum
         # Sharp: at most 2 pixels above half the maximum, at or next to the centre.
         above = torch.nonzero(science > 0.5)
         assert len(above) <= 2
         assert (above - centre).abs().sum(dim=1).max() <= 1
-        # The difference has the same spike, negative for a negative alert.
-        extreme = 1.0 if positive else 0.0
-        assert difference[centre, centre] == extreme
+        # The difference has the same spike, a central peak as in every real alert.
+        assert difference[centre, centre] == 1
+        assert _centre_z(difference) > 5
+
+
+def test_synthetic_differences_are_central_peaks_for_every_row() -> None:
+    # Every replaced row, at any fraction and step: the difference's centre is a positive
+    # peak against its border (no central dip, which no real alert has), and no negative
+    # alert or SN row is ever a source.
+    images, features, targets, fits = _synthetic_inputs()
+    for step in range(20):
+        rng = augment_rng(1, step, SYNTHETIC_STREAM)
+        out, _, _, replaced = synthetic_bogus(images, features, targets, fits, 0.99, rng)
+        assert replaced.any()
+        assert not replaced[fits[:, 0].numpy() < 0].any()
+        assert not replaced[targets.argmax(dim=1).numpy() == LABEL_NAMES.index("SN")].any()
+        for row in np.flatnonzero(replaced):
+            assert _centre_z(out[row, 2]) > 0
 
 
 def test_synthetic_bogus_needs_sources_and_donors() -> None:
@@ -345,6 +369,10 @@ def test_synthetic_bogus_needs_sources_and_donors() -> None:
     no_bogus = targets.clone()
     no_bogus[4:6] = torch.nn.functional.one_hot(torch.tensor([0, 0]), 5).float()
     *_, replaced = synthetic_bogus(images, features, no_bogus, fits, 0.5, rng)
+    assert not replaced.any()
+    negative_donors = features.clone()
+    negative_donors[:, _ISDIFFPOS] = 2.1225  # only negative-alert Bogus: no donor
+    *_, replaced = synthetic_bogus(images, negative_donors, targets, fits, 0.5, rng)
     assert not replaced.any()
     low = fits.clone()
     low[:, 3] = 0.1

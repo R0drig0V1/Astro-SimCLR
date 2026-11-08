@@ -18,11 +18,29 @@
     }
   },
   "c6_source_share": {
-    "AGN": 0.874,
-    "SN": 0.912,
-    "VS": 0.678,
+    "AGN": 0.435,
+    "SN": 0.0,
+    "VS": 0.357,
     "Asteroid": 0.919,
-    "Bogus": 0.699
+    "Bogus": 0.57
+  },
+  "difference_centre_z": {
+    "synthetic": {
+      "median": 30.7,
+      "min": 8.6
+    },
+    "real_median": {
+      "AGN a>0": 7.7,
+      "AGN a<0": 7.2,
+      "SN a>0": 11.6,
+      "SN a<0": 7.9,
+      "VS a>0": 43.6,
+      "VS a<0": 24.8,
+      "Asteroid a>0": 11.0,
+      "Asteroid a<0": 8.4,
+      "Bogus a>0": 17.3,
+      "Bogus a<0": 5.4
+    }
   },
   "widest_spike_fwhm_px": 0.481,
   "MIN_PSF_FWHM_PX": 1.19,

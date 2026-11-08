@@ -39,12 +39,15 @@ template's, which the relation already carries.
   of the source science's own background sigma, plus a spike at the crop centre
   (:func:`spike_patterns`: one pixel, or a 2-pixel horizontal or vertical line, 10-50 sigma);
   the difference is the relation applied to that science and template,
-  ``a * (noise + spike) + c`` (so a negative alert's difference gets a negative spike, and
-  the source's own transient, in its residual, is gone); then the min-max. The label is
-  Bogus, and the features are those of a real Bogus row of the same batch whose
-  ``isdiffpos`` matches the sign of ``a`` (a donor from the batch rather than a separate
-  bank: always the run's own training part, also for split runs). A real stamp is never
-  relabelled: the replaced row's stamp is only the raw material.
+  ``a * (noise + spike) + c`` (the source's own transient, in its residual, is gone); then
+  the min-max. **Only positive alerts (``a > 0``) are sources**: an alert is a peak at the
+  centre of its stored difference, negative alerts included (their difference is stored
+  flipped), and a hot pixel in the science can only trigger a positive alert, so a source
+  with ``a < 0`` would give a central dip that no real stamp has. SN rows are never
+  replaced (the weakest class keeps all its rows). The label is Bogus, and the features are
+  those of a real positive-alert Bogus row of the same batch (a donor from the batch rather
+  than a separate bank: always the run's own training part, also for split runs). A real
+  stamp is never relabelled: the replaced row's stamp is only the raw material.
 
 **The spike is sharper than any PSF** (:func:`moment_fwhm`, :data:`MIN_PSF_FWHM_PX`). The
 smallest PSF FWHM measured on ``red`` Train is 1.19 px: a pixel-integrated circular Gaussian
@@ -136,6 +139,7 @@ _ISDIFFPOS: Final = KEPT_FEATURE_NAMES.index("isdiffpos")
 #: Stored ``isdiffpos`` is 0 (a positive alert, ``a > 0``) or 2.12 (negative).
 _ISDIFFPOS_SPLIT: Final = 1.0
 _BOGUS: Final = LABEL_NAMES.index("Bogus")
+_SN: Final = LABEL_NAMES.index("SN")
 
 #: The smallest PSF FWHM in the data, in pixels (measured on the differences; module
 #: docstring).
@@ -393,14 +397,16 @@ def synthetic_bogus(
     ``images`` (B, 3, S, S) crops (no context channels), ``features`` (B, 23), ``targets`` (B,
     5) one-hot, ``fits`` (B, 6) of :func:`stamp_fits`. Returns the new images, features and
     targets, and which rows were replaced. The construction is in the module docstring. A row
-    can be a source when ``R^2 >= min_r2``, ``a * b < 0`` (the template enters the static
-    science with a positive scale), its science sigma is positive and no pixel is masked; a
-    source is used when the batch has a real Bogus row whose ``isdiffpos`` matches the sign of
-    ``a`` (the feature donor, chosen uniformly among them; the original rows, before any
-    replacement). The rows are taken in a random order, so fewer than ``round(fraction * B)``
-    are replaced when sources or donors run out. Draws, always: a permutation of B, B uniforms
-    (donors), (B, S, S) normals (noise), B uniforms (spike S/N) and :func:`spike_patterns` of B.
-    The inputs are not modified.
+    can be a source when it is not an SN (the weakest class keeps all its rows), ``R^2 >=
+    min_r2``, ``a > 0`` and ``b < 0`` (a positive alert, whose difference is not stored
+    flipped: a hot pixel in the science can only trigger a positive alert; the template
+    enters the static science with a positive scale), its science sigma is positive and no
+    pixel is masked. The feature donor is a real positive-alert Bogus row of the batch
+    (stored ``isdiffpos`` 0), chosen uniformly among the original rows, before any
+    replacement; without one nothing is replaced. The rows are taken in a random order, so
+    fewer than ``round(fraction * B)`` are replaced when sources run out. Draws, always: a
+    permutation of B, B uniforms (donors), (B, S, S) normals (noise), B uniforms (spike S/N)
+    and :func:`spike_patterns` of B. The inputs are not modified.
 
     Raises:
         ValueError: if ``images`` is not (B, 3, S, S).
@@ -421,20 +427,16 @@ def synthetic_bogus(
     fits_cpu = fits.detach().cpu().numpy().astype(np.float64)
     a, b, c, r2, sigma = (fits_cpu[:, k] for k in (0, 1, 2, 3, 4))
     unmasked = ~masked_pixels(images[:, :3]).flatten(1).any(dim=1).cpu().numpy()
-    source = (r2 >= min_r2) & (a * b < 0) & (sigma > 0) & unmasked
     labels = targets.argmax(dim=1).cpu().numpy()
+    source = (labels != _SN) & (r2 >= min_r2) & (a > 0) & (b < 0) & (sigma > 0) & unmasked
     positive = features[:, _ISDIFFPOS].cpu().numpy() < _ISDIFFPOS_SPLIT
-    donors = {
-        sign: np.flatnonzero((labels == _BOGUS) & (positive == sign)) for sign in (True, False)
-    }
+    donors = np.flatnonzero((labels == _BOGUS) & positive)
+    if donors.size == 0:
+        return images, features, targets, replaced
     donor_of = np.full(n, -1)
-    for row in order:
-        if replaced.sum() == wanted:
-            break
-        pool = donors[bool(a[row] > 0)]
-        if source[row] and pool.size:
-            replaced[row] = True
-            donor_of[row] = pool[int(donor_u[row] * pool.size)]
+    for row in order[source[order]][:wanted]:
+        replaced[row] = True
+        donor_of[row] = donors[int(donor_u[row] * donors.size)]
     if not replaced.any():
         return images, features, targets, replaced
 

@@ -57,16 +57,28 @@ result, and the user asked whether the difference would be computed or augmented
    the template is unchanged; the science is the static sky the relation implies,
    `-(b/a) * tmpl`, plus Gaussian noise of the source science's background sigma, plus a
    spike at the centre; the difference is the relation applied to them,
-   `a * (noise + spike) + c` (so a negative alert's difference gets a negative spike, and the
-   source's transient, which lives in its residual, is gone); then the min-max. A source
-   needs `a*b < 0` (the template enters with a positive scale) and no masked pixel. The
-   label is Bogus and the features are those of a real Bogus row **of the same batch**
-   whose `isdiffpos` matches `sign(a)`, instead of a separate device-resident bank: the
-   batch is a shuffled stream of the run's own training part (also for split runs), it
-   needs no extra state, and a batch has about 20 % Bogus after the tiling (a row whose
-   donor pool is empty is skipped). **A real stamp is never relabelled**: the row's stamp is
-   only raw material, and its own label is replaced together with its image. A replaced row
-   is not noised again by C5.
+   `a * (noise + spike) + c` (the source's transient, which lives in its residual, is
+   gone); then the min-max. **Only positive alerts are sources** (`a > 0`, `b < 0`: the
+   template enters with a positive scale), with no masked pixel. An alert is a peak at the
+   centre of its stored difference, negative alerts included (their difference is stored
+   flipped: on `red` Train the median centre z of the real differences, against the border
+   median and MAD, is +5.4 to +43.6 for every class and sign), and a hot pixel in the
+   science can only trigger a positive alert. A first version also built Bogus from
+   `a < 0` sources, which gave the spike negative in the difference: a central dip
+   (z about -30) that no real stamp has, in about a third of the synthetic rows (found by
+   the integrator's review of PR #20). Putting the spike in the template for `a < 0` was
+   rejected: a hot pixel surviving a co-added template is rarer, and real negative Bogus are
+   mostly bad subtractions. Now the synthetic differences have a median centre z of +30.7
+   (minimum +8.6 over 1,000 rows). **SN rows are never replaced**: SN is the weakest class
+   (1,396 Train stamps), and C6 would otherwise remove its rows in proportion to the
+   fraction. The label is Bogus and the features are those of a real positive-alert Bogus
+   row (stored `isdiffpos` 0) **of the same batch**, instead of a separate device-resident
+   bank: the batch is a shuffled stream of the run's own training part (also for split
+   runs), it needs no extra state, and a batch has about 20 % Bogus after the tiling (a
+   batch without such a donor replaces nothing). **A real stamp is never relabelled**: the
+   row's stamp is only raw material, and its own label is replaced together with its image.
+   A replaced row is not noised again by C5. On `red` Train the share of stamps usable as a
+   source is AGN 44 %, VS 36 %, Asteroid 92 %, Bogus 57 %.
 6. **The spike is narrower than any PSF in the data, by an explicit, tested measure.**
    `moment_fwhm` is the circular-Gaussian FWHM from the pixel second moments less a pixel's
    own 1/12; for a pixel-integrated Gaussian it equals the Gaussian's FWHM, which is what
@@ -103,8 +115,8 @@ result, and the user asked whether the difference would be computed or augmented
   the 2.5 runs, not fixed here.
 - An augmented step costs a host-device round trip (the selection of rows and the draws are
   on the CPU) and C6's construction on the CPU for the few replaced rows.
-- C6 shifts the class balance of each batch towards Bogus by up to `synthetic_bogus`; the
-  tiling is unchanged.
+- C6 shifts the class balance of each batch towards Bogus by up to `synthetic_bogus`, taken
+  from AGN, VS, Asteroid and Bogus rows (never SN); the tiling is unchanged.
 - Old checkpoints of `PaperClassifierModule` load unchanged (the new hyperparameters have
   defaults); old runs' metrics no longer warn about the 2.5 flags in `compare-reference`.
 - Later ideas, not built: fake SN injected on real host galaxies (aimed at SN -> Asteroid);

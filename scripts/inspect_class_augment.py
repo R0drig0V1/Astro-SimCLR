@@ -8,10 +8,12 @@ per-channel min-max, NaN -> 0), this writes to ``OUT``:
   next to two C5 noise draws of each (``class_augment.noise_augment`` at ``--aug-noise``,
   among the stamps with ``R^2 >= --min-r2``);
 - ``C6_synthetic.png``: ``--rows`` synthetic hot-pixel Bogus (``class_augment.
-  synthetic_bogus``, each from a random Train stamp of its batch), next to a real Bogus and
-  a real Asteroid;
+  synthetic_bogus``, each from a random Train stamp of its batch), next to a real
+  positive-alert Bogus and a real Asteroid;
 - ``report.json`` (also printed): per class, the share of stamps excluded by
-  ``R^2 < --min-r2`` and the share usable as a C6 source; the PSF FWHM measurement that
+  ``R^2 < --min-r2`` and the share usable as a C6 source; the centre z of the difference
+  (against the border median and MAD) of 1,000 synthetic rows and of real stamps per class
+  and sign of ``a`` (every real alert is a central peak); the PSF FWHM measurement that
   sets ``class_augment.MIN_PSF_FWHM_PX``; the widest spike's FWHM.
 
 **PSF measurement.** A pixel-integrated circular Gaussian plus a constant is fitted
@@ -67,6 +69,8 @@ _CHANNELS = ("sci", "tmpl", "diff")
 _WINDOW = 11
 _MIN_SNR = 15.0
 _FIT_CHUNK = 2048
+#: Synthetic rows whose difference centre z is measured.
+_Z_SAMPLES = 1000
 
 
 def _stretch(image: np.ndarray) -> np.ndarray:
@@ -138,15 +142,17 @@ def _c6_grid(
     labels: np.ndarray,
     fits: np.ndarray,
     args: argparse.Namespace,
-) -> None:
+) -> dict[str, float]:
+    """Write ``C6_synthetic.png``; return the median centre z of 1,000 synthetic differences."""
     rng = np.random.default_rng(args.seed + 1)
     bogus, asteroid = (
         np.flatnonzero(labels == LABEL_NAMES.index(c)) for c in ("Bogus", "Asteroid")
     )
-    eligible = fits[:, 3] >= args.min_r2
+    # Real positive-alert Bogus (the kind C6 makes) with a well-explained difference.
+    eligible = (fits[:, 3] >= args.min_r2) & (fits[:, 0] > 0)
     synthetic: list[tuple[np.ndarray, str]] = []
     step = 0
-    while len(synthetic) < args.rows:
+    while len(synthetic) < max(args.rows, _Z_SAMPLES):
         rows = rng.choice(len(labels), 64, replace=False)
         targets = torch.nn.functional.one_hot(torch.from_numpy(labels[rows]), len(LABEL_NAMES))
         built, _, _, replaced = synthetic_bogus(
@@ -163,6 +169,7 @@ def _c6_grid(
             text = f"from {LABEL_NAMES[labels[source]]} #{source} a={fits[source, 0]:+.2f}"
             synthetic.append((built[j].numpy(), text))
         step += 1
+    z = np.array([_centre_z(crop[2]) for crop, _ in synthetic[:_Z_SAMPLES]])
     real_bogus = rng.choice(bogus[eligible[bogus]], args.rows, replace=False)
     real_asteroid = rng.choice(asteroid, args.rows, replace=False)
     grid = [
@@ -171,6 +178,33 @@ def _c6_grid(
     ]
     title = "C6: synthetic hot-pixel Bogus | real Bogus | real Asteroid (Train); sqrt p1-max"
     _grid(out / "C6_synthetic.png", title, grid[: args.rows], ["synthetic", "real", "real"])
+    return {"median": round(float(np.median(z)), 1), "min": round(float(z.min()), 1)}
+
+
+def _centre_z(image: np.ndarray) -> float:
+    """The centre pixel's z against the median and MAD of the two-pixel border."""
+    side = image.shape[-1]
+    border = ~np.pad(np.ones((side - 4, side - 4), dtype=bool), 2)
+    values = image[border]
+    median = np.median(values)
+    mad = 1.4826 * np.median(np.abs(values - median))
+    return float((image[side // 2, side // 2] - median) / mad) if mad > 0 else 0.0
+
+
+def _real_centre_z(images: np.ndarray, labels: np.ndarray, fits: np.ndarray) -> dict[str, Any]:
+    """Median centre z of the real differences, per class and sign of ``a`` (500 each)."""
+    rng = np.random.default_rng(0)
+    out: dict[str, Any] = {}
+    for label, name in enumerate(LABEL_NAMES):
+        for sign, tag in ((1, "a>0"), (-1, "a<0")):
+            rows = np.flatnonzero((labels == label) & (np.sign(fits[:, 0]) == sign))
+            if rows.size < 20:
+                continue
+            pick = rng.choice(rows, min(500, rows.size), replace=False)
+            out[f"{name} {tag}"] = round(
+                float(np.median([_centre_z(images[i, 2]) for i in pick])), 1
+            )
+    return out
 
 
 def _gaussian_model(p: torch.Tensor) -> torch.Tensor:
@@ -292,11 +326,18 @@ def main() -> None:
     images, features, labels = train.images, train.features, train.labels
     fits = stamp_fits(images)
     _c5_grids(args.out, images, labels, fits, args)
-    _c6_grid(args.out, images, features, labels, fits, args)
+    synthetic_z = _c6_grid(args.out, images, features, labels, fits, args)
 
     a, b = fits[:, 0], fits[:, 1]
     unmasked = ~masked_pixels(torch.from_numpy(images)).flatten(1).any(dim=1).numpy()
-    source = (fits[:, 3] >= args.min_r2) & (a * b < 0) & (fits[:, 4] > 0) & unmasked
+    source = (
+        (labels != LABEL_NAMES.index("SN"))
+        & (fits[:, 3] >= args.min_r2)
+        & (a > 0)
+        & (b < 0)
+        & (fits[:, 4] > 0)
+        & unmasked
+    )
     worst = np.zeros((21, 21))
     worst[10, 10], worst[10, 11] = 1.0, SPIKE_LINE_RATIO[1]
     report: dict[str, Any] = {
@@ -304,6 +345,10 @@ def main() -> None:
         "r2_exclusions": fit_exclusions(fits, labels, args.min_r2),
         "c6_source_share": {
             name: round(float(source[labels == k].mean()), 3) for k, name in enumerate(LABEL_NAMES)
+        },
+        "difference_centre_z": {
+            "synthetic": synthetic_z,
+            "real_median": _real_centre_z(images, labels, fits),
         },
         "widest_spike_fwhm_px": round(moment_fwhm(worst), 3),
         "MIN_PSF_FWHM_PX": MIN_PSF_FWHM_PX,

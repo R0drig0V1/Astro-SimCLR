@@ -941,9 +941,12 @@ on every row. Validation and test are never augmented.
   continuous kept features; `DISCRETE_FEATURES` (`isdiffpos`; the integer counts
   `ndethist`, `ncovhist`, `non_detections`) never change.
 - **C6, synthetic hot-pixel Bogus** (`synthetic_bogus`): `round(fraction·B)` rows, taken in
-  a random order among the possible sources (R² ≥ `aug_min_r2`, `a·b < 0`, σ_sci > 0, no
-  masked pixel) that have a feature donor (a real Bogus row of the batch whose `isdiffpos`
-  matches `sign(a)`). Each becomes: template unchanged; science `−(b/a)·tmpl + n + spike`
+  a random order among the possible sources: positive alerts only (`a > 0`, `b < 0`; a hot
+  pixel in the science cannot trigger a negative alert, and an `a < 0` source would give a
+  central dip that no real difference has), not SN (the weakest class keeps its rows),
+  R² ≥ `aug_min_r2`, σ_sci > 0, no masked pixel. The feature donor is a real positive-alert
+  Bogus row of the batch (none: nothing is replaced). Each becomes: template unchanged;
+  science `−(b/a)·tmpl + n + spike`
   (the static sky the relation implies, `n` Gaussian of the source science's σ, the spike
   10–50 σ); difference `a·(n + spike) + c`; then the min-max; label Bogus; the donor's
   features. `spike_patterns`: one pixel at the centre, or (probability 0.5) a 2-pixel
@@ -964,8 +967,9 @@ known `a, b, c`; the computed difference equals `a·sci + b·tmpl + c` before th
 `renormalise` equals the float path's min-max; augmented crops have per-channel min 0 and
 max 1 with masked pixels at 0; low-R² rows, skipped rows and the context are untouched; the
 discrete features are untouched; synthetic rows are Bogus, with the spike as the science's
-maximum, at most 2 pixels above half of it, a negative spike in a negative alert's
-difference, and a matching donor; no sources or no donors replace nothing; every spike is
+maximum, at most 2 pixels above half of it, the same spike as a central peak of the
+difference (positive centre z for every replaced row), a positive-alert donor, and never a
+negative-alert or SN source; no sources or no donors replace nothing; every spike is
 below `MIN_PSF_FWHM_PX`; defaults off are bit-identical with or without fits; evaluation is
 not augmented; the settings' checks; the preset deviations; a p4 run on every accelerator;
 an augmented fold run (fits equal to those of the fold's training part) and its exact
