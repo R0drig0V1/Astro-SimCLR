@@ -25,6 +25,11 @@
   two sides cover the same folds and seeds; then it applies :func:`cv_comparison` (folds)
   or :func:`screen_comparison` (screen; drop only) and returns a verdict that the CLI maps
   to its exit code: 0 for ``ADOPT`` / ``KEEP``, 1 for ``NOT ADOPTED`` / ``DROP``.
+
+Every output also reports, as **secondary** metrics that decide nothing (plan row D3,
+``docs/evaluation-protocol.md``): each side's top-label ECE per run, mean ± std
+(``protocol.calibration``, from the predictions files), and for CV the fold-to-fold
+standard deviation (ddof = 1) of the per-fold balanced accuracies.
 """
 
 from __future__ import annotations
@@ -38,6 +43,7 @@ from typing import Final, Literal
 import numpy as np
 
 from astro_simclr.config import ConfigError
+from astro_simclr.protocol.calibration import ECE_BINS, expected_calibration_error
 from astro_simclr.protocol.predictions import (
     Predictions,
     check_paired,
@@ -76,6 +82,7 @@ __all__ = [
     "cv_comparison",
     "load_run_predictions",
     "load_split_run",
+    "run_ece",
     "screen_comparison",
 ]
 
@@ -150,6 +157,20 @@ def _describe(values: Sequence[float]) -> str:
     if len(values) == 1:
         return f"{values[0]:.4f} (n=1)"
     return f"{statistics.mean(values):.4f} ± {statistics.stdev(values):.4f} (n={len(values)})"
+
+
+def run_ece(predictions: Predictions) -> float:
+    """One run's top-label ECE (``protocol.calibration``, 15 bins) on its predictions."""
+    return expected_calibration_error(predictions.probabilities, predictions.labels)
+
+
+def _ece_line(base: Sequence[Predictions], variant: Sequence[Predictions]) -> str:
+    """Both sides' ECE per run, mean ± std (a secondary metric: it decides nothing)."""
+    left = _describe([run_ece(p) for p in base])
+    right = _describe([run_ece(p) for p in variant])
+    return (
+        f"  ECE ({ECE_BINS} bins, top label; secondary, per run): baseline {left}, variant {right}"
+    )
 
 
 def _check_side(name: str, runs: Sequence[RunPredictions], out: list[str]) -> None:
@@ -235,6 +256,7 @@ def compare_variants(
         ensembled = float(ensemble(preds).correct.mean())
         lines.append(f"  {name:8}  accuracy {_describe(accuracies)}; seed ensemble {ensembled:.4f}")
     lines += [
+        _ece_line(base_preds, variant_preds),
         f"  McNemar (seed ensembles): baseline only {test.only_baseline}, variant only "
         f"{test.only_variant}, exact p = {test.p_value:.4g}",
         f"  paired bootstrap over stamps (stratified by class, {interval.n_boot} resamples, "
@@ -669,6 +691,13 @@ def _decide_cv(
         f"  pooled (seed means): baseline {result.baseline_pooled:.4f}, variant "
         f"{result.variant_pooled:.4f}"
     )
+    if len(splits.folds) > 1:
+        lines.append(
+            f"  fold-to-fold std (ddof=1; secondary): baseline "
+            f"{statistics.stdev(result.baseline_folds):.4f}, variant "
+            f"{statistics.stdev(result.variant_folds):.4f}"
+        )
+    lines.append(_ece_line(_by_seed(base), _by_seed(variant)))
     if test is not None:
         lines.append(
             f"  McNemar (seed ensembles, all folds): baseline only {test.only_baseline}, "
@@ -721,6 +750,7 @@ def _decide_screen(
         *out,
         f"  accuracy (seed means): baseline {result.baseline:.4f}, variant "
         f"{result.variant:.4f}, variant - baseline {result.variant - result.baseline:+.4f}",
+        _ece_line(base_preds, variant_preds),
         f"  McNemar (seed ensembles): baseline only {test.only_baseline}, variant only "
         f"{test.only_variant}, exact p = {test.p_value:.4g}",
         f"  rule: drop if the variant is {100 * SCREEN_DROP_THRESHOLD:.0f} points or more "

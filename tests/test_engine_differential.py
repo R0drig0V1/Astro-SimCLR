@@ -21,8 +21,11 @@ the extensions end within a few dozen steps). The two runs must agree **bit for 
 
 It is parametrised over the 2.5 flags on main (``paper_arch`` ``single`` / ``p4`` / ``p4m`` /
 ``convnext_atto``, ``context``, ``rot90_augment``, C5's noise and jitter, C6, C7,
-``feature_set``, ``fp32_precision``), split runs (a fold and the screen), a mid-run resume of
-the plain engine and each accelerator present. A flag added to one engine only therefore
+``feature_set``, ``fp32_precision``) and plan row D3's (the weight EMA, its warmup, the
+cosine learning-rate schedule with warmup and ``checkpoint_selection: final``, which run a
+fixed horizon), split runs (a fold and the screen), a mid-run resume of the plain engine
+(with and without D3's EMA and schedule, whose state the checkpoint carries) and each
+accelerator present. A flag added to one engine only therefore
 fails CI (CLAUDE.md, "New training flags are engine-free").
 
 The second half ports the semantics of the three Lightning-bound resume tests (ADR 0014,
@@ -93,7 +96,18 @@ _AUGMENT: dict[str, Any] = {
     "flux_rescale": 0.5,
 }
 
-#: The 2.5 flags, one case each (and the faithful model first).
+#: Plan row D3 all on: EMA with warmup, cosine with warmup, the final weights scored (a
+#: fixed horizon: no extension). The decay is small so that 10 steps move the EMA.
+_D3: dict[str, Any] = {
+    "ema_decay": 0.9,
+    "ema_warmup": True,
+    "lr_schedule": "cosine",
+    "lr_warmup_steps": 3,
+    "checkpoint_selection": "final",
+    "horizon_increment": 0,
+}
+
+#: The 2.5 and D3 flags, one case each (and the faithful model first).
 _FLAGS: list[Any] = [
     pytest.param({}, id="faithful"),
     pytest.param({"paper_arch": "single"}, id="single"),
@@ -109,6 +123,14 @@ _FLAGS: list[Any] = [
     pytest.param({"feature_set": "none", "rot90_augment": True}, id="feature_set-none"),
     pytest.param({"fp32_precision": "tf32"}, id="fp32-tf32"),
     pytest.param(_AUGMENT, id="C5-C7-p4"),
+    pytest.param({"ema_decay": 0.9}, id="ema"),
+    pytest.param({"checkpoint_selection": "final", "horizon_increment": 0}, id="final"),
+    pytest.param(
+        {"lr_schedule": "cosine", "lr_warmup_steps": 2, "horizon_increment": 0}, id="cosine"
+    ),
+    pytest.param({"lr_warmup_steps": 4, "horizon_increment": 0}, id="constant-warmup"),
+    pytest.param(_D3, id="D3"),
+    pytest.param({**_AUGMENT, **_D3, "paper_arch": "p4m"}, id="D3-C5-C7-p4m"),
 ]
 
 #: Split runs: (flags, fold or None for the screen).
@@ -260,7 +282,10 @@ def _assert_engines_agree(
     _assert_same_states(lightning.initial, initial)
     _assert_same_validations(lightning.validations, probe.validations)
     assert _computed(metrics) == _computed(expected)
-    assert metrics["horizon"] > _SCHEDULE["max_steps"]  # the schedule did extend
+    if settings.horizon_increment:
+        assert metrics["horizon"] > _SCHEDULE["max_steps"]  # the schedule did extend
+    else:
+        assert metrics["last_step"] == metrics["horizon"] == settings.max_steps
     assert metrics["machine"]["engine"] == "plain"
     _assert_same_outputs(settings.output_dir, plain_out)
     return metrics
@@ -299,10 +324,12 @@ def test_engines_agree_on_each_accelerator(
     _assert_engines_agree(settings, tmp_path / "plain")
 
 
+@pytest.mark.parametrize("flags", [_AUGMENT, {**_AUGMENT, **_D3}], ids=["C5-C7", "C5-C7-D3"])
 def test_mid_run_resume_agrees_with_an_uninterrupted_lightning_run(
-    classifier_f32_dir: Path, tmp_path: Path
+    flags: dict[str, Any], classifier_f32_dir: Path, tmp_path: Path
 ) -> None:
-    settings = _settings(classifier_f32_dir, tmp_path / "lightning", **_AUGMENT)
+    # With D3, last.pt carries the EMA (in the weights) and the scheduler (task state).
+    settings = _settings(classifier_f32_dir, tmp_path / "lightning", **flags)
     expected, lightning = _lightning(settings)
     whole, resumed = tmp_path / "whole", tmp_path / "resumed"
     saved = tmp_path / "mid" / "last.pt"

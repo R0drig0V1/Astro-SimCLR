@@ -132,6 +132,10 @@ IDENTITY_KEYS: Final[Mapping[str, str]] = {
 #:   could be non-semantic; it is hash-neutral instead, by ADR 0015 rule 9 (every post-A0
 #:   field has its pre-field value here, which the registry's ``flat-1`` reader fills), at
 #:   the cost of two keeps of one experiment having two ids (a rerun, never a false match);
+#:   plan row D3's flags off (``checkpoint_selection: best_val_loss``, ``lr_schedule:
+#:   constant``, ``lr_warmup_steps: 0``, ``ema_decay: null``, ``ema_warmup: false``: CD21's
+#:   selection on the validation loss with a constant learning rate, the only protocol
+#:   before them);
 #: - ``num_workers`` at 0. With DataLoader workers, Lightning seeds each worker, so the
 #:   worker count decides which augmentations are drawn: 0, 2 and 3 workers are three
 #:   different runs, and a false run-id match would contaminate a comparison, while a
@@ -145,6 +149,11 @@ HASH_NEUTRAL_DEFAULTS: Final[Mapping[str, object]] = {
     "rj23_bn_position": "after_concat",
     "rj23_large_values": "paper",
     "rj23_keep": "stop",
+    "checkpoint_selection": "best_val_loss",
+    "lr_schedule": "constant",
+    "lr_warmup_steps": 0,
+    "ema_decay": None,
+    "ema_warmup": False,
 }
 
 _EXCLUDED: Final = frozenset(NON_SEMANTIC_KEYS) | frozenset(IDENTITY_KEYS)

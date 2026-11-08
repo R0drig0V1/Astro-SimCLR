@@ -10,14 +10,18 @@ without Lightning, sharing every piece that decides the numbers:
 - :func:`load_backbone` (the ConvNeXt pretrained backbone, ADR 0022), also shared.
 - :class:`PaperNet`: the model under the attribute ``model`` (``build_paper_model``), so its
   ``state_dict`` keys are ``PaperClassifierModule``'s; the loss ``P_stamps_loss`` is its
-  ``criterion``. With ``feature_set: none`` the forward ignores the features, as the
-  Lightning module does.
+  ``criterion``; with ``ema_decay`` (plan row D3) the weight EMA ``training.ema.EmaWeights``
+  is its ``ema``, and its forward in ``eval()`` mode runs the EMA weights. With
+  ``feature_set: none`` the forward ignores the features, as the Lightning module does.
 - :class:`PaperTask`: the engine ``Task``. A training step plans the augmentation of step
   ``step`` on a host copy of the batch (``training.paper_augment.PaperAugment``, the same
   object the Lightning module delegates to), uploads the plan, applies it, then computes
   the loss: ``PaperClassifierModule.training_step`` with the loader's plan (the
   host-planned augmentation of PR #38). The optimizer is ``build_optimizer`` over every
-  parameter with the configured Adam betas.
+  parameter but the EMA's, with the configured Adam betas, and the learning-rate schedule
+  of plan row D3 (``training.lr_schedule``) when one is set; ``after_step`` steps that
+  schedule and updates the EMA, as the Lightning module's scheduler and
+  ``on_train_batch_end`` do.
 - :func:`build_paper_task`: the task of a ``Settings``, built on the CPU (the loop calls
   it after seeding, ADR 0014, C1).
 
@@ -47,7 +51,9 @@ from astro_simclr.paper_variants import build_paper_model, paper_input_side
 from astro_simclr.protocol.leakage import find_duplicates, train_exclusions
 from astro_simclr.protocol.split_runs import SplitRun
 from astro_simclr.training.class_augment import fit_exclusions, stamp_fits, upload_plan
+from astro_simclr.training.ema import EmaWeights, trainable_parameters
 from astro_simclr.training.flux_rescale import fit_central_psf, psf_exclusions
+from astro_simclr.training.lr_schedule import LrSchedule
 from astro_simclr.training.optimizers import PAPER_ADAM_BETAS, build_optimizer, check_optimizer_name
 from astro_simclr.training.paper_augment import PaperAugment, check_augment_context
 from astro_simclr.training.tensor_splits import (
@@ -65,6 +71,7 @@ __all__ = [
     "check_paper_task",
     "leaked_train",
     "load_backbone",
+    "lr_schedule_of",
     "paper_augment",
     "paper_inputs",
     "with_train_fits",
@@ -231,27 +238,52 @@ def paper_augment(settings: Settings) -> PaperAugment:
     return augment
 
 
+def lr_schedule_of(settings: Settings) -> LrSchedule:
+    """The learning-rate schedule of ``settings`` (plan row D3), over ``max_steps``.
+
+    Raises:
+        ValueError: as :class:`~astro_simclr.training.lr_schedule.LrSchedule`.
+    """
+    return LrSchedule(settings.lr_schedule, settings.lr_warmup_steps, settings.max_steps)
+
+
 class PaperNet(nn.Module):
     """The paper model (``model``) and its loss (``criterion``), as ``PaperClassifierModule``.
 
     ``reads_features`` is whether the head reads the features (false for ``feature_set:
-    none``, or without features): the forward then passes ``None``.
+    none``, or without features): the forward then passes ``None``. ``ema`` (plan row D3)
+    is the weight EMA of ``model``, or None; registered after ``model``, so the
+    ``state_dict`` keys and order are the Lightning module's. With an EMA the forward runs
+    the EMA weights in ``eval()`` mode (every validation and evaluation), ``model`` in
+    ``train()`` mode.
     """
 
-    def __init__(self, model: nn.Module, criterion: P_stamps_loss, *, reads_features: bool):
+    def __init__(
+        self,
+        model: nn.Module,
+        criterion: P_stamps_loss,
+        *,
+        reads_features: bool,
+        ema: EmaWeights | None = None,
+    ):
         super().__init__()
         self.criterion = criterion
         self.model = model
         self.reads_features = reads_features
+        self.ema = ema
 
     def forward(self, images: torch.Tensor, features: torch.Tensor) -> torch.Tensor:
         """Crops (B, C, S, S) and features (B, 23) -> (B, n_classes) logits."""
-        out: torch.Tensor = self.model(images, features if self.reads_features else None)
+        net = self.model if self.ema is None or self.training else self.ema.shadow
+        out: torch.Tensor = net(images, features if self.reads_features else None)
         return out
 
 
 class PaperTask:
     """The paper classifier as an engine ``Task`` (module docstring).
+
+    ``lr_schedule`` (plan row D3) is the learning-rate schedule; the default is CD21's
+    constant rate (no scheduler).
 
     Raises:
         UnknownOptimizerError: if ``optimizer`` is not a known name.
@@ -266,6 +298,7 @@ class PaperTask:
         optimizer: str,
         lr: float,
         adam_betas: str = "code",
+        lr_schedule: LrSchedule | None = None,
     ) -> None:
         check_optimizer_name(optimizer)
         if adam_betas not in PAPER_ADAM_BETAS:
@@ -276,6 +309,8 @@ class PaperTask:
         self.optimizer_name = optimizer
         self.lr = lr
         self.adam_betas = adam_betas
+        self.lr_schedule = LrSchedule() if lr_schedule is None else lr_schedule
+        self.scheduler: torch.optim.lr_scheduler.LambdaLR | None = None
 
     @property
     def module(self) -> nn.Module:
@@ -283,11 +318,17 @@ class PaperTask:
         return self.net
 
     def make_optimizer(self) -> torch.optim.Optimizer:
-        """``build_optimizer`` over every parameter, with the configured betas, no schedule."""
+        """``build_optimizer`` over every parameter but the EMA's, with the configured betas.
+
+        With an active ``lr_schedule`` the task also builds its ``LambdaLR`` here (which
+        sets step 0's learning rate); :meth:`after_step` steps it.
+        """
         betas = PAPER_ADAM_BETAS[self.adam_betas]
-        return build_optimizer(
-            self.optimizer_name, self.net.parameters(), self.lr, adam_betas=betas
+        optimizer = build_optimizer(
+            self.optimizer_name, trainable_parameters(self.net), self.lr, adam_betas=betas
         )
+        self.scheduler = self.lr_schedule.scheduler(optimizer)
+        return optimizer
 
     def train_step(self, batch: TrainBatch, step: int) -> torch.Tensor:
         """The loss of step ``step``'s batch after its planned augmentation.
@@ -305,6 +346,13 @@ class PaperTask:
         loss: torch.Tensor = self.net.criterion(self.net(images, features), targets)
         return loss
 
+    def after_step(self, step: int) -> None:
+        """After optimizer step ``step``: the scheduler's step, then the EMA update (D3)."""
+        if self.scheduler is not None:
+            self.scheduler.step()
+        if self.net.ema is not None:
+            self.net.ema.update(self.net.model, step)
+
     def eval_step(self, batch: Batch) -> EvalOutput:
         """The batch's loss, probabilities and labels (``ClassifierModule._step``'s)."""
         images, features, targets = batch
@@ -317,11 +365,24 @@ class PaperTask:
         )
 
     def state(self) -> dict[str, Any]:
-        """No state outside the weights: every draw is a function of the step."""
-        return {}
+        """The scheduler's state, if any (the EMA is in the weights; every draw is a
+        function of the step). Empty for a constant learning rate."""
+        if self.scheduler is None:
+            return {}
+        return {"lr_scheduler": self.scheduler.state_dict()}
 
     def load_state(self, state: Mapping[str, Any]) -> None:
-        """Nothing to restore."""
+        """Restore the scheduler's state (after the optimizer's, which holds the rate).
+
+        Raises:
+            ValueError: if the state and this task disagree on having a scheduler (another
+                schedule; the run id refuses it first).
+        """
+        saved = state.get("lr_scheduler")
+        if (saved is None) != (self.scheduler is None):
+            raise ValueError("the checkpoint was saved with another learning-rate schedule")
+        if self.scheduler is not None and saved is not None:
+            self.scheduler.load_state_dict(dict(saved))
 
 
 def check_paper_task(settings: Settings) -> None:
@@ -332,6 +393,7 @@ def check_paper_task(settings: Settings) -> None:
             or feature set; C5's noise, C6 or C7 on a ConvNeXt.
     """
     check_optimizer_name(settings.optimizer)
+    lr_schedule_of(settings)
     if settings.adam_betas not in PAPER_ADAM_BETAS:
         valid = ", ".join(PAPER_ADAM_BETAS)
         raise ValueError(f"adam_betas must be one of {valid}, got {settings.adam_betas!r}")
@@ -351,7 +413,8 @@ def build_paper_task(
 
     The model is built exactly as ``PaperClassifierModule`` builds it (the loss first, then
     ``build_paper_model`` with the same arguments: the same draws), then the ConvNeXt
-    backbone weights are loaded if configured (:func:`load_backbone`).
+    backbone weights are loaded if configured (:func:`load_backbone`), then the weight EMA
+    is copied from it if ``ema_decay`` is set (no draw).
 
     Raises:
         UnknownOptimizerError, ValueError: as ``PaperClassifierModule`` (an unknown
@@ -374,7 +437,18 @@ def build_paper_task(
         feature_set=settings.feature_set,
     )
     load_backbone(settings, model, info, download=download)
-    net = PaperNet(model, criterion, reads_features=reads_features)
+    # After the backbone weights, so the EMA starts from them (plan row D3).
+    ema = (
+        None
+        if settings.ema_decay is None
+        else EmaWeights(model, settings.ema_decay, warmup=settings.ema_warmup)
+    )
+    net = PaperNet(model, criterion, reads_features=reads_features, ema=ema)
     return PaperTask(
-        net, augment, optimizer=settings.optimizer, lr=settings.lr, adam_betas=settings.adam_betas
+        net,
+        augment,
+        optimizer=settings.optimizer,
+        lr=settings.lr,
+        adam_betas=settings.adam_betas,
+        lr_schedule=lr_schedule_of(settings),
     )

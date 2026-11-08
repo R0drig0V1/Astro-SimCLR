@@ -16,13 +16,16 @@ Submodules (``docs/architecture.md``, section "training", has the design):
   (``HorizonCallback``); ``modules.PaperClassifierModule``;
 - plan rows C5 and C6: :mod:`~astro_simclr.training.class_augment` (the paper model's
   class-aware training augmentation; ADR 0006).
+- plan row D3: :mod:`~astro_simclr.training.ema` (the weight EMA) and
+  :mod:`~astro_simclr.training.lr_schedule` (the per-step learning-rate schedule).
 
 A run is: ``apply_fp32_precision(settings)`` (ADR 0010), ``seed_run(settings)``, build
 the module and its data module, ``build_callbacks(settings, Module.MONITORABLE, dirpath=...)``,
 ``build_trainer(settings, callbacks=...)``, then ``trainer.fit(module, datamodule)``.
 Importing this package does **not** import Lightning (task 4.6): the names above load on
 first use (PEP 562), so the Lightning-free submodules (``class_augment``, ``flux_rescale``,
-``paper_augment``, ``tensor_splits``, ``metrics``, ``optimizers``, ``tiling``) serve the plain
+``ema``, ``lr_schedule``, ``paper_augment``, ``tensor_splits``, ``metrics``, ``optimizers``,
+``tiling``) serve the plain
 engine (ADR 0014) too. ``modules``, ``datamodules``, ``device_data``, ``runs`` and
 ``schedule`` import Lightning.
 """

@@ -109,7 +109,7 @@ FLAT_1_FILLS: Final[Mapping[str, tuple[object, str]]] = MappingProxyType(
 )
 
 #: The metrics a record keeps (:func:`metrics_summary`): per evaluation stage, these keys.
-_STAGE_METRICS: Final = ("accuracy", "balanced_accuracy", "macro_f1")
+_STAGE_METRICS: Final = ("accuracy", "balanced_accuracy", "macro_f1", "ece")
 
 
 class RecordError(ValueError):

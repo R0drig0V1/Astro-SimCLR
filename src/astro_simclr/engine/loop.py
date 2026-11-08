@@ -8,8 +8,10 @@ validates it on one evaluation source, following ADR 0014's checklist item by it
   built **on the CPU** by the caller's factory (so its initial weights do not depend on
   the device), then the module moved to the device, then ``Task.make_optimizer()``.
 - **C2:** each step is forward, ``optimizer.zero_grad(set_to_none=True)``, backward,
-  ``optimizer.step()`` (Lightning's closure order); ``module.zero_grad(set_to_none=True)``
-  before each validation, so every gradient is ``None`` while it runs.
+  ``optimizer.step()`` (Lightning's closure order), then ``Task.after_step(step)`` (a
+  scheduler step, a weight EMA update: Lightning's ``interval: step`` scheduler and
+  ``on_train_batch_end``); ``module.zero_grad(set_to_none=True)`` before each validation,
+  so every gradient is ``None`` while it runs.
 - **C3:** a fit validation captures every submodule's ``training`` flag, calls
   ``eval()``, runs under ``torch.no_grad()`` and restores the flags (not a blanket
   ``train()``: a frozen encoder stays in ``eval``); the loop never calls ``train()`` at the
@@ -325,6 +327,7 @@ class _Fit:
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()  # type: ignore[no-untyped-call]
         self.optimizer.step()
+        self.task.after_step(self.steps_done)
         self.steps_done += 1
         # Summed on the device (no synchronisation); read at the next validation.
         detached = loss.detach()

@@ -245,11 +245,14 @@ def test_invalid_manifest_is_not_backfilled(tmp_path: Path) -> None:
 def test_metrics_summary_skips_what_is_not_a_finite_number() -> None:
     summary = metrics_summary(
         {
-            "evaluation": {"val": {"accuracy": 0.5, "macro_f1": float("nan")}, "x": 3},
+            "evaluation": {
+                "val": {"accuracy": 0.5, "macro_f1": float("nan"), "ece": 0.25},
+                "x": 3,
+            },
             "best_step": True,
             "last_step": 7,
             "timing": None,
         }
     )
-    assert summary == {"val.accuracy": 0.5, "last_step": 7.0}
+    assert summary == {"val.accuracy": 0.5, "val.ece": 0.25, "last_step": 7.0}
     assert metrics_summary({}) == {}

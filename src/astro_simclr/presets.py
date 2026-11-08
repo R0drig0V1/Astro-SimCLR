@@ -21,7 +21,7 @@ the authority (ADR 0003):
 - Adam (0.9, 0.999), epsilon 1e-8, lr 1e-3, no weight decay; ``CE - 0.5 H``;
 - the iteration schedule of task 2.2a: 30,000 steps, validation (and selection on the
   validation loss, batch 64 in file order) every 10 steps, horizon +10,000 per new best, no
-  EarlyStopping;
+  EarlyStopping; a constant learning rate and no weight EMA (plan row D3's flags off);
 - dropout layers present but inactive (``dropout_active: false``; rate 0.5 when active);
 - float32 convolutions and matmuls (``fp32_precision: ieee``; ADR 0010), never TF32.
 
@@ -125,6 +125,14 @@ _CARRASCO2021: Final[Mapping[str, object]] = {
     "flux_rescale": 0.0,
     "flux_k_min": 0.5,
     "flux_k_max": 1.5,
+    # Selection, learning-rate schedule and weight EMA (plan row D3): CD21's selection on the
+    # validation loss, a constant learning rate, no EMA. Listed so that a D3 run is
+    # recorded as a deviation.
+    "checkpoint_selection": "best_val_loss",
+    "lr_schedule": "constant",
+    "lr_warmup_steps": 0,
+    "ema_decay": None,
+    "ema_warmup": False,
     # Precision (ADR 0010): float32 convolutions and matmuls, as on the GTX 1050 (no TF32).
     # Listed so that a TF32 run (``fp32_precision: tf32``) is recorded as a deviation.
     "fp32_precision": "ieee",
