@@ -39,6 +39,14 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   pinned commit (SHA-256 checked) into a local cache and converts it to ``.npz``;
   ``m1-oracle --data-dir DIR --out DIR`` runs the port-equivalence and data-path checks
   and writes ``m1_oracle.json`` and ``m1_val_curve.csv``: exit 0 if both passed, else 1.
+- raw alerts (task 3.1, :mod:`astro_simclr.alerts`): ``fetch-alerts --dataset NAME --split
+  S`` resolves the split's rows on ALeRCE, downloads and verifies their raw alerts into
+  ``--out`` (default ``dataset/raw/NAME``), resumable with ``--resume``, or rebuilds the
+  index offline with ``--from-snapshot DIR``. Exit 0 when the run ends. SIGTERM, SIGHUP
+  and Ctrl-C stop it after the current row and commit the batch (exit 128 + the signal
+  number); a second signal forces the exit. ``alerts-summary RAW_DIR`` prints the counts per
+  class and status, the acceptance and the duplicated candids: exit 0 if every split
+  shown reaches the acceptance, else 1.
 
 The heavy modules (torch, Lightning) are imported inside the handlers, so ``show-config``
 and ``--help`` stay fast. A :class:`~astro_simclr.data.DataError` (bad, truncated or missing
@@ -913,6 +921,195 @@ def _add_oracle_commands(commands: argparse._SubParsersAction[argparse.ArgumentP
     oracle.set_defaults(handler=_m1_oracle)
 
 
+def _fetch_alerts(args: argparse.Namespace) -> int:
+    import signal
+
+    from astro_simclr.alerts.alerce import AlerceClient, make_client
+    from astro_simclr.alerts.fetch import fetch_alerts
+    from astro_simclr.alerts.snapshot import Recorder
+    from astro_simclr.alerts.store import (
+        Snapshot,
+        duplicates,
+        format_duplicates,
+        format_summary,
+        summarize,
+    )
+
+    settings = settings_from_args(args)
+    for flag, value, ok in (
+        ("--rate", args.rate, args.rate > 0),
+        ("--limit", args.limit, args.limit is None or args.limit >= 1),
+        ("--batch-size", args.batch_size, args.batch_size >= 1),
+        ("--cooldown", args.cooldown, args.cooldown >= 0),
+    ):
+        if not ok:
+            raise ConfigError(f"{flag} is out of range: {value}")
+    data_dir: Path = settings.data_dir if args.data_dir is None else args.data_dir
+    out: Path = Path("dataset/raw") / args.dataset if args.out is None else args.out
+    if args.from_snapshot is not None:
+        snapshot_dir: Path = args.from_snapshot / args.split
+        if snapshot_dir.resolve() == (out / args.split).resolve():
+            raise ConfigError("--from-snapshot must differ from --out")
+        client = AlerceClient(Recorder(Snapshot(snapshot_dir).fetch))
+        cooldown = 0.0
+    else:
+        client = make_client(args.rate)
+        cooldown = args.cooldown
+
+    def report(position: int, total: int, line: object) -> None:
+        from astro_simclr.alerts.store import IndexRow
+        from astro_simclr.data.schema import LABEL_NAMES
+
+        assert isinstance(line, IndexRow)  # noqa: S101 - the progress callback's contract
+        where = f"{line.oid}:{line.candid}" if line.oid else ""
+        sys.stderr.write(
+            f"[{position}/{total}] row {line.row} {LABEL_NAMES[line.label]} {line.status} "
+            f"{where} {line.requests} req {line.seconds:.1f} s\n"
+        )
+
+    stopping: list[int] = []
+
+    def on_signal(signum: int, _frame: object) -> None:
+        # The first signal asks the run to stop between rows, so a commit is never cut;
+        # a second one forces the exit (the finally still commits the batch).
+        if stopping:
+            raise KeyboardInterrupt
+        stopping.append(signum)
+        sys.stderr.write(f"astro-simclr: signal {signum}: stopping after the current row\n")
+
+    handled = [getattr(signal, s) for s in ("SIGTERM", "SIGHUP", "SIGINT") if hasattr(signal, s)]
+    previous = {sig: signal.signal(sig, on_signal) for sig in handled}
+    try:
+        run = fetch_alerts(
+            data_dir / args.dataset,
+            args.split,
+            out,
+            client=client,
+            limit=args.limit,
+            resume=args.resume,
+            batch_size=args.batch_size,
+            cooldown=cooldown,
+            progress=None if args.quiet else report,
+            stop=lambda: bool(stopping),
+        )
+    finally:
+        for sig, handler in previous.items():
+            # None means a handler not installed from Python: fall back to the default.
+            signal.signal(sig, signal.SIG_DFL if handler is None else handler)
+    per = run.seconds / run.attempted if run.attempted else 0.0
+    sys.stdout.write(
+        f"attempted {run.attempted} rows ({run.skipped} already done), {run.requests} "
+        f"requests, {run.seconds:.1f} s ({per:.2f} s per row), {run.cooldowns} cooldowns\n"
+    )
+    sys.stdout.write(format_summary(summarize(run.split_dir)))
+    sys.stdout.write(format_duplicates(duplicates([run.split_dir])))
+    return 128 + stopping[0] if stopping else 0
+
+
+def _alerts_summary(args: argparse.Namespace) -> int:
+    from astro_simclr.alerts.store import (
+        META_NAME,
+        duplicates,
+        format_duplicates,
+        format_summary,
+        summarize,
+    )
+    from astro_simclr.data.schema import SPLITS, DataError
+
+    raw: Path = args.raw_dir
+    splits: list[str] = args.split or [s for s in SPLITS if (raw / s / META_NAME).is_file()]
+    if not splits:
+        raise DataError(f"{raw}: no fetch-alerts run (no <split>/{META_NAME})")
+    summaries = [summarize(raw / split) for split in splits]
+    found = duplicates(raw / split for split in splits)
+    if args.json:
+        payload = {
+            "splits": [s.to_json() for s in summaries],
+            "duplicates": {str(c): owners for c, owners in found.items()},
+        }
+        sys.stdout.write(json.dumps(payload, indent=2) + "\n")
+    else:
+        sys.stdout.write("\n".join(format_summary(s) for s in summaries))
+        sys.stdout.write(format_duplicates(found))
+    return 0 if all(s.accepted() for s in summaries) else EXIT_DATA
+
+
+def _add_alert_commands(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    from astro_simclr.data.schema import SPLITS
+
+    fetch = commands.add_parser(
+        "fetch-alerts",
+        help="recover the raw ZTF alerts of a prepared split from ALeRCE (resumable)",
+        description="For each row of the split, find its alert on ALeRCE from the "
+        "de-standardised ra, dec, magpsf and sigmapsf, download the avro, check that "
+        "ALeRCE's min-max of the raw cutouts equals the stored float32 stamp (<= 1e-6), "
+        "and store the raw cutouts, the candidate record and every raw response under "
+        "OUT/SPLIT (docs/data.md, 'Raw alerts'). One rate limit over all hosts, retries "
+        "with backoff on timeouts, 5xx and 429. Needs prepare-data --images float32.",
+    )
+    add_settings_arguments(fetch)
+    fetch.add_argument(
+        "--data-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="the directory of prepared datasets (default: the data_dir setting)",
+    )
+    fetch.add_argument("--dataset", required=True, metavar="NAME", help="prepared dataset name")
+    fetch.add_argument("--split", required=True, choices=SPLITS)
+    fetch.add_argument(
+        "--out", type=Path, default=None, metavar="DIR", help="default: dataset/raw/NAME"
+    )
+    fetch.add_argument(
+        "--rate", type=float, default=1.5, metavar="R", help="requests per second (default 1.5)"
+    )
+    fetch.add_argument("--limit", type=int, default=None, metavar="N", help="rows to attempt")
+    fetch.add_argument(
+        "--resume",
+        action="store_true",
+        help="continue the run in OUT/SPLIT: skip finished rows, retry http_error ones",
+    )
+    fetch.add_argument(
+        "--batch-size",
+        type=int,
+        default=100,
+        metavar="N",
+        help="rows per committed shard (a hard kill loses at most one batch; default 100)",
+    )
+    fetch.add_argument(
+        "--cooldown",
+        type=float,
+        default=300.0,
+        metavar="S",
+        help="pause after 3 consecutive http_error rows (default 300 s; 0 disables)",
+    )
+    fetch.add_argument(
+        "--from-snapshot",
+        type=Path,
+        default=None,
+        metavar="RAW_DIR",
+        help="rebuild offline from the raw responses stored in RAW_DIR/SPLIT (no network)",
+    )
+    fetch.add_argument("--quiet", action="store_true", help="no per-row progress on stderr")
+    fetch.set_defaults(handler=_fetch_alerts)
+
+    summary = commands.add_parser(
+        "alerts-summary",
+        help="counts per class and status of a fetch-alerts store, and the acceptance",
+        description="Print, per split, the counts per class and status, the miss groups "
+        "(not found, ambiguous, timeout, mismatch), the recovery per class against the "
+        "98%% acceptance, the CCD-edge (non-63x63) alerts and the cost; then the candids "
+        "stored for several rows (within or across splits). Exit 0 if every split shown "
+        "reaches the acceptance, else 1.",
+    )
+    summary.add_argument("raw_dir", type=Path, metavar="RAW_DIR")
+    summary.add_argument(
+        "--split", action="append", choices=SPLITS, help="repeatable (default: every split)"
+    )
+    summary.add_argument("--json", action="store_true")
+    summary.set_defaults(handler=_alerts_summary)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level parser with every subcommand."""
     parser = argparse.ArgumentParser(
@@ -931,6 +1128,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_training_commands(commands)
     _add_check_commands(commands)
     _add_oracle_commands(commands)
+    _add_alert_commands(commands)
     return parser
 
 

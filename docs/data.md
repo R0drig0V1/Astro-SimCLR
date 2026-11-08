@@ -1,7 +1,7 @@
 <!-- Data files of the project: schemas, provenance and workflow. Code: src/astro_simclr/data/
      (docs/architecture.md, section `data`). Checked against the real files on 2026-11-07;
      the float input and feature sections on 2026-11-08 (task 2.1); RJ23 inputs written
-     2026-11-08 (task 3.3). -->
+     2026-11-08 (task 3.3); the raw alerts on 2026-11-08 (task 3.1). -->
 # Data
 
 The ZTF stamp datasets are pickles, kept untracked in `dataset/` (`.gitignore`:
@@ -318,6 +318,162 @@ below, and `isdiffpos` is exactly {0, 1}. A std wrong in the sixth digit would a
 observations for later tasks: the Train means of the stored features (except `isdiffpos`)
 are up to 3e-4 in absolute value, not 0 (M1's Train is the set before the 12 duplicates
 were removed), and `non_detections` reaches −190 in Train (ALeRCE does not clip it at 0).
+
+## Raw alerts (task 3.1)
+
+The stored stamps are normalised: per channel, min-max over 63×63, then NaN → 0. The raw
+alerts behind them are recovered from ALeRCE's public services by `astro-simclr
+fetch-alerts` (code: `src/astro_simclr/alerts/`, ADR 0011). They keep the real NaN and
+saturation masks, and the full candidate record. Phase 3 needs them for RJ23/C25 inputs,
+the dataset reconstruction and the object-level splits. Phase 2 needs them for row C1 and
+the fake-SN follow-ups. A pretraining corpus needs their `candid`s as its leakage
+exclusion list.
+
+### Method and provenance
+
+The method comes from the integrator's probe of 2026-11-08: 9 of 10 probe stamps
+recovered, with no flip or rotation. For each row of a prepared split:
+
+1. De-standardise `ra`, `dec`, `magpsf` and `sigmapsf` with M1's statistics
+   ([above](#features-and-m1s-normalisation)).
+2. `GET https://api.alerce.online/ztf/v1/objects/?ra=..&dec=..&radius=1.5`. Keep the
+   trailing slash: without it the server redirects.
+   - No object at all: **`ghost_candidate`**. RJ23's `build_dataset.py` calls some CD21
+     Bogus "ghost bogus": objects that are not in ALeRCE's database, whose stamps exist
+     only in CD21's files.
+3. `GET /ztf/v1/objects/{oid}/detections` for every object in the cone. Match a detection
+   when `|Δmagpsf| ≤ 1e-4` and `|Δsigmapsf| ≤ 1e-4`. `candid` arrives as a string,
+   `isdiffpos` as ±1, and there is no `jd` or `drb`: those come from the avro.
+4. **Ties.** `jd` is not a stored feature, so an AGN or VS with hundreds of detections can
+   tie. Every matching `candid` is downloaded (at most 16; more is `ambiguous` without
+   downloading), and the stamp check decides.
+5. `GET https://avro.alerce.online/get_avro?oid=..&candid=..` returns the whole alert:
+   about 50 KB, snappy codec, the candidate record, the previous candidates, and the
+   three gzipped FITS cutouts. It replaces three `get_stamp` FITS requests, and it gives
+   `jd`, `drb`, `xpos` and `ypos`.
+6. **Stamp check:** ALeRCE's min-max of the raw cutouts must equal the stored
+   `images_f32` row, max |Δ| ≤ 1e-6.
+   - The normalisation is per channel over 63×63, no epsilon, NaN → 0:
+     `crop_then_normalise(raw, crop=63, nan_approximation=False)`.
+   - A cutout cut at a CCD edge (smaller than 63×63) is padded with NaN by
+     `repair_non_squared_stamp`, from the candidate's `xpos`/`ypos`, before the check.
+
+Statuses: `ok` (one candidate passes; stored), `mismatch` (downloaded, none passes; the
+closest is recorded, not stored), `ghost_candidate`, `no_object` (objects in the cone, none
+with a detection), `no_detection_match`, `ambiguous` (several candidates pass, or more than
+16 tie, or a miss when the cone search has an unread second page), `bad_alert` (no
+candidate is a readable alert), and `http_error`. `http_error` is a timeout, 5xx or 429
+still failing after the retries, or malformed JSON (these are transient), or a final 4xx. Only `http_error` is retried, by the next
+`--resume`. Ghosts are final: no retry beyond the transport's backoff, and no wider
+tolerance.
+
+**Acceptance.**
+- Every class recovers at least 98 % of its **non-ghost** rows as `ok`.
+- The misses are reported in groups: not found, ambiguous, timeout, mismatch. Ghosts are
+  counted per class apart.
+- No stored row fails the stamp check: only `ok` rows are stored.
+- Non-63×63 (CCD-edge) alerts are counted apart.
+- `alerts-summary RAW_DIR` prints all of this, and exits 1 until the acceptance is met.
+
+### Store layout
+
+```
+dataset/raw/<dataset>/<split>/
+    fetch.json        format astro-simclr-raw-alerts v1; the prepared dataset and its
+                      source SHA-256; split, size, class counts; endpoints; tolerances
+    index.csv         one line per attempt, append-only; the last line of a row wins
+    shard-00000.npz   one committed batch (100 rows by default), np.savez_compressed:
+                        rows, candid   int64 (n,)              the ok rows only
+                        cutouts        float32 (n, 63, 63, 3)  science, template,
+                                                               difference; raw, NaN kept
+                        candidates     uint8                   JSON list of the candidate
+                                                               records (scalar fields)
+                        responses      uint8                   JSON list: url, kind,
+                                                               retrieved_at (UTC),
+                                                               sha256, offset, size
+                        bodies         uint8                   the raw response bytes
+```
+
+Each index line holds the row, its label and its status.
+- **Search:** the de-standardised targets (`target_ra`, `target_dec`, `target_magpsf`,
+  `target_sigmapsf`; for a ghost, the only position on record, for later position groups),
+  the objects in the cone, and every matching `oid:candid`.
+- **The chosen alert:** its candidate fields (`oid`, `candid`, `jd`, `fid`, `magpsf`,
+  `sigmapsf`, `isdiffpos`, `rb`, `drb`, `ra`, `dec`), the raw shape, the NaN count and the
+  check's max |Δ|.
+- **Provenance and cost:** the shard of its batch, the responses it used
+  (`kind:sha256`), and the requests and seconds it cost.
+
+**Snapshot.** Every raw response is kept byte for byte: the cone-search JSON, the full
+detection list of each object (needed later to pick a random or the first alert per
+object), and every downloaded avro.
+- So the index can be rebuilt offline: `fetch-alerts ... --from-snapshot RAW_DIR --out
+  OTHER` re-decides every row from the stored bytes, with no network.
+- Cone searches and detection lists are cached in memory by URL, because rows share
+  objects (about 1,392 rows of `red` share a position).
+
+**Why npz shards and a CSV index.**
+- The run lasts 1–2 days and must survive interruptions. A batch is committed as one
+  shard, written to a temporary file, fsynced and renamed; only then are its index lines
+  appended and fsynced. An index line therefore never names a missing shard.
+- The directory is fsynced after the rename, and `fetch.json` is written atomically.
+- A crash in between leaves an orphan shard that no line references. A truncated last
+  index line is dropped, and text fields never contain a newline.
+- On `--resume`, an `ok` row whose shard is missing is fetched again.
+- The shards load with `allow_pickle=False`, since the records are JSON text in uint8
+  arrays.
+- CSV needs no new dependency. One file per batch keeps the file count near 500 for `red`.
+
+`dataset/` is untracked (`.gitignore`), and the raw alerts must not be committed either.
+They are ZTF public alerts, but they are retrieved from ALeRCE's service and keyed to our
+non-public labelled set.
+
+**Size and cost**, from the smoke run below:
+- about 94 KB per row, so about 4.9 GB for `red`'s 51,582 rows;
+- about 3.1 requests per row, so about 160k requests.
+- The run is sequential and **latency-bound**: 1.29 s per request on average at
+  `--rate 1`, more than the 1 s interval, so the limiter rarely waited. At the smoke run's
+  4.06 s per row, `red` takes about 58 h, and a higher `--rate` shortens that only where
+  the latency is below the interval. The latency from the GPU machine may differ.
+
+### Running it (GPU machine, WSL2, unattended)
+
+```bash
+astro-simclr fetch-alerts --data-dir DATA --dataset td_ztf_stamp_17_06_20_red-002 \
+    --split Train --out dataset/raw/td_ztf_stamp_17_06_20_red-002 --rate 1.5 --quiet
+# after any stop, or to retry the http_error rows:
+astro-simclr fetch-alerts ... --resume --quiet
+astro-simclr alerts-summary dataset/raw/td_ztf_stamp_17_06_20_red-002
+```
+
+- The prepared layout needs `images_f32.npy` (`prepare-data --images float32`).
+- One rate limit covers both hosts; first attempts and retries go through it alike.
+- Timeouts, 5xx and 429 are retried 5 times with backoff 2, 4, 8 and 16 s, capped at 60 s.
+  A numeric `Retry-After` wins over the cap, up to 600 s. The API sends no rate-limit
+  headers, so the throttling is ours.
+- Each response must arrive in full within 300 s (the socket timeout of 60 s is per
+  read). Redirects are followed only to `https://`.
+- After 3 transient `http_error` rows in a row the run pauses for `--cooldown` seconds
+  (default 300). A final 4xx does not count toward that streak.
+- SIGTERM, SIGHUP (a closed ssh session) and Ctrl-C stop the run after the current row and
+  commit the batch (exit 128 + the signal number), so a signal never cuts a commit. A
+  second signal forces the exit. A hard kill loses at most one batch.
+- A failed commit (a full disk, say) is not retried, and its responses stay pending.
+  Resume after fixing the cause.
+- Memory: the response cache is bounded at 256 MB.
+- Rows are visited round-robin over the classes, so a partial run covers them evenly.
+- The `User-Agent` is generic (`astro-simclr/<version> (research; raw alert retrieval)`).
+
+### Smoke run (2026-11-08)
+
+Run on `red-002` Validation with `--limit 50 --rate 1`, from the M4, at 50 rows (10 per
+class):
+- 47 `ok`, 3 `ghost_candidate` (all Bogus: rows 402, 405 and 408), and no mismatch,
+  not-found, ambiguous or timeout;
+- max |Δ| 1.2e-7 over the `ok` rows, re-checked from the store; 3 of them have NaN pixels;
+- no tie and no CCD-edge cutout;
+- 157 requests, 203 s: 4.06 s per alert;
+- `--from-snapshot` rebuilt the same 50 statuses offline in 0.9 s.
 
 ## Workflow and manifest
 
