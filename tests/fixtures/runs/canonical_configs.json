@@ -1,0 +1,124 @@
+{
+  "configs": {
+    "carrasco2021": {
+      "canonical_json": "{\"canonical_version\":1,\"command\":\"train-supervised\",\"settings\":{\"adam_betas\":\"code\",\"aug_feature_jitter\":0.0,\"aug_min_r2\":0.5,\"aug_noise\":0.0,\"augmentation\":\"center_crop\",\"batch_size\":64,\"beta_loss\":0.5,\"check_finite\":true,\"context\":\"none\",\"dataset\":\"td_ztf_stamp_17_06_20_red-002\",\"deterministic\":false,\"devices\":1,\"divergence_threshold\":null,\"drop_rate\":0.5,\"dropout_active\":false,\"early_stopping\":false,\"encoder_name\":\"resnet18\",\"eval_batch_size\":64,\"exclude_leaked_train\":true,\"fine_tune_lr_factor\":0.2,\"flux_k_max\":1.5,\"flux_k_min\":0.5,\"flux_rescale\":0.0,\"fp32_precision\":\"ieee\",\"group_fields\":null,\"horizon_increment\":10000,\"image_size\":21,\"lars_legacy_trust_ratio\":true,\"limit_train_batches\":null,\"limit_val_batches\":null,\"lr\":0.001,\"max_epochs\":220,\"max_steps\":30000,\"min_delta\":0.001,\"monitor\":\"loss_val\",\"nan_approximation\":true,\"nt_xent_legacy_denominator\":true,\"optimizer\":\"Adam\",\"paper_arch\":\"rot4\",\"paper_input\":\"float32\",\"patience\":40,\"projection_dim\":300,\"rot90_augment\":false,\"schedule\":\"carrasco2021\",\"supervised_model\":\"paper_stamp_classifier\",\"synthetic_bogus\":0.0,\"temperature\":0.17910250439416514,\"val_every_n_steps\":10,\"with_features\":true}}",
+      "config_sha256": "5b443b6852973951b1e0fef2d1faa40ea49f4c18f1e76d2b003b60b2e1201796"
+    },
+    "carrasco2021-no-features": {
+      "canonical_json": "{\"canonical_version\":1,\"command\":\"train-supervised\",\"settings\":{\"adam_betas\":\"code\",\"aug_feature_jitter\":0.0,\"aug_min_r2\":0.5,\"aug_noise\":0.0,\"augmentation\":\"center_crop\",\"batch_size\":64,\"beta_loss\":0.5,\"check_finite\":true,\"context\":\"none\",\"dataset\":\"td_ztf_stamp_17_06_20_red-002\",\"deterministic\":false,\"devices\":1,\"divergence_threshold\":null,\"drop_rate\":0.5,\"dropout_active\":false,\"early_stopping\":false,\"encoder_name\":\"resnet18\",\"eval_batch_size\":64,\"exclude_leaked_train\":true,\"fine_tune_lr_factor\":0.2,\"flux_k_max\":1.5,\"flux_k_min\":0.5,\"flux_rescale\":0.0,\"fp32_precision\":\"ieee\",\"group_fields\":null,\"horizon_increment\":10000,\"image_size\":21,\"lars_legacy_trust_ratio\":true,\"limit_train_batches\":null,\"limit_val_batches\":null,\"lr\":0.001,\"max_epochs\":220,\"max_steps\":30000,\"min_delta\":0.001,\"monitor\":\"loss_val\",\"nan_approximation\":true,\"nt_xent_legacy_denominator\":true,\"optimizer\":\"Adam\",\"paper_arch\":\"rot4\",\"paper_input\":\"float32\",\"patience\":40,\"projection_dim\":300,\"rot90_augment\":false,\"schedule\":\"carrasco2021\",\"supervised_model\":\"paper_stamp_classifier\",\"synthetic_bogus\":0.0,\"temperature\":0.17910250439416514,\"val_every_n_steps\":10,\"with_features\":false}}",
+      "config_sha256": "7e13d4a8888e09a0db8fd36bbbab6cb19862ef2bcb2b43d11f566710707d0925"
+    },
+    "carrasco2021+p4": {
+      "canonical_json": "{\"canonical_version\":1,\"command\":\"train-supervised\",\"settings\":{\"adam_betas\":\"code\",\"aug_feature_jitter\":0.0,\"aug_min_r2\":0.5,\"aug_noise\":0.0,\"augmentation\":\"center_crop\",\"batch_size\":64,\"beta_loss\":0.5,\"check_finite\":true,\"context\":\"none\",\"dataset\":\"td_ztf_stamp_17_06_20_red-002\",\"deterministic\":false,\"devices\":1,\"divergence_threshold\":null,\"drop_rate\":0.5,\"dropout_active\":false,\"early_stopping\":false,\"encoder_name\":\"resnet18\",\"eval_batch_size\":64,\"exclude_leaked_train\":true,\"fine_tune_lr_factor\":0.2,\"flux_k_max\":1.5,\"flux_k_min\":0.5,\"flux_rescale\":0.0,\"fp32_precision\":\"ieee\",\"group_fields\":null,\"horizon_increment\":10000,\"image_size\":21,\"lars_legacy_trust_ratio\":true,\"limit_train_batches\":null,\"limit_val_batches\":null,\"lr\":0.001,\"max_epochs\":220,\"max_steps\":30000,\"min_delta\":0.001,\"monitor\":\"loss_val\",\"nan_approximation\":true,\"nt_xent_legacy_denominator\":true,\"optimizer\":\"Adam\",\"paper_arch\":\"p4\",\"paper_input\":\"float32\",\"patience\":40,\"projection_dim\":300,\"rot90_augment\":false,\"schedule\":\"carrasco2021\",\"supervised_model\":\"paper_stamp_classifier\",\"synthetic_bogus\":0.0,\"temperature\":0.17910250439416514,\"val_every_n_steps\":10,\"with_features\":true}}",
+      "config_sha256": "0295d1bf349dbfa0b8870051adfa43a19e3a7b531790aecbb53b16c99aac71b5"
+    },
+    "carrasco2021+p4m-fields8": {
+      "canonical_json": "{\"canonical_version\":1,\"command\":\"train-supervised\",\"settings\":{\"adam_betas\":\"code\",\"aug_feature_jitter\":0.0,\"aug_min_r2\":0.5,\"aug_noise\":0.0,\"augmentation\":\"center_crop\",\"batch_size\":64,\"beta_loss\":0.5,\"check_finite\":true,\"context\":\"none\",\"dataset\":\"td_ztf_stamp_17_06_20_red-002\",\"deterministic\":false,\"devices\":1,\"divergence_threshold\":null,\"drop_rate\":0.5,\"dropout_active\":false,\"early_stopping\":false,\"encoder_name\":\"resnet18\",\"eval_batch_size\":64,\"exclude_leaked_train\":true,\"fine_tune_lr_factor\":0.2,\"flux_k_max\":1.5,\"flux_k_min\":0.5,\"flux_rescale\":0.0,\"fp32_precision\":\"ieee\",\"group_fields\":8,\"horizon_increment\":10000,\"image_size\":21,\"lars_legacy_trust_ratio\":true,\"limit_train_batches\":null,\"limit_val_batches\":null,\"lr\":0.001,\"max_epochs\":220,\"max_steps\":30000,\"min_delta\":0.001,\"monitor\":\"loss_val\",\"nan_approximation\":true,\"nt_xent_legacy_denominator\":true,\"optimizer\":\"Adam\",\"paper_arch\":\"p4m\",\"paper_input\":\"float32\",\"patience\":40,\"projection_dim\":300,\"rot90_augment\":false,\"schedule\":\"carrasco2021\",\"supervised_model\":\"paper_stamp_classifier\",\"synthetic_bogus\":0.0,\"temperature\":0.17910250439416514,\"val_every_n_steps\":10,\"with_features\":true}}",
+      "config_sha256": "f49df4f850b697440f7c53cc219762721a2faae3971475c811527a4713784e0b"
+    },
+    "carrasco2021+single-rot90": {
+      "canonical_json": "{\"canonical_version\":1,\"command\":\"train-supervised\",\"settings\":{\"adam_betas\":\"code\",\"aug_feature_jitter\":0.0,\"aug_min_r2\":0.5,\"aug_noise\":0.0,\"augmentation\":\"center_crop\",\"batch_size\":64,\"beta_loss\":0.5,\"check_finite\":true,\"context\":\"none\",\"dataset\":\"td_ztf_stamp_17_06_20_red-002\",\"deterministic\":false,\"devices\":1,\"divergence_threshold\":null,\"drop_rate\":0.5,\"dropout_active\":false,\"early_stopping\":false,\"encoder_name\":\"resnet18\",\"eval_batch_size\":64,\"exclude_leaked_train\":true,\"fine_tune_lr_factor\":0.2,\"flux_k_max\":1.5,\"flux_k_min\":0.5,\"flux_rescale\":0.0,\"fp32_precision\":\"ieee\",\"group_fields\":null,\"horizon_increment\":10000,\"image_size\":21,\"lars_legacy_trust_ratio\":true,\"limit_train_batches\":null,\"limit_val_batches\":null,\"lr\":0.001,\"max_epochs\":220,\"max_steps\":30000,\"min_delta\":0.001,\"monitor\":\"loss_val\",\"nan_approximation\":true,\"nt_xent_legacy_denominator\":true,\"optimizer\":\"Adam\",\"paper_arch\":\"single\",\"paper_input\":\"float32\",\"patience\":40,\"projection_dim\":300,\"rot90_augment\":true,\"schedule\":\"carrasco2021\",\"supervised_model\":\"paper_stamp_classifier\",\"synthetic_bogus\":0.0,\"temperature\":0.17910250439416514,\"val_every_n_steps\":10,\"with_features\":true}}",
+      "config_sha256": "a1215cf406cf4ff3cc2fcedbe4c4a6cad096435c7afd2d23d60fc97dcb18fb6c"
+    },
+    "carrasco2021+avgpool63": {
+      "canonical_json": "{\"canonical_version\":1,\"command\":\"train-supervised\",\"settings\":{\"adam_betas\":\"code\",\"aug_feature_jitter\":0.0,\"aug_min_r2\":0.5,\"aug_noise\":0.0,\"augmentation\":\"center_crop\",\"batch_size\":64,\"beta_loss\":0.5,\"check_finite\":true,\"context\":\"avgpool63\",\"dataset\":\"td_ztf_stamp_17_06_20_red-002\",\"deterministic\":false,\"devices\":1,\"divergence_threshold\":null,\"drop_rate\":0.5,\"dropout_active\":false,\"early_stopping\":false,\"encoder_name\":\"resnet18\",\"eval_batch_size\":64,\"exclude_leaked_train\":true,\"fine_tune_lr_factor\":0.2,\"flux_k_max\":1.5,\"flux_k_min\":0.5,\"flux_rescale\":0.0,\"fp32_precision\":\"ieee\",\"group_fields\":null,\"horizon_increment\":10000,\"image_size\":21,\"lars_legacy_trust_ratio\":true,\"limit_train_batches\":null,\"limit_val_batches\":null,\"lr\":0.001,\"max_epochs\":220,\"max_steps\":30000,\"min_delta\":0.001,\"monitor\":\"loss_val\",\"nan_approximation\":true,\"nt_xent_legacy_denominator\":true,\"optimizer\":\"Adam\",\"paper_arch\":\"rot4\",\"paper_input\":\"float32\",\"patience\":40,\"projection_dim\":300,\"rot90_augment\":false,\"schedule\":\"carrasco2021\",\"supervised_model\":\"paper_stamp_classifier\",\"synthetic_bogus\":0.0,\"temperature\":0.17910250439416514,\"val_every_n_steps\":10,\"with_features\":true}}",
+      "config_sha256": "7a33208ed3346c87754d9d9bfcb7b92823b15495586d607c3f76e88bc4911dca"
+    },
+    "carrasco2021+c5": {
+      "canonical_json": "{\"canonical_version\":1,\"command\":\"train-supervised\",\"settings\":{\"adam_betas\":\"code\",\"aug_feature_jitter\":0.1,\"aug_min_r2\":0.5,\"aug_noise\":1.0,\"augmentation\":\"center_crop\",\"batch_size\":64,\"beta_loss\":0.5,\"check_finite\":true,\"context\":\"none\",\"dataset\":\"td_ztf_stamp_17_06_20_red-002\",\"deterministic\":false,\"devices\":1,\"divergence_threshold\":null,\"drop_rate\":0.5,\"dropout_active\":false,\"early_stopping\":false,\"encoder_name\":\"resnet18\",\"eval_batch_size\":64,\"exclude_leaked_train\":true,\"fine_tune_lr_factor\":0.2,\"flux_k_max\":1.5,\"flux_k_min\":0.5,\"flux_rescale\":0.0,\"fp32_precision\":\"ieee\",\"group_fields\":null,\"horizon_increment\":10000,\"image_size\":21,\"lars_legacy_trust_ratio\":true,\"limit_train_batches\":null,\"limit_val_batches\":null,\"lr\":0.001,\"max_epochs\":220,\"max_steps\":30000,\"min_delta\":0.001,\"monitor\":\"loss_val\",\"nan_approximation\":true,\"nt_xent_legacy_denominator\":true,\"optimizer\":\"Adam\",\"paper_arch\":\"rot4\",\"paper_input\":\"float32\",\"patience\":40,\"projection_dim\":300,\"rot90_augment\":false,\"schedule\":\"carrasco2021\",\"supervised_model\":\"paper_stamp_classifier\",\"synthetic_bogus\":0.0,\"temperature\":0.17910250439416514,\"val_every_n_steps\":10,\"with_features\":true}}",
+      "config_sha256": "fe6f638b57e362b50353f7ac81a697efbae5821733f3467d843c205e3bd6299a"
+    },
+    "carrasco2021+c6": {
+      "canonical_json": "{\"canonical_version\":1,\"command\":\"train-supervised\",\"settings\":{\"adam_betas\":\"code\",\"aug_feature_jitter\":0.0,\"aug_min_r2\":0.5,\"aug_noise\":0.0,\"augmentation\":\"center_crop\",\"batch_size\":64,\"beta_loss\":0.5,\"check_finite\":true,\"context\":\"none\",\"dataset\":\"td_ztf_stamp_17_06_20_red-002\",\"deterministic\":false,\"devices\":1,\"divergence_threshold\":null,\"drop_rate\":0.5,\"dropout_active\":false,\"early_stopping\":false,\"encoder_name\":\"resnet18\",\"eval_batch_size\":64,\"exclude_leaked_train\":true,\"fine_tune_lr_factor\":0.2,\"flux_k_max\":1.5,\"flux_k_min\":0.5,\"flux_rescale\":0.0,\"fp32_precision\":\"ieee\",\"group_fields\":null,\"horizon_increment\":10000,\"image_size\":21,\"lars_legacy_trust_ratio\":true,\"limit_train_batches\":null,\"limit_val_batches\":null,\"lr\":0.001,\"max_epochs\":220,\"max_steps\":30000,\"min_delta\":0.001,\"monitor\":\"loss_val\",\"nan_approximation\":true,\"nt_xent_legacy_denominator\":true,\"optimizer\":\"Adam\",\"paper_arch\":\"rot4\",\"paper_input\":\"float32\",\"patience\":40,\"projection_dim\":300,\"rot90_augment\":false,\"schedule\":\"carrasco2021\",\"supervised_model\":\"paper_stamp_classifier\",\"synthetic_bogus\":0.1,\"temperature\":0.17910250439416514,\"val_every_n_steps\":10,\"with_features\":true}}",
+      "config_sha256": "502bc943aee68f69df36a02eebdc9c6b411dfb591b85b3e39358546603de8fe4"
+    },
+    "carrasco2021+c7": {
+      "canonical_json": "{\"canonical_version\":1,\"command\":\"train-supervised\",\"settings\":{\"adam_betas\":\"code\",\"aug_feature_jitter\":0.0,\"aug_min_r2\":0.5,\"aug_noise\":0.0,\"augmentation\":\"center_crop\",\"batch_size\":64,\"beta_loss\":0.5,\"check_finite\":true,\"context\":\"none\",\"dataset\":\"td_ztf_stamp_17_06_20_red-002\",\"deterministic\":false,\"devices\":1,\"divergence_threshold\":null,\"drop_rate\":0.5,\"dropout_active\":false,\"early_stopping\":false,\"encoder_name\":\"resnet18\",\"eval_batch_size\":64,\"exclude_leaked_train\":true,\"fine_tune_lr_factor\":0.2,\"flux_k_max\":1.5,\"flux_k_min\":0.5,\"flux_rescale\":0.5,\"fp32_precision\":\"ieee\",\"group_fields\":null,\"horizon_increment\":10000,\"image_size\":21,\"lars_legacy_trust_ratio\":true,\"limit_train_batches\":null,\"limit_val_batches\":null,\"lr\":0.001,\"max_epochs\":220,\"max_steps\":30000,\"min_delta\":0.001,\"monitor\":\"loss_val\",\"nan_approximation\":true,\"nt_xent_legacy_denominator\":true,\"optimizer\":\"Adam\",\"paper_arch\":\"rot4\",\"paper_input\":\"float32\",\"patience\":40,\"projection_dim\":300,\"rot90_augment\":false,\"schedule\":\"carrasco2021\",\"supervised_model\":\"paper_stamp_classifier\",\"synthetic_bogus\":0.0,\"temperature\":0.17910250439416514,\"val_every_n_steps\":10,\"with_features\":true}}",
+      "config_sha256": "359950da0d18c3998bfa6ff01e685556b447288a6b1df9637bfed6aa3608fb05"
+    },
+    "carrasco2021+tf32": {
+      "canonical_json": "{\"canonical_version\":1,\"command\":\"train-supervised\",\"settings\":{\"adam_betas\":\"code\",\"aug_feature_jitter\":0.0,\"aug_min_r2\":0.5,\"aug_noise\":0.0,\"augmentation\":\"center_crop\",\"batch_size\":64,\"beta_loss\":0.5,\"check_finite\":true,\"context\":\"none\",\"dataset\":\"td_ztf_stamp_17_06_20_red-002\",\"deterministic\":false,\"devices\":1,\"divergence_threshold\":null,\"drop_rate\":0.5,\"dropout_active\":false,\"early_stopping\":false,\"encoder_name\":\"resnet18\",\"eval_batch_size\":64,\"exclude_leaked_train\":true,\"fine_tune_lr_factor\":0.2,\"flux_k_max\":1.5,\"flux_k_min\":0.5,\"flux_rescale\":0.0,\"fp32_precision\":\"tf32\",\"group_fields\":null,\"horizon_increment\":10000,\"image_size\":21,\"lars_legacy_trust_ratio\":true,\"limit_train_batches\":null,\"limit_val_batches\":null,\"lr\":0.001,\"max_epochs\":220,\"max_steps\":30000,\"min_delta\":0.001,\"monitor\":\"loss_val\",\"nan_approximation\":true,\"nt_xent_legacy_denominator\":true,\"optimizer\":\"Adam\",\"paper_arch\":\"rot4\",\"paper_input\":\"float32\",\"patience\":40,\"projection_dim\":300,\"rot90_augment\":false,\"schedule\":\"carrasco2021\",\"supervised_model\":\"paper_stamp_classifier\",\"synthetic_bogus\":0.0,\"temperature\":0.17910250439416514,\"val_every_n_steps\":10,\"with_features\":true}}",
+      "config_sha256": "ada51e1d377d829e848c0501f1250ec4b9c7174acd3d4d96ced4343eba240ac7"
+    },
+    "pretrain-legacy": {
+      "canonical_json": "{\"canonical_version\":1,\"command\":\"pretrain\",\"settings\":{\"adam_betas\":\"code\",\"aug_feature_jitter\":0.0,\"aug_min_r2\":0.5,\"aug_noise\":0.0,\"augmentation\":\"simclr\",\"batch_size\":450,\"beta_loss\":0.016063800410738464,\"check_finite\":true,\"context\":\"none\",\"dataset\":\"td_ztf_stamp_simclr_300\",\"deterministic\":false,\"devices\":1,\"divergence_threshold\":null,\"drop_rate\":0.2,\"dropout_active\":false,\"early_stopping\":true,\"encoder_name\":\"resnet18\",\"eval_batch_size\":100,\"exclude_leaked_train\":true,\"fine_tune_lr_factor\":0.2,\"flux_k_max\":1.5,\"flux_k_min\":0.5,\"flux_rescale\":0.0,\"fp32_precision\":\"ieee\",\"group_fields\":null,\"horizon_increment\":10000,\"image_size\":27,\"lars_legacy_trust_ratio\":true,\"limit_train_batches\":null,\"limit_val_batches\":null,\"lr\":1.258059613629328,\"max_epochs\":400,\"max_steps\":30000,\"min_delta\":0.002,\"monitor\":\"loss_train_enc\",\"nan_approximation\":true,\"nt_xent_legacy_denominator\":true,\"optimizer\":\"LARS\",\"paper_arch\":\"rot4\",\"paper_input\":\"float32\",\"patience\":100,\"projection_dim\":300,\"rot90_augment\":false,\"schedule\":\"epochs\",\"supervised_model\":\"stamp_classifier\",\"synthetic_bogus\":0.0,\"temperature\":0.17910250439416514,\"val_every_n_steps\":10,\"with_features\":true}}",
+      "config_sha256": "12cef88a8b4c20fdcc5ea3a50614866c1d5df2dd6a84a059fa8da8e6130cffc6"
+    },
+    "train-supervised-legacy": {
+      "canonical_json": "{\"canonical_version\":1,\"command\":\"train-supervised\",\"settings\":{\"adam_betas\":\"code\",\"aug_feature_jitter\":0.0,\"aug_min_r2\":0.5,\"aug_noise\":0.0,\"augmentation\":\"center_crop\",\"batch_size\":45,\"beta_loss\":0.016063800410738464,\"check_finite\":true,\"context\":\"none\",\"dataset\":\"td_ztf_stamp_17_06_20_red-002\",\"deterministic\":false,\"devices\":1,\"divergence_threshold\":null,\"drop_rate\":0.2,\"dropout_active\":false,\"early_stopping\":true,\"encoder_name\":\"resnet18\",\"eval_batch_size\":100,\"exclude_leaked_train\":true,\"fine_tune_lr_factor\":0.2,\"flux_k_max\":1.5,\"flux_k_min\":0.5,\"flux_rescale\":0.0,\"fp32_precision\":\"ieee\",\"group_fields\":null,\"horizon_increment\":10000,\"image_size\":27,\"lars_legacy_trust_ratio\":true,\"limit_train_batches\":null,\"limit_val_batches\":null,\"lr\":0.002495379490073152,\"max_epochs\":220,\"max_steps\":30000,\"min_delta\":0.001,\"monitor\":\"accuracy_val\",\"nan_approximation\":true,\"nt_xent_legacy_denominator\":true,\"optimizer\":\"AdamW\",\"paper_arch\":\"rot4\",\"paper_input\":\"float32\",\"patience\":40,\"projection_dim\":300,\"rot90_augment\":false,\"schedule\":\"epochs\",\"supervised_model\":\"stamp_classifier\",\"synthetic_bogus\":0.0,\"temperature\":0.17910250439416514,\"val_every_n_steps\":10,\"with_features\":true}}",
+      "config_sha256": "1d3e1c1d9399293b0912f440ee1e3eca9d691bc51387061e704acb11deaf9993"
+    }
+  },
+  "run_ids": {
+    "carrasco2021/seed0": {
+      "identity": {
+        "config_sha256": "5b443b6852973951b1e0fef2d1faa40ea49f4c18f1e76d2b003b60b2e1201796",
+        "seed": 0,
+        "split": null,
+        "data_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "splits_sha256": null,
+        "pretrained_sha256": null,
+        "machine_class": "cuda-nvidia-geforce-gtx-1050",
+        "engine": "lightning",
+        "numerics_epoch": 1
+      },
+      "run_id": "ae80692c8ca9073ed91868033feef28649010dc3e0fdd8fee0ace936e8e39439"
+    },
+    "carrasco2021/seed0/plain": {
+      "identity": {
+        "config_sha256": "5b443b6852973951b1e0fef2d1faa40ea49f4c18f1e76d2b003b60b2e1201796",
+        "seed": 0,
+        "split": null,
+        "data_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "splits_sha256": null,
+        "pretrained_sha256": null,
+        "machine_class": "cuda-nvidia-geforce-gtx-1050",
+        "engine": "plain",
+        "numerics_epoch": 1
+      },
+      "run_id": "80eaf8ae167f2931e2e6bdb63f8456afe40a967a68f4054cb53f2828377caea8"
+    },
+    "carrasco2021/seed3/fold2": {
+      "identity": {
+        "config_sha256": "5b443b6852973951b1e0fef2d1faa40ea49f4c18f1e76d2b003b60b2e1201796",
+        "seed": 3,
+        "split": 2,
+        "data_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "splits_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+        "pretrained_sha256": null,
+        "machine_class": "cuda-nvidia-geforce-gtx-1050",
+        "engine": "lightning",
+        "numerics_epoch": 1
+      },
+      "run_id": "7650e7d47eafbc48a072c402cbc511ab7279833cfe69aa015858046b336d0646"
+    },
+    "carrasco2021/seed0/screen": {
+      "identity": {
+        "config_sha256": "5b443b6852973951b1e0fef2d1faa40ea49f4c18f1e76d2b003b60b2e1201796",
+        "seed": 0,
+        "split": "screen",
+        "data_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "splits_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+        "pretrained_sha256": null,
+        "machine_class": "cuda-nvidia-geforce-gtx-1050",
+        "engine": "lightning",
+        "numerics_epoch": 1
+      },
+      "run_id": "70ef4f4ddb112871099ae0c298caa19aaa9b38d2a24bf22670238cd9638e9ce3"
+    },
+    "carrasco2021/seed0/cpu-epoch2": {
+      "identity": {
+        "config_sha256": "5b443b6852973951b1e0fef2d1faa40ea49f4c18f1e76d2b003b60b2e1201796",
+        "seed": 0,
+        "split": null,
+        "data_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "splits_sha256": null,
+        "pretrained_sha256": null,
+        "machine_class": "cpu-arm64",
+        "engine": "lightning",
+        "numerics_epoch": 2
+      },
+      "run_id": "4c4bba04d1b6ec614edb62445a46b94d71948a4416cbed33ea430199191fe681"
+    }
+  }
+}
