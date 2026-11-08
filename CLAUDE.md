@@ -46,6 +46,7 @@ scripts/integrator.sh              # launch the integrator agent (inside herdr, 
 uv sync --locked                   # .venv with the package and dev tools (Python 3.13)
 uv sync --locked --extra cpu       # CPU torch (CI); then UV_NO_SYNC=1 for every uv run (ADR 0001)
 uv run astro-simclr --help         # the CLI (src/astro_simclr/cli.py)
+uv run astro-simclr runs reindex results/phase2   # the run registry (~/.astro-simclr; ADR 0016)
 scripts/gpu-preflight.sh --synthetic   # GPU machine check (astro-simclr preflight; ADR 0001)
 uv run ruff format . && uv run ruff check --fix .   # fix formatting and most lint findings
 uvx copier@9.19.1 update           # pull python-template improvements (clean tree only)

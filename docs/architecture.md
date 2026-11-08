@@ -35,6 +35,7 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  ├──► preflight ──► experiments, data (inspection, manifest)
  └──► engine (phase 4: the plain-PyTorch loop's contracts; imports no Lightning) ──► config
  └──► runs (phase 4, A0: run identity, manifest.json, layout, retention) ──► config, data
+ └──► registry (phase 4, A2: runs reindex | ls | show | compare; SQLite) ──► runs, reference
 
 rj23_model (engine-free nn.Modules, not wired yet: task 3.4b) ──► data.rj23_input
 ```
@@ -226,6 +227,10 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
 - `preflight (--synthetic | --data-dir DIR) [--accelerator cuda] [--runs R1,R2,R3,R4]
   [--set ...]` (see `preflight`): exit 0 if no step failed, else 1.
   `scripts/gpu-preflight.sh` is a thin `uv run --no-sync` wrapper.
+- `runs reindex [ROOT ...] [--rebuild]`, `runs ls`, `runs show KEY`, `runs compare SPEC`
+  (task A2, see `registry`): the local run registry. Exit 0 on success (`reindex` also when
+  it skipped directories), 1 when the registry cannot be used or a comparison does not
+  resolve.
 - Exit codes: 0 success; 1 unusable data (`DataError`) or a failed gate/preflight; 2 invalid
   settings or arguments, including an unavailable accelerator (`AcceleratorError`).
 
@@ -1745,6 +1750,54 @@ calls `record.start_run` and `RunRecord.end` around the fit (task A1).
   An unreadable manifest is a `ConfigError`, never overwritten. The git state and the
   `uv.lock` SHA-256 come from the source checkout (`source_root()`, `None` in an installed
   wheel). `concurrent_jobs` comes from `ASTRO_SIMCLR_CONCURRENT_JOBS` (default 1).
+
+## `registry` (phase 4, task A2; ADR 0016)
+
+`src/astro_simclr/registry/` is the local run registry: a derived SQLite index of run
+directories at `$ASTRO_SIMCLR_HOME/registry.sqlite` (default `~/.astro-simclr`), rebuildable
+from them. Nothing in it imports torch; `parser.py` imports only argparse, so `--help` stays
+fast and the handlers (`commands.py`) load on use.
+
+- **`home`**: `astro_simclr_home()`, `registry_path()` (refuses a path inside a git working
+  tree), `specs_dir()` (`$ASTRO_SIMCLR_HOME/specs`, where A3's queue writes accepted specs).
+  `RegistryError` is the package's error (exit 1).
+- **`readers`**: `read_run_dir(path)` returns a `RunRecord`:
+  - from `manifest.json` (validated by `runs.manifest.read_manifest`), plus the metrics of
+    `metrics.json` once finished;
+  - or, backfilled from `metrics.json` alone, `legacy: true`, with null run id, attempt,
+    data / pretrained SHA-256, git, `uv.lock` and `numerics_epoch`; `status: finished`,
+    `engine: lightning` and the machine class derived (ADR 0016 rule 4).
+
+  The config is read by the reader of its `config_format` (`CONFIG_FORMATS`; `flat-1` when
+  the file names none): `lower_flat_1` fills the fields added since with `FLAT_1_FILLS`
+  (each the pre-field behaviour, with its reason) and refuses unknown or unfillable keys, so
+  the archived runs hash like today's presets. `metrics_summary` keeps
+  `<stage>.{accuracy,balanced_accuracy,macro_f1}`, `monitor_best`, `best_step`,
+  `last_step` and `seconds_per_step`. `RunRecord.key` is `<run id[:16]>-a<attempt>` or
+  `legacy-<metrics SHA[:16]>`; copies of an attempt share it.
+- **`store`**: `open_registry(path)` creates and migrates the file (`SCHEMA_VERSION` in
+  `PRAGMA user_version`; `MIGRATIONS` append-only; a newer file is refused). Tables:
+  `roots`, `runs` (one row per run directory), `artefacts` (path, kind, size, mtime,
+  SHA-256; deleted with their run) and `specs` (id, name, file).
+- **`index`**: `reindex(conn, roots, specs=..., rebuild=False)` walks the roots (no
+  symlinks, no hidden directories, not into a run directory), replaces each root's rows in
+  one transaction, reports skipped directories and missing remembered roots, rehashes only
+  changed files, then indexes the spec files of `specs_dir()` through A3's `load_spec`.
+- **`spec_view`**: `SpecLike`, the `Protocol` of A3's `runs.spec.ExperimentSpec` that the
+  registry reads; `load_spec_file` (a lazy import of `runs.spec`: `SpecUnavailableError`
+  without A3); `ComparisonPlan` and `PlannedCell`, the minimal frozen dataclasses a
+  comparison runs on (`plan_from_spec` builds one and hashes the spec's splits file).
+- **`compare`**: `resolve(plan, records, use=..., attempts="error"|"latest",
+  allow_mixed=...)` maps each cell to one finished attempt, or raises `ComparisonError`
+  with every problem: a missing cell, several attempts without a choice, copies that
+  differ, mixed machine signatures / engines / numerics epochs (allowed per kind), or
+  different data (never allowed). Matching runs outside the cells are counted.
+  `format_report` / `resolution_to_plain` print the cells and the mean ± std (ddof=1) per
+  arm; a report, never a decision (`compare-variants` decides).
+- **`parser`** / **`commands`**: `astro-simclr runs reindex [ROOT ...] [--rebuild]`,
+  `runs ls [filters] [--json]`, `runs show KEY [--json]`, `runs compare SPEC [--metric M]
+  [--use KEY] [--attempts latest] [--allow-mixed KIND] [--json]`; `--registry FILE` on
+  each.
 
 ## `preflight` (task 1.7)
 
