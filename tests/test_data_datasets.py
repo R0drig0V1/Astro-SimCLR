@@ -7,7 +7,7 @@ import pytest
 import torch
 from torch.utils.data import DataLoader
 
-from astro_simclr.augmentations import Augmentation, Stamp
+from astro_simclr.augmentations import AUGMENTATIONS, Augmentation, Stamp, get_augmentation
 from astro_simclr.data import DataError, SplitData, load_prepared, prepare
 from astro_simclr.data.datasets import ContrastiveDataset, StampDataset
 from astro_simclr.data.synthetic import CLASSIFIER_FILES, PRETRAINING_FILE, make_synthetic
@@ -101,3 +101,27 @@ def test_datasets_batch_through_a_dataloader(prepared: Path) -> None:
     pairs = ContrastiveDataset(_split(prepared, PRETRAINING_FILE, "Train"), _CentreCrop())
     x_i, x_j = next(iter(DataLoader(pairs, batch_size=5, drop_last=True)))
     assert x_i.shape == x_j.shape == (5, 3, 27, 27)
+
+
+# The real registry of task 1.5: the datasets work with any of its augmentations.
+
+
+def test_stamp_dataset_with_without_aug_is_the_legacy_resize_img(prepared: Path) -> None:
+    # Legacy Dataset_stamps_v2 without augmentation: img_float2int, ToPILImage, then
+    # Resize_img (CenterCrop + ToTensor). The stamps are already uint8 here.
+    split = _split(prepared, CLASSIFIER_FILES[0], "Validation")
+    dataset = StampDataset(split, get_augmentation("without_aug", 27))
+    image, _, _ = dataset[4]
+    expected = torch.from_numpy(np.array(split.images[4, 18:45, 18:45])).permute(2, 0, 1)
+    torch.testing.assert_close(image, expected.float() / 255, rtol=0, atol=1e-6)
+
+
+@pytest.mark.parametrize("name", sorted(AUGMENTATIONS))
+def test_contrastive_dataset_with_every_registered_augmentation(name: str, prepared: Path) -> None:
+    torch.manual_seed(0)
+    dataset = ContrastiveDataset(
+        _split(prepared, PRETRAINING_FILE, "Train"), get_augmentation(name, 27)
+    )
+    x_i, x_j = next(iter(DataLoader(dataset, batch_size=4, drop_last=True)))
+    assert x_i.shape == x_j.shape == (4, 3, 27, 27)
+    assert x_i.dtype == torch.float32

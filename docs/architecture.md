@@ -157,6 +157,9 @@ pickle ──read_pickle──► validate ──► StampData ──write_prepa
   default). The label is one-hot int64 by default, or an int64 scalar with `one_hot=False`.
   `ContrastiveDataset` returns `augmentation.pair(stamp)`. Each item gets a writable copy
   of its stamp, never a view of the memory map.
+  The augmentation normally comes from `get_augmentation(name, size)` (1.5); with
+  `without_aug` an item equals the legacy `img_float2int` → `ToPILImage` → `Resize_img`
+  path, and every registered name is tested with `ContrastiveDataset`.
 - `synthetic`: `make_synthetic` writes the four pickles with the real containers and
   dtypes, and a rotation-invariant class pattern inside the central 27×27 crop (a
   nearest-centroid classifier gets ≥ 0.95). Its numpy `Generator` is seeded explicitly,
