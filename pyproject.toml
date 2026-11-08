@@ -87,20 +87,9 @@ explicit = true
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-# Legacy research code, linted again as it is refactored into src/astro_simclr/.
+# Not linted: the 2021 notebooks and saved results, and the characterization generators, which
+# run the retired legacy code (git tag legacy-final) verbatim in isolated environments.
 extend-exclude = [
-    "fine_tuning.py",
-    "hyperparams_ce.py",
-    "hyperparams_ce_resnet.py",
-    "hyperparams_clr.py",
-    "iter_ce_resnet.py",
-    "iter_ce_stamp.py",
-    "iter_clr.py",
-    "linear_classifier.py",
-    "visualization_embedded.py",
-    "losses/",
-    "models/",
-    "utils/",
     "jupyter_examples/",
     "results/",
     "scripts/characterize/",

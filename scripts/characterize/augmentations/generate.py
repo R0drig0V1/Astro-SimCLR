@@ -1,6 +1,7 @@
 """Characterization fixture for astro_simclr.augmentations (task 1.5).
 
-Runs the LEGACY transforms (utils/transformations.py) on fixed uint8 stamps, with the global
+Runs the LEGACY transforms (``utils/transformations.py`` at the ``legacy-final`` tag, read
+with ``git show`` through ``legacy_tree.py``) on fixed uint8 stamps, with the global
 Python / numpy / torch generators seeded the way ``lightning.seed_everything(seed)`` seeds
 them, and records both views of each pair. The test replays the same seeds on the port.
 
@@ -17,7 +18,6 @@ legacy pipeline ends in ToTensor on a PIL image, so each value is exactly k/255)
 """
 
 import random
-import subprocess
 import sys
 import types
 from pathlib import Path
@@ -27,7 +27,10 @@ import torch
 import torchvision
 
 ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "scripts" / "characterize"))
+import legacy_tree  # noqa: E402
+
+LEGACY_SHA = legacy_tree.put_on_path("utils")
 sys.modules.setdefault("cv2", types.ModuleType("cv2"))
 sys.modules.setdefault("albumentations", types.ModuleType("albumentations"))
 
@@ -95,8 +98,7 @@ def main() -> None:
                 second.append(to_uint8(b))
             arrays[f"{name}_{size}_first"] = np.stack(first)
             arrays[f"{name}_{size}_second"] = np.stack(second)
-    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    arrays["legacy_sha"] = np.array(sha)
+    arrays["legacy_sha"] = np.array(LEGACY_SHA)
     arrays["torch_version"] = np.array(torch.__version__)
     arrays["torchvision_version"] = np.array(torchvision.__version__)
     arrays["seed"] = np.array(SEED)

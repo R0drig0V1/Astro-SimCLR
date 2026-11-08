@@ -1,5 +1,7 @@
 """Characterization fixtures for astro_simclr.optim (task 1.5): LARS and the LR schedule.
 
+The legacy code is read at the ``legacy-final`` tag (``legacy_tree.py``), not from the checkout.
+
 1. LARS: the legacy ``utils/lars.py`` optimizer takes two steps on small fixed tensors, with
    and without Nesterov momentum. ``Tensor.get_device`` is monkeypatched to return "cpu",
    because the legacy code calls ``torch.Tensor([1.0]).to(g_norm.get_device())`` and
@@ -16,7 +18,6 @@ Run from the repository root, in an isolated environment:
         python scripts/characterize/optim/generate.py
 """
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -26,7 +27,10 @@ import torch
 from timm.scheduler import CosineLRScheduler
 
 ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "scripts" / "characterize"))
+import legacy_tree  # noqa: E402
+
+LEGACY_SHA = legacy_tree.put_on_path("utils")
 torch.Tensor.get_device = lambda self: "cpu"  # type: ignore[method-assign,assignment]
 
 from utils.lars import LARS  # noqa: E402
@@ -95,8 +99,7 @@ def main() -> None:
                 arrays[f"lars_{tag}_step{k // 3}_{k % 3}"] = a
     for lr in LRS:
         arrays[f"lr_{lr:g}"] = schedule(lr)
-    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    arrays["legacy_sha"] = np.array(sha)
+    arrays["legacy_sha"] = np.array(LEGACY_SHA)
     arrays["torch_version"] = np.array(torch.__version__)
     arrays["timm_version"] = np.array(timm.__version__)
     out = ROOT / "tests/fixtures/optim/legacy_optim.npz"
