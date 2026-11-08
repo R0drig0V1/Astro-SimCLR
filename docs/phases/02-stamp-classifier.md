@@ -388,7 +388,7 @@ below stays unused. The without-features runs (advisory) are queued on the same 
 
 **Status:** unblocked by the 2.4 gate. Two prerequisites, in parallel:
 
-- **2.5-infra (CV training path).** `make-splits` writes the screen and the 5 CV folds, but
+- **2.5-infra (CV training path)** — done (PR #17, merged as 689346b, 2026-11-08; resumes across folds are refused). `make-splits` writes the screen and the 5 CV folds, but
   nothing trains or evaluates on them yet. Needed: `train-supervised --splits FILE
   --fold K | --screen` (train on the fold's training part, select on its selection part,
   predict its evaluation part; test untouched and not computed), and a `compare-variants`
