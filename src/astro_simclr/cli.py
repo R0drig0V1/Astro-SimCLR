@@ -37,6 +37,10 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   macro-F1 (± std over seeds), per class and on the first-stamp view, and with a baseline
   the paired bootstrap CI of the macro-F1 difference and McNemar (always exit 0: a report);
 - ``preflight`` (:mod:`astro_simclr.preflight`): exit 0 if no step failed, else 1.
+- experiment specs and the run queue (task A3, :mod:`astro_simclr.queue.cli`,
+  ``docs/queue.md``): ``spec check|expand|run-cell`` and ``queue init|enqueue|paths|
+  worker|status|cancel|service|tmux|submit|sync``. ``spec run-cell`` exits with the job's
+  code; the queue's own errors exit 1, an invalid spec 2.
 - M1 oracle (task 2.2b, :mod:`astro_simclr.oracle`): ``fetch-m1`` downloads M1 at the
   pinned commit (SHA-256 checked) into a local cache and converts it to ``.npz``;
   ``m1-oracle --data-dir DIR --out DIR`` runs the port-equivalence and data-path checks
@@ -1207,6 +1211,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_check_commands(commands)
     _add_oracle_commands(commands)
     _add_alert_commands(commands)
+    from astro_simclr.queue.cli import add_queue_commands, add_spec_commands
+
+    add_spec_commands(commands)
+    add_queue_commands(commands)
     return parser
 
 
