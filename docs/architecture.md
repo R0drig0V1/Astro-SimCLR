@@ -1146,8 +1146,9 @@ float32 (N, 23), int64 (N,), and optionally the float32 (N, 6) `class_augment.st
 of the crops (C5 / C6), or (N, 11) with `flux_rescale.fit_central_psf` after them (C7),
 validated. `without_train_indices` keeps Train's fits with its
 stamps; `protocol_splits` builds roles without fits. When the Train split has fits, its
-training batches carry them as a fourth element (validation and test never do). `DeviceTensorDataModule(source,
-batch_size=64, eval_batch_size=64, seed=0, balance=True)` takes the three splits (a mapping,
+training batches carry them as a fourth element (validation and test never do).
+`DeviceTensorDataModule(source, batch_size=64, eval_batch_size=64, seed=0, balance=True,
+planner=None)` takes the three splits (a mapping,
 or a callable resolved once at the first `setup`), moves them once to
 `trainer.strategy.root_device` (CPU without a Trainer) and yields `(crops, features,
 one-hot labels)`:
@@ -1233,8 +1234,9 @@ off by default; see "Class-aware augmentation" below), and row C7 `flux_rescale`
 ### Class-aware augmentation (plan rows C5 and C6)
 
 `src/astro_simclr/training/class_augment.py`; decisions in ADR 0006. Training only, in
-`PaperClassifierModule.augmented_batch` (called by `training_step`), on the device-resident
-batch: C6, C7 (below), then C5's noise on the rows C6 did not replace, **then** the rotation
+`PaperClassifierModule.augment_plan` (host, planned ahead by the training loader; see
+"Prefetch" below) and `apply_plan` (in `training_step`, on the device-resident batch): C6,
+C7 (below), then C5's noise on the rows C6 did not replace, **then** the rotation
 of `rot90_augment`, then the feature jitter on every row. The class augmentation runs before
 the rotation because the stamp fits describe the unrotated crop (C7's PSF centroid in
 particular; C5 / C6 are rotation-agnostic). Validation and test are never augmented.
@@ -1285,6 +1287,19 @@ particular; C5 / C6 are rotation-agnostic). Validation and test are never augmen
   `default_rng([seed, global_step, stream])`, streams 1 (noise), 2 (jitter), 3 (synthetic);
   every draw has a fixed size per batch. Device-independent, exact on resume, and
   `rot90_augment`'s `[seed, step]` draws are unchanged.
+- **Prefetch** (ADR 0006, item 10): each augmentation is a host *plan* and a device *apply*
+  (`plan_noise` / `apply_noise`, `plan_synthetic` / `apply_synthetic`, `plan_jitter`;
+  C7's `plan_flux` / `apply_flux`; the public `noise_augment`, `synthetic_bogus`,
+  `jitter_features`, `flux_rescale` are apply(plan(...))). `PaperClassifierModule.
+  augment_plan(host_batch, step)` plans a whole step (C6, C7, C5, rotation, jitter: a dict
+  of CPU tensors); `apply_plan(batch, plan)` applies it with the same torch operations.
+  For an augmented run (`module.augmenting`), `experiments` gives the data module
+  `planner=module.augment_plan`: the training loader keeps a CPU copy of the Train split,
+  gathers the step's rows there, plans, and yields `(*batch, plan)` with the plan uploaded
+  by `upload_plan` (pinned + `non_blocking` on CUDA); `training_step` recognises the plan
+  (a trailing dict) and only applies it. No `.cpu()` and no blocking copy in the step;
+  bit for bit the in-step path (`augmented_batch`), which stays for direct calls
+  (`tests/test_augment_prefetch.py`).
 
 **Tested** (`tests/test_class_augment.py`, `tests/test_split_runs.py`): the fit recovers
 known `a, b, c`; the computed difference equals `a·sci + b·tmpl + c` before the min-max;
@@ -1464,13 +1479,16 @@ preflight alike:
    `last.ckpt` (every epoch); `--resume auto` means `OUT/checkpoints/last.ckpt` if present;
 6. classifiers: `validate` and `test` on `best.ckpt`, then the figures and the metrics.
 
-Outputs, all under `output_dir`: `checkpoints/{best,last}.ckpt`,
-`lightning_logs/version_N/` (TensorBoard), `metrics.json`, and for the classifiers
+Outputs, all under `output_dir`: `manifest.json` (task A1, section `runs`: `queued` and
+`running` before the fit, then `finished`, `failed` or `cancelled`),
+`checkpoints/{best,last}.ckpt`, `lightning_logs/version_N/` (TensorBoard), `metrics.json`
+(with `run`: run id, attempt and config hash), and for the classifiers
 `confusion_matrix_{val,test}.png`. `metrics.json`: command, seed, `best_epoch` (0-based),
 `last_epoch`, monitor and `monitor_best`, versions, accelerator, `machine` (task 2.3:
 `device` from `trainer.strategy.root_device`, `gpu` = the CUDA device name or `null`,
 `torch`, `cuda`, `cudnn`, `platform`, `processor`, `python`; ADR 0010: `fp32_precision`,
-the effective `ieee` or `tf32`, `fp32_backends` and `compute_capability`), the data (prepared path,
+the effective `ieee` or `tf32`, `fp32_backends` and `compute_capability`; task A1:
+`engine`, `lightning`), the data (prepared path,
 source SHA-256, class counts per split from `meta.json`), the resolved `config`; the
 classifiers add `val_acc_best` (micro accuracy on Validation at the best checkpoint: with
 the monitor `accuracy_val`, the best validation accuracy over epochs, the metric of the
@@ -1551,9 +1569,12 @@ checked (command, `supervised_model`, no duplicate seed) and `val_acc_best` aggr
   tier it would reach. The paper's σ is ddof=0; the runs' std is printed with ddof=1 and 0.
   Runs with and without features may share seeds (`Reference.split_by_features`); the
   result line is `CD21: PASS (faithful|acceptable)`. Constants: `CD21_*`.
-- Every gate prints a WARN line when the runs' `machine_signature` (device, GPU, torch,
-  CUDA and the effective float32 precision, ADR 0010; a run without it reads as `ieee`)
-  differ.
+- Every gate prints a WARN line when the runs' `machine_signature` differs. The signature
+  is the device, GPU, torch, CUDA, the effective float32 precision (ADR 0010; a run
+  without it reads as `ieee`) and the engine (task A1; a run without it reads as
+  `lightning`). `compare-variants` and `bench-report` refuse such a mix unless
+  `--allow-mixed-machines` is given, so a new-engine variant is compared only with a
+  baseline rerun on the new engine.
 
 ## `protocol` (task 2.3; split runs and decisions in 2.5-infra; grouped splits; benchmarks in 3.2)
 
@@ -1610,8 +1631,8 @@ phase-3 benchmarks (task 3.2); the rules and the power note are in
 ## `runs` (phase 4, task A0; ADR 0015)
 
 `src/astro_simclr/runs/` defines the interfaces of run identity that the registry (A2), the
-queue (A3) and the new engine build on. Nothing in it imports torch, and nothing calls it
-yet: A1 wires it into `run_command`.
+queue (A3) and the new engine build on. Nothing in it imports torch. `experiments.run_command`
+calls `record.start_run` and `RunRecord.end` around the fit (task A1).
 
 - **`canonical`**: `canonical_json(value)` writes sorted keys with no whitespace, ASCII
   escapes, `repr` floats, `-0.0` as `0.0` and ints distinct from floats, and refuses
@@ -1668,6 +1689,19 @@ yet: A1 wires it into `run_command`.
   - an unfinished attempt keeps everything;
   - a finished one deletes `last`, and keeps `best` only for `pretrain`;
   - records, results, logs, figures and unknown files are kept.
+- **`record`** (task A1): `start_run(command, settings, data=..., machine=..., split=...,
+  pretrained_file=..., resumed=...)` computes the identity, with the machine class from
+  the Trainer's device and `engine: lightning`, and writes `manifest.json` as `queued` then
+  `running`. `RunRecord.end(status)` writes `finished`, `failed` or `cancelled`, once.
+  Attempts, since `--output-dir` keeps only the latest attempt:
+  - none, or a manifest of another run id: attempt 1;
+  - `--resume` of an attempt left `running` (killed): the same attempt, through `queued`
+    (like an expired lease);
+  - the same run id otherwise: the next attempt.
+
+  An unreadable manifest is a `ConfigError`, never overwritten. The git state and the
+  `uv.lock` SHA-256 come from the source checkout (`source_root()`, `None` in an installed
+  wheel). `concurrent_jobs` comes from `ASTRO_SIMCLR_CONCURRENT_JOBS` (default 1).
 
 ## `preflight` (task 1.7)
 

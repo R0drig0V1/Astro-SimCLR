@@ -354,7 +354,9 @@ def test_cd21_warns_on_mixed_machines(tmp_path: Path) -> None:
     metrics["seed"] = 4
     (runs[-1] / "metrics.json").write_text(json.dumps(metrics))
     lines = compare_reference("CD21", runs).lines
-    assert any("different machines, builds or float32" in line for line in lines)
+    assert any(
+        "different machines, builds, float32 precisions or engines" in line for line in lines
+    )
 
 
 def test_oracle_report_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

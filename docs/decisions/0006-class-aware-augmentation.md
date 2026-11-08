@@ -127,6 +127,34 @@ result, and the user asked whether the difference would be computed or augmented
    would otherwise add WARN lines for every run older than the key (the defect recorded in
    the plan for the 2.5-models keys). The defaults of new flags are the behaviour the old
    runs had, by construction.
+10. **Prefetch: plan on the host, apply on the device** (2026-11-08, audit item 5). The
+   first version made every draw on the host *inside the step* and copied the results to
+   the device with blocking, pageable copies, after `.cpu()` reads of the batch: about 8-10
+   CPU-GPU synchronisations per augmented step, each draining the GPU queue. Every input
+   of the decisions is known on the host before the step (the stream's batch indices are a
+   pure function of `(seed, b)`, the Train arrays and fits are NumPy, the generators are
+   `[seed, step, stream]`), so the work is split: `PaperClassifierModule.augment_plan`
+   (host) makes every draw and decision of C6, C7, C5, the rotation and the jitter, with the
+   same NumPy calls and float64 arithmetic (`class_augment.plan_noise` / `plan_synthetic` /
+   `plan_jitter`, `flux_rescale.plan_flux`); `apply_plan` (device) runs exactly the torch
+   operations the step ran before (`apply_noise`, `apply_synthetic`, `apply_flux`, the
+   rotation's gather, the jitter's addition). The training loader
+   (`DeviceTensorDataModule(planner=module.augment_plan)`, wired by `experiments` for every
+   augmented run) gathers the step's rows from a CPU copy of the Train split, plans, and
+   uploads the plan (`class_augment.upload_plan`: pinned memory and `non_blocking=True` on
+   CUDA) with the batch; the step makes no host round trip. **The results are bit for bit
+   those of the in-step path on every device** (the same values reach the same device
+   operations), so the reproducibility contract is unchanged: the draws are
+   device-independent and exact on resume, while the float32 device operations (C5's
+   min-max, C6's min-max of the built rows, C7's feature update) are, as before, the
+   device's. A seeded torch generator on the device was rejected: CUDA's Philox stream
+   differs from the CPU's, so the draws would depend on the device. The in-step path
+   (`augmented_batch`) remains for direct calls and as the reference of the equivalence
+   tests (`tests/test_augment_prefetch.py`: the loader's planned batches equal it over 200
+   steps with every flag on, and a short augmented run gives the same `metrics.json`,
+   timing aside, and the same predictions on CPU and MPS). Checked against the
+   pre-prefetch code as well: 200 CPU steps with every flag on, `torch.equal` on every
+   tensor, and the same short run's `metrics.json` on CPU and MPS.
 
 ## Consequences
 

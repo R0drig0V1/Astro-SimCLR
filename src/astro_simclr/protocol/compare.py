@@ -171,11 +171,11 @@ def _check_machines(runs: Sequence[RunPredictions], allow_mixed: bool, out: list
         detail = "; ".join(sorted(map(str, machines)))
         if not allow_mixed:
             raise ConfigError(
-                f"the runs come from different machines, builds or float32 precisions "
-                f"({detail}); a comparison never mixes them (pass --allow-mixed-machines to "
-                "override)"
+                "the runs come from different machines, builds, float32 precisions or "
+                f"engines ({detail}); a comparison never mixes them (pass "
+                "--allow-mixed-machines to override)"
             )
-        out.append(f"  WARN: mixed machines or builds: {detail}")
+        out.append(f"  WARN: mixed machines, builds, precisions or engines: {detail}")
 
 
 def compare_variants(
