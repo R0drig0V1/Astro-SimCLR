@@ -45,6 +45,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "pre-commit>=4.7.0",
     "types-pyyaml>=6.0.12.20261103",
+    "pytest-xdist>=3.8.0",
 ]
 
 [build-system]

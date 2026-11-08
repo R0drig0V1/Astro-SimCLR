@@ -1,6 +1,6 @@
 <!-- The phase-2 evaluation protocol (task 2.3 of docs/phases/02-stamp-classifier.md; the CV
      training path of task 2.5-infra): the rules, the power note and how to use the tools.
-     Code: src/astro_simclr/protocol/ (split_runs, compare), the --splits path of
+     Code: src/astro_simclr/protocol/ (groups, splits, audit, split_runs, compare), the --splits path of
      src/astro_simclr/experiments.py and training/device_data.py,
      src/astro_simclr/reference.py (CD21), the metrics JSON of src/astro_simclr/experiments.py.
      Design choices: docs/decisions/0004-evaluation-protocol.md. The last section, "Phase 3
@@ -39,7 +39,8 @@ The same principle applies to validation: **a decision never uses the metric of 
 that chose the checkpoint.** The replication itself (task 2.4) is the exception. It keeps
 the paper's protocol, which selects on all 500 Validation stamps, so that its number stays
 comparable with 0.941. Its validation accuracy is a gate condition, not a decision between
-variants.
+variants. It also keeps the paper's splits, which share objects across Train, Validation and
+Test (about 20 % of the Validation and Test Bogus; see "Leakage" below).
 
 ## What every run reports
 
@@ -136,34 +137,52 @@ a side.
 
 ## The decision protocol (2.5 and later)
 
-Decisions never use the metric of the stamps that chose the checkpoint. The splits below
-are **seeded and stored**: `configs/splits/td_ztf_stamp_17_06_20_red-002.json`, generated on
+Decisions never use the metric of the stamps that chose the checkpoint, and never evaluate
+on an object that a run trained on. The splits below are **seeded, grouped by object and
+stored**. **2.5 decides on the grouped file**,
+`configs/splits/td_ztf_stamp_17_06_20_red-002-grouped.json` (format version 2), generated on
 the real data with
 
 ```bash
 astro-simclr make-splits dataset/prepared/td_ztf_stamp_17_06_20_red-002 \
-    --out configs/splits/td_ztf_stamp_17_06_20_red-002.json      # seed 0
+    --out configs/splits/td_ztf_stamp_17_06_20_red-002-grouped.json   # seed 0, 1.5"
 ```
 
-The file records the dataset's source SHA-256 and the SHA-256 of Train's and Validation's
-labels. `verify_splits(read_splits(file), prepared_dir)` does several checks:
+The first file, `configs/splits/td_ztf_stamp_17_06_20_red-002.json` (format version 1,
+stratified but **not grouped**), is kept unchanged and still readable, so the runs made on
+it stay reproducible; it is not used for new decisions (see "Leakage").
+
+The file records the dataset's source SHA-256, the SHA-256 of Train's and Validation's
+labels, and the grouping (method, radius, the groups of two or more stamps).
+`verify_splits(read_splits(file), prepared_dir)` does several checks:
 
 - it refuses another dataset, but accepts a renamed or moved copy;
+- no group spans two parts (two folds, a fold's selection set and its training part, the
+  two screen halves), and the stored groups are what a fresh grouping of the data finds;
 - with the real labels, it checks the class balance of the screen halves and of the
   selection sets, and the stratification of the folds;
-- it re-runs the leakage check against `excluded_train`. **The stored file is the source of truth**, not
-the generator: numpy does not promise the same seeded permutation in every version.
+- it re-runs the leakage check against `excluded_train`.
+
+**The stored file is the source of truth**, not the generator: numpy does not promise the
+same seeded permutation in every version.
 
 ### Cross-validation (the default for 2.5)
 
-The split is a stratified 5-fold CV on the *pool* Train + Validation: 51,081 stamps, after
-the leakage removal. Pool index `i < 50,582` is Train stamp `i`, and pool index
-`50,582 + j` is Validation stamp `j` (`ProtocolSplits.locate`). For each fold:
+The split is a class-stratified **group** 5-fold CV on the *pool* Train + Validation: 51,081
+stamps, after the leakage removal, in 49,717 position groups (663 of two or more stamps).
+Pool index `i < 50,582` is Train stamp `i`, and pool index `50,582 + j` is Validation stamp
+`j` (`ProtocolSplits.locate`). Every group is evaluated by exactly one fold. Groups are
+placed largest first into the fold where they least raise the per-class fill, so per class
+two folds differ by at most the largest group's stamps of that class (on `red`: by at most
+1). For each fold:
 
-- its **evaluation** part (about 10,215 stamps) is held out and gives the decision metric:
+- its **evaluation** part (about 10,216 stamps) is held out and gives the decision metric:
   **balanced accuracy**;
-- its **selection** set (100 per class, drawn from the rest of the pool) chooses the
-  checkpoint;
+- its **selection** set (100 per class) chooses the checkpoint. It is drawn from whole
+  groups outside the fold, in seeded random order; a group whose class is already full is
+  skipped, and a group that fills a class gives only the stamps needed. The rest of such a
+  *selection group* is **unused** in that fold (neither selection nor training), so no
+  group spans the selection set and the training part. On `red` no fold has unused stamps;
 - its **training** part (about 40,365 stamps) is the rest of the pool. It is the only part
   that is tiled (balanced by repetition) and trained on.
 
@@ -189,9 +208,18 @@ runs, per row: it is not a fallback when superiority fails.
 
 ### The 250/250 screen (drop only)
 
-Validation is split into a selection half and a decision half, 50 stamps per class each. A
-screened run chooses its checkpoint on the selection half and is evaluated on the decision
-half. `screen_comparison` **drops** a variant whose seed-mean accuracy on the decision half
+Validation is split into a selection half and a decision half, 50 stamps per class each, and
+no group spans the two halves (Validation's groups are placed largest first into the half
+with room for them). A screened run trains on Train without `excluded_train` and without
+`screen_excluded_train`: the **107 Train alerts whose group has a Validation member**, as
+the leaked stamp leaves Train. It chooses its checkpoint on the selection half and is
+evaluated on the decision half.
+
+*Fallback.* If the groups make 50 + 50 per class impossible (a group bigger than what is
+left in either half is left out of the screen), both halves are trimmed at random to the
+largest per-class count they share, which the file stores as the screen's `per_class`, with
+the reason in `grouping.screen_fallback`; `make-splits` prints it. On `red` it is not needed.
+The CV selection sets need no fallback: they are always exact. `screen_comparison` **drops** a variant whose seed-mean accuracy on the decision half
 is 4 points or more below the baseline's. It never adopts one: its minimum detectable
 effect is about 4 points. It runs first, to drop clear losers cheaply.
 
@@ -204,7 +232,7 @@ are one part of the stored splits:
 
 | | `--fold K` (0-4) | `--screen` |
 |---|---|---|
-| trains on (tiled to the largest class, as in the preset) | fold K's training part | Train minus `excluded_train` |
+| trains on (tiled to the largest class, as in the preset) | fold K's training part | Train minus `excluded_train` and, on a grouped file, `screen_excluded_train` |
 | selects the checkpoint on (same monitor, horizon rule and batch-64 means as the preset) | fold K's selection set (500) | the screen's selection half (250) |
 | predicts | fold K's evaluation part (~10,215) | the screen's decision half (250) |
 | `index` in the predictions file | pool index | Validation index |
@@ -212,8 +240,8 @@ are one part of the stored splits:
 - **Test is never loaded**, so it can be neither measured nor predicted. Only Train and
   Validation are read and cropped.
 - Before anything is built, the splits file is **verified against the prepared data**
-  (`verify_splits`: the source and label SHA-256 and sizes, the balance, the
-  stratification, a fresh leakage check). A file made for other data fails with exit 1 and
+  (`verify_splits`: the source and label SHA-256 and sizes, the group integrity and a
+  fresh grouping, the balance, the stratification, a fresh leakage check). A file made for other data fails with exit 1 and
   says to regenerate it with `make-splits`. A fold that the file does not have, another
   schedule than `carrasco2021`, or `exclude_leaked_train: false` fail with exit 2.
 - **Resume** (`--resume PATH|auto`) continues only the same run. The run's identity (the
@@ -229,7 +257,8 @@ are one part of the stored splits:
   not bias a comparison. Still, "no evaluation stamp influences training" holds for the
   labels and the gradient updates, not literally for the feature scaling.
 - The outputs: `metrics.json` with `protocol` (`mode`, `fold`, `splits_file`,
-  `splits_sha256`, the part sizes, `excluded_train`), `selection_acc_best`,
+  `splits_sha256`, the part sizes, `excluded_train`, and `grouping`: method, radius, group
+  count and the screen's grouped exclusions, `null` for a version-1 file), `selection_acc_best`,
   `evaluation_accuracy`, `evaluation_balanced_accuracy` (the decision metric of the fold),
   `evaluation.{selection,evaluation}` (the usual per-part block),
   `predictions.evaluation` → `predictions_evaluation.npz`, and
@@ -251,7 +280,7 @@ on both sides. The baseline arms are run once per machine and shared by every ro
 takes several `KEY=VALUE` items, so it goes last.
 
 ```bash
-SPLITS=configs/splits/td_ztf_stamp_17_06_20_red-002.json
+SPLITS=configs/splits/td_ztf_stamp_17_06_20_red-002-grouped.json
 TRAIN="astro-simclr train-supervised --preset carrasco2021 --data-dir dataset/prepared --splits $SPLITS"
 
 # 1. The screen (cheap; it can only drop): one run per seed and arm.
@@ -281,7 +310,8 @@ astro-simclr compare-variants --splits $SPLITS \
 
 - Every run is a split run trained on **this** file (its SHA-256 is in the run's
   `protocol`), all in one mode (folds or screen), on the same data (`data.source.sha256`)
-  and machine and build (unless `--allow-mixed-machines`).
+  and machine, build and effective float32 precision (ADR 0010; unless
+  `--allow-mixed-machines`).
 - Both sides cover **the same (fold, seed) cells**, once each, and the CV runs cover
   **every fold** of the file. A missing fold, a seed on one side only or a repeated cell is
   an error that names it (exit 2). Fewer than 2 seeds in a fold gives a WARN line.
@@ -301,16 +331,47 @@ compared.
 
 ## Leakage
 
-The deduplication of `red` removed duplicates within each split only. `make-splits`
-(`astro_simclr.protocol.leakage.find_duplicates`) compares the uint8 stamps of every pair of
-splits. On `td_ztf_stamp_17_06_20_red-002` it finds exactly one duplicate: **Train 2995,
-labelled Bogus, is Validation 115, labelled SN**, with identical features. The same alert
-therefore carries two different labels.
+Two kinds of leakage connect the splits of `red`. `astro-simclr leakage-audit PREPARED_DIR`
+(`astro_simclr.protocol.audit`) reports both.
 
-The stamp is removed **from Train only** (`excluded_train`), and it is in no CV fold. The
-`carrasco2021` runs drop it (`exclude_leaked_train`; tasks 2.2a and 2.2c), and split runs
-take it from the splits file, checked against a fresh leakage check. Validation and Test
-keep their 500 stamps, as in the paper, so Validation 115 stays, labelled SN.
+**The same stamp.** The deduplication of `red` removed duplicates within each split only.
+`make-splits` (`astro_simclr.protocol.leakage.find_duplicates`) compares the uint8 stamps of
+every pair of splits. On `td_ztf_stamp_17_06_20_red-002` it finds exactly one duplicate:
+**Train 2995, labelled Bogus, is Validation 115, labelled SN**, with identical features. The
+same alert therefore carries two different labels. The stamp is removed **from Train only**
+(`excluded_train`), and it is in no CV fold. The `carrasco2021` runs drop it
+(`exclude_leaked_train`; tasks 2.2a and 2.2c), and split runs take it from the splits file,
+checked against a fresh leakage check. Validation and Test keep their 500 stamps, as in the
+paper, so Validation 115 stays, labelled SN.
+
+**The same object.** `red` removed exact duplicates only, so one object (or one artefact)
+can have several *distinct* alerts. Grouping the alerts by position (`ra`, `dec`
+de-standardised with M1's statistics, linked within 1.5", connected components;
+`astro_simclr.protocol.groups`) gives, on `red` (from `leakage-audit`):
+
+| | rows sharing a position with a Train alert | by class |
+|---|---|---|
+| Validation | 24 of 500 | Bogus 20, AGN 2, SN 1, VS 1 |
+| Test | 27 of 500 | Bogus 21, SN 3, AGN 2, VS 1 |
+
+Train itself holds 656 groups of 2 to 16 alerts (1,997 alerts: Bogus 1,418, VS 290,
+AGN 253, SN 36), mostly the same artefact seen again, and 107 Train alerts share a group
+with Validation. The version-1 splits were stratified but not grouped, so a CV fold could
+train on one alert of an artefact and evaluate on another. That rewards whatever memorises
+more, and the adoption rule would read it as superiority. Hence:
+
+- **2.5 decisions use the grouped file** (format version 2, above): no group spans two
+  folds, a fold's selection set and its training part, or the two screen halves, and the
+  screen's runs leave out the 107 Train alerts grouped with Validation. `verify_splits`
+  checks the groups at every split run.
+- **The paper replication (2.4) keeps CD21's protocol**: the paper's Train, Validation and
+  Test, so that its number stays comparable with 0.941. Caveat: about 20 % of the
+  Validation and Test Bogus (20 and 21 of 100) share a position with a Train alert, so its
+  Bogus recall, and the test accuracy through it, may be optimistic for unseen objects.
+- The grouping is a parameter (`--radius-arcsec`, 1.5" by default) and can come from an
+  external id instead (`--group-ids FILE`: a `.npz` with one array per split, for example
+  the `oid`s of task 3.1's `fetch-alerts`). Position matching is transitive, so a chain of
+  close alerts is one group even when its ends are farther apart than the radius.
 
 ## Power note
 

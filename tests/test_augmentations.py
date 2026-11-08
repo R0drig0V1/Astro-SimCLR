@@ -6,7 +6,9 @@ port and compares with the views the legacy classes produced (tests/fixtures/aug
 
 from __future__ import annotations
 
+import multiprocessing
 import random
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -279,6 +281,16 @@ def test_gaussian_blur_preserves_a_constant_image() -> None:
 # --- DataLoader reproducibility (plan 1.5 acceptance) --------------------------------------
 
 
+# Workers start by fork where it is safe. A spawned worker (the macOS and Windows default)
+# re-imports torch, torchvision and Lightning: about 5 s of CPU per worker, 26 s of the suite
+# for this test alone. The start method does not change what the test checks: torch's worker
+# loop seeds torch, numpy and `random` from the base seed in every worker whatever the start
+# method, then the worker init function reseeds them. macOS does not fork here because fork
+# after the Objective-C runtime or Metal has started (an MPS test in the same process) can
+# crash the child.
+_FORK = sys.platform != "darwin" and "fork" in multiprocessing.get_all_start_methods()
+
+
 def _first_two_batches(name: str, num_workers: int, seed: int) -> list[list[torch.Tensor]]:
     seed_everything(seed, workers=True, verbose=False)
     # The worker init function is what the Lightning Trainer injects into its DataLoaders
@@ -289,6 +301,7 @@ def _first_two_batches(name: str, num_workers: int, seed: int) -> list[list[torc
         shuffle=True,
         num_workers=num_workers,
         worker_init_fn=pl_worker_init_function,
+        multiprocessing_context="fork" if num_workers > 0 else None,
     )
     batches = []
     for batch in loader:
@@ -300,7 +313,20 @@ def _first_two_batches(name: str, num_workers: int, seed: int) -> list[list[torc
 
 # astro_perspective_gray uses all three generators: torch (torchvision), `random` (centre crop) and
 # np.random (blur).
-@pytest.mark.parametrize("num_workers", [0, 2])
+@pytest.mark.parametrize(
+    "num_workers",
+    [
+        0,
+        pytest.param(
+            2,
+            marks=pytest.mark.skipif(
+                not _FORK,
+                reason="DataLoader workers do not fork on this platform (spawn costs ~5 s per "
+                "worker); the case runs on the Linux CI job",
+            ),
+        ),
+    ],
+)
 def test_same_seed_gives_identical_first_two_batches(num_workers: int) -> None:
     first = _first_two_batches("astro_perspective_gray", num_workers, seed=11)
     second = _first_two_batches("astro_perspective_gray", num_workers, seed=11)
@@ -308,8 +334,6 @@ def test_same_seed_gives_identical_first_two_batches(num_workers: int) -> None:
     for batch_a, batch_b in zip(first, second, strict=True):
         for a, b in zip(batch_a, batch_b, strict=True):
             assert torch.equal(a, b)
-    if num_workers == 0:
-        # Sanity check that the seed matters; only in-process, because each spawned worker
-        # (the macOS default) costs seconds of torch import.
-        other = _first_two_batches("astro_perspective_gray", num_workers, seed=12)
-        assert not torch.equal(first[0][0], other[0][0])
+    # The seed matters.
+    other = _first_two_batches("astro_perspective_gray", num_workers, seed=12)
+    assert not torch.equal(first[0][0], other[0][0])

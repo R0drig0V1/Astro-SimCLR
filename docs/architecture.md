@@ -70,6 +70,11 @@ of one run.
   change the loss); `deterministic: false` (the legacy runs used `benchmark=True`); the
   protocol defaults are the legacy classifier values (220 epochs, patience 40,
   `min_delta` 0.001, `accuracy_val`, eval batch 100).
+- `fp32_precision: ieee | tf32` (ADR 0010; default `ieee`): the float32 precision of cuDNN
+  convolutions and of matmuls. `ieee` is full float32 on every device; `tf32` lets Ampere+
+  GPUs use TensorFloat-32 (torch 2.14's own default for convolutions). Set at the start of
+  every run (`training.runs.apply_fp32_precision`) and recorded, with its effect, in
+  `metrics.json["machine"]`.
 - Later tasks add their fields here (for example the NT-Xent denominator flag of 1.3).
 - **Task 1.7 fields** (flat, so every one can be `--set`): EarlyStopping `check_finite`
   (default true, Lightning's default) and `divergence_threshold` (null: never; R1 uses
@@ -244,7 +249,13 @@ only on this protocol, never on a concrete transform.
   them with `lightning.seed_everything(seed, workers=True)`; DataLoader workers are seeded
   by Lightning's `pl_worker_init_function`, which the Trainer injects (a DataLoader built
   outside a Trainer must pass it as `worker_init_fn`). Same seed → identical batches, with
-  0 or more workers (tested with 0 and 2).
+  0 or more workers, and a different seed → different batches (tested with 0 workers
+  everywhere and with 2 workers where they fork). The 2-worker case forks its workers
+  explicitly and is skipped, with its reason, on macOS: a spawned worker re-imports torch,
+  torchvision and Lightning (about 5 s of CPU each; 26 s of the suite), and fork is unsafe
+  there once Metal has started. The start method does not change what is checked: torch's
+  worker loop seeds torch, numpy and `random` from the base seed in every worker under any
+  start method, then the init function reseeds them. The Linux CI job runs it.
 - **Naming change:** registry names are descriptive; the legacy names keep working as
   aliases, so no config needs to change.
 - **Characterization:** `tests/fixtures/augmentations/legacy_views.npz`, from
@@ -816,6 +827,14 @@ memory-mapped:
 **Run helpers** (`runs.py`):
 
 - `seed_run(settings)`: `L.seed_everything(settings.seed, workers=True)`.
+- `apply_fp32_precision(settings)` (ADR 0010): `torch.backends.cudnn.conv.fp32_precision`
+  and `torch.set_float32_matmul_precision("highest" | "high")` from `fp32_precision`
+  (the matmul call, not `torch.backends.cuda.matmul.fp32_precision`, because after the
+  latter is set to `tf32` `torch.get_float32_matmul_precision()` raises, and Lightning calls
+  it on Ampere+ GPUs). Process-global; `run_command` calls it before anything is built.
+  `fp32_precision_record(device)`: the effective policy (`tf32` only on a CUDA device of
+  compute capability 8.0+ that allows it), the torch settings read back
+  (`fp32_backends`) and `compute_capability`, for `metrics.json["machine"]`.
 - `build_callbacks(settings, monitorable, dirpath, filename="best")`: `EarlyStopping` and
   `ModelCheckpoint(save_top_k=1, enable_version_counter=False)` (the legacy
   `ModelCheckpoint_V2` overrode a private method to the same effect), both on
@@ -844,8 +863,8 @@ memory-mapped:
 does not); the scheduler steps once per epoch; selection on `loss_train_enc` and `loss_val`;
 EarlyStopping stops a flat run; every epoch and every validation pass starts from an empty
 buffer (a module whose predictions flip between passes); downstream checkpoints reload.
-Worker seeding (`num_workers=2`) is covered by the augmentation tests, not repeated here
-because spawned workers cost about 25 s on macOS.
+Worker seeding (`num_workers=2`) is covered by the augmentation tests (on Linux, where the
+workers fork), not repeated here because spawned workers cost about 25 s on macOS.
 
 **Behaviour changes against the legacy code** (no result of a valid legacy run changes):
 
@@ -1119,8 +1138,9 @@ Decisions and provenance: ADR 0003.
   `rot90_augment: false` to both presets (the defaults, so the faithful settings are
   unchanged), so that a variant run is reported as a deviation, not as faithful. Plan rows
   C5 and C6 add `aug_noise: 0.0`, `aug_feature_jitter: 0.0`, `synthetic_bogus: 0.0` and
-  `aug_min_r2: 0.5` the same way (ADR 0006), and row C7 `flux_rescale: 0.0`,
-  `flux_k_min: 0.5`, `flux_k_max: 1.5` (ADR 0007).
+  `aug_min_r2: 0.5` the same way (ADR 0006), row C7 `flux_rescale: 0.0`,
+  `flux_k_min: 0.5`, `flux_k_max: 1.5` (ADR 0007), and ADR 0010 `fp32_precision: ieee`, so
+  that a TF32 run is a deviation.
 - `preset_for(settings)`: the preset of a `carrasco2021`-schedule run (by `with_features`),
   else `None`. `preset_report(settings)`: `name`, `faithful` (no preset key changed),
   `deviations` (key → `{value, preset}`) and `diagnostics` (the flags turned on), written
@@ -1170,7 +1190,8 @@ preflight alike:
 1. `check_accelerator`: `cuda` without `torch.cuda.is_available()` (or `mps`, `gpu`
    without one) raises `AcceleratorError`, naming the torch build and the preflight, before
    anything is built;
-2. `dataset_path`: `data_dir/<dataset>` must be a prepared layout (`DataError` says how to
+2. `apply_fp32_precision` (ADR 0010), then `dataset_path`: `data_dir/<dataset>` must be a
+   prepared layout (`DataError` says how to
    prepare it);
 3. `seed_run` before any module is built (downstream: after loading the pretrained
    checkpoint, so the head's initial weights do not depend on the loading path);
@@ -1188,7 +1209,8 @@ Outputs, all under `output_dir`: `checkpoints/{best,last}.ckpt`,
 `confusion_matrix_{val,test}.png`. `metrics.json`: command, seed, `best_epoch` (0-based),
 `last_epoch`, monitor and `monitor_best`, versions, accelerator, `machine` (task 2.3:
 `device` from `trainer.strategy.root_device`, `gpu` = the CUDA device name or `null`,
-`torch`, `cuda`, `cudnn`, `platform`, `processor`, `python`), the data (prepared path,
+`torch`, `cuda`, `cudnn`, `platform`, `processor`, `python`; ADR 0010: `fp32_precision`,
+the effective `ieee` or `tf32`, `fp32_backends` and `compute_capability`), the data (prepared path,
 source SHA-256, class counts per split from `meta.json`), the resolved `config`; the
 classifiers add `val_acc_best` (micro accuracy on Validation at the best checkpoint: with
 the monitor `accuracy_val`, the best validation accuracy over epochs, the metric of the
@@ -1270,24 +1292,27 @@ checked (command, `supervised_model`, no duplicate seed) and `val_acc_best` aggr
   Runs with and without features may share seeds (`Reference.split_by_features`); the
   result line is `CD21: PASS (faithful|acceptable)`. Constants: `CD21_*`.
 - Every gate prints a WARN line when the runs' `machine_signature` (device, GPU, torch,
-  CUDA) differ.
+  CUDA and the effective float32 precision, ADR 0010; a run without it reads as `ieee`)
+  differ.
 
-## `protocol` (task 2.3; split runs and decisions in 2.5-infra; benchmarks in 3.2)
+## `protocol` (task 2.3; split runs and decisions in 2.5-infra; grouped splits; benchmarks in 3.2)
 
 `src/astro_simclr/protocol/`: the code of the phase-2 evaluation protocol, and of the
 phase-3 benchmarks (task 3.2); the rules and the power note are in
 `docs/evaluation-protocol.md`, the design choices in ADR 0004 (phase 2) and ADR 0008
-(phase 3). No torch import, so `make-splits`, `compare-variants`, `make-object-splits` and
-`bench-report` start fast.
+(phase 3). No torch import, so `make-splits`, `leakage-audit`, `compare-variants`,
+`make-object-splits` and `bench-report` start fast.
 
 | Module | What it does |
 |---|---|
 | `leakage` | `find_duplicates(StampData)`: byte-identical uint8 stamps across every pair of splits (BLAKE2b-128), with both labels and whether the features match; `train_exclusions` (the Train indices to drop, from Train only), `train_keep_indices(n_train, excluded)` |
-| `splits` | `make_splits(prepared_dir, seed=0)`: the 250/250 screen of Validation (50 per class per half) and the stratified 5-fold CV on the pool Train + Validation (pool index: Train `i`, Validation `n_train + j`), each fold with its own 100-per-class selection set drawn from outside the fold; leaked Train stamps are in no fold. At most 10 folds (`fold_of` is one digit per stamp). `write_splits` / `read_splits` (structure checks: sizes, disjointness, ranges, positive integers) / `verify_splits(splits, prepared_dir)` (dataset identity by source and label SHA-256 and sizes, not the directory name; class balance; fold stratification within 1 per class; `excluded_train` equal to a fresh leakage check). `ProtocolSplits.locate` maps pool indices to Train and Validation indices |
+| `groups` | Phase 2: builds object groups from the prepared data (unlike task 3.2's `grouping`, which assigns given ids): `neighbour_pairs(ra, dec, radius_arcsec)` (every pair within the radius, inclusive; an exact dec-sorted window search with the haversine separation, numpy only, correct at the poles and across the RA wrap; refuses non-finite coordinates and `|dec| > 90`), `union_groups` (union-find, canonical ids: groups numbered by their smallest row), `position_groups` / `external_groups` (equal ids, e.g. `oid`) → `Grouping(method, radius_arcsec, group_of)` (`n_groups`, `multi()`), `split_positions(data, names)` (ra/dec de-standardised with M1's statistics), `grouping_for(data, names, radius_arcsec=1.5, group_ids=None)`, `load_group_ids(npz)` (one array per split, integers or strings, no pickles; returns the file's name and SHA-256) |
+| `splits` | Format version 2 (grouped; version 1 still read). `make_splits(prepared_dir, seed=0, radius_arcsec=1.5, group_ids_file=None)`: groups the pool (Train ∪ Validation), then the grouped 250/250 screen of Validation (groups placed largest first into the half with room; a documented fallback trims both halves to a common per-class count), `screen_excluded_train` (the Train alerts grouped with Validation, out of the screen's training), and the class-stratified group 5-fold CV (greedy placement, largest group first, per-class spread at most the largest group's stamps of the class), each fold with an exact 100-per-class selection set drawn from whole groups outside the fold (the other stamps of a selection group are the fold's `unused`); leaked Train stamps are in no fold. At most 10 folds (`fold_of` is one digit per stamp). `write_splits` / `read_splits` (structure checks: sizes, disjointness, ranges, positive integers, the grouping block, and `check_group_integrity`: no group in two folds, in a fold's selection and training, or in both screen halves; `screen_excluded_train` consistent) / `verify_splits(splits, prepared_dir, group_ids_file=None)` (dataset identity by source and label SHA-256 and sizes, not the directory name; group integrity; the stored groups equal a fresh grouping; class balance; fold stratification within the grouped tolerance; `excluded_train` equal to a fresh leakage check). `ProtocolSplits.locate` maps pool indices to Train and Validation indices; `ProtocolSplits.screen_training_excluded()` |
+| `audit` | `leakage_audit(prepared_dir, radius_arcsec=1.5, group_ids_file=None)` (CLI `leakage-audit`): groups all three splits together and reports the groups within each split and per split pair by class, the Validation and Test rows with a Train alert within the radius (or the same id), and the byte duplicates, as a JSON-ready dict; `format_audit` prints it |
 | `predictions` | `Predictions(probabilities, labels, index, n_classes=5)` (task 3.2: `n_classes` generalises the column count; 5 by default, so phase 2 is unchanged; the benchmarks pass 6 and index by `candid`), `save_predictions` / `load_predictions` (`.npz`, `allow_pickle=False`), `check_paired`, `ensemble` (mean probabilities per stamp), `seed_mean_correct` |
 | `stats` | `mcnemar` (exact, integer arithmetic), `paired_bootstrap` (percentile CI of variant − baseline, stratified by class, metric `accuracy` or `balanced_accuracy`, own `default_rng(seed)`, memory-bounded blocks), `paired_bootstrap_macro_f1(pred_baseline, pred_variant, labels, n_classes)` (task 3.2: the same paired, class-stratified resampling for macro-F1; each resample recounts every run's confusion matrix as one matrix product of item multiplicities with (run, true, predicted) indicator columns; observed = mean-over-runs macro-F1 difference, the report passes one row per side, the seed-ensemble argmax; identical sides give exactly [0, 0]; `BootstrapCI.metric` is now `IntervalMetric`), `minimum_detectable_effect(n, discordant= \| rate=)` (2.80·SE, paired or unpaired), `balanced_accuracy`, `adoption_decision` (superiority: `adopt` only if the CI is above 0), `non_inferiority_decision(interval, margin=0.005)` (`adopt` if the CI lower bound is above −margin, `worse` if the CI is below it; `check_margin` refuses margins outside (0, 0.05], a likely points-for-fraction mistake), `screen_decision` (`drop` at 4 points or more, never adopt) |
-| `split_runs` | Task 2.5-infra. `SplitRequest(file, fold)` (`fold=None`: the screen); `open_split_run(request, prepared_dir)` reads the file, refuses a fold it does not have (`ConfigError`) and runs `verify_splits` on the prepared data (a wrong fingerprint is a `SplitsError`); `SplitRun.parts()` gives `RunParts` (training, selection, evaluation as sorted pool indices, and `evaluation_index`: pool indices for a fold, Validation indices for the screen) and checks that they are pairwise disjoint and hold no excluded stamp; `SplitRun.describe()` is `metrics.json["protocol"]` (mode, fold, splits file and SHA-256, part sizes); `SplitRun.identity()` (splits SHA-256, mode, fold) is stored in every checkpoint and checked on resume. `file_sha256` |
-| `compare` | `compare_variants(baseline_dirs, variant_dirs, stage)`: loads each run's `metrics.json` and predictions file, refuses repeated seeds, runs on different data (`data.source.sha256`: a normal run's `index` is `arange(N)`, so the data identity and the labels are what show two runs saw the same stamps), unpaired runs and mixed machines (unless allowed), reports McNemar on the seed ensembles and the bootstrap, always as REPORT; it points split runs to `--splits`. `screen_comparison` / `cv_comparison(..., rule="superiority"\|"non-inferiority", margin)`: the decision helpers, which check that the predictions cover exactly the screen's decision half or each fold's evaluation part (so the CV bootstrap is paired by pool index); `CVResult` holds the per-fold and pooled balanced accuracies, the CI, McNemar on the seed ensembles and the decision. `compare_decision(baseline_dirs, variant_dirs, splits_file, rule, margin)` (CLI `compare-variants --splits`): loads split runs (`load_split_run`), checks the splits file's SHA-256, one mode, one data source and machine, the same (fold, seed) cells on both sides and every fold, then applies `cv_comparison` (verdict `ADOPT` / `NOT ADOPTED`) or `screen_comparison` (`KEEP` / `DROP`; `--rule` refused) |
+| `split_runs` | Task 2.5-infra. `SplitRequest(file, fold)` (`fold=None`: the screen); `open_split_run(request, prepared_dir)` reads the file, refuses a fold it does not have (`ConfigError`) and runs `verify_splits` on the prepared data (a wrong fingerprint is a `SplitsError`); `SplitRun.parts()` gives `RunParts` (training, selection, evaluation as sorted pool indices, and `evaluation_index`: pool indices for a fold, Validation indices for the screen) and checks that they are pairwise disjoint and hold no excluded stamp; `SplitRun.describe()` is `metrics.json["protocol"]` (mode, fold, splits file and SHA-256, part sizes, `grouping`); the screen trains on Train minus `ProtocolSplits.screen_training_excluded()`; `SplitRun.identity()` (splits SHA-256, mode, fold) is stored in every checkpoint and checked on resume. `file_sha256` |
+| `compare` | `compare_variants(baseline_dirs, variant_dirs, stage)`: loads each run's `metrics.json` and predictions file, refuses repeated seeds, runs on different data (`data.source.sha256`: a normal run's `index` is `arange(N)`, so the data identity and the labels are what show two runs saw the same stamps), unpaired runs and mixed machines or float32 precisions (unless allowed), reports McNemar on the seed ensembles and the bootstrap, always as REPORT; it points split runs to `--splits`. `screen_comparison` / `cv_comparison(..., rule="superiority"\|"non-inferiority", margin)`: the decision helpers, which check that the predictions cover exactly the screen's decision half or each fold's evaluation part (so the CV bootstrap is paired by pool index); `CVResult` holds the per-fold and pooled balanced accuracies, the CI, McNemar on the seed ensembles and the decision. `compare_decision(baseline_dirs, variant_dirs, splits_file, rule, margin)` (CLI `compare-variants --splits`): loads split runs (`load_split_run`), checks the splits file's SHA-256, one mode, one data source and machine, the same (fold, seed) cells on both sides and every fold, then applies `cv_comparison` (verdict `ADOPT` / `NOT ADOPTED`) or `screen_comparison` (`KEEP` / `DROP`; `--rule` refused) |
 | `alerts` | Task 3.2. `AlertTable` (sorted by `candid`: `oid`, `candid`, `jd`, `label`, `label_names`, `group`, `group_key` `"oid"` or `"group"`), `AlertTable.from_rows` (checks: valid ids, unique positive `candid`, finite positive `jd`, labels in range), `sha256` (canonical rows by `candid`, the group only with a `group` column), `rows_of(candids)`; `read_alert_table(csv, label_names=BENCHMARK_LABEL_NAMES)` (untrusted input: `csv` module and a schema, errors name the line; extra columns ignored), `write_alert_table`; `label_conflicts` (groups with two labels); `first_stamps(table, rows)` (earliest `jd`, then smaller `candid`, per `oid`). `BENCHMARK_LABEL_NAMES` = R5's classes (the phase-2 five), `RJ23_LABEL_NAMES` = the five + `Satellite` |
 | `grouping` | Task 3.2, on per-row arrays of any group ids (never builds groups): `group_rows` (ids, label, size, conflicts), `assign_groups` (per class, `default_rng([seed, stream, class])` shuffle, then largest-deficit assignment; refuses a class that cannot give every part a group), `grouped_split` (refuse or drop conflicting groups), `grouped_halves` (50/50 selection/decision, own stream), `check_stratified` (no group in two parts; per class and part, within `+g` / `−(k−1)g` of the target), `stratification_bound`, `shared_groups` / `assert_no_shared_groups(..., allowed=CROSS_BENCHMARK_ALLOWED)` (the cross-benchmark rule: by default the plan's matrix, Train/Train and Validation/Test pairs allowed, Train with the other's Validation or Test refused; `allowed=()` refuses all nine; returns the shared-count matrix) |
 | `object_splits` | Task 3.2. `make_object_splits(table, seed, fractions=(0.6, 0.2, 0.2), on_conflict="refuse"\|"drop")`: `grouped_split` by `table.group`, then `grouped_halves` of Validation; `ObjectSplits` (table identity, group key, label names, seed, fractions, conflicts, sorted group ids per split and half, class counts per part), `split_of` / `half_of` / `rows(table, part)`; `write_object_splits` / `read_object_splits` (structure: valid sorted ids, disjoint splits and halves, halves inside Validation) / `verify_object_splits(splits, table)` (fingerprint, group key, label names, conflicts, coverage, the bound, the counts). CLI `make-object-splits` |
@@ -1298,10 +1323,13 @@ phase-3 benchmarks (task 3.2); the rules and the power note are in
   `object_splits`, `benchmark_metrics`, `bench_report`) are built and tested on synthetic
   alert tables; the real ones come from task 3.1. No object-splits file is committed
   yet. Rules: `docs/evaluation-protocol.md`, "Phase 3 benchmark metrics"; choices: ADR 0008.
-- **Stored splits:** `configs/splits/td_ztf_stamp_17_06_20_red-002.json` (seed 0, made with
-  `make-splits` on the real data). On `red`: one duplicate, Train 2995 (Bogus) =
-  Validation 115 (SN); folds of about 40,365 training / 500 selection / 10,215 evaluation
-  stamps.
+- **Stored splits:** `configs/splits/td_ztf_stamp_17_06_20_red-002-grouped.json` (format
+  version 2, seed 0, 1.5", made with `make-splits` on the real data; the file of every 2.5
+  decision) and `configs/splits/td_ztf_stamp_17_06_20_red-002.json` (version 1, not
+  grouped; kept for the runs made on it). On `red`: one duplicate, Train 2995 (Bogus) =
+  Validation 115 (SN); 49,717 pool groups (663 of two or more stamps); 107 Train alerts
+  grouped with Validation leave the screen's training; folds of about 40,365 training /
+  500 selection / 10,216 evaluation stamps, no unused stamps.
 - Randomness: the splits and the bootstrap use their own seeded generators, independent of
   `seed_run`, so a training seed never moves a split and a comparison is reproducible on
   its own (an exception to the "Randomness" convention above, for data definitions and

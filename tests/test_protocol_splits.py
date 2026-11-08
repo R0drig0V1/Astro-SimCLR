@@ -135,7 +135,7 @@ def test_round_trip_and_determinism(layout: Path, tmp_path: Path) -> None:
     np.testing.assert_array_equal(loaded.screen.decision, splits.screen.decision)
     # One list of integers per line.
     assert max(len(line) for line in first.read_text().splitlines()) > 100
-    assert len(first.read_text().splitlines()) < 60
+    assert len(first.read_text().splitlines()) < 75
 
 
 def test_another_seed_draws_other_splits(layout: Path) -> None:

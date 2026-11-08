@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 
+from astro_simclr.data.m1_features import M1_FEATURE_NORM_STATS
 from astro_simclr.data.prepared import write_prepared
 from astro_simclr.data.schema import FEATURE_NAMES, LABEL_NAMES, STAMP_SHAPE, SplitData, StampData
 from astro_simclr.protocol.predictions import Predictions, predictions_file, save_predictions
@@ -18,11 +20,25 @@ N_CLASSES = len(LABEL_NAMES)
 MACHINE: dict[str, Any] = {"device": "cpu", "gpu": None, "torch": "2.14.0", "cuda": None}
 
 
+#: The standardised ``dec`` column, clipped so that every row is on the sky (|dec| < 89):
+#: the grouping of ``make-splits`` refuses impossible coordinates.
+_DEC = FEATURE_NAMES.index("dec")
+_DEC_MEAN, _DEC_STD = M1_FEATURE_NORM_STATS["dec"]
+_DEC_RANGE = ((-89 - _DEC_MEAN) / _DEC_STD, (89 - _DEC_MEAN) / _DEC_STD)
+
+
+def standardised(name: str, values: npt.ArrayLike) -> npt.NDArray[np.float64]:
+    """``values`` of feature ``name`` (degrees for ra/dec) as the files store them."""
+    mean, std = M1_FEATURE_NORM_STATS[name]
+    return (np.asarray(values, dtype=np.float64) - mean) / std
+
+
 def _split(rng: np.random.Generator, per_class: int) -> SplitData:
     n = per_class * N_CLASSES
     images = rng.integers(0, 256, size=(n, *STAMP_SHAPE), dtype=np.uint8)
     labels = np.repeat(np.arange(N_CLASSES, dtype=np.int64), per_class)
     features = rng.normal(size=(n, len(FEATURE_NAMES)))
+    features[:, _DEC] = np.clip(features[:, _DEC], *_DEC_RANGE)
     return SplitData(images, labels, features)
 
 
@@ -34,11 +50,14 @@ def make_layout(
     test: int,
     duplicate: tuple[int, str, int] | None = None,
     seed: int = 0,
+    positions: dict[str, dict[int, tuple[float, float]]] | None = None,
 ) -> Path:
     """Write a prepared classifier layout with ``train``/``validation``/``test`` per class.
 
     ``duplicate = (i, split, j)`` copies Train stamp ``i`` (image and features) over stamp
-    ``j`` of ``split``, as in ``red`` (the label stays the split's own).
+    ``j`` of ``split``, as in ``red`` (the label stays the split's own). ``positions`` sets
+    ``(ra, dec)`` in degrees of some rows: split name -> {row: (ra, dec)} (the other rows
+    keep random positions, which never fall within arcseconds of each other).
     """
     rng = np.random.default_rng(seed)
     splits = {
@@ -52,6 +71,12 @@ def make_layout(
         assert other.features is not None and splits["Train"].features is not None
         other.images[j] = splits["Train"].images[i]
         other.features[j] = splits["Train"].features[i]
+    for name, rows in (positions or {}).items():
+        features = splits[name].features
+        assert features is not None
+        for row, (ra, dec) in rows.items():
+            features[row, FEATURE_NAMES.index("ra")] = standardised("ra", ra)
+            features[row, _DEC] = standardised("dec", dec)
     source = {"name": f"{dest.name}.pkl", "size_bytes": 0, "sha256": f"{seed:064d}"}
     return write_prepared(StampData("classifier", splits), dest, source)
 

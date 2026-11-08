@@ -63,6 +63,8 @@ uv run pre-commit install    # optional: ruff on every commit
 ```
 
 `scripts/check.sh` is the single definition of "green": CI runs exactly that script.
+It runs the tests in parallel, one process per CPU (`PYTEST_XDIST_AUTO_NUM_WORKERS=N` caps
+it); `uv run pytest` alone runs them in one process.
 
 ### Torch build per machine
 
@@ -94,7 +96,7 @@ How phase-2 results are measured and compared: [docs/evaluation-protocol.md](doc
 | ruff (`E,F,W,I,B,UP,S,SIM,RUF,C90`) | bugs, imports, outdated syntax, Bandit security rules, complexity > 10 | `scripts/check.sh`, CI |
 | ruff format | formatting | `scripts/check.sh`, CI |
 | mypy `strict` | type errors in `src/` and `tests/` | `scripts/check.sh`, CI |
-| pytest + coverage (branch, >= 80%) | regressions, untested code | `scripts/check.sh`, CI |
+| pytest + coverage (branch, >= 80%), in parallel (pytest-xdist) | regressions, untested code | `scripts/check.sh`, CI |
 | torch-wheel assertions | the lock no longer matches ADR 0001 (extras, labels, `nvidia-*`) | `scripts/check-torch-wheels.sh`, CI |
 | zizmor, actionlint | insecure or broken GitHub workflows | `quality.yml` |
 | gitleaks | secrets committed anywhere in the history | `quality.yml` |
