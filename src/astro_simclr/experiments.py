@@ -508,8 +508,15 @@ def _build_paper(
         eval_batch_size=settings.eval_batch_size,
         seed=settings.seed,
         run_identity=None if split_run is None else split_run.identity(),
+        # Augmented runs plan each step on the host, ahead of the step (ADR 0006, "Prefetch").
+        planner=module.augment_plan if module.augmenting and _PREFETCH else None,
     )
     return module, datamodule, info
+
+
+#: Plan the training augmentation in the loader (True) or in the step (False: the in-step
+#: path, with host round trips; the same bits; kept for the equivalence test).
+_PREFETCH = True
 
 
 def _with_train_fits(

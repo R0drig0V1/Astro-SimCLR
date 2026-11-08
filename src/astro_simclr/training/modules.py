@@ -35,7 +35,7 @@ from __future__ import annotations
 import copy
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any, ClassVar, Final
+from typing import Any, ClassVar, Final, cast
 
 import lightning as L
 import numpy as np
@@ -61,12 +61,17 @@ from astro_simclr.training.class_augment import (
     JITTER_STREAM,
     NOISE_STREAM,
     SYNTHETIC_STREAM,
+    apply_noise,
+    apply_synthetic,
     augment_rng,
-    jitter_features,
     noise_augment,
+    plan_jitter,
+    plan_noise,
+    plan_synthetic,
     synthetic_bogus,
+    upload_plan,
 )
-from astro_simclr.training.flux_rescale import FLUX_STREAM, flux_rescale
+from astro_simclr.training.flux_rescale import FLUX_STREAM, apply_flux, flux_rescale, plan_flux
 from astro_simclr.training.metrics import METRIC_NAMES, classification_metrics, confusion_matrix
 from astro_simclr.training.optimizers import (
     PAPER_ADAM_BETAS,
@@ -89,6 +94,8 @@ __all__ = [
 ClassifierBatch = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 #: A paper-model training batch with the stamp fits (B, 6) of ``class_augment.stamp_fits``.
 AugmentBatch = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+#: A training batch followed by its uploaded augmentation plan (``augment_plan``).
+PlannedBatch = tuple[Any, ...]
 #: A SimCLR batch: the two views (B, 3, S, S) of each stamp.
 PairBatch = tuple[torch.Tensor, torch.Tensor]
 
@@ -393,6 +400,10 @@ class PaperClassifierModule(ClassifierModule):
         self.flux_rescale = flux_rescale
         self.flux_k_min = flux_k_min
         self.flux_k_max = flux_k_max
+        #: Whether any training augmentation is on (the run then plans it on the host).
+        self.augmenting = bool(
+            rot90_augment or aug_noise or aug_feature_jitter or synthetic_bogus or flux_rescale
+        )
         self.model = build_paper_model(
             paper_arch,
             group_fields=group_fields,
@@ -418,31 +429,66 @@ class PaperClassifierModule(ClassifierModule):
         rng = np.random.default_rng([self.augment_seed, step])
         return torch.from_numpy(rng.integers(0, 4, size=n, dtype=np.int64))
 
-    def training_step(self, batch: ClassifierBatch | AugmentBatch, batch_idx: int) -> torch.Tensor:
-        """One optimisation step, on :meth:`augmented_batch` (the batch itself when all off).
+    def training_step(
+        self, batch: ClassifierBatch | AugmentBatch | PlannedBatch, batch_idx: int
+    ) -> torch.Tensor:
+        """One optimisation step, on the augmented batch (the batch itself when all off).
+
+        A batch whose last element is a dict carries its augmentation plan, computed and
+        uploaded ahead by the training loader (``DeviceTensorDataModule(planner=
+        augment_plan)``): only :meth:`apply_plan` runs here, with no host round trip.
+        Otherwise :meth:`augmented_batch` plans and applies in the step.
 
         Raises:
             ValueError: as :meth:`augmented_batch`.
         """
-        return self._step(self.augmented_batch(batch), "train")
+        if isinstance(batch[-1], dict):
+            plan = batch[-1]
+            rows = cast(ClassifierBatch | AugmentBatch, tuple(batch[:-1]))
+            return self._step(self.apply_plan(rows, plan), "train")
+        return self._step(
+            self.augmented_batch(cast(ClassifierBatch | AugmentBatch, batch)), "train"
+        )
 
     def augmented_batch(self, batch: ClassifierBatch | AugmentBatch) -> ClassifierBatch:
         """The training batch after C6 / C7 / C5, the rotation and the jitter, when enabled.
+
+        :meth:`augment_plan` on a host copy of ``batch`` at the current global step, then
+        :meth:`apply_plan` on ``batch`` (the in-step path, with host round trips; the
+        training loader normally plans ahead). Returns ``(images, features, one-hot
+        targets)``; ``batch`` is not modified.
+
+        Raises:
+            ValueError: as :meth:`augment_plan`.
+        """
+        host = cast(ClassifierBatch | AugmentBatch, tuple(t.detach().cpu() for t in batch))
+        plan = self.augment_plan(host, self.global_step)
+        return self.apply_plan(batch, upload_plan(plan, batch[0].device))
+
+    def augment_plan(self, batch: ClassifierBatch | AugmentBatch, step: int) -> dict[str, Any]:
+        """The host part of the augmentation of a training batch at global step ``step``.
+
+        ``batch`` is on the CPU (the Train rows of the step: crops, features, one-hot
+        targets and, for C5 / C6 / C7, the stamp fits). Every draw and decision of C6, C7,
+        C5's noise, the rotation and the jitter is made here, with the same NumPy calls and
+        float64 arithmetic as the in-step functions (``class_augment.plan_*``,
+        ``flux_rescale.plan_flux``), from ``[augment_seed, step, stream]`` (rotation:
+        ``[augment_seed, step]``): device-independent and exact on resume (ADR 0006, 0007).
+        Returns a dict of CPU tensors (keys ``c6``, ``c7``, ``c5``, ``rot``, ``jitter`` for
+        the augmentations that change the batch), for :meth:`apply_plan`.
 
         The class-aware augmentation runs **before** the rotation: the stamp fits, and C7's
         PSF centroid in particular, describe the unrotated crop (``fit_central_psf``), so a
         rotated off-centre transient would get its rescaled flux at the wrong place (found in
         review of PR #22). C5 / C6 are rotation-agnostic, so the order only matters for C7.
-        Draws come from ``[augment_seed, global_step, stream]`` (rotation: ``[augment_seed,
-        global_step]``). Returns ``(images, features, one-hot targets)``; ``batch`` is not
-        modified.
 
         Raises:
             ValueError: if ``aug_noise``, ``synthetic_bogus`` or ``flux_rescale`` is on and
                 the batch has no stamp fits (a fourth element), or ``flux_rescale`` is on and
                 the fits have no PSF columns.
         """
-        x_img, x_feat, targets = batch[0], batch[1], batch[2]
+        images, features = batch[0], batch[1]
+        plan: dict[str, Any] = {}
         if self.aug_noise or self.synthetic_bogus or self.flux_rescale:
             if len(batch) != 4:
                 msg = (
@@ -451,15 +497,74 @@ class PaperClassifierModule(ClassifierModule):
                     "class_augment.stamp_fits (plus flux_rescale.fit_central_psf for C7)"
                 )
                 raise ValueError(msg)
-            x_img, x_feat, targets = self.class_augment(x_img, x_feat, targets, batch[3])
+            plan.update(self._class_plan(batch, step))
         if self.rot90_augment:
-            k = self.rotation_steps(x_img.shape[0], self.global_step).to(x_img.device)
-            rotations = torch.stack([torch.rot90(x_img, j, dims=(2, 3)) for j in range(4)])
-            x_img = rotations[k, torch.arange(x_img.shape[0], device=x_img.device)]
+            plan["rot"] = self.rotation_steps(images.shape[0], step)
         if self.aug_feature_jitter:
-            rng = augment_rng(self.augment_seed, self.global_step, JITTER_STREAM)
-            x_feat = jitter_features(x_feat, self.aug_feature_jitter, rng)
-        return x_img, x_feat, targets
+            rng = augment_rng(self.augment_seed, step, JITTER_STREAM)
+            plan["jitter"] = plan_jitter(tuple(features.shape), self.aug_feature_jitter, rng)
+        return plan
+
+    def _class_plan(self, batch: AugmentBatch, step: int) -> dict[str, Any]:
+        """C6, C7 and C5's noise of :meth:`augment_plan`, in that order (host tensors)."""
+        images, features, targets, fits_tensor = batch
+        fits = fits_tensor.numpy()
+        plan: dict[str, Any] = {}
+        replaced = None
+        if self.synthetic_bogus:
+            rng = augment_rng(self.augment_seed, step, SYNTHETIC_STREAM)
+            c6 = plan_synthetic(
+                images, features, targets, fits, self.synthetic_bogus, rng, min_r2=self.aug_min_r2
+            )
+            replaced = c6.pop("replaced")
+            if replaced.any():
+                plan["c6"] = c6
+        if self.flux_rescale:
+            rng = augment_rng(self.augment_seed, step, FLUX_STREAM)
+            c7 = plan_flux(
+                images,
+                features,
+                targets,
+                fits,
+                self.flux_rescale,
+                (self.flux_k_min, self.flux_k_max),
+                rng,
+                skip=replaced,
+            )
+            c7.pop("k")
+            if c7:
+                plan["c7"] = c7
+        if self.aug_noise:
+            rng = augment_rng(self.augment_seed, step, NOISE_STREAM)
+            c5 = plan_noise(
+                fits, images.shape[-1], self.aug_noise, rng, min_r2=self.aug_min_r2, skip=replaced
+            )
+            if c5 is not None:
+                plan["c5"] = c5
+        return plan
+
+    def apply_plan(
+        self, batch: ClassifierBatch | AugmentBatch, plan: dict[str, Any]
+    ) -> ClassifierBatch:
+        """The device part: :meth:`augment_plan`'s ``plan``, on ``batch``'s device, applied.
+
+        The same torch operations as the in-step functions (``class_augment.apply_*``,
+        ``flux_rescale.apply_flux``, the rotation, the jitter's addition), so the result is
+        bit for bit the in-step one on every device; nothing is copied back to the host.
+        """
+        images, features, targets = batch[0], batch[1], batch[2]
+        if "c6" in plan:
+            images, features, targets = apply_synthetic(images, features, targets, plan["c6"])
+        if "c7" in plan:
+            images, features = apply_flux(images, features, plan["c7"])
+        if "c5" in plan and len(batch) == 4:
+            images = apply_noise(images, batch[3], plan["c5"])
+        if "rot" in plan:
+            rotations = torch.stack([torch.rot90(images, j, dims=(2, 3)) for j in range(4)])
+            images = rotations[plan["rot"], torch.arange(images.shape[0], device=images.device)]
+        if "jitter" in plan:
+            features = features + plan["jitter"].to(features.dtype)
+        return images, features, targets
 
     def class_augment(
         self, x_img: torch.Tensor, x_feat: torch.Tensor, targets: torch.Tensor, fits: torch.Tensor
