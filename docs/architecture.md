@@ -28,6 +28,8 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  │                                          datamodules ──► data (prepared layout) + augmentations
  ├──► reference (compare-reference: the gates of R1-R4 and CD21)
  ├──► protocol (make-splits, compare-variants: the phase-2 evaluation protocol) ──► data
+ ├──► ensemble_eval (ensemble-eval: seed ensembles and TTA of stored split runs; D4) ──► tta,
+ │      tasks.paper (PaperNet, paper_crops), engine (open_eval, DevicePolicy), runs, protocol
  ├──► oracle (fetch-m1, m1-oracle: the published M1 vs our input path) ──► paper_model, data
  ├──► alerts (fetch-alerts, alerts-summary: raw alerts from ALeRCE) ──► data (prepared, m1_features)
  ├──► r5 (r5-sources, build-r5: the R5 benchmark) ──► alerts (by_oid, store), protocol, data.raw_alerts
@@ -285,6 +287,10 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   2.5-infra) it decides on split runs: 0 for ADOPT / KEEP, 1 for NOT ADOPTED / DROP;
   `--rule`/`--margin` without `--splits`, `--split` with it, or `--margin` without
   `--rule non-inferiority` exit 2.
+- `ensemble-eval RUN_DIR... --splits FILE --fold K | --screen [--tta rot4|d4|d4_shift]
+  [--test] --out JSON [--data DIR] [--accelerator ...]` (plan row D4, see `tta and
+  ensemble_eval`): exit 0 when written, 2 for runs that cannot form an ensemble or a TTA
+  mode their input cannot support, 1 for unusable data.
 - `make-object-splits ALERTS_CSV --out FILE [--seed 0] [--fractions 0.6 0.2 0.2]
   [--labels NAMES] [--drop-conflicts] [--overwrite]` and `bench-report RUN... --splits FILE
   --alerts ALERTS_CSV [--baseline RUN...] [--split test|val] [--reference-counts N...]
@@ -456,7 +462,10 @@ Task 2.1 adds the paper's float input path (`docs/data.md`, "Float input path"):
   input dtype; `former_nan_mask` (zeros of channels with more than one exact zero over the
   full stamp), `approximated_stamps` (stamps where a masked zero is inside the crop),
   `crop_split` (a whole float32 split, chunked, for 2.2a's precomputed crops) and
-  `crop_bounds` (ALeRCE's crop arithmetic: `(21, 42)` for 21 on 63). Golden fixture:
+  `crop_bounds` (ALeRCE's crop arithmetic: `(21, 42)` for 21 on 63). Plan row D4 adds
+  `offset=(dy, dx)` to `crop_then_normalise` and `crop_split`: the window moves by `dy`
+  rows and `dx` columns (refused if it leaves the stamp), then the same normalisation;
+  `(0, 0)`, the default, is the paper's crop through the same code. Golden fixture:
   `tests/fixtures/data/alerce_crop.npz`, from ALeRCE's own functions
   (`scripts/characterize/data/alerce_crop.py`).
 - `float_input`, task 2.5-models (plan row B1'): `context_then_normalise(stamps, factor=3,
@@ -1799,7 +1808,7 @@ through it; Lightning stays the default until 4.7/4.8.
 | Module | What it does |
 |---|---|
 | `common` | The run checks of `run_command`, moved from `experiments` (which re-exports them): `check_accelerator` (`AcceleratorError`), `dataset_path`, `check_names`, `check_schedule` / `check_paper_variant`, `check_split`. |
-| `paper` | `paper_inputs(settings, data, split_run)`: the splits as `TensorSplit`s (float path or uint8 diagnostic, leaked Train stamps removed, a split run's roles, the C5-C7 fits) and the `paper_data` entry; `experiments._build_paper` calls it too. `load_backbone` (ConvNeXt weights, ADR 0022). `PaperNet` (the model under `model`, the loss as `criterion`: `PaperClassifierModule`'s `state_dict` keys). `PaperTask`, the engine `Task`: a step plans the augmentation of step `step` on a host copy (`training.paper_augment.PaperAugment`, the object the Lightning module delegates to), uploads and applies it, then the loss; `build_optimizer` with the configured betas. `build_paper_task(settings, info)` builds it on the CPU (after the seed); `check_paper_task` runs its checks before the manifest. |
+| `paper` | `paper_crops(settings, data, names)`: the splits as the run's model sees them (the float path with its context channels, or the uint8 diagnostic, at `paper_arch`'s side), shared by `paper_inputs` and `ensemble-eval`. `paper_inputs(settings, data, split_run)`: the splits as `TensorSplit`s (float path or uint8 diagnostic, leaked Train stamps removed, a split run's roles, the C5-C7 fits) and the `paper_data` entry; `experiments._build_paper` calls it too. `load_backbone` (ConvNeXt weights, ADR 0022). `PaperNet` (the model under `model`, the loss as `criterion`: `PaperClassifierModule`'s `state_dict` keys). `PaperTask`, the engine `Task`: a step plans the augmentation of step `step` on a host copy (`training.paper_augment.PaperAugment`, the object the Lightning module delegates to), uploads and applies it, then the loss; `build_optimizer` with the configured betas. `build_paper_task(settings, info)` builds it on the CPU (after the seed); `check_paper_task` runs its checks before the manifest. |
 | `results` | `StageOutput` and `classifier_results`: the Validation / Test (or selection / evaluation) entries of `metrics.json`, `predictions_*.npz` and the confusion-matrix figures, moved from `experiments` and used by both engines. |
 | `plain` | `run_plain(command, settings, resume=, split=, on_step=, on_validation=, progress=)`: `run_command` for `train-supervised` of the paper classifier on `carrasco2021` (every 2.5 flag, split runs, `fp32_precision`). The same checks, the data on the `device` tier, `start_run(..., engine="plain")`, `engine.fit`, the final evaluation of the restored best, `metrics.json` (the Lightning keys, with `machine.engine: plain`, `checkpoints` `ckpt/{best,last}.pt`, no Lightning version, `accelerator` the device type), the manifest `finished`. `resume="auto"`: `OUTPUT_DIR/ckpt/last.pt`. Refuses other commands, models and schedules (use `lightning`), `devices != 1`, and `limit_train_batches` / `limit_val_batches`. |
 
@@ -2052,6 +2061,88 @@ phase-3 benchmarks (task 3.2); the rules and the power note are in
   another fold's weights. The default path, and so the
   faithful preset, is unchanged. The end-to-end commands are in
   `docs/evaluation-protocol.md`.
+
+## `tta` and `ensemble_eval` (plan row D4)
+
+Seed ensembles and extended test-time augmentation (TTA), evaluated on the stored weights
+of finished split runs, without retraining. Nothing here changes how a run trains or
+evaluates itself: there is no `Settings` field, so every config computes what it computed
+(no new config hash, no `NUMERICS_EPOCH` bump).
+
+**`tta`** (`src/astro_simclr/tta.py`): pure, engine-free and deterministic (no
+randomness, so no random stream). Modes `TTA_MODES = ("rot4", "d4", "d4_shift")`.
+
+- *Where the averaging happens.* The paper model (CD21, `paper_arch: rot4`) is
+  cyclic-pooling: its forward averages the 64-d **features** of the 4 rotations after fc1,
+  before the head. The ConvNeXt rows pool their 4 rotations the same way, `p4` its 4
+  orientations, `p4m` the 8 of D4 (`ARCH_SYMMETRY`: `c4`, `d4` or `none` for `single`).
+  A TTA view goes through the whole model, so its extra views are averaged at the
+  **logit** level, outside it (`combine_view_logits`: the mean of the views' logits; the
+  caller applies the softmax). Re-feeding the rotations to a C4-pooled model would only
+  repeat its own feature mean, so `tta_views(mode, symmetry)` gives the cosets of the
+  model's symmetry in D4:
+
+  | Model symmetry | `rot4` | `d4` | `d4_shift` |
+  |---|---|---|---|
+  | `c4` (rot4, p4, ConvNeXt) | 1 view | identity, flip (2) | 2 × 9 offsets (18) |
+  | `d4` (p4m) | 1 view | 1 view | 1 × 9 offsets (9) |
+  | `none` (single) | 1 view | the 8 dihedral views | 8 × 9 offsets (72) |
+
+  The 4 internal rotations of the flipped stamp are its 4 reflections, so for the paper
+  model `d4` covers the 8 elements of D4: feature-averaged within each view,
+  logit-averaged across the two (not the same as a feature mean over all 8, which the
+  head never saw).
+- `rot4` (the default) is one identity view whose logits are returned untouched: the
+  run's own evaluation, bit for bit (for `single`, one pass).
+- `d4_shift`: `d4` at the 9 crop offsets `(dy, dx)`, `dy, dx ∈ {-1, 0, 1}`
+  (`SHIFT_OFFSETS`): the 21×21 crop re-taken 1 px off centre from the 63×63 float stamp
+  (`crop_then_normalise(offset=...)`, each crop normalised on its own pixels; no padding,
+  the stamp has a 21-px margin). The offset set is D4-symmetric, so the result stays
+  D4-invariant. `check_tta` refuses it for `paper_input: uint8`, the ConvNeXt rows (they
+  see the whole stamp) and `context: avgpool63` (the context would not move with the
+  crop; use `d4`).
+- `View(rotation, flip, offset)`, `apply_dihedral(images, view)` (flip the columns, then
+  `rotation` counter-clockwise quarter turns, `torch.rot90` as the model's own; on all
+  channels, the context included), `tta_logits(forward, images, views)` (centre views
+  only).
+
+**`ensemble_eval`** (`src/astro_simclr/ensemble_eval.py`, CLI `ensemble-eval`):
+
+- `read_member(run_dir)` reads the validated `manifest.json` and `metrics.json`;
+  `check_members(members, splits_sha256, part)` refuses, before any data is read, a run
+  that is not `finished`, not `train-supervised` of `paper_stamp_classifier`, of another
+  fold / the screen or splits file, and members that differ in config hash, engine, data
+  hash, machine class, numerics epoch, pretrained weights or training machine
+  (`reference.machine_signature`), or repeat a run (`ConfigError`, exit 2).
+- `member_net` rebuilds the model from the manifest's config (`build_paper_model`, no
+  backbone download) and loads the selected weights: `ckpt/best.pt` (plain, its run id
+  checked) or `checkpoints/best.ckpt` (Lightning; the same `state_dict` keys as
+  `PaperNet`).
+- `evaluation_parts`: the part's evaluation stamps from `paper_crops` and
+  `protocol_splits` (pool index for a fold, Validation index for the screen), and Test
+  only with `--test`; `shifted_images` re-crops them for `d4_shift` from the memory-mapped
+  float32 stamps, 4096 at a time.
+- `member_probabilities` evaluates as the run did: `engine.open_eval` batches of the
+  config's `eval_batch_size`, `eval()` and `inference_mode`, the config's float32
+  precision and determinism (`DevicePolicy`), on the members' training device unless
+  `--accelerator`; per batch, the views' logits are combined and soft-maxed as
+  `PaperTask.eval_step`. With `rot4` the probabilities equal the run's own
+  `predictions_evaluation.npz` (tested for plain and Lightning weights, fold and screen).
+- The **ensemble** is `protocol.predictions.ensemble` (the float64 mean of the members'
+  probabilities). The report has each member's balanced accuracy (and the run's stored
+  one), their mean and std, the ensemble's evaluation entry and `ensemble − mean`.
+- `--out FILE.json` is shaped like a split run's `metrics.json` for what
+  `compare-variants --splits` reads (`seed`: the member's for one member, the sorted
+  list for an ensemble; `machine`: the members' training machine; `data`; `protocol`;
+  `predictions.evaluation` → `<stem>.predictions_evaluation.npz`), plus `format:
+  astro-simclr-ensemble-eval` version 1, `tta`, `members`, `results`,
+  `evaluation_machine`. The JSON file itself is a `RUN_DIR` of `compare-variants`.
+
+**Tested.** `tests/test_tta.py` (view sets, D4 invariance of `d4` for rot4 / single / p4 /
+p4m / ConvNeXt-atto and of `d4_shift` from the stamps, the shifted crops, the refusals) and
+`tests/test_ensemble_eval.py` (six tiny CPU split runs: `rot4` reproduces the plain and
+Lightning runs' predictions bit for bit, the ensemble arithmetic, `d4` / `d4_shift` /
+`--test`, the output read by `compare-variants --splits`, every refusal).
 
 ## `runs` (phase 4, task A0; ADR 0015)
 

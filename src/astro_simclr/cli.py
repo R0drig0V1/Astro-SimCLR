@@ -39,6 +39,11 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   ``--splits FILE`` (task 2.5-infra) it decides on split runs (``train-supervised --splits
   FILE --fold K | --screen``): CV runs exit 0 for ADOPT and 1 for NOT ADOPTED (``--rule
   superiority|non-inferiority``, ``--margin``), screen runs 0 for KEEP and 1 for DROP;
+- ``ensemble-eval RUN_DIR... --splits FILE --fold K | --screen [--tta rot4|d4|d4_shift]
+  [--test] --out JSON`` (plan row D4, :mod:`astro_simclr.ensemble_eval`): the members'
+  balanced accuracies, their mean and the seed ensemble's, with test-time augmentation
+  (:mod:`astro_simclr.tta`), on stored split runs without retraining; the JSON is a run for
+  ``compare-variants --splits`` (exit 0 when written);
 - phase-3 benchmarks (task 3.2, :mod:`astro_simclr.protocol.object_splits`,
   :mod:`astro_simclr.protocol.bench_report`): ``make-object-splits ALERTS.csv --out FILE``
   writes object-grouped, class-stratified Train/Validation/Test splits of an alert table;
@@ -1014,7 +1019,68 @@ def _add_protocol_commands(
     _add_grouping_arguments(splits)
     splits.add_argument("--overwrite", action="store_true")
     splits.set_defaults(handler=_make_splits)
+    _add_ensemble_eval(commands)
     _add_benchmark_commands(commands)
+
+
+#: ``ensemble-eval --tta`` choices (``tta.TTA_MODES``; spelled out so ``--help`` needs no torch).
+TTA_CHOICES: Final = ("rot4", "d4", "d4_shift")
+
+
+def _ensemble_eval(args: argparse.Namespace) -> int:
+    from astro_simclr.ensemble_eval import ensemble_eval
+
+    report = ensemble_eval(
+        args.run_dirs,
+        args.splits,
+        fold=None if args.screen else args.fold,
+        tta=args.tta,
+        test=args.test,
+        out=args.out,
+        data=args.data,
+        accelerator=args.accelerator,
+    )
+    sys.stdout.write("\n".join(report.lines) + "\n")
+    return 0
+
+
+def _add_ensemble_eval(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    sub = commands.add_parser(
+        "ensemble-eval",
+        help="seed ensemble and test-time augmentation of stored split runs (plan row D4)",
+        description="Load the selected weights of finished runs of one arm (same config, "
+        "engine, data and machine; one per seed) trained on --splits FILE --fold K (or "
+        "--screen), evaluate each on the part's evaluation stamps with the test-time "
+        "augmentation --tta (rot4: the model's own evaluation, the default; d4: the 8 "
+        "dihedral views; d4_shift: d4 x the 9 crop offsets of 0 or 1 px), and report each "
+        "member's balanced accuracy, their mean and the ensemble's (mean of the softmax "
+        "probabilities). --out FILE.json and its predictions are read by compare-variants "
+        "--splits as one run. Test is evaluated only with --test (a report, never a "
+        "decision input; docs/evaluation-protocol.md).",
+    )
+    sub.add_argument("run_dirs", type=Path, nargs="+", metavar="RUN_DIR")
+    sub.add_argument("--splits", type=Path, required=True, metavar="FILE")
+    part = sub.add_mutually_exclusive_group(required=True)
+    part.add_argument("--fold", type=int, metavar="K", help="the runs' CV fold")
+    part.add_argument("--screen", action="store_true", help="the runs are screen runs")
+    sub.add_argument("--tta", choices=TTA_CHOICES, default="rot4", help="default rot4")
+    sub.add_argument(
+        "--test", action="store_true", help="also evaluate the Test split (a report only)"
+    )
+    sub.add_argument("--out", type=Path, required=True, metavar="JSON")
+    sub.add_argument(
+        "--data",
+        type=Path,
+        metavar="PREPARED_DIR",
+        help="the prepared dataset (default: the runs' data_dir/dataset; its hash is checked)",
+    )
+    sub.add_argument(
+        "--accelerator",
+        choices=["cpu", "cuda", "mps", "gpu", "auto"],
+        default=None,
+        help="the evaluation device (default: the one the runs trained on)",
+    )
+    sub.set_defaults(handler=_ensemble_eval)
 
 
 def _add_benchmark_commands(
