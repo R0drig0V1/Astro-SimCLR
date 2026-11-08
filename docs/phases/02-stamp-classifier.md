@@ -223,7 +223,22 @@ except the manual runs, and the phase-1 portability rule applies to all of them.
     every 10 iterations.
   - A CPU smoke run on synthetic data.
 
-### 2.2b M1 oracle (after 2.1 and 2.2a; no GPU)
+### 2.2b M1 oracle (after 2.1 and 2.2a; no GPU) — done, **PASSED** (PR #16, merged as 15f6427, 2026-11-08)
+
+Results (`results/phase2/replication/m1_oracle.json`):
+- **Port equivalence:** max |Δlogit| 1.6e-6 and 100 % argmax agreement.
+- **Data path:** 475/500 exact, loss −0.06162. The 41 NaN-approximated stamps are all
+  correct.
+- **M1 test accuracy: 0.936** (SN recall 0.86). The paper's 0.941 is a 5-run mean.
+- **Pricing of the input paths on M1, validation:**
+
+  | Input path | Change |
+  |---|---|
+  | no NaN approximation | −0.2 pt |
+  | uint8 21 + pad | −2.2 pts |
+  | **uint8 27 px, the phase-1 path** | **−4.0 pts** |
+
+  This confirms the phase-1 input flaw F1.
 
 - A script downloads M1 at the pinned commit, checks its SHA-256 and converts it to a
   local `.npz` that is never committed. It uses a pure-Python TF-checkpoint reader or a
