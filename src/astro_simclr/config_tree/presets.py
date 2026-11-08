@@ -8,6 +8,9 @@ lower to the flat preset's flat view and config hash exactly (ADR 0015, rule 10;
 - ``carrasco2021`` and ``carrasco2021-no-features``: ``presets.PRESETS`` on top of the
   ``train-supervised`` protocol (the replication of Carrasco-Davis et al. 2021, ADR 0003;
   every value and its provenance is in ``configs/phase2/carrasco2021.yaml``);
+- ``rj23-full``, ``rj23-cropped``, ``rj23-lowres``, ``rj23-multiscale``: ``presets.PRESETS``
+  of RJ23's four scenarios (task 3.4b; ADR 0023; ``configs/phase3/rj23-*.yaml``), each with
+  its Table 2 learning rate;
 - ``<command>-legacy``: the legacy protocol of each training subcommand,
   ``hparams.COMMAND_DEFAULTS`` on top of the ``Settings`` defaults. A nested config file
   without ``preset`` starts from the one of its command (:data:`LEGACY_PRESETS`), as the
@@ -24,7 +27,7 @@ import dataclasses
 from collections.abc import Mapping
 from typing import Final
 
-from astro_simclr.config import CARRASCO2021_EVAL_BATCH_SIZE, ConfigError
+from astro_simclr.config import CARRASCO2021_EVAL_BATCH_SIZE, RJ23_MONITOR, ConfigError
 from astro_simclr.config_tree.schema import (
     AdamOptim,
     Carrasco2021Schedule,
@@ -35,8 +38,11 @@ from astro_simclr.config_tree.schema import (
     FineTuneModel,
     LARSOptim,
     LinearEvalModel,
+    NoAugment,
     PaperAugment,
     PaperStampClassifier,
+    RJ23Classifier,
+    RJ23RegimeSchedule,
     Runtime,
     SimCLRModel,
     TransformsAugment,
@@ -93,6 +99,35 @@ _CARRASCO2021: Final = Config(
     eval=Eval(batch_size=CARRASCO2021_EVAL_BATCH_SIZE),
 )
 
+
+def _rj23(scenario: str, lr: float) -> Config:
+    """RJ23's preset for ``scenario`` with Table 2's learning rate ``lr`` (task 3.4b)."""
+    return Config(
+        runtime=Runtime(num_workers=0, fp32_precision="ieee"),
+        # 256 per batch, drawn class-uniformly; RJ23 read no alert features.
+        data=Data(batch_size=256, with_features=False),
+        model=RJ23Classifier(scenario=scenario, bn_position="after_concat", large_values="paper"),
+        # Built as Keras' Adam (rj23_regime.keras_adam: epsilon 1e-7, Keras' placement).
+        optim=AdamOptim(kind="Adam", lr=lr),
+        schedule=RJ23RegimeSchedule(
+            max_steps=100_000,
+            val_every_n_steps=500,
+            patience=5,
+            monitor=RJ23_MONITOR,
+            keep="stop",
+        ),
+        augment=NoAugment(),
+    )
+
+
+#: RJ23's Table 2 learning rates (Reyes-Jainaga et al. 2023, App. A), written out again.
+_RJ23: Final[Mapping[str, Config]] = {
+    "rj23-full": _rj23("full", 7.589e-4),
+    "rj23-cropped": _rj23("cropped", 3.4627e-4),
+    "rj23-lowres": _rj23("lowres", 1.125e-3),
+    "rj23-multiscale": _rj23("multiscale", 7.445e-4),
+}
+
 _PRETRAIN: Final = Config(
     # iter_clr.py: max 400 epochs, EarlyStopping(loss_train_enc, 0.002, patience 100).
     data=Data(dataset="td_ztf_stamp_simclr_300", image_size=27, batch_size=450),
@@ -110,6 +145,7 @@ PRESETS: Final[Mapping[str, Config]] = {
     "carrasco2021-no-features": dataclasses.replace(
         _CARRASCO2021, data=dataclasses.replace(_CARRASCO2021.data, with_features=False)
     ),
+    **_RJ23,
     "pretrain-legacy": _PRETRAIN,
     "linear-eval-legacy": Config(model=LinearEvalModel()),
     "fine-tune-legacy": Config(model=FineTuneModel()),

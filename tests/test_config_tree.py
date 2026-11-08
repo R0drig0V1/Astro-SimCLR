@@ -30,12 +30,16 @@ from astro_simclr.config_tree.schema import (
     AdamOptim,
     Carrasco2021Schedule,
     LARSOptim,
+    NoAugment,
     PaperAugment,
     PaperStampClassifier,
     ResNetClassifier,
+    RJ23Classifier,
+    RJ23RegimeSchedule,
     Runtime,
     SGDOptim,
     StampClassifier,
+    TransformsAugment,
 )
 
 CD21 = {"preset": "carrasco2021"}
@@ -67,6 +71,10 @@ def test_presets_decide_the_command() -> None:
     assert commands == {
         "carrasco2021": "train-supervised",
         "carrasco2021-no-features": "train-supervised",
+        "rj23-full": "train-supervised",
+        "rj23-cropped": "train-supervised",
+        "rj23-lowres": "train-supervised",
+        "rj23-multiscale": "train-supervised",
         "pretrain-legacy": "pretrain",
         "linear-eval-legacy": "linear-eval",
         "fine-tune-legacy": "fine-tune",
@@ -92,6 +100,14 @@ def test_presets_decide_the_command() -> None:
             "augment.kind paper go together",
         ),
         (lambda: Config(augment=PaperAugment()), "augment.kind paper go together"),
+        (lambda: Config(model=RJ23Classifier()), "schedule.kind rj23 go together"),
+        (lambda: Config(schedule=RJ23RegimeSchedule()), "schedule.kind rj23 go together"),
+        (lambda: Config(augment=NoAugment()), "augment.kind none go together"),
+        (
+            lambda: dataclasses.replace(PRESETS["rj23-full"], augment=TransformsAugment()),
+            "augment.kind none go together",
+        ),
+        (lambda: NoAugment(kind="paper"), "NoAugment kind must be one of: none"),
         (lambda: Config(model=AdamOptim()), "section model must be one of"),  # type: ignore[arg-type]
     ],
 )
@@ -297,3 +313,19 @@ def test_the_example_nested_configs_resolve() -> None:
     for path in files:
         config = resolve_config(path)
         assert config.runtime.accelerator == "cuda", path
+
+
+def test_rj23_presets_raise_and_resolve_with_overrides() -> None:
+    # Task 3.4b: the flat rj23 settings raise to the rj23 variants and back, and a nested
+    # override reaches the flat field it lowers to.
+    from astro_simclr.presets import PRESETS as FLAT_PRESETS
+
+    flat = Settings().replace(**FLAT_PRESETS["rj23-lowres"])
+    nested = config_from_settings("train-supervised", flat)
+    assert isinstance(nested.model, RJ23Classifier) and nested.model.scenario == "lowres"
+    assert isinstance(nested.schedule, RJ23RegimeSchedule) and nested.schedule.patience == 5
+    assert isinstance(nested.augment, NoAugment)
+    assert nested.to_settings() == flat
+    arm = resolve_mapping({"preset": "rj23-multiscale"}, ("model.bn_position=before_concat",))
+    assert arm.to_settings().rj23_bn_position == "before_concat"
+    assert arm.to_settings().early_stopping is False

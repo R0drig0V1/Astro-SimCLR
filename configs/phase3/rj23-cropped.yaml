@@ -1,0 +1,46 @@
+# rj23-cropped: RJ23's cropped scenario (Reyes-Jainaga et al. 2023, ApJL 952, L43,
+# arXiv:2304.13080) with their training regime (task 3.4b; ADR 0023). The same values as
+# `train-supervised --preset rj23-cropped` (src/astro_simclr/presets.py;
+# tests/test_presets.py keeps them equal).
+#
+# Run (one seed; the data is a raw-alerts layout, the splits its object splits):
+#   astro-simclr train-supervised --config configs/phase3/rj23-cropped.yaml \
+#       --splits SPLITS.json --set dataset=R5 --data-dir DATA \
+#       --accelerator cuda --seed S --output-dir OUT/rj23-cropped/seed-S
+# Add --screen for a phase-3 decision run (stop on the selection half of Validation, predict
+# both halves; Test is never read). Report: astro-simclr bench-report
+#   OUT/rj23-cropped/seed-* --splits SPLITS.json --alerts ALERTS.csv
+#
+# Provenance (docs/phases/03-newer-benchmarks.md, tasks 3.0, 3.3, 3.4, 3.4b):
+# - input: cropped 16x16x6 (rows and columns 24:40), built from the raw cutouts by data.rj23_input (ADR 0009;
+#   RJ23 sec. II.1), with the position (x, y, z) on the unit sphere.
+# - model: RJ23's Table 2 cropped column, conv 112, 27, pool, 92, 121; dense 133; dropout 0.866799
+#   (rj23_model.RJ23_TABLE2; the details the paper leaves open are ADR 0013's); the 8
+#   rotation/flip views averaged.
+# - optimizer: Keras Adam (beta_1 0.9, beta_2 0.999, epsilon 1e-7, Keras' epsilon
+#   placement; rj23_regime.keras_adam), Table 2's learning rate 3.4627e-4; unweighted
+#   cross-entropy.
+# - batches: 256, each item's class drawn uniformly, then one of its alerts uniformly
+#   (rj23_regime.ClassUniformStream; RJ23's sample_from_datasets).
+# - schedule: validation macro-F1 every 500 iterations from iteration 0, patience 5 on a
+#   strict improvement, a 100,000-iteration cap (reported when hit); the weights at the
+#   stop are the primary result (RJ23 saved that model), the best validation's are
+#   evaluated next to them.
+# - precision: float32 convolutions and matmuls (ADR 0010).
+supervised_model: rj23
+rj23_scenario: cropped
+rj23_bn_position: after_concat
+rj23_large_values: paper
+with_features: false
+optimizer: Adam
+lr: 0.00034627
+batch_size: 256
+num_workers: 0
+schedule: rj23
+monitor: macro_f1_val
+val_every_n_steps: 500
+patience: 5
+max_steps: 100000
+early_stopping: false
+rj23_keep: stop
+fp32_precision: ieee

@@ -22,7 +22,11 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   defaults, the subcommand's legacy protocol (``hparams.COMMAND_DEFAULTS``), ``--preset``
   (``train-supervised`` only: ``carrasco2021`` or ``carrasco2021-no-features``, the paper
   replication of task 2.2c; :mod:`astro_simclr.presets`; and ``--splits FILE --fold K |
-  --screen``, a split run of task 2.5-infra: :mod:`astro_simclr.protocol.split_runs`),
+  --screen``, a split run of task 2.5-infra: :mod:`astro_simclr.protocol.split_runs`; or
+  ``rj23-full``, ``rj23-cropped``, ``rj23-lowres``, ``rj23-multiscale``, RJ23's regime of
+  task 3.4b on a ``raw-alerts`` layout, which needs ``--splits OBJECT_SPLITS`` (the paper
+  protocol; with ``--screen``, a decision run on the selection half) and optionally
+  ``--alerts ALERTS.csv``: :mod:`astro_simclr.training.rj23`),
   ``--hparams``
   (a legacy ``results/hparams_best_*.yaml``, through the mapping of
   :mod:`astro_simclr.hparams`), ``--config``, ``--set``, then the explicit flags
@@ -50,6 +54,12 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   phase-2 results report (``docs/results-phase2.md``) as markdown from run directories:
   the replication and its CD21 gate, the screen and CV decisions, per-class recall,
   confusion matrices, throughput and provenance (always exit 0: a report);
+- phase-5 label budgets (task 5.4, :mod:`astro_simclr.protocol.label_budgets`):
+  ``make-label-budgets --out FILE (--splits FILE --data DIR | --object-splits FILE --alerts
+  CSV)`` writes the nested label-budget subsets and selection sets of every training part;
+  ``verify-label-budgets FILE`` with the same parent options exits 0 if the file belongs to
+  the verified parent, else 1. Registered by
+  :func:`astro_simclr.protocol.budget_parser.add_budget_commands`.
 - ``preflight`` (:mod:`astro_simclr.preflight`): exit 0 if no step failed, else 1.
 - the run registry (task A2, :mod:`astro_simclr.registry`): ``runs reindex [ROOT ...]``,
   ``runs ls``, ``runs show KEY`` and ``runs compare SPEC`` (by experiment spec); exit 1
@@ -76,6 +86,13 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   sources; ``build-r5`` builds the benchmark (online, ``--from-snapshot`` offline with
   ``--expect build.json``, or ``--dry-run``): exit 0 when written, 1 when incomplete or
   different from ``--expect``.
+- archive corpus (:mod:`astro_simclr.archive`): ``ingest-archive TARBALL... --out DIR
+  (--exclude FILE | --no-exclusions)`` streams nightly archive tarballs (files, or ``-``
+  with ``--night`` for one piped in) into the unlabelled corpus, one shard per night,
+  skipping complete nights (exit 0); ``archive-summary DIR [--verify]`` prints the
+  per-night counts and the objects (with ``--verify``, every night is loaded and hashed: a
+  bad one exits 1); ``plan-archive-nights`` prints the seeded night sampling plan's size
+  estimate and writes the plan with ``--out FILE``. None of them downloads anything.
 
 The heavy modules (torch, Lightning) are imported inside the handlers, so ``show-config``
 and ``--help`` stay fast. A :class:`~astro_simclr.data.DataError` (bad, truncated or missing
@@ -103,6 +120,7 @@ import yaml
 
 from astro_simclr.config import (
     ACCELERATORS,
+    RJ23,
     ConfigError,
     Settings,
     load_settings,
@@ -112,12 +130,14 @@ from astro_simclr.config import (
     settings_to_plain,
 )
 from astro_simclr.hparams import COMMAND_DEFAULTS, COMMANDS, load_legacy_hparams
+from astro_simclr.protocol.budget_parser import add_budget_commands
 from astro_simclr.registry.parser import add_runs_command
 from astro_simclr.simclr.commands import add_simclr_commands
 
 if TYPE_CHECKING:
     from astro_simclr.oracle.m1 import M1Files
     from astro_simclr.protocol.split_runs import SplitRequest
+    from astro_simclr.training.rj23 import RJ23Request
 
 __all__ = [
     "add_settings_arguments",
@@ -378,6 +398,23 @@ def _split_request(args: argparse.Namespace) -> SplitRequest | None:
     return SplitRequest(file, fold)
 
 
+def _rj23_request(args: argparse.Namespace) -> RJ23Request:
+    """The object splits, protocol and alert table of an ``rj23`` run.
+
+    Raises:
+        ConfigError: without ``--splits``, or with ``--fold`` (object splits have no folds).
+    """
+    from astro_simclr.training.rj23 import RJ23Request
+
+    file: Path | None = getattr(args, "splits", None)
+    if file is None:
+        raise ConfigError("schedule rj23 needs --splits OBJECT_SPLITS (make-object-splits)")
+    if getattr(args, "fold", None) is not None:
+        raise ConfigError("schedule rj23 has no CV folds: drop --fold (--screen: a decision run)")
+    screen = bool(getattr(args, "screen", False))
+    return RJ23Request(file, "decision" if screen else "replication", getattr(args, "alerts", None))
+
+
 def _train(args: argparse.Namespace) -> int:
     command: str = args.command
     return _execute(command, training_settings(command, args), args)
@@ -389,10 +426,38 @@ def _execute(
     """Run ``command`` with ``settings`` on ``engine`` and print its summary.
 
     ``lightning``: ``experiments.run_command``; ``plain``: ``tasks.plain.run_plain`` (task
-    4.6, ADR 0014), which never imports Lightning.
+    4.6, ADR 0014), which never imports Lightning. ``schedule: rj23`` goes to
+    ``training.rj23.run_rj23`` (its ``--splits`` is the object splits), on Lightning only
+    for now: its policy objects are engine-free (``rj23_regime``), its plain adapter is a
+    follow-up (``tasks.plain``).
+
+    Raises:
+        ConfigError: for ``schedule: rj23`` on the plain engine, or ``--alerts`` outside it.
     """
     from astro_simclr.runs.layout import METRICS_FILE
 
+    if settings.schedule == RJ23:
+        if engine != "lightning":
+            msg = (
+                f"schedule {RJ23} trains on runtime.engine lightning only (the plain "
+                "adapter of rj23_regime is a follow-up)"
+            )
+            raise ConfigError(msg)
+        from astro_simclr.training.rj23 import run_rj23
+
+        metrics = run_rj23(settings, _rj23_request(args), resume=args.resume)
+        evaluation = metrics["evaluation"]
+        scores = ", ".join(
+            f"{stage} macro-F1 {e['macro_f1']:.4f}" for stage, e in evaluation.items()
+        )
+        sys.stdout.write(
+            f"{command} ({settings.rj23_keep} weights, step {metrics['stop_step']} stop / "
+            f"{metrics['best_step']} best, {metrics['schedule']['stopped_by']}): {scores}; "
+            f"wrote {settings.output_dir / METRICS_FILE}\n"
+        )
+        return 0
+    if getattr(args, "alerts", None) is not None:
+        raise ConfigError("--alerts belongs to the rj23 schedule (--preset rj23-<scenario>)")
     split = _split_request(args)
     if engine == "plain":
         from astro_simclr.tasks.plain import run_plain
@@ -480,7 +545,14 @@ def _add_run_command(commands: argparse._SubParsersAction[argparse.ArgumentParse
 
 #: ``train-supervised --preset`` choices (``presets.PRESETS``; spelled out here so that
 #: ``--help`` does not import the training stack).
-_TRAINING_PRESETS: Final = ("carrasco2021", "carrasco2021-no-features")
+_TRAINING_PRESETS: Final = (
+    "carrasco2021",
+    "carrasco2021-no-features",
+    "rj23-full",
+    "rj23-cropped",
+    "rj23-lowres",
+    "rj23-multiscale",
+)
 
 _TRAINING_HELP = {
     "pretrain": "SimCLR pretraining of an encoder (legacy iter_clr.py)",
@@ -499,7 +571,15 @@ def _add_split_arguments(sub: argparse.ArgumentParser) -> None:
         help="a stored decision splits file (make-splits; configs/splits/): train on one of "
         "its parts instead of Train, select on its selection part and predict its "
         "evaluation part; test is not loaded (carrasco2021 schedule; "
-        "docs/evaluation-protocol.md)",
+        "docs/evaluation-protocol.md). With --preset rj23-*: the object splits "
+        "(make-object-splits) of the raw-alerts layout, required",
+    )
+    sub.add_argument(
+        "--alerts",
+        type=Path,
+        metavar="CSV",
+        help="rj23 only: the alert table the object splits were drawn from (default: the "
+        "layout's own, grouped by oid)",
     )
     part = sub.add_mutually_exclusive_group()
     part.add_argument(
@@ -513,7 +593,8 @@ def _add_split_arguments(sub: argparse.ArgumentParser) -> None:
         "--screen",
         action="store_true",
         help="with --splits: the 250/250 screen: train on Train, select on the selection "
-        "half of Validation, predict the decision half (Validation indices)",
+        "half of Validation, predict the decision half (Validation indices); rj23: a "
+        "decision run (stop on the selection half, predict both halves; Test unread)",
     )
 
 
@@ -556,7 +637,10 @@ def _add_training_commands(
                 help="named settings applied after the legacy protocol and before --hparams, "
                 "--config and --set: carrasco2021 is the paper replication of Carrasco-Davis "
                 "et al. 2021 (float input, Adam (0.9, 0.999), the iteration schedule; ADR "
-                "0003), carrasco2021-no-features its without-features variant",
+                "0003), carrasco2021-no-features its without-features variant; rj23-<scenario> "
+                "trains RJ23's classifier of that input on a raw-alerts layout with their "
+                "regime (Keras Adam, class-uniform batches, macro-F1 patience; ADR 0023) and "
+                "needs --splits",
             )
             _add_split_arguments(sub)
         if command in ("linear-eval", "fine-tune"):
@@ -1412,6 +1496,245 @@ def _add_alert_commands(commands: argparse._SubParsersAction[argparse.ArgumentPa
     summary.set_defaults(handler=_alerts_summary)
 
 
+def _ingest_archive(args: argparse.Namespace) -> int:
+    from astro_simclr.archive.ingest import (
+        NightResult,
+        Rules,
+        ingest_archive,
+        ingest_stream,
+    )
+    from astro_simclr.archive.selection import Exclusions, Selection, load_exclusions
+    from astro_simclr.data.schema import DataError
+
+    from_stdin = [str(t) for t in args.tarballs] == ["-"]
+    if "-" in [str(t) for t in args.tarballs] and not from_stdin:
+        raise ConfigError("'-' (stdin) must be the only TARBALL")
+    if from_stdin != (args.night is not None):
+        raise ConfigError("--night is required with '-' (stdin), and only then")
+    try:
+        selection = Selection(oid_year=not args.no_oid_year, max_ndethist=args.max_ndethist)
+        exclusions = Exclusions.none() if args.no_exclusions else load_exclusions(args.exclude)
+        rules = Rules(selection, exclusions, args.rows_per_file, args.overwrite)
+    except ValueError as err:
+        if isinstance(err, DataError):
+            raise
+        raise ConfigError(str(err)) from None
+
+    def report(result: NightResult) -> None:
+        dropped = ", ".join(
+            f"{k} {v}" for k, v in sorted(result.counts.items()) if v and k != "kept"
+        )
+        sys.stderr.write(f"{result.night} {result.status}: kept {result.kept} ({dropped})\n")
+
+    progress = None if args.quiet else report
+    if from_stdin:
+        results = [ingest_stream(sys.stdin.buffer, args.night, args.out, rules)]
+        if progress is not None:
+            progress(results[0])
+    else:
+        results = ingest_archive(args.tarballs, args.out, rules, progress=progress)
+    ingested = sum(r.status == "ingested" for r in results)
+    sys.stdout.write(
+        f"{len(results)} nights ({ingested} ingested, {len(results) - ingested} already done), "
+        f"{sum(r.kept for r in results)} stamps kept, in {args.out}\n"
+    )
+    return 0
+
+
+def _archive_summary(args: argparse.Namespace) -> int:
+    from astro_simclr.archive.layout import (
+        corpus_index,
+        iter_nights,
+        load_night,
+        night_dir,
+        verify_night,
+    )
+
+    rows = []
+    totals: dict[str, int] = {}
+    for night, meta in iter_nights(args.corpus):
+        if args.verify:
+            load_night(night_dir(args.corpus, night))
+            verify_night(night_dir(args.corpus, night))
+        counts = {k: int(v) for k, v in meta.get("counts", {}).items()}
+        for key, value in counts.items():
+            totals[key] = totals.get(key, 0) + value
+        source = meta.get("source", {})
+        rows.append(
+            {
+                "night": night,
+                "tarball": source.get("tarball"),
+                "sha256": source.get("sha256"),
+                "counts": counts,
+            }
+        )
+    objects = len(corpus_index(args.corpus))
+    if args.json:
+        payload = {"nights": rows, "totals": totals, "objects": objects}
+        sys.stdout.write(json.dumps(payload, indent=2) + "\n")
+        return 0
+    for row in rows:
+        kept = row["counts"].get("kept", 0)
+        sys.stdout.write(f"{row['night']} kept {kept:>8}  {row['tarball']}\n")
+    verified = ", every file verified" if args.verify else ""
+    sys.stdout.write(f"{len(rows)} nights, {objects} objects (one alert each){verified}\n")
+    for key, value in sorted(totals.items()):
+        sys.stdout.write(f"  {key:<24} {value:>10}\n")
+    return 0
+
+
+def _plan_archive_nights(args: argparse.Namespace) -> int:
+    from astro_simclr.archive.plan import estimate, format_estimate, plan_nights
+
+    try:
+        plan = plan_nights(
+            args.seed,
+            labelled_per_year=args.labelled_per_year,
+            later_per_year=args.later_per_year,
+            spares=args.spares,
+            first=args.first,
+            last=args.last,
+        )
+    except ValueError as err:
+        raise ConfigError(str(err)) from None
+    if min(args.stamps_per_night, args.tarball_gb, args.download_hours) <= 0:
+        raise ConfigError("--stamps-per-night, --tarball-gb and --download-hours must be > 0")
+    sizes = estimate(
+        plan,
+        stamps_per_night=args.stamps_per_night,
+        tarball_gb=args.tarball_gb,
+        download_hours=args.download_hours,
+        measured=args.measured,
+    )
+    payload = {"plan": plan.to_json(), "estimate": sizes}
+    if args.out is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    if args.json:
+        sys.stdout.write(json.dumps(payload, indent=2) + "\n")
+    else:
+        sys.stdout.write(format_estimate(sizes))
+    return 0
+
+
+def _add_archive_commands(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    from datetime import date
+
+    from astro_simclr.archive import plan as archive_plan
+
+    ingest = commands.add_parser(
+        "ingest-archive",
+        help="stream ZTF archive tarballs into the unlabelled corpus (resumable per night)",
+        description="Read each ztf_public_YYYYMMDD.tar.gz as a stream (never extracted; "
+        "'-' reads one night from stdin, so a download can be piped in and no tarball is "
+        "stored), parse every avro alert with size limits, keep the first alerts of "
+        "objects with 63x63 cutouts that are not excluded, and write them as one shard per "
+        "night under OUT/nights (docs/data.md, 'Archive corpus'; ADR 0019). A complete "
+        "night is skipped; a night cut short is redone. Downloads nothing.",
+    )
+    ingest.add_argument(
+        "tarballs", type=Path, nargs="+", metavar="TARBALL", help="tarball files, or '-'"
+    )
+    ingest.add_argument("--out", type=Path, required=True, metavar="DIR")
+    ingest.add_argument(
+        "--night", type=int, default=None, metavar="YYYYMMDD", help="the night read from '-'"
+    )
+    excluded = ingest.add_mutually_exclusive_group(required=True)
+    excluded.add_argument(
+        "--exclude",
+        type=Path,
+        metavar="FILE",
+        help="oids to drop, one per line: the union of every evaluation set's objects",
+    )
+    excluded.add_argument(
+        "--no-exclusions", action="store_true", help="keep every object (never for training)"
+    )
+    ingest.add_argument(
+        "--no-oid-year",
+        action="store_true",
+        help="do not drop alerts whose oid is named after an earlier year (ablation)",
+    )
+    ingest.add_argument(
+        "--max-ndethist",
+        type=int,
+        default=None,
+        metavar="N",
+        help="also require ndethist <= N (off by default: it counts sub-alert detections "
+        "on the same field and readout only)",
+    )
+    ingest.add_argument(
+        "--rows-per-file",
+        type=int,
+        default=4096,
+        metavar="N",
+        help="stamps per cutout file (the writer holds one file in memory; default 4096)",
+    )
+    ingest.add_argument(
+        "--overwrite", action="store_true", help="re-ingest nights that are already complete"
+    )
+    ingest.add_argument("--quiet", action="store_true", help="no per-night line on stderr")
+    ingest.set_defaults(handler=_ingest_archive)
+
+    summary = commands.add_parser(
+        "archive-summary",
+        help="per-night counts and objects of an archive corpus (--verify: its hashes)",
+    )
+    summary.add_argument("corpus", type=Path, metavar="CORPUS_DIR")
+    summary.add_argument(
+        "--verify", action="store_true", help="load every night and check every SHA-256"
+    )
+    summary.add_argument("--json", action="store_true")
+    summary.set_defaults(handler=_archive_summary)
+
+    plan = commands.add_parser(
+        "plan-archive-nights",
+        help="the seeded night sampling plan of the archive corpus and its size estimate",
+        description="Per year, k strata of nights; a primary and SPARES spare nights drawn "
+        "in each from the seed, the H1 (2018-2022) and ablation uses, and the pilot nights "
+        "(ADR 0019); then the stamps, storage and download of the primaries, assumed or "
+        "measured on an ingested corpus. Downloads nothing.",
+    )
+    plan.add_argument("--seed", type=int, default=0)
+    plan.add_argument("--labelled-per-year", type=int, default=24, metavar="K")
+    plan.add_argument("--later-per-year", type=int, default=8, metavar="K")
+    plan.add_argument("--spares", type=int, default=2, metavar="N")
+    plan.add_argument("--first", type=date.fromisoformat, default=archive_plan.ARCHIVE_FIRST_NIGHT)
+    plan.add_argument("--last", type=date.fromisoformat, default=archive_plan.ARCHIVE_LAST_NIGHT)
+    plan.add_argument(
+        "--stamps-per-night",
+        type=float,
+        default=archive_plan.ASSUMED_STAMPS_PER_NIGHT,
+        metavar="N",
+        help="assumed kept stamps per night (default "
+        f"{archive_plan.ASSUMED_STAMPS_PER_NIGHT}: an assumption)",
+    )
+    plan.add_argument(
+        "--tarball-gb",
+        type=float,
+        default=archive_plan.ASSUMED_TARBALL_GB,
+        metavar="GB",
+        help=f"tarball size per night (default {archive_plan.ASSUMED_TARBALL_GB})",
+    )
+    plan.add_argument(
+        "--download-hours",
+        type=float,
+        default=archive_plan.ASSUMED_DOWNLOAD_HOURS,
+        metavar="H",
+        help="download time of a --tarball-gb night "
+        f"(default {archive_plan.ASSUMED_DOWNLOAD_HOURS})",
+    )
+    plan.add_argument(
+        "--measured",
+        type=Path,
+        default=None,
+        metavar="CORPUS_DIR",
+        help="use the counts and sizes of the nights ingested there",
+    )
+    plan.add_argument("--out", type=Path, default=None, metavar="FILE", help="write the JSON")
+    plan.add_argument("--json", action="store_true", help="print the JSON instead of the table")
+    plan.set_defaults(handler=_plan_archive_nights)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level parser with every subcommand."""
     parser = argparse.ArgumentParser(
@@ -1432,8 +1755,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_check_commands(commands)
     _add_oracle_commands(commands)
     _add_alert_commands(commands)
+    _add_archive_commands(commands)
     add_runs_command(commands)
     add_simclr_commands(commands)
+    add_budget_commands(commands)
     return parser
 
 

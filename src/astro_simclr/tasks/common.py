@@ -8,7 +8,9 @@ same messages, without importing Lightning:
 - :func:`check_names` (the augmentation registry);
 - :func:`check_schedule` and :func:`check_paper_variant`: the ``carrasco2021`` schedule,
   the paper model and its 2.5 flags go together;
-- :func:`check_split`: a split run is ``train-supervised`` on ``carrasco2021``.
+- :func:`check_split`: a split run is ``train-supervised`` on ``carrasco2021``;
+- :func:`refuse_rj23`: phase 3's ``rj23`` schedule has its own runner
+  (``training.rj23.run_rj23``, task 3.4b), so both generic runners refuse it.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from typing import Final
 import torch
 
 from astro_simclr.augmentations import resolve_augmentation_name
-from astro_simclr.config import CARRASCO2021, HYBRID_FLAGS, ConfigError, Settings
+from astro_simclr.config import CARRASCO2021, HYBRID_FLAGS, RJ23, ConfigError, Settings
 from astro_simclr.data.prepared import is_prepared
 from astro_simclr.data.schema import DataError
 from astro_simclr.paper_variants import paper_input_side
@@ -36,6 +38,7 @@ __all__ = [
     "check_schedule",
     "check_split",
     "dataset_path",
+    "refuse_rj23",
 ]
 
 #: ``train-supervised`` model of the ``carrasco2021`` schedule (task 2.2a).
@@ -88,6 +91,20 @@ def dataset_path(settings: Settings) -> Path:
         )
         raise DataError(msg)
     return path
+
+
+def refuse_rj23(settings: Settings) -> None:
+    """The ``rj23`` schedule trains through ``training.rj23.run_rj23``, not a generic runner.
+
+    Raises:
+        ConfigError: for ``schedule: rj23`` (the message gives the command that trains it).
+    """
+    if settings.schedule == RJ23:
+        msg = (
+            f"schedule {RJ23} trains through training.rj23.run_rj23: `astro-simclr "
+            "train-supervised --preset rj23-<scenario> --splits OBJECT_SPLITS`"
+        )
+        raise ConfigError(msg)
 
 
 def check_names(settings: Settings) -> None:

@@ -26,6 +26,7 @@ jupyter_examples/  2021 exploratory notebooks (they import the legacy code: run 
                    weekly macOS CI, CodeQL, Scorecard, pip-audit; workflow_dispatch on all
 configs/reference/  R1-R4 reference-run configs (plan "Reference runs"), with provenance
 configs/splits/     stored phase-2 decision splits (make-splits; docs/evaluation-protocol.md)
+configs/label-budgets/  stored phase-5 label-budget subsets (make-label-budgets)
 configs/runs/       nested configs for `astro-simclr run` (task 4.2; ADR 0017)
 docs/        architecture.md (one section per module), phases/ (the plan), decisions/
              (ADRs), plan-reviews/, evaluation-protocol.md (phase-2 rules), data.md

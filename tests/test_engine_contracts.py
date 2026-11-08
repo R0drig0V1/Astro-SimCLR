@@ -30,6 +30,7 @@ from lightning.pytorch.trainer.connectors.accelerator_connector import _set_torc
 from torch import nn
 from torch.utils.data import DataLoader
 
+from astro_simclr import rj23_regime
 from astro_simclr.config import ConfigError, Settings
 from astro_simclr.engine import (
     CHECKPOINT_FORMAT,
@@ -345,8 +346,17 @@ def test_reserved_streams_are_the_augmentations_numbers() -> None:
         "simclr_view_noise": 7,
         "simclr_batch_order": 8,
         "simclr_diagnostics": 9,
+        "rj23_class_uniform": rj23_regime.STREAM,
     }
     assert len(set(RESERVED_STREAMS.values())) == len(RESERVED_STREAMS)
+
+
+def test_reserved_stream_numbers_are_unique() -> None:
+    # Two augmentations on one stream number would draw correlated numbers at every step.
+    numbers = list(RESERVED_STREAMS.values())
+    assert len(set(numbers)) == len(numbers)
+    assert all(isinstance(n, int) and not isinstance(n, bool) and n >= 1 for n in numbers)
+    assert RESERVED_STREAMS["rj23_class_uniform"] == 10
 
 
 def test_host_generator_is_augment_rng() -> None:

@@ -4,7 +4,7 @@ A plain run writes the same ``manifest.json`` as a Lightning run (``runs.record.
 with ``engine: plain``, which is part of its run id: a plain run never passes for an
 attempt of a Lightning run, and comparisons refuse mixed engines (task A1).
 
-- :func:`machine_record` is ``experiments._machine`` without the Lightning ``Trainer``: the
+- :func:`machine_record` is ``experiments.machine_record`` without the Lightning ``Trainer``: the
   device and build of a run, with ADR 0010's precision record and ``engine: plain``. It is
   what ``start_run(machine=...)`` and ``metrics.json["machine"]`` take.
 - :func:`recorded` ends a started record with ``finished`` when its block completes,
@@ -33,7 +33,7 @@ ENGINE: Final = "plain"
 
 
 def machine_record(device: torch.device) -> dict[str, Any]:
-    """The machine and build a run on ``device`` used (``experiments._machine``'s keys).
+    """The machine and build a run on ``device`` used (``experiments.machine_record``'s keys).
 
     ``gpu`` is the CUDA device name (``None`` elsewhere); ``fp32_precision`` (effective),
     ``fp32_backends`` and ``compute_capability`` come from ADR 0010's record, so call it

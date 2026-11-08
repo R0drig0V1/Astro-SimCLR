@@ -137,6 +137,10 @@ _FLAT_FILES: Final = {
     "configs/reference/R4.yaml": "train-supervised",
     "configs/phase2/carrasco2021.yaml": "train-supervised",
     "configs/phase2/carrasco2021-no-features.yaml": "train-supervised",
+    "configs/phase3/rj23-full.yaml": "train-supervised",
+    "configs/phase3/rj23-cropped.yaml": "train-supervised",
+    "configs/phase3/rj23-lowres.yaml": "train-supervised",
+    "configs/phase3/rj23-multiscale.yaml": "train-supervised",
 }
 
 
