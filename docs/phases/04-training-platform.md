@@ -1,6 +1,6 @@
-<!-- Phase 4 of the roadmap (docs/phases/README.md); owned by the integrator. DRAFT: to be
-reviewed with the improve-plan procedure before dispatch. -->
-# Phase 4: a modern training platform (plain PyTorch, local registry) — draft
+<!-- Phase 4 of the roadmap (docs/phases/README.md); owned by the integrator. Reviewed (round 1,
+docs/plan-reviews/2026-11-08-phase-4.md); amendments applied below. -->
+# Phase 4: a modern training platform (plain PyTorch, local registry)
 
 ## Goal
 
@@ -44,116 +44,188 @@ What is wrong today (audit and SimCLR review, 2026-11-08):
 - **Small, typed, tested.** mypy strict, docstrings, and tests on CPU. Lightning's
   conveniences are reimplemented only where we need them.
 
-## Tasks
+## Tasks (two tracks, after review round 1)
 
-The dependency order is: 4.0 → {4.1, 4.2, 4.3, 4.4} in parallel → 4.5, 4.6 → 4.7 → 4.8.
+**Track A, the daily pain, starts now on today's CLI** (no engine dependency): A0 → {A1, A2,
+A3}.
 
-### 4.0 Design ADR and interfaces (one agent, short)
-An ADR that fixes the platform's shape, plus typed skeletons with no logic:
-- **`engine/`:** `Task`, a protocol with `train_step`, `eval_step`, `state_dict` and
-  `load_state_dict`; `Loop` (step-based, with evaluation every N steps, hooks as plain
-  function lists, and early-stop/horizon policies as objects); `Checkpoint` (model,
-  optimisers, schedulers, every RNG stream, the data-stream position, and the run identity);
-  `Precision` (fp32, TF32 or bf16 policy); `Device`.
-- **`config/`:** nested typed configs (`run`, `data`, `model`, `optim`, `schedule`,
-  `augment`, `eval`, `runtime`) with presets, `--set a.b=c` overrides, validation, and a
-  canonical serialisation with a content hash. ADR question: dataclasses or pydantic v2.
-- **`runs/`:** the run manifest:
-  - config and hash;
-  - git SHA and dirty flag;
-  - `uv.lock` SHA, data SHA, splits SHA;
-  - machine, device and precision;
-  - seeds;
-  - status and timings.
-- **`registry/`:** a local SQLite index of runs, and the query API.
-- **`orchestrate/`:**
-  - an experiment spec: arms × seeds × folds × machine, which expands into run ids;
-  - a queue;
-  - runners (local, and remote over ssh).
-- **The deprecation plan** for `Settings`, `experiments.run_command` and the Lightning
-  modules.
+**Track B, the engine:** B0 → {4.1, 4.2, 4.3} → 4.6 → 4.7 → 4.8.
 
-### 4.1 Engine core (after 4.0)
-- **The loop:**
-  - step-based training with gradient accumulation off by default;
-  - evaluation every N steps (the paper's 10) with a fused, batch-64-means option;
-  - the horizon and early-stop policies;
-  - checkpoints `last` and `best`, with exact resume (RNG, stream position, scheduler).
-- **Precision:** the policy from task `tf32-policy` (fp32 default), and an optional bf16
-  autocast.
-- **Optional performance features, each behind a flag with an equivalence test:**
-  torch.compile, and CUDA graphs on a static-shape path.
-- **Logging:** local scalars (CSV or JSONL, plus TensorBoard event files), with no progress
-  bar by default.
-- **Tests:** exact resume, the schedule length, hook order, and determinism on CPU.
+**Interfaces frozen first, all in A0 and B0:**
+- the canonical config JSON and its hash;
+- the manifest schema;
+- the batch tuple format (`device_data.TrainBatch`);
+- the checkpoint key set.
 
-### 4.2 Typed config and CLI (after 4.0)
-- Nested configs with presets (carrasco2021 and its variants, migrated) and overrides.
-- A loader that reads today's flat YAML and `--set` (a compatibility shim).
-- One CLI built from the config tree (`astro-simclr run CONFIG [--set ...]`), with the old
-  commands kept as thin aliases until 4.8.
+**Rule from B0 on:** new flags (2.5, phase 3's `rj23` schedule) are engine-free pure
+functions (model builders, augmentation functions, samplers, schedule policy objects)
+wired by thin adapters. The CPU differential test (4.7a) stays a CI gate until 4.8, so a
+flag added to one engine only fails CI. A cut-over date is set at 4.7, after which nothing
+new lands on Lightning.
 
-### 4.3 Data layer (after 4.0)
-- **One dataset API** over the prepared kinds (classifier, unlabelled, raw-alerts once
-  phase 3's 3.1b lands), with device-resident tensors and a seeded, resumable stream.
-- **Batched augmentations as tensor ops**, with no PIL:
-  - the C5/C6/C7 and rot90 policy kept bit-identical (host-precomputed draws, ADR
-    0006/0007);
-  - the SimCLR pair views (dihedral, small shifts, per-channel affine) for phase 5;
-  - prefetch with pinned memory, and no blocking syncs.
-- **Memory planning:** 63-px tensors for 50k stamps are about 2.4 GB in float32, too big
-  for the 1050 at 63 px, so a chunked or uint8-on-device fallback.
+### A0 Run identity, manifest, registry, specs and queue: ADR and implemented schemas
+- **Run id** = hash(canonical semantic config, seed, fold or screen, data SHA, splits SHA,
+  machine class, `numerics_epoch`), plus an `attempt` counter.
+  - `numerics_epoch` is an integer in the package, bumped by any PR that changes numerics.
+    The PR template asks for it; for example, the C7 rotation-order fix would have bumped
+    it.
+  - The git SHA is recorded but not hashed.
+  - Non-semantic keys (`output_dir`, `checkpoint_every_n_steps`, `accelerator`, …) are
+    listed in code and excluded from the hash.
+  - `failed` and `cancelled` are never "finished".
+  - Identical-config reruns are allowed as new attempts: protocol 2.3's confirmatory rerun,
+    and GPU non-determinism.
+- **Canonical JSON:** sorted keys, `repr` floats, defaults materialised. Implemented and
+  tested with fixtures. A migration test proves that the hash of each flat preset equals
+  the hash of its nested equivalent (4.2).
+- **Manifest** (`manifest.json` in every run directory):
+  - config and hash; git SHA and dirty flag;
+  - `uv.lock`, data and splits SHA-256;
+  - machine, device and fp32 precision (ADR 0010);
+  - `engine` (`lightning` or `plain`);
+  - seeds, `concurrent_jobs`, status and timings.
+- **Run-directory layout:** `manifest.json`, `metrics.json`, `scalars.jsonl`, `tb/`,
+  `predictions_*.npz`, `ckpt/{last,best}.pt`.
+- **Retention:** delete `last` on success; keep `best` only for pretraining runs; keep
+  metrics and predictions forever. The registry records each artefact's SHA and presence.
 
-### 4.4 Run registry, orchestration and queue (after 4.0)
-- **Manifest and registry:**
-  - every run writes its manifest and final metrics, and registers in SQLite;
-  - `astro-simclr runs ls|show|compare`;
-  - `compare-reference` and `compare-variants` read run sets from registry queries.
-- **Experiment specs.** A YAML file lists the arms (config overrides), seeds and folds or
-  the screen; it expands into content-addressed run ids. A finished run is never repeated.
-- **The queue:**
-  - a durable queue per machine (SQLite), with `queue add|run|status|cancel`;
-  - a GPU-aware concurrency limit (it can run 2 small jobs on the 1050 if a measurement
-    shows a throughput gain);
-  - resume after interruption;
-  - remote submission over ssh to the GPU machine, with results synced back to the
-    registry.
+### A1 Every run writes `manifest.json` (today's `run_command`)
+`engine: lightning`. `machine_signature` gains `engine`, and comparisons refuse mixed
+engines unless allowed, as for machines and precision. Rule: a new-engine variant is
+compared only with a baseline rerun on the new engine.
 
-  This replaces the hand-written tmux/bash queues.
-- **Notifications:** a completion summary file, plus an optional local hook.
+### A2 Local registry and backfill
+- A derived, rebuildable SQLite index at `$ASTRO_SIMCLR_HOME/registry.sqlite`, outside
+  every worktree, with `schema_version` and migrations.
+- `runs reindex|ls|show|compare`.
+- A backfill of `results/phase2/**` and `~/runs`, with missing provenance as nulls and
+  `legacy: true`.
+- Readers versioned on `config_format`, tested on the archived metrics.
+- **Comparisons take an experiment-spec id.** They fail if the resolved set differs from the
+  spec's arms × seeds × folds, or holds more than one attempt per cell without an explicit
+  choice.
 
-### 4.5 Sweeps (after 4.1, 4.2, 4.4)
-- Optuna with SQLite storage and pruning, driven by experiment specs.
-- **Protocol guard:** a sweep may only optimise on selection data, never the decision half
-  or test (task 2.3's rules). The guard is enforced in code.
+### A3 Experiment specs, the durable queue and runners (drives today's `train-supervised`)
+- **Specs** (YAML: arms as overrides, seeds, folds or screen, machine) expand into run
+  ids.
+- **Queue:** SQLite on the ext4 side, never on `/mnt/c` or synced.
+- **Workers:** a systemd user service, or hosted in tmux with lingering.
+  - Jobs hold heartbeat leases; an expired lease is re-queued and resumes from `last`.
+  - Concurrency 1 on the GTX 1050, which is compute-bound (audit). On the 5090, set by
+    measurement.
+  - Admission by measured peak memory.
+- **Remote:**
+  - the runner checks out the submitted SHA into a per-SHA worktree;
+  - it runs `uv sync --locked --extra <machine>`;
+  - it refuses dirty trees for non-scratch specs;
+  - commands are argv arrays running a fixed entry point that reads the spec file.
+- **Sync:** an rsync of run directories (no checkpoints unless retained), then
+  `runs reindex`. Never copy the SQLite file.
+- **Acceptance:**
+  - CPU crash-injection tests with fake jobs: `kill -9`, then lease expiry, then resume;
+  - a fake ssh transport;
+  - a manual survival checklist: ssh drop, `wsl --shutdown`, reboot.
+- This replaces the hand-written tmux/bash queues. One of those queues stalled for
+  25 minutes on 2026-11-08, because `tmux has-session -t screen25` matched `screen25c` by
+  prefix.
+
+### B0 Engine ADR (checklist of Lightning's hidden behaviour)
+The ADR lists every behaviour the loop must reproduce, each pinned by a test in 4.7(a):
+- **Seeding:** `seed_everything`, then the model built on CPU, then moved to the device.
+- **Gradients:** `zero_grad(set_to_none=True)`, also before each validation.
+- **Validation mode:** `eval()` with `inference_mode`, then back to `train()`.
+- **Validation trigger:** `(total_batch_idx + 1) % 10 == 0`, with no validation at the
+  1,136-step epoch boundary and one after the final step. The horizon extension that a
+  validation can trigger.
+- **Augmentation seeds** keyed by the optimizer steps done before the step.
+- **Monitor value:** the float32 `torch.stack(losses).mean()`, with a strict `<`.
+- **Determinism:** `cudnn.benchmark = not deterministic`, `use_deterministic_algorithms`,
+  and `CUBLAS_WORKSPACE_CONFIG`.
+- **Final evaluation** on the restored best weights.
+
+Plus:
+- **Data tiers (4.3):**
+  1. device-resident;
+  2. host-pinned float32 with a per-step gather and async upload (exact);
+  3. a disk memmap with sharded reads (phase 5).
+
+  uint8 or fp16 on the device is a recorded preset deviation, never an automatic fallback.
+- **SimCLR views:** per-sample parameters are host-drawn (device-independent); per-pixel
+  fields are drawn from a seeded per-step device generator (device-dependent, recorded);
+  interpolating ops are rounding-class.
+- **Config:** nested frozen dataclasses with tagged unions, reusing today's coercers.
+  `--set a.b=c` errors on an unknown path.
+- **Out of scope:** multi-GPU. The engine refuses `world_size > 1`.
+- **No cross-engine resume:** in-flight Lightning runs finish on Lightning.
+
+### 4.1 Engine core (after B0)
+- The loop, the horizon and early-stop policies, checkpoints and exact resume, the
+  precision policy (ADR 0010), local scalars.
+- Ports of the semantics of today's Lightning-bound resume tests:
+  - `test_resume_from_mid_epoch_last_checkpoint`;
+  - `test_resume_at_the_horizon_still_writes_best`;
+  - `test_augmented_resume_is_exact`.
+
+### 4.2 Typed config and CLI (after A0 and B0)
+- The nested config and presets.
+- A shim for the flat YAML and `--set`.
+- The hash migration test (A0).
+- `astro-simclr run CONFIG`, with the old commands as aliases until 4.8.
+
+### 4.3 Data layer (after B0)
+- The three tiers.
+- Batched tensor augmentations.
+- C5/C6/C7 replayed exactly: `torch.equal` against today's `augmented_batch` for
+  200 steps on CPU with every flag on, plus a GPU check.
+- SimCLR pair views (phase 5).
+
+### 4.5 Sweeps — deferred to phase 5
+No current phase needs a search: 2.5 decides pre-registered flags, and 3.4 runs no
+search. When it comes back, the guard is structural:
+- trials run in a mode that never loads the decision or test roles;
+- the registry tags sweep runs and refuses to return their evaluation metrics;
+- the trial count is recorded;
+- pruning is off by default, because this validation signal is noise-dominated.
 
 ### 4.6 Tasks on the engine (after 4.1–4.3)
-Port, one at a time:
-- the paper classifier, with all its 2.5 flags: p4/p4m, context, C5/C6/C7, rot90, split
-  runs;
-- the ResNet and stamp supervised baselines;
-- linear evaluation and fine-tuning, **fixing the known defects**: the double softmax
-  becomes plain cross-entropy behind a recorded switch, and the schedule follows the run's
-  length.
+- The paper classifier with all its 2.5 flags and split runs.
+- Phase 3's `rj23` schedule.
+- `preflight` (`ThroughputTimer` and `run_command`).
 
-The SimCLR task itself is phase 5's, built on this.
+Cut:
+- the ResNet and stamp `SupervisedCE*` baselines and the legacy linear evaluation and
+  fine-tuning are frozen at the tag `lightning-final` (the way to reproduce phase-1 runs);
+- phase 5 writes linear evaluation and fine-tuning fresh.
 
 ### 4.7 Equivalence gate (after 4.6)
-- **On CPU:**
-  - the carrasco2021 task on the new engine reproduces the Lightning run's loss trajectory,
-    selected step and final metrics over a short schedule, exactly (or within a tolerance
-    fixed in the ADR, if the op order must change);
-  - the golden fixtures and the M1 oracle pass unchanged.
-- **On the GTX 1050:** one seed of the replication rerun on the new engine matches the
-  archived seed's selected step and metrics (exactly, or within the documented tolerance),
-  and a 5-seed rerun passes CD21 again.
-- **Throughput:** reported before and after.
+- **(a) CPU differential test,** in CI on Linux and macOS while Lightning exists.
+  - Both engines run in one process on synthetic data, on a schedule with horizon
+    extension.
+  - Bit-exact: `torch.equal` on the parameters after each validation, identical `loss_val`
+    sequences, the same `best_step`, the same horizon and `last_step`, identical final
+    metrics.
+  - Parametrised over every preset key, the 2.5 flags, split runs, and a mid-run resume.
+- **(b) GPU differential on the 1050:** both engines with `deterministic=True` for about
+  3,000 steps, bit-exact.
+- **(c) Distributional check:** a 5-seed CD21 rerun with `deterministic=False`, reported
+  next to a Lightning-versus-Lightning same-seed rerun as the noise floor. The archived runs
+  were non-deterministic (`benchmark=True`), so they cannot be matched exactly.
 
 ### 4.8 Switch and retire (after 4.7)
-- Phases 2 and 3 run on the new platform.
-- Remove Lightning, the legacy data modules and the PIL path, and the old `Settings` and
-  `run_command` once nothing uses them.
-- Update CLAUDE.md, docs/architecture.md, and the runbook for the GPU machine.
+- Remove Lightning, the legacy data modules and the PIL path once nothing uses them.
+- Tag `lightning-final` first.
+- Update CLAUDE.md, the docs and the runbook.
+
+### 4.9 Performance flags (after the 5090 bring-up)
+- **5090 bring-up first:**
+  - preflight;
+  - the precision policy;
+  - Lightning-versus-plain s/step for rot4 and p4.
+- **Then CUDA graphs, torch.compile and bf16,** each with a rounding-class equivalence test
+  of fixed tolerance and a numeric acceptance: for example ≥ 1.5× steps/s on the 5090, or
+  the feature is cut.
+- **Note:** CUDA graphs need static shapes, but the last validation batch has 52 stamps and
+  C6 replaces a variable number of rows.
 
 ## Risks
 - **Equivalence drift:** a different op order or RNG consumption changes the results. The
