@@ -5,7 +5,7 @@ Reyes-Jainaga et al. 2023 (RJ23, ApJL, arXiv:2304.13080) feed their stamp classi
 normalised stamps. This module is a reimplementation from the paper and from the
 description of RJ23's MIT code (``github.com/alercebroker/multiscale_stamps``,
 ``src/data_loader.py``) in the task 3.0 research; no ALeRCE code is copied. The choices the
-sources leave open are in ADR 0008, the formats in ``docs/data.md`` ("RJ23 inputs").
+sources leave open are in ADR 0009, the formats in ``docs/data.md`` ("RJ23 inputs").
 Carvajal et al. 2025 (C25) use the same 6-channel stamps; their FFT branch is not built
 (plan review round 2: C25's satellites cannot be rebuilt from public data).
 

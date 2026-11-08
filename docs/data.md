@@ -248,7 +248,7 @@ reference, difference, NaN and ±inf kept (the raw-alert kind of task 3.1b will 
 the CD21 pickles cannot be used, their stamps are already min-max normalised).
 `astro_simclr.data.rj23_input` is a numpy-only reimplementation, from the paper and the
 description of RJ23's MIT code (`alercebroker/multiscale_stamps`, `src/data_loader.py`);
-the open points are settled in ADR 0008.
+the open points are settled in ADR 0009.
 
 **Normalisation and mask** (`normalise`, `invalid_mask`, `channel_statistics`), per stamp
 and channel on the full 63×63, before any crop or pooling:

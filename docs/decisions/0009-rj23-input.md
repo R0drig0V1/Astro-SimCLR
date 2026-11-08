@@ -1,6 +1,6 @@
-<!-- ADR 0008: how the RJ23 input path (task 3.3) settles the points where RJ23's paper and
+<!-- ADR 0009: how the RJ23 input path (task 3.3) settles the points where RJ23's paper and
      code differ or are silent. -->
-# 0008: The RJ23 input path: the paper's `|x| > 1e10` rule by default, RJ23's code elsewhere
+# 0009: The RJ23 input path: the paper's `|x| > 1e10` rule by default, RJ23's code elsewhere
 
 - **Status:** accepted (2026-11-08, phase 3, task 3.3)
 - **Implemented by:** `src/astro_simclr/data/rj23_input.py`
