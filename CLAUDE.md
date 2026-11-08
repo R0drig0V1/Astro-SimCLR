@@ -24,8 +24,9 @@ env.yml            legacy conda environment (Python 3.8, CUDA); uv + pyproject.t
 .github/           CI (check.sh), quality (zizmor, actionlint, gitleaks, pip-audit), CodeQL,
                    Scorecard, Dependabot; from python-template (.copier-answers.yml)
 configs/reference/  R1-R4 reference-run configs (plan "Reference runs"), with provenance
+configs/splits/     stored phase-2 decision splits (make-splits; docs/evaluation-protocol.md)
 docs/        architecture.md (one section per module), phases/ (the plan), decisions/
-             (ADRs), plan-reviews/
+             (ADRs), plan-reviews/, evaluation-protocol.md (phase-2 rules), data.md
 scripts/     check.sh (all checks), check-torch-wheels.sh (ADR 0001 lock assertions),
              gpu-preflight.sh (wraps `astro-simclr preflight`), integrator.sh; optional
              worktree-setup.sh, verify-reset.sh

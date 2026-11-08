@@ -14,7 +14,8 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping)
  │                                    ▲
  ├──► experiments (one training run) ──► training (Lightning 2) ──► models, losses, optim, metrics
  │                                          datamodules ──► data (prepared layout) + augmentations
- ├──► reference (compare-reference: the gates of R1-R4)
+ ├──► reference (compare-reference: the gates of R1-R4 and CD21)
+ ├──► protocol (make-splits, compare-variants: the phase-2 evaluation protocol) ──► data
  └──► preflight ──► experiments, data (inspection, manifest)
 ```
 
@@ -106,8 +107,12 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   (later wins; `cli.training_settings`). The legacy file comes before the config so that a
   config can correct it (R1's `AdamW`). Dry mode: `--set max_epochs=1 limit_train_batches=2
   limit_val_batches=2` (not `fast_dev_run`, which writes no checkpoint).
-- `compare-reference RUN_DIR... --ref R1|R2|R3|R4` (see `reference`): exit 0 for PASS or
-  REPORT, 1 for FAIL.
+- `compare-reference RUN_DIR... --ref R1|R2|R3|R4|CD21 [--oracle-report FILE]` (see
+  `reference`): exit 0 for PASS or REPORT, 1 for FAIL.
+- `make-splits PREPARED_DIR --out FILE [--seed 0] [--overwrite]` and `compare-variants
+  --baseline RUN... --variant RUN... [--split test|val] [--n-boot N] [--seed S]
+  [--allow-mixed-machines]` (task 2.3, see `protocol`); `compare-variants` always exits 0
+  (a report).
 - `preflight (--synthetic | --data-dir DIR) [--accelerator cuda] [--runs R1,R2,R3,R4]
   [--set ...]` (see `preflight`): exit 0 if no step failed, else 1.
   `scripts/gpu-preflight.sh` is a thin `uv run --no-sync` wrapper.
@@ -408,8 +413,10 @@ legacy modules.
   on the progress bar. SimCLR logs `Loss_encoder/Train`, `loss_train_enc`, `lr`,
   `positive_mean`, `negative_mean`. The x-axis is now Lightning's global step, not the epoch.
 - Validation and test store the row-normalised confusion matrix (on the CPU) in
-  `module.confusion_matrices["val"|"test"]`, and the labels `(y_pred, y_true)` in
-  `module.predictions["val"|"test"]`, for the figures and metrics JSON of 1.7.
+  `module.confusion_matrices["val"|"test"]`, the labels `(y_pred, y_true)` in
+  `module.predictions["val"|"test"]`, for the figures and metrics JSON of 1.7, and the
+  softmax probabilities (N, 5) in `module.probabilities["val"|"test"]`, for the per-stamp
+  predictions files of task 2.3.
 - `MONITORABLE` (class attribute) lists what `Settings.monitor` may select:
   `accuracy_val`, `loss_val` for the classifiers, `loss_train_enc` for SimCLR (which has no
   validation loop). The protocol default `accuracy_val` therefore raises `ConfigError` for
@@ -561,12 +568,18 @@ preflight alike:
 Outputs, all under `output_dir`: `checkpoints/{best,last}.ckpt`,
 `lightning_logs/version_N/` (TensorBoard), `metrics.json`, and for the classifiers
 `confusion_matrix_{val,test}.png`. `metrics.json`: command, seed, `best_epoch` (0-based),
-`last_epoch`, monitor and `monitor_best`, versions, accelerator, the data (prepared path,
+`last_epoch`, monitor and `monitor_best`, versions, accelerator, `machine` (task 2.3:
+`device` from `trainer.strategy.root_device`, `gpu` = the CUDA device name or `null`,
+`torch`, `cuda`, `cudnn`, `platform`, `processor`, `python`), the data (prepared path,
 source SHA-256, class counts per split from `meta.json`), the resolved `config`; the
 classifiers add `val_acc_best` (micro accuracy on Validation at the best checkpoint: with
 the monitor `accuracy_val`, the best validation accuracy over epochs, the metric of the
-legacy tables), `test_acc_at_best`, `val_macro_f1`, `test_macro_f1` and, per split, the
-normalised and count confusion matrices. Non-finite numbers are written as `null`.
+legacy tables), `test_acc_at_best`, `val_macro_f1`, `test_macro_f1` and, per split
+(`evaluation.val|test`), the balanced accuracy, `recall_per_class` (by class name, `null`
+for an absent class) and the normalised and count confusion matrices. They also write
+`predictions_{val,test}.npz` (softmax probabilities, labels and stamp index of the selected
+checkpoint, `protocol.predictions`), listed under `predictions` with the evaluated split.
+Non-finite numbers are written as `null`.
 
 **Resume** restores the epoch counter, optimizer, LR schedule and the EarlyStopping /
 checkpoint state (tested: 2 + 2 epochs equal 4 in epoch, global step, lr and `wait_count`).
@@ -596,6 +609,45 @@ checked (command, `supervised_model`, no duplicate seed) and `val_acc_best` aggr
   (`Reference.expected`, tested against `configs/reference/`); differences print WARN
   lines, so an R4 run given as R1 is flagged.
 - **R4:** report only. R1 also prints the Carrasco-Davis et al. 2021 figures as context.
+- **CD21 (task 2.3), two-tier gate of the paper replication**, on the with-features runs'
+  `test_acc_at_best` (the without-features runs are compared with 0.883 ± 0.006 and only
+  reported). The runs must be `supervised_model: paper_stamp_classifier` (task 2.2a); a run
+  without `schedule: carrasco2021` gets a WARN line. *Faithful*: `|mean - 0.941| <= 0.005` and the M1 oracle passed
+  (`--oracle-report FILE`, a JSON whose top-level `passed` is a boolean; the contract for
+  2.2b). *Acceptable*: `|mean - 0.941| <= 0.01`. Both need the mean SN test recall
+  (`evaluation.test.recall_per_class.SN`) within ±0.04 of 0.87 and the mean `val_acc_best`
+  within ±0.01 of 0.950. Defined on exactly 5 seeds: another count gives REPORT with the
+  tier it would reach. The paper's σ is ddof=0; the runs' std is printed with ddof=1 and 0.
+  Runs with and without features may share seeds (`Reference.split_by_features`); the
+  result line is `CD21: PASS (faithful|acceptable)`. Constants: `CD21_*`.
+- Every gate prints a WARN line when the runs' `machine_signature` (device, GPU, torch,
+  CUDA) differ.
+
+## `protocol` (task 2.3)
+
+`src/astro_simclr/protocol/`: the code of the phase-2 evaluation protocol; the rules and the
+power note are in `docs/evaluation-protocol.md`, the design choices in ADR 0004. No torch
+import, so `make-splits` and `compare-variants` start fast.
+
+| Module | What it does |
+|---|---|
+| `leakage` | `find_duplicates(StampData)`: byte-identical uint8 stamps across every pair of splits (BLAKE2b-128), with both labels and whether the features match; `train_exclusions` (the Train indices to drop, from Train only), `train_keep_indices(n_train, excluded)` |
+| `splits` | `make_splits(prepared_dir, seed=0)`: the 250/250 screen of Validation (50 per class per half) and the stratified 5-fold CV on the pool Train + Validation (pool index: Train `i`, Validation `n_train + j`), each fold with its own 100-per-class selection set drawn from outside the fold; leaked Train stamps are in no fold. At most 10 folds (`fold_of` is one digit per stamp). `write_splits` / `read_splits` (structure checks: sizes, disjointness, ranges, positive integers) / `verify_splits(splits, prepared_dir)` (dataset identity by source and label SHA-256 and sizes, not the directory name; class balance; fold stratification within 1 per class; `excluded_train` equal to a fresh leakage check). `ProtocolSplits.locate` maps pool indices to Train and Validation indices |
+| `predictions` | `Predictions(probabilities, labels, index)`, `save_predictions` / `load_predictions` (`.npz`, `allow_pickle=False`), `check_paired`, `ensemble` (mean probabilities per stamp), `seed_mean_correct` |
+| `stats` | `mcnemar` (exact, integer arithmetic), `paired_bootstrap` (percentile CI of variant − baseline, stratified by class, metric `accuracy` or `balanced_accuracy`, own `default_rng(seed)`, memory-bounded blocks), `balanced_accuracy`, `adoption_decision` (`adopt` only if the CI is above 0), `screen_decision` (`drop` at 4 points or more, never adopt) |
+| `compare` | `compare_variants(baseline_dirs, variant_dirs, stage)`: loads each run's `metrics.json` and predictions file, refuses repeated seeds, runs on different data (`data.source.sha256`: a normal run's `index` is `arange(N)`, so the data identity and the labels are what show two runs saw the same stamps), unpaired runs and mixed machines (unless allowed), reports McNemar on the seed ensembles and the bootstrap, always as REPORT. `screen_comparison` / `cv_comparison`: the decision helpers, which check that the predictions cover exactly the screen's decision half or each fold's evaluation part |
+
+- **Stored splits:** `configs/splits/td_ztf_stamp_17_06_20_red-002.json` (seed 0, made with
+  `make-splits` on the real data). On `red`: one duplicate, Train 2995 (Bogus) =
+  Validation 115 (SN); folds of about 40,365 training / 500 selection / 10,215 evaluation
+  stamps.
+- Randomness: the splits and the bootstrap use their own seeded generators, independent of
+  `seed_run`, so a training seed never moves a split and a comparison is reproducible on
+  its own (an exception to the "Randomness" convention above, for data definitions and
+  statistics only).
+- Not wired yet: training on a fold or a screen half (the data modules taking index
+  subsets, and predictions whose `index` is the pool or Validation index). That belongs
+  with the GPU-resident data module of task 2.2a.
 
 ## `preflight` (task 1.7)
 

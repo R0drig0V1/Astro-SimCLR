@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
@@ -17,10 +18,12 @@ from astro_simclr.config import ConfigError, Settings
 from astro_simclr.experiments import (
     AcceleratorError,
     _finite,
+    _recalls,
     check_accelerator,
     load_pretrained,
     resolve_resume,
 )
+from astro_simclr.protocol.predictions import load_predictions
 
 ROOT = Path(__file__).resolve().parents[1]
 _DRY = ["max_epochs=1", "limit_train_batches=1", "limit_val_batches=1", "num_workers=0"]
@@ -240,12 +243,46 @@ def test_outputs_stay_under_the_output_dir(runs: dict[str, Path]) -> None:
         "metrics.json",
         "confusion_matrix_val.png",
         "confusion_matrix_test.png",
+        "predictions_val.npz",
+        "predictions_test.npz",
     }
     metrics = json.loads((out / "metrics.json").read_text())
     assert metrics["data"]["class_counts"]["Validation"] == [2, 2, 2, 2, 2]
     assert metrics["config"]["batch_size"] == 5
     counts = metrics["evaluation"]["val"]["confusion_counts"]
     assert sum(map(sum, counts)) == 10  # every validation stamp, counted once
+
+
+def test_metrics_record_the_protocol_fields(runs: dict[str, Path]) -> None:
+    """Task 2.3: machine, per-class recall, balanced accuracy and per-stamp predictions."""
+    out = runs["supervised"]
+    metrics = json.loads((out / "metrics.json").read_text())
+    machine = metrics["machine"]
+    assert machine["device"] == "cpu" and machine["gpu"] is None
+    assert machine["torch"] == torch.__version__ and machine["cuda"] == torch.version.cuda
+    assert {"platform", "processor", "python", "cudnn"} <= set(machine)
+    for stage, split in (("val", "Validation"), ("test", "Test")):
+        evaluation = metrics["evaluation"][stage]
+        counts = evaluation["confusion_counts"]
+        recalls = evaluation["recall_per_class"]
+        assert list(recalls) == list(metrics["labels"])
+        assert recalls["SN"] == pytest.approx(counts[1][1] / sum(counts[1]))
+        assert evaluation["balanced_accuracy"] == pytest.approx(sum(recalls.values()) / 5)
+        entry = metrics["predictions"][stage]
+        assert entry == {"file": f"predictions_{stage}.npz", "split": split, "n": 10}
+        predictions = load_predictions(out / entry["file"])
+        assert predictions.index.tolist() == list(range(10))
+        np.testing.assert_allclose(predictions.probabilities.sum(axis=1), 1.0, rtol=1e-5)
+        # The saved probabilities give the confusion counts of the metrics.
+        recount = np.zeros((5, 5), dtype=int)
+        np.add.at(recount, (predictions.labels, predictions.predicted), 1)
+        assert recount.tolist() == counts
+        assert evaluation["accuracy"] == pytest.approx(predictions.correct.mean())
+
+
+def test_recalls_of_an_absent_class() -> None:
+    counts = [[2, 0, 0, 0, 0], [1, 1, 0, 0, 0], [0] * 5, [0, 0, 0, 3, 1], [0, 0, 0, 0, 0]]
+    assert _recalls(counts) == {"AGN": 1.0, "SN": 0.5, "VS": None, "Asteroid": 0.75, "Bogus": None}
 
 
 def test_resnet_supervised_model(data_dir: Path, tmp_path: Path) -> None:

@@ -83,6 +83,8 @@ class _StepOutput:
     y_pred: torch.Tensor
     y_true: torch.Tensor
     loss: torch.Tensor
+    #: softmax of the logits (B, 5): the per-stamp outputs of the comparisons (task 2.3).
+    probabilities: torch.Tensor
 
 
 class ClassifierModule(L.LightningModule):
@@ -90,12 +92,14 @@ class ClassifierModule(L.LightningModule):
 
     Each step computes ``loss = compute_loss(logits, one_hot_targets)`` with
     ``P_stamps_loss(beta_loss)`` and buffers ``argmax(softmax(logits))``, the true labels
-    and the loss. At the end of each train, validation and test epoch it logs, under the
-    legacy names, ``Loss/<Stage>`` (mean of the batch losses), ``Accuracy/<Stage>`` (micro),
+    and the loss (and the softmax probabilities). At the end of each train, validation and
+    test epoch it logs, under the legacy names, ``Loss/<Stage>`` (mean of the batch
+    losses), ``Accuracy/<Stage>`` (micro),
     ``Precision/<Stage>`` and ``Recall/<Stage>`` (macro). Validation and test also log
     ``accuracy_val`` / ``loss_val`` (``accuracy_test`` / ``loss_test``) on the progress bar,
     and store the row-normalised confusion matrix, on the CPU, in
-    ``confusion_matrices["val"]`` / ``["test"]`` (and the labels in ``predictions``).
+    ``confusion_matrices["val"]`` / ``["test"]`` (the labels in ``predictions``, the
+    probabilities in ``probabilities``).
 
     Subclasses define ``forward(x_img, x_feat)``, and may override :meth:`compute_loss`
     and :meth:`trainable_parameters`.
@@ -122,6 +126,9 @@ class ClassifierModule(L.LightningModule):
         #: The last ``(y_pred, y_true)`` of each evaluation stage, on the CPU (for the
         #: metrics JSON of the CLI: macro-F1 and the confusion-matrix counts).
         self.predictions: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+        #: The last softmax probabilities (N, 5) of each evaluation stage, on the CPU, in
+        #: loader order (the per-stamp predictions files of the CLI, task 2.3).
+        self.probabilities: dict[str, torch.Tensor] = {}
 
     def compute_loss(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """The training loss of a batch: ``P_stamps_loss(logits, one_hot_targets)``."""
@@ -136,9 +143,12 @@ class ClassifierModule(L.LightningModule):
         x_img, x_feat, targets = batch
         logits = self(x_img, x_feat)
         loss = self.compute_loss(logits, targets)
-        y_pred = logits.softmax(dim=1).argmax(dim=1)
+        probabilities = logits.softmax(dim=1).detach()
+        y_pred = probabilities.argmax(dim=1)
         y_true = targets.argmax(dim=1)
-        self._outputs[stage].append(_StepOutput(y_pred.detach(), y_true.detach(), loss.detach()))
+        self._outputs[stage].append(
+            _StepOutput(y_pred, y_true.detach(), loss.detach(), probabilities)
+        )
         return loss
 
     def training_step(self, batch: ClassifierBatch, batch_idx: int) -> torch.Tensor:
@@ -195,6 +205,7 @@ class ClassifierModule(L.LightningModule):
             self.log(f"loss_{stage}", loss, logger=False, prog_bar=True)
             self.confusion_matrices[stage] = confusion_matrix(y_pred, y_true).cpu()
             self.predictions[stage] = (y_pred.cpu(), y_true.cpu())
+            self.probabilities[stage] = torch.cat([out.probabilities for out in outputs]).cpu()
 
     def configure_optimizers(self) -> OptimizerLRScheduler:
         """The optimizer ``optimizer`` over :meth:`trainable_parameters`, no LR schedule."""

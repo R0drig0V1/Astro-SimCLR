@@ -13,8 +13,12 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   :mod:`astro_simclr.hparams`), ``--config``, ``--set``, then the explicit flags
   (``--data-dir``, ``--output-dir``, ``--seed``, ``--accelerator``, ``--pretrained``);
   later wins. The legacy file comes first so that a config can correct it (R1's AdamW);
-- ``compare-reference RUN_DIR... --ref R1|R2|R3|R4`` (:mod:`astro_simclr.reference`): exit
-  0 for PASS or REPORT, 1 for FAIL;
+- ``compare-reference RUN_DIR... --ref R1|R2|R3|R4|CD21 [--oracle-report FILE]``
+  (:mod:`astro_simclr.reference`): exit 0 for PASS or REPORT, 1 for FAIL;
+- protocol (task 2.3, :mod:`astro_simclr.protocol`): ``make-splits`` writes the stored
+  decision splits of a prepared dataset; ``compare-variants --baseline RUN... --variant
+  RUN...`` reports McNemar on the seed ensembles and the paired bootstrap (always exit 0:
+  a report, never a decision);
 - ``preflight`` (:mod:`astro_simclr.preflight`): exit 0 if no step failed, else 1.
 
 The heavy modules (torch, Lightning) are imported inside the handlers, so ``show-config``
@@ -297,9 +301,51 @@ def _add_training_commands(
 def _compare_reference(args: argparse.Namespace) -> int:
     from astro_simclr.reference import compare_reference, exit_code
 
-    comparison = compare_reference(args.ref, args.run_dirs)
+    comparison = compare_reference(args.ref, args.run_dirs, oracle_report=args.oracle_report)
     sys.stdout.write("\n".join(comparison.lines) + "\n")
     return exit_code(comparison.result)
+
+
+def _compare_variants(args: argparse.Namespace) -> int:
+    from astro_simclr.protocol.compare import compare_variants
+
+    comparison = compare_variants(
+        args.baseline,
+        args.variant,
+        stage=args.split,
+        n_boot=args.n_boot,
+        seed=args.seed,
+        allow_mixed_machines=args.allow_mixed_machines,
+    )
+    sys.stdout.write("\n".join(comparison.lines) + "\n")
+    return 0
+
+
+def _make_splits(args: argparse.Namespace) -> int:
+    from astro_simclr.protocol.splits import make_splits, write_splits
+
+    if args.out.exists() and not args.overwrite:
+        raise ConfigError(f"{args.out} already exists; pass --overwrite to replace it")
+    splits = make_splits(args.data, seed=args.seed)
+    write_splits(splits, args.out)
+    for dup in splits.duplicates:
+        sys.stdout.write(
+            f"duplicate: {dup['split_a']} {dup['index_a']} ({dup['label_a']}) = "
+            f"{dup['split_b']} {dup['index_b']} ({dup['label_b']}), features equal: "
+            f"{dup['features_equal']}\n"
+        )
+    sizes = ", ".join(
+        f"fold {f.fold}: {f.training.size}/{f.selection.size}/{f.evaluation.size}"
+        for f in splits.folds
+    )
+    sys.stdout.write(
+        f"excluded from Train: {list(splits.excluded_train)}\n"
+        f"screen: {splits.screen.selection.size} selection / {splits.screen.decision.size} "
+        f"decision Validation stamps\n"
+        f"cv (training/selection/evaluation): {sizes}\n"
+        f"wrote {args.out}\n"
+    )
+    return 0
 
 
 def _preflight(args: argparse.Namespace) -> int:
@@ -331,8 +377,17 @@ def _add_check_commands(commands: argparse._SubParsersAction[argparse.ArgumentPa
         "for FAIL.",
     )
     compare.add_argument("run_dirs", type=Path, nargs="+", metavar="RUN_DIR")
-    compare.add_argument("--ref", required=True, choices=["R1", "R2", "R3", "R4"])
+    compare.add_argument("--ref", required=True, choices=["R1", "R2", "R3", "R4", "CD21"])
+    compare.add_argument(
+        "--oracle-report",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="CD21 only: the M1 oracle report (JSON with a boolean 'passed'); the faithful "
+        "tier needs it",
+    )
     compare.set_defaults(handler=_compare_reference)
+    _add_protocol_commands(commands)
 
     preflight = commands.add_parser(
         "preflight",
@@ -377,6 +432,45 @@ def _add_check_commands(commands: argparse._SubParsersAction[argparse.ArgumentPa
         help="settings applied to every dry run (e.g. num_workers=0)",
     )
     preflight.set_defaults(handler=_preflight)
+
+
+def _add_protocol_commands(
+    commands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    variants = commands.add_parser(
+        "compare-variants",
+        help="McNemar and paired bootstrap of two sets of runs (a report)",
+        description="Pair the per-stamp predictions of a baseline and a variant (one run "
+        "per seed each): McNemar on the seed-ensembled predictions and a class-stratified "
+        "paired bootstrap over stamps of the seed-mean accuracy difference (variant - "
+        "baseline). Always a report (exit 0): test is never a decision input "
+        "(docs/evaluation-protocol.md).",
+    )
+    variants.add_argument("--baseline", type=Path, nargs="+", required=True, metavar="RUN_DIR")
+    variants.add_argument("--variant", type=Path, nargs="+", required=True, metavar="RUN_DIR")
+    variants.add_argument("--split", choices=["test", "val"], default="test")
+    variants.add_argument("--n-boot", type=int, default=10_000, metavar="N")
+    variants.add_argument("--seed", type=int, default=0, metavar="N", help="bootstrap seed")
+    variants.add_argument(
+        "--allow-mixed-machines",
+        action="store_true",
+        help="compare runs from different machines or builds (the plan forbids it)",
+    )
+    variants.set_defaults(handler=_compare_variants)
+
+    splits = commands.add_parser(
+        "make-splits",
+        help="write the stored decision splits (screen, 5-fold CV) of a prepared dataset",
+        description="Find the stamps duplicated across splits (removed from Train only), "
+        "then draw the 250/250 screen of Validation and the stratified 5-fold CV on Train + "
+        "Validation, each fold with its own 100-per-class selection set; write them as "
+        "JSON (docs/evaluation-protocol.md).",
+    )
+    splits.add_argument("data", type=Path, metavar="PREPARED_DIR")
+    splits.add_argument("--out", type=Path, required=True, metavar="FILE")
+    splits.add_argument("--seed", type=int, default=0, metavar="N")
+    splits.add_argument("--overwrite", action="store_true")
+    splits.set_defaults(handler=_make_splits)
 
 
 def build_parser() -> argparse.ArgumentParser:
