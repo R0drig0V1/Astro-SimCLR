@@ -32,9 +32,10 @@ The tier never changes the numbers, so it is not part of the stream definition: 
 resume on another tier exactly. The **storage dtype** does change them: ``float16`` or
 ``uint8`` images (``TierChoice.storage_dtype``, a recorded preset deviation, never an
 automatic fallback) are quantised once when the tier is built and dequantised on the device
-after each gather (``float16`` -> ``float32``; ``uint8`` -> ``float32 / 255``, which needs
-images in [0, 1]); the definition records the dtype, so a resume under another one is
-refused. The ``memmap`` tier serves the file's float32 only.
+after each gather (``float16`` -> ``float32``; ``uint8``, which needs images in [0, 1], ->
+``k / 255`` correctly rounded, from a 256-entry table so the bits do not depend on the
+device); the definition records the dtype, so a resume under another one is refused. The
+``memmap`` tier serves the file's float32 only.
 
 On a CPU training device nothing is staged or pinned: the host gather is the batch.
 :meth:`TrainSource.describe` is the record for the manifest (tier, storage dtype, whether it
@@ -151,13 +152,36 @@ def _quantised(images: npt.NDArray[np.float32], dtype: StorageDtype) -> npt.NDAr
     return np.rint(images * np.float32(255.0)).astype(np.uint8)
 
 
+#: ``k / 255`` in float32 for every uint8 ``k``, correctly rounded (numpy's IEEE division).
+#: The dequantisation is a gather of this table, never a division on the device: CUDA
+#: divides a tensor by a Python scalar as a multiplication by its reciprocal, which differs
+#: from ``k / 255`` by one ulp for 126 of the 256 values (measured on torch 2.14.1+cu130,
+#: RTX 5090), so the same uint8 batch would give other float32 images on CUDA than on CPU.
+_UINT8_TO_FLOAT32: Final = torch.from_numpy(np.arange(256, dtype=np.float32) / np.float32(255.0))
+#: The table on each device it was used on (a 1 KiB upload once, not once per batch).
+_UINT8_TABLES: dict[torch.device, torch.Tensor] = {}
+
+
+def _uint8_table(device: torch.device) -> torch.Tensor:
+    table = _UINT8_TABLES.get(device)
+    if table is None:
+        table = _UINT8_TABLES[device] = _UINT8_TO_FLOAT32.to(device)
+    return table
+
+
 def _dequantised(images: torch.Tensor, dtype: StorageDtype) -> torch.Tensor:
-    """The float32 images of a gathered batch stored under ``dtype`` (on its device)."""
+    """The float32 images of a gathered batch stored under ``dtype`` (on its device).
+
+    ``uint8`` gives ``k / 255`` correctly rounded, the same bits on every device
+    (:data:`_UINT8_TO_FLOAT32`).
+    """
     if dtype == "float32":
         return images
     if dtype == "float16":
         return images.to(torch.float32)
-    return images.to(torch.float32) / 255.0
+    # index_select reads int32 indices on every backend; a uint8 index would be a mask.
+    index = images.reshape(-1).to(torch.int32)
+    return _uint8_table(images.device).index_select(0, index).view(images.shape)
 
 
 class _Staging:
