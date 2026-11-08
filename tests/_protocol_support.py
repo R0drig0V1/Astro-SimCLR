@@ -99,3 +99,44 @@ def fake_run(
     }
     (out / "metrics.json").write_text(json.dumps(metrics))
     return out
+
+
+def fake_split_run(
+    root: Path,
+    name: str,
+    pred: Predictions,
+    *,
+    sha256: str,
+    seed: int = 0,
+    fold: int | None = None,
+    machine: dict[str, Any] | None = None,
+    source: str = "0" * 64,
+) -> Path:
+    """A ``train-supervised --splits`` run directory: ``protocol`` and evaluation predictions.
+
+    ``fold=None`` makes a screen run. ``sha256`` is the splits file's, as ``experiments``
+    records it.
+    """
+    out = root / name
+    out.mkdir(parents=True)
+    save_predictions(pred, out / predictions_file("evaluation"))
+    metrics = {
+        "command": "train-supervised",
+        "seed": seed,
+        "machine": MACHINE if machine is None else machine,
+        "data": {"source": {"sha256": source}},
+        "protocol": {
+            "mode": "screen" if fold is None else "fold",
+            "fold": fold,
+            "splits_sha256": sha256,
+        },
+        "predictions": {
+            "evaluation": {
+                "file": predictions_file("evaluation"),
+                "split": "evaluation",
+                "n": int(pred.labels.size),
+            }
+        },
+    }
+    (out / "metrics.json").write_text(json.dumps(metrics))
+    return out
