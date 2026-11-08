@@ -5,15 +5,20 @@ the G-CNNs and the control arms) this prints, and with ``--out`` writes as JSON:
 
 - the trainable parameters and the MACs per stamp (``count_parameters``, ``count_macs``);
 - on the CPU, with the default thread count and with 1 thread: the median latency of a
-  batch of 1 (ms) and the throughput at batch 512 (stamps/s);
+  batch of 1 (ms), the throughput at batch 512 (stamps/s) and the time of one training step
+  at batch 64 (ms);
 - on the accelerator torch reports (``torch.accelerator``: CUDA or MPS), if any and unless
-  ``--cpu-only``: the batch-1 latency and the throughput at batch 512 and 4096.
+  ``--cpu-only``: the batch-1 latency, the throughput at batch 512 and 4096 and the batch-64
+  training step.
 
-Every measurement is a median over ``--reps`` timed calls after warm-up, in eval mode under
-``torch.inference_mode``, float32, on random weights and inputs (the speed does not depend
-on them). The group layers expand their kernels on every call (no cache), so the batch-1
-numbers include that cost; an exported (ONNX, constant-folded) model would not pay it. The
-deployment numbers of the plan (x86 CPU with ONNX Runtime) are not measured here.
+Every measurement is a median over ``--reps`` timed calls after warm-up, float32, on random
+weights and inputs (the speed does not depend on them). Inference runs in eval mode under
+``torch.inference_mode``. The training step (``b64_train_ms``) runs in train mode: forward,
+the sum of the logits as a stand-in loss, and backward (no optimiser step, which is the same
+for every variant up to the parameter count). The group layers expand their kernels on every
+call (no cache), so the batch-1 latency and the training step include that cost; an exported
+(ONNX, constant-folded) model would not pay it. The deployment numbers of the plan (x86 CPU
+with ONNX Runtime) are not measured here.
 
 Run from the repository root, on an idle machine (do not run it on a GPU that is training)::
 
@@ -89,8 +94,31 @@ def _speed(
                 out["b1_ms"] = 1e3 * seconds
             else:
                 out[f"b{n}_stamps_per_s"] = n / seconds
+    out["b64_train_ms"] = 1e3 * _train_step_seconds(model, channels, device, reps, sync)
     model.to("cpu")
     return out
+
+
+def _train_step_seconds(
+    model: torch.nn.Module,
+    channels: int,
+    device: torch.device,
+    reps: int,
+    sync: Callable[[], None],
+) -> float:
+    """Median seconds of a batch-64 forward and backward in train mode (module docstring)."""
+    images, features = _inputs(64, channels, device)
+    model.train()
+
+    def step() -> None:
+        model.zero_grad(set_to_none=True)
+        model(images, features).sum().backward()
+
+    try:
+        return _median_seconds(step, max(3, reps // 4), 5, sync)
+    finally:
+        model.zero_grad(set_to_none=True)
+        model.eval()
 
 
 def _no_sync() -> None:
