@@ -30,6 +30,7 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  ├──► protocol (make-splits, compare-variants: the phase-2 evaluation protocol) ──► data
  ├──► oracle (fetch-m1, m1-oracle: the published M1 vs our input path) ──► paper_model, data
  ├──► alerts (fetch-alerts, alerts-summary: raw alerts from ALeRCE) ──► data (prepared, m1_features)
+ ├──► r5 (r5-sources, build-r5: the R5 benchmark) ──► alerts (by_oid, store), protocol, data.raw_alerts
  │    (training ──► paper_variants: rot4 / single / p4 / p4m ──► paper_model, group_conv)
  └──► preflight ──► experiments, data (inspection, manifest)
 
@@ -163,7 +164,7 @@ of one run.
   YAML mapping without checking keys; `settings_to_plain` gives the plain (YAML/JSON) form
   that `show-config` prints and the metrics JSON records.
 
-## `cli` (task 1.1; subcommands from 1.2, 1.7 and 3.1)
+## `cli` (task 1.1; subcommands from 1.2, 1.7, 3.1 and 3.5)
 
 The `astro-simclr` console script (`[project.scripts]`). `main(argv)` returns the exit code,
 so tests call it in-process. Every subcommand registers in `build_parser()` and takes the
@@ -217,6 +218,15 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   exit), and restores the previous handlers. A store that exists without `--resume` is a
   data error (1); an out-of-range option is 2. `alerts-summary` exits 0 if every split
   shown meets the acceptance, else 1.
+- `fetch-alerts --oids FILE --out DIR [--resume] [--rate] [--batch-size] [--cooldown]
+  [--quiet]` (task 3.5, see `alerts.by_oid`): the by-oid mode; `--dataset`, `--split`,
+  `--limit` and `--from-snapshot` are refused with it (2). `r5-sources --out DIR [--only
+  zenodo|bts] [--keep-archive]` and `build-r5 --sources DIR --cd21-raw RAW_DIR --fetched
+  DIR (--out DIR | --dry-run) [--from-snapshot] [--expect BUILD_JSON] [--seed 0]
+  [--max-rounds 20] [--rate 1.5] [...]` (task 3.5, see `r5`; handlers in `r5/cli.py`):
+  `build-r5` exits 0 when written (and matching `--expect`), 1 when incomplete, refused
+  offline, or different from `--expect`; a dry run exits 0 and prints the next round's
+  request count. The same signal handling as `fetch-alerts`.
 - `preflight (--synthetic | --data-dir DIR) [--accelerator cuda] [--runs R1,R2,R3,R4]
   [--set ...]` (see `preflight`): exit 0 if no step failed, else 1.
   `scripts/gpu-preflight.sh` is a thin `uv run --no-sync` wrapper.
@@ -883,6 +893,19 @@ prepared split ──targets (destandardise)──► fetch_row ──► Alerce
     turns true. The cooldown follows 3 consecutive *transient* failures
     (`RowResult.transient`). `fetch.json`'s data identity and every status-deciding
     setting (radius, tolerances, `max_candidates`) must match on `--resume`.
+- `by_oid` (task 3.5): `fetch-alerts --oids FILE --out DIR`. `FetchItem(kind, oid,
+  candid)` (`detections` or `avro`), `read_items` (`OID` / `OID CANDID` lines),
+  `fetch_by_oid(items, out, client=...)`: the same `Recorder`, `Fetcher`, shard format
+  (`write_shard` with no cutouts: the avro bodies are the alerts), batch commits, stop,
+  cooldown and resume as `fetch_alerts`. Its own `index.csv` (`ItemLine`: kind, oid, candid,
+  status, n_detections, raw_shape, shard, responses, requests, seconds, note) and
+  `fetch.json` (`astro-simclr-oid-fetch` v1). Statuses: `ok`, `not_found` (404),
+  `refused` (other 4xx), `bad_alert` (final), `http_error` (transient, retried).
+  `final_statuses(out)`; `Snapshot(out)` serves its responses. `alerce` gained
+  `DetectionRecord` / `parse_detection_records` (`candid`, `jd = mjd + 2400000.5`,
+  `has_stamp`, `fid`, `ra`, `dec`), `detections_url`, `avro_url`; `store.Snapshot`
+  gained `__contains__`, `iter_many` (bulk, shard by shard) and `read_many`; `transport`
+  gained `https_opener` (for the streamed Zenodo download).
 - `store`: the layout and its readers. `IndexRow` and `COLUMNS`; `IndexWriter`
   (append, fsync, repairs a truncated last line); `read_index` and `latest_rows`;
   `write_shard` / `read_shard` (atomic; `allow_pickle=False`); `load_recovered` (the `ok`
@@ -901,6 +924,66 @@ row per status. They cover:
 - the cooldown, the offline rebuild, and duplicates across splits;
 - backoff and `Retry-After` on a fake clock;
 - the size caps and malformed inputs.
+
+## `r5` (task 3.5)
+
+`src/astro_simclr/r5/`: builds R5, the phase-3 5-class object-level benchmark, under RJ23's
+recipe from public sources. The recipe, sources, commands and outputs are in
+[`docs/data.md`](data.md), "R5"; the decisions in ADR 0016. Nothing imports torch.
+
+```
+r5-sources ──► sources (Zenodo archive streamed, MD5/size checked, CSV read unextracted;
+                        BTS CSV via Fetcher; JSON records with SHA-256)
+build-r5 ──► build.build_r5 ──loop──► select.evaluate(Inputs, Responses) ──missing──► alerts.by_oid.fetch_by_oid
+                 │                         │  recipe: draw_alert, ndet, JD_MAX     (online rounds only)
+                 │                         ▼
+                 │                  Selection (decisions per walk, drops, missing)
+                 ▼
+          build.assemble: components (oid + 1.5" across R5 and CD21) ─► constrained make_object_splits
+                          ─► assert_no_shared_groups ─► first stamps of Test
+          build.write_outputs: r5/, r5-first/ (write_raw_alerts), alerts.csv, splits.json,
+                          index.csv, deviations/drops/eras/split_counts.csv, build.json
+```
+
+- `recipe`: `JD_MAX`, `SEED`, `SUBCLASSES` (the plan's table: label, subclass, source,
+  source classes, RJ23's target and cap), `SN_TARGET`, `BOGUS_MAX_NDET`; `eligible`
+  (stamped, `jd ≤ JD_MAX`, by candid), `draw_alert` (`default_rng([seed, oid_hash])`),
+  `ndet`, `first_stamp_order`, `bts_subclass`, `stable_hash` / `oid_hash`, `year_of_jd`.
+- `sources`: `download_zenodo` (injectable stream; partial file removed on failure),
+  `download_bts` (injectable `get`), `load_source` (SHA-256 against the record),
+  `read_zenodo`, `read_bts` (sexagesimal RA/Dec), `SourceRow`.
+- `select`: `read_cd21` (task 3.1's index, latest line per row, all three splits),
+  `Inputs`, `Responses` (several snapshots by URL, the first serving; the by-oid store's
+  final failures), the candidate pools per subclass (`_add_zenodo`, `_add_bts`,
+  `_add_cd21`, the label claims), `_decide` (the cut order of the module docstring),
+  `_walk` (stops at accepted + pending = target), `evaluate` → `Selection`. Parsed
+  responses are cached across rounds; bodies stream shard by shard, so memory holds one
+  shard and the compact detection summaries.
+- `build`: `load_inputs`, `assemble` (groups, the dropped cross-split and mixed-label
+  groups, the constraints, the splits, the matrix, the first stamps), `write_outputs`
+  (cutouts re-parsed from the snapshot into a memory map, then `write_raw_alerts`),
+  `build_r5` (the round loop; dry run, offline refusal, `.partial` directory renamed at
+  the end), `check_expected`.
+- `cli`: `fetch_by_oid_command`, `r5-sources`, `build-r5`, `stop_on_signals`.
+- `protocol.grouping.assign_groups(..., allowed=mask)` and
+  `protocol.object_splits.make_object_splits(..., allowed={group: splits})`: the
+  constraints of the cross-benchmark rule (format version 2 of the object-splits file);
+  unchanged draws without them.
+
+Tests (offline; `tests/_r5_support.py` builds the world: a tiny Zenodo archive and BTS CSV
+through the real download functions, task 3.1's store of CD21 with detection JSON and avro
+in its shards, and a fake service for the by-oid fetch). They cover:
+- every drop cause;
+- the seeded draw before `JD_MAX` and ndet against the world's detections;
+- the first stamps;
+- the cross-benchmark matrix and the pinned groups;
+- the deviation table;
+- the walk's stop at the target;
+- the seeded selection order;
+- an online build in rounds, then an offline rebuild that is byte-identical;
+- the refusal of an incomplete snapshot;
+- `--expect`;
+- the CLI commands.
 
 ## `optim` (task 1.5)
 
@@ -1543,8 +1626,8 @@ phase-3 benchmarks (task 3.2); the rules and the power note are in
 | `split_runs` | Task 2.5-infra. `SplitRequest(file, fold)` (`fold=None`: the screen); `open_split_run(request, prepared_dir)` reads the file, refuses a fold it does not have (`ConfigError`) and runs `verify_splits` on the prepared data (a wrong fingerprint is a `SplitsError`); `SplitRun.parts()` gives `RunParts` (training, selection, evaluation as sorted pool indices, and `evaluation_index`: pool indices for a fold, Validation indices for the screen) and checks that they are pairwise disjoint and hold no excluded stamp; `SplitRun.describe()` is `metrics.json["protocol"]` (mode, fold, splits file and SHA-256, part sizes, `grouping`); the screen trains on Train minus `ProtocolSplits.screen_training_excluded()`; `SplitRun.identity()` (splits SHA-256, mode, fold) is stored in every checkpoint and checked on resume. `file_sha256` |
 | `compare` | `compare_variants(baseline_dirs, variant_dirs, stage)`: loads each run's `metrics.json` and predictions file, refuses repeated seeds, runs on different data (`data.source.sha256`: a normal run's `index` is `arange(N)`, so the data identity and the labels are what show two runs saw the same stamps), unpaired runs and mixed machines or float32 precisions (unless allowed), reports McNemar on the seed ensembles and the bootstrap, always as REPORT; it points split runs to `--splits`. `screen_comparison` / `cv_comparison(..., rule="superiority"\|"non-inferiority", margin)`: the decision helpers, which check that the predictions cover exactly the screen's decision half or each fold's evaluation part (so the CV bootstrap is paired by pool index); `CVResult` holds the per-fold and pooled balanced accuracies, the CI, McNemar on the seed ensembles and the decision. `compare_decision(baseline_dirs, variant_dirs, splits_file, rule, margin)` (CLI `compare-variants --splits`): loads split runs (`load_split_run`), checks the splits file's SHA-256, one mode, one data source and machine, the same (fold, seed) cells on both sides and every fold, then applies `cv_comparison` (verdict `ADOPT` / `NOT ADOPTED`) or `screen_comparison` (`KEEP` / `DROP`; `--rule` refused) |
 | `alerts` | Task 3.2. `AlertTable` (sorted by `candid`: `oid`, `candid`, `jd`, `label`, `label_names`, `group`, `group_key` `"oid"` or `"group"`), `AlertTable.from_rows` (checks: valid ids, unique positive `candid`, finite positive `jd`, labels in range), `sha256` (canonical rows by `candid`, the group only with a `group` column), `rows_of(candids)`; `read_alert_table(csv, label_names=BENCHMARK_LABEL_NAMES)` (untrusted input: `csv` module and a schema, errors name the line; extra columns ignored), `write_alert_table`; `label_conflicts` (groups with two labels); `first_stamps(table, rows)` (earliest `jd`, then smaller `candid`, per `oid`). `BENCHMARK_LABEL_NAMES` = R5's classes (the phase-2 five), `RJ23_LABEL_NAMES` = the five + `Satellite` |
-| `grouping` | Task 3.2, on per-row arrays of any group ids (never builds groups): `group_rows` (ids, label, size, conflicts), `assign_groups` (per class, `default_rng([seed, stream, class])` shuffle, then largest-deficit assignment; refuses a class that cannot give every part a group), `grouped_split` (refuse or drop conflicting groups), `grouped_halves` (50/50 selection/decision, own stream), `check_stratified` (no group in two parts; per class and part, within `+g` / `−(k−1)g` of the target), `stratification_bound`, `shared_groups` / `assert_no_shared_groups(..., allowed=CROSS_BENCHMARK_ALLOWED)` (the cross-benchmark rule: by default the plan's matrix, Train/Train and Validation/Test pairs allowed, Train with the other's Validation or Test refused; `allowed=()` refuses all nine; returns the shared-count matrix) |
-| `object_splits` | Task 3.2. `make_object_splits(table, seed, fractions=(0.6, 0.2, 0.2), on_conflict="refuse"\|"drop")`: `grouped_split` by `table.group`, then `grouped_halves` of Validation; `ObjectSplits` (table identity, group key, label names, seed, fractions, conflicts, sorted group ids per split and half, class counts per part), `split_of` / `half_of` / `rows(table, part)`; `write_object_splits` / `read_object_splits` (structure: valid sorted ids, disjoint splits and halves, halves inside Validation) / `verify_object_splits(splits, table)` (fingerprint, group key, label names, conflicts, coverage, the bound, the counts). CLI `make-object-splits` |
+| `grouping` | Task 3.2, on per-row arrays of any group ids (never builds groups): `group_rows` (ids, label, size, conflicts), `assign_groups` (per class, `default_rng([seed, stream, class])` shuffle, then largest-deficit assignment; refuses a class that cannot give every part a group; task 3.5: an optional `allowed` mask, the most constrained groups placed first, each to the allowed part furthest below target), `grouped_split` (refuse or drop conflicting groups), `grouped_halves` (50/50 selection/decision, own stream), `check_stratified` (no group in two parts; per class and part, within `+g` / `−(k−1)g` of the target), `stratification_bound`, `shared_groups` / `assert_no_shared_groups(..., allowed=CROSS_BENCHMARK_ALLOWED)` (the cross-benchmark rule: by default the plan's matrix, Train/Train and Validation/Test pairs allowed, Train with the other's Validation or Test refused; `allowed=()` refuses all nine; returns the shared-count matrix) |
+| `object_splits` | Task 3.2. `make_object_splits(table, seed, fractions=(0.6, 0.2, 0.2), on_conflict="refuse"\|"drop", allowed=None)`: `grouped_split` by `table.group` (task 3.5: `allowed` maps groups to the splits they may be in, stored as `constraints`, format version 2; version 1 still read; the bound is verified only for classes without constraints), then `grouped_halves` of Validation; `ObjectSplits` (table identity, group key, label names, seed, fractions, conflicts, sorted group ids per split and half, class counts per part), `split_of` / `half_of` / `rows(table, part)`; `write_object_splits` / `read_object_splits` (structure: valid sorted ids, disjoint splits and halves, halves inside Validation) / `verify_object_splits(splits, table)` (fingerprint, group key, label names, conflicts, coverage, the bound, the counts). CLI `make-object-splits` |
 | `benchmark_metrics` | Task 3.2, numpy only: `confusion_counts`, `confusion_percent` (rows to 100; an empty row stays zeros), `macro_f1`, `macro_f1_from_counts` (stacked `(..., C, C)`), `reweighted_counts(counts, reference)` (prior reweighting), `benchmark_metrics(labels, predicted, label_names, reference_counts=None)` → `BenchmarkMetrics` (accuracy, macro P/R/F1, `ClassScores` per class, counts, percent, reweighted macro P and F1; `as_dict`). Zero-division rule: 0/0 → 0, and classes absent from labels and predictions are left out of the macro means (`None` per class), as torchmetrics. `RJ23_CLASS_COUNTS`, `rj23_reference(label_names)` (the default reference: only proportions matter) |
 | `bench_report` | Task 3.2. `load_benchmark_run` (the run contract: `seed`, `machine`, `benchmark.splits_sha256`, `predictions.<stage>.file` with `index` = `candid`; aligned to the split's rows, which it must cover exactly with the table's labels), `benchmark_report(run_dirs, splits_file, alerts_file, baseline_dirs=(), stage="test", reference_counts=None)` → lines: per view (all alerts, first stamp) and side, macro-F1/P/R and accuracy mean ± std over seeds, the seed-ensemble macro-F1, the prior-reweighted macro-F1, per-class scores with alerts, objects and the recall MDE (on objects), the % confusion matrix; with a baseline, the ensembles' macro-F1 bootstrap CI and McNemar; always `REPORT`. CLI `bench-report` |
 

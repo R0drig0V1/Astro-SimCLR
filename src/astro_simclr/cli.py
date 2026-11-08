@@ -48,7 +48,12 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   and Ctrl-C stop it after the current row and commit the batch (exit 128 + the signal
   number); a second signal forces the exit. ``alerts-summary RAW_DIR`` prints the counts per
   class and status, the acceptance and the duplicated candids: exit 0 if every split
-  shown reaches the acceptance, else 1.
+  shown reaches the acceptance, else 1. ``fetch-alerts --oids FILE --out DIR`` (task 3.5)
+  fetches detection lists and alerts by object id instead.
+- R5 (task 3.5, :mod:`astro_simclr.r5.cli`): ``r5-sources --out DIR`` snapshots the label
+  sources; ``build-r5`` builds the benchmark (online, ``--from-snapshot`` offline with
+  ``--expect build.json``, or ``--dry-run``): exit 0 when written, 1 when incomplete or
+  different from ``--expect``.
 
 The heavy modules (torch, Lightning) are imported inside the handlers, so ``show-config``
 and ``--help`` stay fast. A :class:`~astro_simclr.data.DataError` (bad, truncated or missing
@@ -1000,6 +1005,17 @@ def _add_oracle_commands(commands: argparse._SubParsersAction[argparse.ArgumentP
 
 
 def _fetch_alerts(args: argparse.Namespace) -> int:
+    """``fetch-alerts``: the by-oid mode with ``--oids``, else one prepared split."""
+    if args.oids is not None:
+        from astro_simclr.r5.cli import fetch_by_oid_command
+
+        return fetch_by_oid_command(args)
+    if args.dataset is None or args.split is None:
+        raise ConfigError("fetch-alerts needs --dataset and --split (or --oids)")
+    return _fetch_split_alerts(args)
+
+
+def _fetch_split_alerts(args: argparse.Namespace) -> int:
     import signal
 
     from astro_simclr.alerts.alerce import AlerceClient, make_client
@@ -1114,6 +1130,8 @@ def _alerts_summary(args: argparse.Namespace) -> int:
 
 def _add_alert_commands(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     from astro_simclr.data.schema import SPLITS
+    from astro_simclr.r5.cli import add_commands as add_r5_commands
+    from astro_simclr.r5.cli import add_fetch_by_oid_arguments
 
     fetch = commands.add_parser(
         "fetch-alerts",
@@ -1133,8 +1151,8 @@ def _add_alert_commands(commands: argparse._SubParsersAction[argparse.ArgumentPa
         metavar="DIR",
         help="the directory of prepared datasets (default: the data_dir setting)",
     )
-    fetch.add_argument("--dataset", required=True, metavar="NAME", help="prepared dataset name")
-    fetch.add_argument("--split", required=True, choices=SPLITS)
+    fetch.add_argument("--dataset", default=None, metavar="NAME", help="prepared dataset name")
+    fetch.add_argument("--split", default=None, choices=SPLITS)
     fetch.add_argument(
         "--out", type=Path, default=None, metavar="DIR", help="default: dataset/raw/NAME"
     )
@@ -1169,7 +1187,9 @@ def _add_alert_commands(commands: argparse._SubParsersAction[argparse.ArgumentPa
         help="rebuild offline from the raw responses stored in RAW_DIR/SPLIT (no network)",
     )
     fetch.add_argument("--quiet", action="store_true", help="no per-row progress on stderr")
+    add_fetch_by_oid_arguments(fetch)
     fetch.set_defaults(handler=_fetch_alerts)
+    add_r5_commands(commands)
 
     summary = commands.add_parser(
         "alerts-summary",

@@ -149,11 +149,27 @@ The method, the timings and the store layout are in [docs/data.md](docs/data.md)
 alerts") and [ADR 0011](docs/decisions/0011-raw-alert-store.md). The other phase-3 tools are
 `make-object-splits`, `bench-report` and `leakage-audit`.
 
+R5 (task 3.5) is built from the Zenodo labelled set, the Bright Transient Survey and the
+CD21 store above. One seeded alert is drawn per object before 2023. The build is resumable,
+and it rebuilds offline byte for byte:
+
+```bash
+uv run astro-simclr r5-sources --out dataset/r5/sources
+uv run astro-simclr build-r5 --sources dataset/r5/sources \
+    --cd21-raw dataset/raw/td_ztf_stamp_17_06_20_red-002 --fetched dataset/r5/fetched \
+    --out dataset/r5/R5 --quiet                 # add --dry-run first for the request count
+uv run astro-simclr build-r5 ... --from-snapshot --out /tmp/R5 --expect dataset/r5/R5/build.json
+```
+
+The recipe and the outputs (deviation and era tables, frozen index) are in
+[docs/data.md](docs/data.md) ("R5") and [ADR 0016](docs/decisions/0016-r5-reconstruction.md).
+
 ## Repository map
 
 ```
 src/astro_simclr/   the package: data, models (paper model, p4/p4m variants), losses,
-                    augmentations, training, protocol (splits, gates, comparisons), oracle, CLI
+                    augmentations, training, protocol (splits, gates, comparisons), oracle,
+                    alerts (raw-alert retrieval), r5 (the R5 build), CLI
 tests/              pytest suite (branch coverage >= 80 %)
 configs/reference/  R1-R4 legacy reference-run configs, with provenance
 configs/splits/     stored phase-2 decision splits (make-splits)
