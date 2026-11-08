@@ -394,7 +394,7 @@ below stays unused. The without-features runs (advisory) are queued on the same 
   predict its evaluation part; test untouched and not computed), and a `compare-variants`
   mode that aggregates the folds and applies the superiority rule of 2.3 and the
   non-inferiority rule below (balanced accuracy, paired bootstrap 95 % CI).
-- **2.5-models (B7, B2′, B1′).** The p4 / p4m single-pass models and the 63″ context
+- **2.5-models (B7, B2′, B1′)** — done (PR #18, merged as 6b5aba9, 2026-11-08; flags `paper_arch`, `group_fields`, `context`, `rot90_augment`, ADR 0005). The p4 / p4m single-pass models and the 63″ context
   channels as flags of `paper_stamp_classifier`, with invariance unit tests, parameter
   counts, and MAC counts.
 
