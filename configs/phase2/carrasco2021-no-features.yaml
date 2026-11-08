@@ -1,0 +1,37 @@
+# carrasco2021-no-features: the without-features variant of the carrasco2021 replication
+# (configs/phase2/carrasco2021.yaml, whose provenance applies), the same values as
+# `train-supervised --preset carrasco2021-no-features` (src/astro_simclr/presets.py).
+#
+# Run: astro-simclr train-supervised --config configs/phase2/carrasco2021-no-features.yaml \
+#          --accelerator cuda --seed S --output-dir OUT/carrasco2021-no-features/seed-S
+# The CD21 gate reports it against 0.883 ± 0.006 (advisory, not gating).
+#
+# Assumption (ADR 0003): the paper states no hyperparameters for this number. ALeRCE's
+# search script for it uses another split (60 per class) and DeepHitsExtraLayer (the same
+# network without the feature BatchNorm and concatenation: 439,557 parameters). We take
+# M1's hyperparameters on the 100-per-class split.
+
+dataset: td_ztf_stamp_17_06_20_red-002
+supervised_model: paper_stamp_classifier
+image_size: 21
+paper_input: float32
+nan_approximation: true
+with_features: false
+dropout_active: false
+drop_rate: 0.5
+exclude_leaked_train: true
+batch_size: 64
+eval_batch_size: 64
+num_workers: 0
+
+optimizer: Adam
+adam_betas: code
+lr: 1.0e-3
+beta_loss: 0.5
+
+schedule: carrasco2021
+monitor: loss_val
+max_steps: 30000
+val_every_n_steps: 10
+horizon_increment: 10000
+early_stopping: false

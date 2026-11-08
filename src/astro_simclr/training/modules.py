@@ -55,7 +55,11 @@ from astro_simclr.models import (
 from astro_simclr.optim import cosine_warmup_scheduler
 from astro_simclr.paper_model import PAPER_DROP_RATE, PaperStampClassifier
 from astro_simclr.training.metrics import METRIC_NAMES, classification_metrics, confusion_matrix
-from astro_simclr.training.optimizers import build_optimizer, check_optimizer_name
+from astro_simclr.training.optimizers import (
+    PAPER_ADAM_BETAS,
+    build_optimizer,
+    check_optimizer_name,
+)
 
 __all__ = [
     "ClassifierModule",
@@ -280,6 +284,12 @@ class PaperClassifierModule(ClassifierModule):
     Trained from scratch with ``P_stamps_loss(beta_loss)`` on 21x21 crops (the batches of
     ``device_data.DeviceTensorDataModule``). ``dropout_active=False`` is M1's training
     (dropout layers present but inactive); ``drop_rate`` is their rate when active.
+    ``adam_betas`` names the betas of ``Adam`` / ``AdamW`` (``optimizers.PAPER_ADAM_BETAS``):
+    ``code`` (0.9, 0.999) is ALeRCE's training (task 2.2c), ``paper`` (0.5, 0.9) a diagnostic.
+
+    Raises:
+        UnknownOptimizerError: if ``optimizer`` is not a known name.
+        ValueError: if ``adam_betas`` is not a key of ``PAPER_ADAM_BETAS``.
     """
 
     def __init__(
@@ -291,10 +301,15 @@ class PaperClassifierModule(ClassifierModule):
         with_features: bool = True,
         dropout_active: bool = False,
         drop_rate: float = PAPER_DROP_RATE,
+        adam_betas: str = "code",
     ) -> None:
         super().__init__(
             beta_loss=beta_loss, lr=lr, optimizer=optimizer, with_features=with_features
         )
+        if adam_betas not in PAPER_ADAM_BETAS:
+            valid = ", ".join(PAPER_ADAM_BETAS)
+            raise ValueError(f"adam_betas must be one of {valid}, got {adam_betas!r}")
+        self.adam_betas = adam_betas
         self.model = PaperStampClassifier(
             with_features=with_features, dropout_active=dropout_active, drop_rate=drop_rate
         )
@@ -304,6 +319,15 @@ class PaperClassifierModule(ClassifierModule):
         """Crops (B, 3, 21, 21) and features -> (B, 5) logits."""
         out: torch.Tensor = self.model(x_img, x_feat if self.with_features else None)
         return out
+
+    def configure_optimizers(self) -> OptimizerLRScheduler:
+        """The optimizer with the betas ``adam_betas`` names, no LR schedule."""
+        return build_optimizer(
+            self.optimizer_name,
+            self.trainable_parameters(),
+            self.lr,
+            adam_betas=PAPER_ADAM_BETAS[self.adam_betas],
+        )
 
 
 class SupervisedCEResNetModule(ClassifierModule):

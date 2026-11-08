@@ -10,7 +10,9 @@ the hardware, paths and protocol, they hold the hyperparameters of the four trai
 subcommands (task 1.7); each subcommand reads the fields it needs, and the others are
 recorded but unused (``docs/architecture.md``, section ``config``, lists which). The
 ``schedule`` field (task 2.2a) chooses between the legacy epoch protocol and the iteration
-schedule of Carrasco-Davis et al. 2021, whose own fields it validates.
+schedule of Carrasco-Davis et al. 2021, whose own fields it validates; the paper model's input,
+leakage and Adam fields (task 2.2c) are set by the ``carrasco2021`` preset
+(:mod:`astro_simclr.presets`).
 
 Resolution order (later wins): the dataclass defaults, an optional ``defaults`` mapping (a
 subcommand's legacy protocol), the YAML file, the overrides. YAML is read with
@@ -32,9 +34,11 @@ import yaml
 
 __all__ = [
     "ACCELERATORS",
+    "ADAM_BETAS_CHOICES",
     "CARRASCO2021",
     "CARRASCO2021_EVAL_BATCH_SIZE",
     "EPOCHS",
+    "PAPER_INPUTS",
     "SCHEDULES",
     "ConfigError",
     "Settings",
@@ -53,6 +57,13 @@ CARRASCO2021: Final = "carrasco2021"
 SCHEDULES: Final = (EPOCHS, CARRASCO2021)
 #: The evaluation batch the ``carrasco2021`` schedule requires (TF's batch of 64).
 CARRASCO2021_EVAL_BATCH_SIZE: Final = 64
+
+#: ``Settings.paper_input``: ``float32`` is the paper's input (2.1's float path), ``uint8``
+#: the interim crops of the prepared uint8 stamps (task 2.2a; a diagnostic).
+PAPER_INPUTS: Final = ("float32", "uint8")
+#: ``Settings.adam_betas``: ``code`` is ALeRCE's code (0.9, 0.999), ``paper`` the paper text's
+#: unused (0.5, 0.9) (a diagnostic; ADR 0003).
+ADAM_BETAS_CHOICES: Final = ("code", "paper")
 
 #: Accelerator names accepted by ``Settings.accelerator`` (the Lightning names this project
 #: supports). ``auto`` picks CUDA, then MPS, then CPU.
@@ -174,6 +185,22 @@ class Settings:
     #: ``carrasco2021`` schedule has none and requires false.
     early_stopping: bool = True
 
+    # --- The paper model's input, data and optimizer (task 2.2c; ADR 0003) -------------------
+
+    #: ``paper_stamp_classifier`` input; see :data:`PAPER_INPUTS`. ``float32`` reads
+    #: ``images_f32.npy`` (``prepare-data --images float32``) and applies
+    #: ``data.float_input.crop_split`` (21x21, per-crop min-max, NaN -> 0).
+    paper_input: str = "float32"
+    #: ``paper_input: float32``: ``crop_split(nan_approximation=...)``. False treats every
+    #: stored zero as a real pixel (a diagnostic of task 2.4).
+    nan_approximation: bool = True
+    #: ``paper_stamp_classifier``: drop the Train stamps that duplicate a Validation or Test
+    #: stamp (``protocol.leakage``; ``red`` Train 2995), from Train only.
+    exclude_leaked_train: bool = True
+    #: ``paper_stamp_classifier``: the Adam / AdamW betas; see :data:`ADAM_BETAS_CHOICES`.
+    #: The phase-1 modules ignore it and keep the legacy (0.5, 0.9).
+    adam_betas: str = "code"
+
     def __post_init__(self) -> None:
         """Check the values that a type alone cannot (ranges and names).
 
@@ -197,7 +224,14 @@ class Settings:
             if not getattr(self, name):
                 raise ConfigError(f"{name} must not be empty")
         self._check_hyperparameters()
+        self._check_paper_model()
         self._check_schedule()
+
+    def _check_paper_model(self) -> None:
+        for name, valid in (("paper_input", PAPER_INPUTS), ("adam_betas", ADAM_BETAS_CHOICES)):
+            value = getattr(self, name)
+            if value not in valid:
+                raise ConfigError(f"{name} {value!r} is not one of: {', '.join(valid)}")
 
     def _check_hyperparameters(self) -> None:
         for name in ("image_size", "batch_size", "projection_dim"):

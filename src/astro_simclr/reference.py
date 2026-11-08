@@ -23,8 +23,9 @@ sample standard deviation (ddof=1), as in the legacy tables.
 - **CD21 (two-tier gate, phase 2, task 2.3)**: the paper replication against Carrasco-Davis
   et al. 2021 (AJ 162, 231; arXiv:2008.03309), on the **test** accuracy of the checkpoint
   selected on validation (``test_acc_at_best``), over the with-features runs. The runs
-  must use ``supervised_model: paper_stamp_classifier`` (task 2.2a), and a run without
-  ``schedule: carrasco2021`` gets a WARN line:
+  must use ``supervised_model: paper_stamp_classifier`` (task 2.2a), and a run whose
+  config differs from the ``carrasco2021`` preset (``presets.PRESETS``, task 2.2c: another
+  schedule, dataset or a diagnostic flag; ``with_features`` aside) gets a WARN line:
   - *faithful*: ``|mean - 0.941| <= 0.005`` **and** the M1 oracle passed
     (``--oracle-report FILE``: the JSON report of task 2.2b, whose top-level ``passed``
     must be ``true``);
@@ -64,6 +65,7 @@ from typing import Any, Final, Literal
 
 from astro_simclr.config import ConfigError
 from astro_simclr.hparams import LABEL_FRACTION_DATASETS
+from astro_simclr.presets import CARRASCO2021_PRESET, PRESETS
 
 __all__ = [
     "REFERENCES",
@@ -234,10 +236,12 @@ REFERENCES: Final[dict[str, Reference]] = {
         source="Carrasco-Davis et al. 2021, AJ 162, 231 (arXiv:2008.03309), std with ddof=0",
         note="a perfect replication misses the faithful tier about 8 % of the time; one "
         "confirmatory 5-seed rerun is allowed (plan, task 2.3)",
+        # The carrasco2021 preset (task 2.2c): a diagnostic run gets a WARN line.
         expected={
             "train-supervised": {
-                "dataset": LABEL_FRACTION_DATASETS[100],
-                "schedule": "carrasco2021",
+                key: value
+                for key, value in PRESETS[CARRASCO2021_PRESET].items()
+                if key != "with_features"
             }
         },
         split_by_features=True,

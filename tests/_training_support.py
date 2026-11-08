@@ -11,6 +11,10 @@ import torch
 
 #: Stamps per split of the synthetic files: small, so training tests stay fast.
 N_PER_SPLIT = 10
+#: ``classifier_f32_dir``: Train stamp ``LEAKED_TRAIN`` is a copy of Validation stamp
+#: ``LEAKED_VALIDATION`` (the leaked stamp the paper model's Train drops).
+LEAKED_TRAIN = 3
+LEAKED_VALIDATION = 7
 
 #: CPU always; MPS and CUDA only when present.
 ACCELERATORS = [
