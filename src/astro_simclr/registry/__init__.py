@@ -1,4 +1,4 @@
-"""The local run registry (phase 4, task A2; ADR 0018).
+"""The local run registry (phase 4, task A2; ADR 0024).
 
 A derived, rebuildable SQLite index of run directories, kept outside every worktree at
 ``$ASTRO_SIMCLR_HOME/registry.sqlite`` (default ``~/.astro-simclr``). The run directories

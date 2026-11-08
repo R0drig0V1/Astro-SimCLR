@@ -1,6 +1,6 @@
-<!-- ADR 0018: the local run registry (task A2): a derived SQLite index outside every worktree,
+<!-- ADR 0024: the local run registry (task A2): a derived SQLite index outside every worktree,
      the legacy backfill with config_format readers, and comparisons by experiment-spec id. -->
-# 0018: The local run registry, the legacy backfill and comparisons by spec
+# 0024: The local run registry, the legacy backfill and comparisons by spec
 
 - **Status:** accepted (2026-11-08, phase 4, task A2)
 - **Implemented by:** `src/astro_simclr/registry/` (`home.py`, `readers.py`, `store.py`,
