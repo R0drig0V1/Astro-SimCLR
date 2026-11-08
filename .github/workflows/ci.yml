@@ -82,7 +82,10 @@ jobs:
       - run: scripts/check-torch-wheels.sh
 
       # UV_NO_SYNC: `uv run` would otherwise re-sync the default extras and replace the
-      # CPU torch with the CUDA one.
+      # CPU torch with the CUDA one. ASTRO_SIMCLR_CHECK_LOCK=0: the runner is not shared,
+      # so the check never waits on the developer-machine lock (check-lock.sh also skips
+      # it under GitHub Actions).
       - run: scripts/check.sh
         env:
           UV_NO_SYNC: "1"
+          ASTRO_SIMCLR_CHECK_LOCK: "0"
