@@ -13,11 +13,18 @@ sample standard deviation (ddof=1), as in the legacy tables.
   The plan writes ``/5`` for both terms; this is the same formula with the actual repeat
   counts. ``n_old`` is 5 for R1 and 3 for R2 (``results/hyperparameter_tuning_ce_resnet.csv``
   has 3 trials of that configuration), so R2 uses 3.
-- **R3 (baseline)**: every run must have finite metrics, and every linear-evaluation run a
-  validation accuracy above the majority-class baseline of its own Validation split (the
-  class counts copied from ``meta.json`` into ``metrics.json``). Pretrain runs may be given
-  too; their selected loss must be finite.
+- **R3 (baseline)**: the pretrain run and one linear-evaluation run per label fraction
+  (1, 10 and 100 %: ``hparams.LABEL_FRACTION_DATASETS``) are all required, and every
+  linear-evaluation run must have been trained on (one of) the given pretrain run(s). The
+  pretrain loss must be finite, and every linear-evaluation run needs finite accuracies and
+  a validation accuracy above the majority-class baseline of its own Validation split (the
+  class counts copied from ``meta.json`` into ``metrics.json``).
 - **R4 (report)**: printed only.
+
+Each run's resolved config is also compared with the distinguishing settings of its
+reference config (``Reference.expected``: dataset, features, model, optimizer, protocol);
+a difference is printed as a WARN line, not a failure (a deliberate variation may be
+compared on purpose), so an R4 run given as R1 does not pass silently.
 
 The result is ``PASS``, ``FAIL`` or ``REPORT``; :func:`exit_code` maps it to 0, 1, 0.
 """
@@ -33,6 +40,7 @@ from pathlib import Path
 from typing import Any, Final, Literal
 
 from astro_simclr.config import ConfigError
+from astro_simclr.hparams import LABEL_FRACTION_DATASETS
 
 __all__ = [
     "REFERENCES",
@@ -69,7 +77,21 @@ class Reference:
     source: str = ""
     #: Context printed with the result (not part of the gate).
     note: str = ""
+    #: Per command, settings of the reference config a run should have (WARN otherwise).
+    expected: dict[str, dict[str, object]] = field(default_factory=dict)
 
+
+#: The distinguishing settings of ``configs/reference/R1.yaml`` (R4 differs in two).
+_R1_SETTINGS: Final[dict[str, object]] = {
+    "dataset": LABEL_FRACTION_DATASETS[100],
+    "supervised_model": "stamp_classifier",
+    "image_size": 27,
+    "augmentation": "without_aug",
+    "batch_size": 45,
+    "optimizer": "AdamW",
+    "max_epochs": 220,
+    "patience": 70,
+}
 
 #: The reference runs of phase 1 (plan: "Reference runs").
 REFERENCES: Final[dict[str, Reference]] = {
@@ -85,6 +107,7 @@ REFERENCES: Final[dict[str, Reference]] = {
         source="results/summary_tuning_ce.csv, row 10 (5 trials)",
         note="external context: Carrasco-Davis et al. 2021 report test accuracy "
         "0.941 ± 0.004 (validation 0.950 ± 0.005)",
+        expected={"train-supervised": {**_R1_SETTINGS, "with_features": True}},
     ),
     "R2": Reference(
         "R2",
@@ -96,6 +119,19 @@ REFERENCES: Final[dict[str, Reference]] = {
         std=0.009866,
         n=3,
         source="results/summary_tuning_ce_resnet.csv, row 6 (3 trials)",
+        expected={
+            "train-supervised": {
+                "dataset": LABEL_FRACTION_DATASETS[100],
+                "supervised_model": "resnet18",
+                "image_size": 63,
+                "with_features": False,
+                "augmentation": "rotation_v3",
+                "batch_size": 30,
+                "optimizer": "AdamW",
+                "max_epochs": 220,
+                "patience": 70,
+            }
+        },
     ),
     "R3": Reference(
         "R3",
@@ -103,6 +139,24 @@ REFERENCES: Final[dict[str, Reference]] = {
         ("pretrain", "linear-eval"),
         "baseline",
         note="no legacy number: this result becomes the first recorded reference",
+        expected={
+            "pretrain": {
+                "encoder_name": "pstamps",
+                "batch_size": 550,
+                "optimizer": "LARS",
+                "augmentation": "astro8",
+                "max_epochs": 850,
+                "patience": 100,
+            },
+            "linear-eval": {
+                "with_features": False,
+                "augmentation": "without_aug",
+                "batch_size": 45,
+                "optimizer": "AdamW",
+                "max_epochs": 220,
+                "patience": 40,
+            },
+        },
     ),
     "R4": Reference(
         "R4",
@@ -111,6 +165,13 @@ REFERENCES: Final[dict[str, Reference]] = {
         "report",
         supervised_model="stamp_classifier",
         note="the comparison point for R3",
+        expected={
+            "train-supervised": {
+                **_R1_SETTINGS,
+                "dataset": LABEL_FRACTION_DATASETS[1],
+                "with_features": False,
+            }
+        },
     ),
 }
 
@@ -214,6 +275,24 @@ def _check_runs(reference: Reference, runs: Sequence[dict[str, Any]]) -> None:
         seen[key] = run["_path"]
 
 
+def _config_differences(reference: Reference, runs: Sequence[dict[str, Any]]) -> list[str]:
+    lines = []
+    for run in runs:
+        expected = reference.expected.get(run.get("command", ""), {})
+        config = run.get("config", {})
+        different = [
+            f"{key}={config.get(key)!r} (expected {value!r})"
+            for key, value in expected.items()
+            if config.get(key) != value
+        ]
+        if different:
+            lines.append(
+                f"  WARN: {run['_path']} differs from the {reference.name} config: "
+                + ", ".join(different)
+            )
+    return lines
+
+
 def _accuracies(runs: Sequence[dict[str, Any]], key: str) -> list[float] | None:
     values: list[float] = []
     for run in runs:
@@ -251,20 +330,47 @@ def _baseline(run: dict[str, Any]) -> float | None:
     return float(max(counts)) / float(sum(counts))
 
 
-def _gate_baseline(runs: Sequence[dict[str, Any]], out: list[str]) -> bool:
+def _same_run(pretrained: object, pretrain_dirs: Sequence[str]) -> bool:
+    """True if a linear-eval run's ``pretrained`` setting points at one of the pretrain runs
+    (their directory, or its ``checkpoints/best.ckpt``)."""
+    if not isinstance(pretrained, str):
+        return False
+    path = Path(pretrained).resolve()
+    for run_dir in pretrain_dirs:
+        root = Path(run_dir).resolve()
+        if root.is_file():  # the metrics.json itself was given
+            root = root.parent
+        if path in (root, root / "checkpoints" / "best.ckpt"):
+            return True
+    return False
+
+
+def _gate_pretrain(runs: Sequence[dict[str, Any]], out: list[str]) -> bool:
+    if not runs:
+        out.append("  FAIL: no pretrain run given (R3 needs it: its loss must be finite)")
+        return False
     passed = True
-    evaluated = 0
     for run in runs:
-        dataset = run.get("config", {}).get("dataset")
+        ok = _finite(run.get("monitor_best"))
+        out.append(
+            f"  pretrain {run['_path']}: {run.get('monitor')} = {run.get('monitor_best')}"
+            f" -> {'finite' if ok else 'NOT FINITE'}"
+        )
+        passed &= ok
+    return passed
+
+
+def _gate_baseline(runs: Sequence[dict[str, Any]], out: list[str]) -> bool:
+    pretrains = [run for run in runs if run.get("command") == "pretrain"]
+    passed = _gate_pretrain(pretrains, out)
+    pretrain_dirs = [run["_path"] for run in pretrains]
+    seen: set[str] = set()
+    for run in runs:
         if run.get("command") == "pretrain":
-            ok = _finite(run.get("monitor_best"))
-            out.append(
-                f"  pretrain {dataset}: {run.get('monitor')} = {run.get('monitor_best')}"
-                f" -> {'finite' if ok else 'NOT FINITE'}"
-            )
-            passed &= ok
             continue
-        evaluated += 1
+        config = run.get("config", {})
+        dataset = config.get("dataset")
+        seen.add(str(dataset))
         value = _as_float(run.get("val_acc_best"))
         test = _as_float(run.get("test_acc_at_best"))
         baseline = _baseline(run)
@@ -273,10 +379,21 @@ def _gate_baseline(runs: Sequence[dict[str, Any]], out: list[str]) -> bool:
             f"  linear-eval {dataset} (seed {run.get('seed')}): val_acc_best {value}, "
             f"test {test}, majority baseline {baseline} -> {'above' if ok else 'NOT above'}"
         )
+        if pretrains and not _same_run(config.get("pretrained"), pretrain_dirs):
+            out.append(
+                f"  FAIL: {run['_path']} was trained on {config.get('pretrained')!r}, not on "
+                "the given pretrain run"
+            )
+            ok = False
         passed &= ok
-    if evaluated == 0:
-        out.append("  no linear-eval run given")
-        return False
+    missing = [
+        f"{fraction} % ({dataset})"
+        for fraction, dataset in LABEL_FRACTION_DATASETS.items()
+        if dataset not in seen
+    ]
+    if missing:
+        out.append(f"  FAIL: incomplete, no linear-eval run at {', '.join(missing)}")
+        passed = False
     return passed
 
 
@@ -292,7 +409,7 @@ def compare_reference(name: str, run_dirs: Sequence[Path]) -> Comparison:
     reference = REFERENCES[name]
     runs = [load_run(path) for path in run_dirs]
     _check_runs(reference, runs)
-    lines = [f"{reference.name}: {reference.description}"]
+    lines = [f"{reference.name}: {reference.description}", *_config_differences(reference, runs)]
     result: Result
     if reference.gate == "pass_rule":
         result = "PASS" if _gate_pass_rule(reference, runs, lines) else "FAIL"

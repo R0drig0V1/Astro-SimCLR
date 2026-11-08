@@ -191,3 +191,15 @@ def test_settings_to_plain_round_trips() -> None:
     plain = settings_to_plain(settings)
     assert plain["pretrained"] == "p"
     assert settings_from_mapping(plain) == settings
+
+
+def test_floats_accept_exponent_strings(tmp_path: Path) -> None:
+    # PyYAML (YAML 1.1) reads `1e-3` as a string; only `1.0e-3` is a float there.
+    assert load_settings(overrides=["lr=1e-3"]).lr == 0.001
+    path = tmp_path / "run.yaml"
+    path.write_text("lr: 1e-3\nmin_delta: 2E-4\n")
+    settings = load_settings(path)
+    assert (settings.lr, settings.min_delta) == (0.001, 0.0002)
+    assert load_settings(overrides=["limit_val_batches=5e-1"]).limit_val_batches == 0.5
+    with pytest.raises(ConfigError, match="a number"):
+        load_settings(overrides=["lr=fast"])

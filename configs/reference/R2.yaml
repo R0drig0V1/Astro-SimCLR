@@ -10,14 +10,14 @@
 # - protocol: hyperparams_ce_resnet.py (the tuning that produced the reference): EarlyStopping
 #   on accuracy_val, patience 70, min_delta 0.001, check_finite, divergence_threshold 0.1.
 #   Its max_epochs=220 call is commented out in the file; 220 is the plan's assumption.
-# - data: as R1 (td_ztf_stamp_17_06_20; stand-in td_ztf_stamp_17_06_20_red-002).
+# - data: as R1: td_ztf_stamp_17_06_20_red-002, the received stand-in of the 100 % file.
 # - 4 GB GPUs (GTX 1050): the preflight's dry run checks that batch 30 at 63 px fits.
 
 accelerator: cuda
 devices: 1
 num_workers: 4
 
-dataset: td_ztf_stamp_17_06_20
+dataset: td_ztf_stamp_17_06_20_red-002
 supervised_model: resnet18
 image_size: 63
 with_features: false

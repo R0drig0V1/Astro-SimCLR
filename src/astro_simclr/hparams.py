@@ -43,6 +43,7 @@ __all__ = [
     "CLASSIFIER_KEYS",
     "COMMANDS",
     "COMMAND_DEFAULTS",
+    "LABEL_FRACTION_DATASETS",
     "SIMCLR_KEYS",
     "LegacyHparams",
     "load_legacy_hparams",
@@ -51,6 +52,16 @@ __all__ = [
 
 #: The training subcommands.
 COMMANDS: Final = ("pretrain", "linear-eval", "fine-tune", "train-supervised")
+
+#: The prepared dataset of each label fraction (%), by the names of the received files
+#: (``docs/data.md``). The legacy 100 % file ``td_ztf_stamp_17_06_20.pkl`` was never
+#: received; ``..._red-002`` is that file with duplicate stamps removed, and stands in for it
+#: (plan, "Data received"). ``make-synthetic`` writes the same names.
+LABEL_FRACTION_DATASETS: Final[Mapping[int, str]] = {
+    1: "td_ztf_stamp_17_06_20_sup_1",
+    10: "td_ztf_stamp_17_06_20_sup_10",
+    100: "td_ztf_stamp_17_06_20_red-002",
+}
 
 #: Settings that differ from the ``Settings`` defaults, per subcommand (legacy protocol).
 COMMAND_DEFAULTS: Final[Mapping[str, Mapping[str, object]]] = {

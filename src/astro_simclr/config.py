@@ -103,7 +103,8 @@ class Settings:
     # --- Data and model hyperparameters of the training subcommands (task 1.7) -------------
 
     #: Prepared layout to train on: the directory ``data_dir/<dataset>`` (a pickle stem).
-    dataset: str = "td_ztf_stamp_17_06_20"
+    #: The default is the received 100 % file, the deduplicated original (``docs/data.md``).
+    dataset: str = "td_ztf_stamp_17_06_20_red-002"
     #: Side of the centre crop fed to the network (the stamp networks need 27).
     image_size: int = 27
     #: Training batch size (SimCLR: pairs per batch).
@@ -193,6 +194,12 @@ def _coerce_int(value: object) -> int:
 def _coerce_float(value: object) -> float:
     if isinstance(value, int | float) and not isinstance(value, bool):
         return float(value)
+    # YAML 1.1 (PyYAML) reads `1e-3` as a string: only `1.0e-3` is a float there.
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            pass
     raise TypeError("a number")
 
 
@@ -252,8 +259,9 @@ def _coerce(hint: Any, value: object) -> Any:
 def settings_from_mapping(data: Mapping[str, object]) -> Settings:
     """Build :class:`Settings` from a mapping, checking keys and value types.
 
-    Missing keys keep their defaults. Integers are accepted for float fields and strings
-    for path fields; nothing else is converted.
+    Missing keys keep their defaults. Integers are accepted for float fields, numeric
+    strings such as ``1e-3`` (which YAML 1.1 leaves as strings) for float fields, and
+    strings for path fields; nothing else is converted.
 
     Raises:
         ConfigError: on an unknown key, a value of the wrong type or an out-of-range value.

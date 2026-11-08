@@ -444,7 +444,8 @@ def run_command(
     try:
         module, datamodule, monitorable = _build(command, settings, data)
     except ValueError as err:
-        if isinstance(err, ConfigError):
+        # DataError is a ValueError too, and must keep its exit code (1, not 2).
+        if isinstance(err, ConfigError | DataError):
             raise
         raise ConfigError(str(err)) from None
     out = settings.output_dir

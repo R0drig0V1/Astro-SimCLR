@@ -8,10 +8,13 @@ order, each prints PASS, FAIL, WARN or SKIP, and the exit code is the result (0:
    (ADR 0001, rule 6) and the installed build is checked against it: CUDA visible to torch,
    ``torch.version.cuda`` supported by the driver, and the GPU's architecture in
    ``torch.cuda.get_arch_list()``. On a mismatch it prints the exact ``uv sync`` command
-   that fixes it. Skipped (but the accelerator still checked) with ``--accelerator`` other
-   than ``cuda``.
+   that fixes it. ``nvidia-smi`` is looked up on PATH, then in ``/usr/lib/wsl/lib`` (WSL2);
+   without it but with CUDA in torch, the driver checks are skipped (WARN). Skipped (but
+   the accelerator still checked) with ``--accelerator`` other than ``cuda``.
 2. **Resources** (:func:`check_resources`): free RAM and disk against the data sizes, from
-   ``meta.json`` and file sizes only (nothing is loaded yet).
+   ``meta.json`` and file sizes only (nothing is loaded yet). Steps 2-4 stop at the first
+   FAIL, so nothing is hashed on a machine without the RAM, and no manifest is written for
+   data that failed a check.
 3. **Data** (:func:`check_data`): ``inspect-data`` on every prepared directory (schema,
    ``meta.json`` and the SHA-256 of every array, memory-mapped).
 4. **Manifest** (:func:`check_manifest`): the first run writes ``data-manifest.json`` in
@@ -19,7 +22,8 @@ order, each prints PASS, FAIL, WARN or SKIP, and the exit code is the result (0:
 5. **Dry chain** (:func:`dry_chain`): the reference configs (``configs/reference/``) in dry
    mode (1 epoch, a few batches): pretrain, linear-eval (on that checkpoint), fine-tune,
    then the supervised runs, on the requested accelerator and at the reference batch sizes
-   (so an out-of-memory GPU fails here, not after hours).
+   (so an out-of-memory GPU fails here, not after hours). A run named in ``--runs`` that
+   cannot run (its dataset is not prepared) fails; without ``--runs`` it is skipped.
 6. **Throughput** (:func:`estimate`): steps/s measured during step 5 with the real
    DataLoader (augmentations, ``num_workers``), and the GPU-hour estimate of R1-R4 from the
    Train counts, batch sizes and ``max_epochs`` (an upper bound: EarlyStopping usually stops
@@ -35,6 +39,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -50,6 +55,7 @@ from lightning.pytorch.callbacks import Callback
 from astro_simclr.config import ConfigError, load_settings
 from astro_simclr.data.prepared import is_prepared, read_meta
 from astro_simclr.data.schema import DataError
+from astro_simclr.hparams import LABEL_FRACTION_DATASETS
 
 __all__ = [
     "MANIFEST_NAME",
@@ -86,6 +92,9 @@ CUDA12_MIN_DRIVER: Final = 525
 _DISK_NEEDED: Final = 2 * 1024**3
 #: RAM for the process itself (torch, the CUDA context, loaders), on top of the data.
 _RAM_HEADROOM: Final = 2 * 1024**3
+#: Where WSL2 puts the Windows driver's tools. Login shells add it to PATH, other shells
+#: (ssh, cron, IDE terminals) often do not.
+WSL_NVIDIA_SMI: Final = Path("/usr/lib/wsl/lib/nvidia-smi")
 
 #: The reference runs as the dry chain runs them: (name, subcommand, config file). The R3
 #: entries run in this order (linear-eval and fine-tune load the pretrain checkpoint);
@@ -98,18 +107,16 @@ REFERENCE_RUNS: Final = (
     ("R2", "train-supervised", "R2.yaml"),
     ("R4", "train-supervised", "R4.yaml"),
 )
+#: The reference runs ``--runs`` can name.
+_ALL_RUNS: Final = ("R1", "R2", "R3", "R4")
 #: Seeds of the full set per reference run (the minimal set is 1 seed each).
 _FULL_SEEDS: Final = {"R1": 5, "R2": 5, "R3-pretrain": 1, "R3-linear-eval": 1, "R4": 1}
 #: R3's linear evaluation runs at these label fractions (one run each).
-_R3_FRACTIONS: Final = (
-    "td_ztf_stamp_17_06_20_sup_1",
-    "td_ztf_stamp_17_06_20_sup_10",
-    "td_ztf_stamp_17_06_20",
-)
+_R3_FRACTIONS: Final = tuple(LABEL_FRACTION_DATASETS.values())
 #: Train-split sizes of the real files (``docs/data.md``), for the synthetic estimate. The
-#: 100 % entry is ``red`` (the deduplicated original); the pretraining set is approximate.
+#: 100 % entry is ``red-002`` (the deduplicated original); the pretraining set is approximate.
 REAL_TRAIN_COUNTS: Final = {
-    "td_ztf_stamp_17_06_20": 50_582,
+    "td_ztf_stamp_17_06_20_red-002": 50_582,
     "td_ztf_stamp_17_06_20_sup_10": 7_480,
     "td_ztf_stamp_17_06_20_sup_1": 810,
     "td_ztf_stamp_simclr_300": 300_000,
@@ -137,26 +144,37 @@ class StepResult:
 
 @dataclass(frozen=True, slots=True)
 class GpuInfo:
-    """One GPU as ``nvidia-smi`` reports it. ``capability`` is None if it cannot say."""
+    """One GPU as ``nvidia-smi`` reports it. ``capability`` is None if it cannot say;
+    ``driver`` is None if ``nvidia-smi`` was not found and torch described the GPU."""
 
     name: str
-    driver: str
+    driver: str | None
     capability: tuple[int, int] | None
 
     @property
-    def driver_major(self) -> int:
-        """The driver's major version (``582.53`` -> 582)."""
-        return int(self.driver.split(".")[0])
+    def driver_major(self) -> int | None:
+        """The driver's major version (``582.53`` -> 582), or None if unknown."""
+        return None if self.driver is None else int(self.driver.split(".")[0])
 
 
 Runner = Callable[[list[str]], "subprocess.CompletedProcess[str]"]
 
 
 def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
-    # A fixed command line, no shell; nvidia-smi is looked up on PATH on purpose.
+    # A fixed command line, no shell; the binary comes from _nvidia_smi_candidates.
     return subprocess.run(  # noqa: S603
         command, capture_output=True, text=True, timeout=60, check=False
     )
+
+
+def _nvidia_smi_candidates() -> list[str]:
+    """``nvidia-smi`` on PATH, then the WSL2 location."""
+    first = shutil.which("nvidia-smi") or "nvidia-smi"
+    return [first] if first == str(WSL_NVIDIA_SMI) else [first, str(WSL_NVIDIA_SMI)]
+
+
+def _is_wsl() -> bool:
+    return WSL_NVIDIA_SMI.parent.is_dir() or "microsoft" in platform.release().lower()
 
 
 def _parse_capability(text: str) -> tuple[int, int] | None:
@@ -166,16 +184,11 @@ def _parse_capability(text: str) -> tuple[int, int] | None:
     return int(major), int(minor)
 
 
-def query_gpus(runner: Runner = _run) -> list[GpuInfo] | None:
-    """The GPUs ``nvidia-smi`` lists, or None if it is missing or fails.
-
-    Older drivers do not know the ``compute_cap`` field; the query is then repeated without
-    it and the capability is left to torch.
-    """
+def _query(binary: str, runner: Runner) -> list[GpuInfo] | None:
     fields = "name,driver_version,compute_cap"
     for query in (fields, "name,driver_version"):
         try:
-            done = runner(["nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader"])
+            done = runner([binary, f"--query-gpu={query}", "--format=csv,noheader"])
         except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired):
             return None
         if done.returncode == 0:
@@ -187,6 +200,21 @@ def query_gpus(runner: Runner = _run) -> list[GpuInfo] | None:
                 capability = _parse_capability(parts[2]) if len(parts) > 2 else None
                 gpus.append(GpuInfo(parts[0], parts[1], capability))
             return gpus or None
+    return None
+
+
+def query_gpus(runner: Runner = _run) -> list[GpuInfo] | None:
+    """The GPUs ``nvidia-smi`` lists, or None if it is missing or fails.
+
+    ``nvidia-smi`` is looked up on PATH, then at :data:`WSL_NVIDIA_SMI` (WSL2 shells that
+    are not login shells, such as ssh, do not have ``/usr/lib/wsl/lib`` on PATH). Older
+    drivers do not know the ``compute_cap`` field; the query is then repeated without it
+    and the capability is left to torch.
+    """
+    for binary in _nvidia_smi_candidates():
+        gpus = _query(binary, runner)
+        if gpus is not None:
+            return gpus
     return None
 
 
@@ -205,7 +233,7 @@ class TorchBuild:
         return "uv sync --locked" + (f" --extra {self.extra}" if self.extra else "")
 
 
-def choose_torch_build(driver_major: int, capability: tuple[int, int]) -> TorchBuild:
+def choose_torch_build(driver_major: int | None, capability: tuple[int, int]) -> TorchBuild:
     """The torch build for an NVIDIA driver and a GPU compute capability (ADR 0001, rule 6).
 
     - compute capability >= 10 (Blackwell, e.g. sm_120): the default build (CUDA 13) with a
@@ -214,8 +242,19 @@ def choose_torch_build(driver_major: int, capability: tuple[int, int]) -> TorchB
       these architectures (whatever the driver);
     - otherwise: the default build with a driver >= 580, ``cu126`` below it;
     - ``cu126`` itself needs a driver >= 525.
+
+    ``driver_major`` None (unknown driver) gives the capability-only answer; between 7.5
+    and 10 that is the default build, with the reason saying it assumes a driver >= 580.
     """
     sm = f"sm_{capability[0]}{capability[1]}"
+    if driver_major is None:
+        if capability < (7, 5):
+            return TorchBuild("cu126", f"{sm} is older than Turing (7.5), which CUDA 13 dropped")
+        return TorchBuild(
+            None,
+            f"{sm}: the CUDA 13 build if the driver is >= {CUDA13_MIN_DRIVER} (unknown here; "
+            f"below it, --extra cu126{'' if capability < (10, 0) else ' cannot run it'})",
+        )
     if capability >= (10, 0):
         if driver_major >= CUDA13_MIN_DRIVER:
             return TorchBuild(None, f"{sm} (Blackwell) needs the CUDA 13 build")
@@ -245,20 +284,22 @@ def choose_torch_build(driver_major: int, capability: tuple[int, int]) -> TorchB
 def arch_supported(capability: tuple[int, int], arch_list: Sequence[str]) -> bool:
     """True if a build with the architectures ``arch_list`` runs a GPU of ``capability``.
 
-    CUDA binaries run on GPUs of the same major version and an equal or higher minor
-    (``sm_60`` code runs on a 6.1 GPU), so any ``sm_<major><m>`` with ``m <= minor`` counts.
+    CUDA binaries (cubins) run on GPUs of the same major version and an equal or higher
+    minor (NVIDIA's binary-compatibility rule: ``sm_60`` code runs on a 6.1 GPU, ``sm_70``
+    on 7.5), so any ``sm_<major><m>`` with ``m <= minor`` counts. Architecture-specific
+    variants (``sm_90a``) run only on that exact architecture. PTX entries (``compute_*``)
+    are ignored: JIT compilation is not counted on.
     """
     major, minor = capability
     for arch in arch_list:
         if not arch.startswith("sm_"):
             continue
-        digits = arch[3:].rstrip("abf")
-        if (
-            len(digits) >= 2
-            and digits.isdigit()
-            and int(digits[:-1]) == major
-            and int(digits[-1]) <= minor
-        ):
+        specific = arch.endswith("a")
+        digits = arch[3:].rstrip("af")
+        if len(digits) < 2 or not digits.isdigit():
+            continue
+        arch_major, arch_minor = int(digits[:-1]), int(digits[-1])
+        if arch_major == major and (arch_minor == minor if specific else arch_minor <= minor):
             return True
     return False
 
@@ -277,7 +318,7 @@ def _build_problem(gpu: GpuInfo, capability: tuple[int, int], build: TorchBuild)
     if cuda is None:
         return f"the installed torch is a CPU build; {_fix(build)}"
     needed_driver = CUDA13_MIN_DRIVER if int(cuda.split(".")[0]) >= 13 else CUDA12_MIN_DRIVER
-    if gpu.driver_major < needed_driver:
+    if gpu.driver_major is not None and gpu.driver_major < needed_driver:
         return f"CUDA {cuda} needs a driver >= {needed_driver}; {_fix(build)}"
     if not torch.cuda.is_available():
         return f"torch.cuda.is_available() is False; {_fix(build)}"
@@ -288,20 +329,44 @@ def _build_problem(gpu: GpuInfo, capability: tuple[int, int], build: TorchBuild)
     return None
 
 
-def check_cuda(gpus: list[GpuInfo] | None) -> StepResult:
-    """Step 1: the driver, the GPU and the installed torch build agree (see the module doc)."""
-    step = StepResult("cuda", "FAIL")
-    out = step.lines
-    if gpus is None:
-        out.append("nvidia-smi not found or failed: no NVIDIA driver is visible")
+def _gpu_from_torch(out: list[str]) -> GpuInfo | None:
+    """Describe GPU 0 through torch when ``nvidia-smi`` is missing (driver unknown)."""
+    searched = f"looked on PATH and at {WSL_NVIDIA_SMI}"
+    if not torch.cuda.is_available():
+        out.append(f"nvidia-smi not found or failed ({searched}): no NVIDIA driver is visible")
+        if _is_wsl():
+            out.append(
+                "WSL2: nvidia-smi and libcuda come from the Windows NVIDIA driver, in "
+                f"{WSL_NVIDIA_SMI.parent}; install or update the driver on Windows"
+            )
         if sys.platform == "win32":
             out.append("Windows-native PyPI torch is CPU-only: run this project inside WSL2")
+        return None
+    out.append(
+        f"WARN: nvidia-smi not found ({searched}), but torch sees CUDA: the driver version is "
+        "unknown, so its check is skipped"
+    )
+    if _is_wsl():
+        out.append(f"WSL2: add {WSL_NVIDIA_SMI.parent} to PATH to check the driver too")
+    return GpuInfo(torch.cuda.get_device_name(0), None, torch.cuda.get_device_capability(0))
+
+
+def check_cuda(gpus: list[GpuInfo] | None) -> StepResult:
+    """Step 1: the driver, the GPU and the installed torch build agree (see the module doc).
+
+    Without ``nvidia-smi`` but with CUDA in torch, the GPU comes from torch, the driver
+    checks are skipped and the step is at best a WARN.
+    """
+    step = StepResult("cuda", "FAIL")
+    out = step.lines
+    gpu = gpus[0] if gpus else _gpu_from_torch(out)
+    if gpu is None:
         return step
-    gpu = gpus[0]
     capability = gpu.capability
     if capability is None and torch.cuda.is_available():
         capability = torch.cuda.get_device_capability(0)
-    out.append(f"GPU 0: {gpu.name}, driver {gpu.driver}, compute capability {capability}")
+    driver = gpu.driver or "unknown"
+    out.append(f"GPU 0: {gpu.name}, driver {driver}, compute capability {capability}")
     out.append(f"installed: {_installed_build()}")
     if capability is None:
         out.append("cannot read the compute capability (old nvidia-smi and no CUDA in torch)")
@@ -315,9 +380,9 @@ def check_cuda(gpus: list[GpuInfo] | None) -> StepResult:
         out.append(problem)
         return step
     cuda = torch.version.cuda or ""
-    if (build.extra == "cu126") != cuda.startswith("12."):
+    if gpu.driver is not None and (build.extra == "cu126") != cuda.startswith("12."):
         out.append(f"note: works, but the recommended build is `{build.command}`")
-    step.status = "PASS"
+    step.status = "PASS" if gpu.driver is not None else "WARN"
     return step
 
 
@@ -401,8 +466,10 @@ def check_resources(data_dir: Path, output_dir: Path) -> StepResult:
     return step
 
 
-def check_data(data_dir: Path) -> StepResult:
-    """Step 3: ``inspect-data`` on every prepared directory of ``data_dir``."""
+def check_data(data_dir: Path, output_dir: Path | None = None) -> StepResult:
+    """Step 3: ``inspect-data`` on every prepared directory of ``data_dir``.
+
+    ``output_dir`` is unused (the steps share one signature)."""
     from astro_simclr.data.inspection import summarize
 
     step = StepResult("data", "PASS")
@@ -443,11 +510,12 @@ def build_manifest(data_dir: Path) -> dict[str, Any]:
     return {"format": _MANIFEST_FORMAT, "format_version": 1, "datasets": datasets}
 
 
-def check_manifest(data_dir: Path) -> StepResult:
+def check_manifest(data_dir: Path, output_dir: Path | None = None) -> StepResult:
     """Step 4: write ``data-manifest.json`` on the first run, verify against it afterwards.
 
     A dataset of the manifest that is missing or differs fails; a dataset not in the
-    manifest only warns (delete the manifest to record the new set).
+    manifest only warns (delete the manifest to record the new set). ``output_dir`` is
+    unused (the steps share one signature).
     """
     step = StepResult("manifest", "PASS")
     path = data_dir / MANIFEST_NAME
@@ -551,6 +619,7 @@ def _run_one(
     forced: list[str],
     data_dir: Path,
     out: list[str],
+    skip: Callable[[str], None],
 ) -> Timed | None:
     """One dry run. ``reference`` (config + ``--set``) gives the batch size and epochs the
     estimate assumes; ``forced`` (dry mode, paths, accelerator) applies on top of it."""
@@ -562,7 +631,7 @@ def _run_one(
     settings = load_settings(config, [*overrides, *forced], defaults=defaults)
     n_train = _train_count(data_dir, settings.dataset)
     if n_train is None:
-        out.append(f"SKIP {name}: dataset {settings.dataset} is not prepared in {data_dir}")
+        skip(f"{name}: dataset {settings.dataset} is not prepared in {data_dir}")
         return None
     batch = min(reference.batch_size, n_train)
     settings = settings.replace(batch_size=batch)
@@ -613,13 +682,16 @@ def dry_chain(
     runs: Sequence[str],
     overrides: Sequence[str],
     steps: int,
+    strict: bool = False,
 ) -> tuple[StepResult, list[Timed]]:
     """Step 5: every selected reference config, in dry mode, on ``accelerator``.
 
     Each run gets ``max_epochs=1``, ``limit_train_batches=steps + 1`` (one untimed batch),
     ``limit_val_batches=2`` and its own output directory under ``output_dir/dry-chain``;
     ``overrides`` (``--set``) come before these. A batch size larger than the Train split
-    is capped to it. A dataset that is not prepared is skipped (WARN); any error fails.
+    is capped to it. A run that cannot run (its dataset is not prepared, or R3's pretrain
+    did not run) is skipped: a WARN, or a FAIL with ``strict`` (the runs were requested
+    explicitly with ``--runs``). Any error fails.
 
     Raises:
         AcceleratorError: if the accelerator is not available (step 1 should have failed).
@@ -630,12 +702,20 @@ def dry_chain(
     timed: list[Timed] = []
     chain = output_dir / "dry-chain"
     pretrained = False
+
+    def skip(line: str) -> None:
+        if strict:
+            step.lines.append(f"FAIL {line} (requested with --runs)")
+            step.status = "FAIL"
+        else:
+            step.warn(f"SKIP {line}")
+
     for name, command, config_name in REFERENCE_RUNS:
         if name.split("-")[0] not in runs:
             continue
         downstream = command in ("linear-eval", "fine-tune")
         if downstream and not pretrained:
-            step.warn(f"SKIP {name}: no pretrain checkpoint from R3-pretrain")
+            skip(f"{name}: no pretrain checkpoint from R3-pretrain")
             continue
         forced = _dry_overrides(command, name, accelerator, data_dir, chain, steps)
         try:
@@ -647,6 +727,7 @@ def dry_chain(
                 forced,
                 data_dir,
                 step.lines,
+                skip,
             )
         except AcceleratorError:
             raise
@@ -656,7 +737,6 @@ def dry_chain(
             step.status = "FAIL"
             continue
         if result is None:
-            step.warn()
             continue
         pretrained = pretrained or command == "pretrain"
         timed.append(result)
@@ -739,11 +819,11 @@ def _print(step: StepResult, stream: TextIO) -> None:
 
 
 def _check_arguments(
-    synthetic: bool, data_dir: Path | None, runs: Sequence[str], reference_dir: Path
+    synthetic: bool, data_dir: Path | None, runs: Sequence[str] | None, reference_dir: Path
 ) -> None:
     if synthetic == (data_dir is not None):
         raise ConfigError("preflight needs exactly one of --synthetic and --data-dir DIR")
-    unknown = sorted(set(runs) - {"R1", "R2", "R3", "R4"})
+    unknown = sorted(set(runs or ()) - set(_ALL_RUNS))
     if unknown:
         raise ConfigError(f"unknown reference run(s) {', '.join(unknown)}; valid: R1, R2, R3, R4")
     if not (reference_dir / "R1.yaml").is_file():
@@ -772,7 +852,7 @@ def run_preflight(
     synthetic: bool = False,
     accelerator: str = "cuda",
     reference_dir: Path = Path("configs/reference"),
-    runs: Sequence[str] = ("R1", "R2", "R3", "R4"),
+    runs: Sequence[str] | None = None,
     overrides: Sequence[str] = (),
     n_per_split: int = 2400,
     seed: int = 0,
@@ -782,10 +862,14 @@ def run_preflight(
 ) -> bool:
     """Run the six steps (module docstring) and print them; True if none failed.
 
-    Exactly one of ``synthetic`` and ``data_dir`` is required. ``gpu_query`` is injectable
-    for tests (a mocked ``nvidia-smi``); ``stream`` defaults to the current ``sys.stdout``.
-    A failed step 1 stops the preflight, and so does a
-    failed step 2-4 (the dry chain would only fail again).
+    Exactly one of ``synthetic`` and ``data_dir`` is required. ``runs`` None means every
+    reference run whose data is present (a missing dataset only warns); runs named
+    explicitly must all run, or the preflight fails. ``gpu_query`` is injectable for tests
+    (a mocked ``nvidia-smi``); ``stream`` defaults to the current ``sys.stdout``.
+
+    The steps stop at the first FAIL of step 1, 2 (resources: checked from file sizes,
+    before any array is read), 3 (data) or 4 (manifest; never written for data that failed
+    step 2 or 3).
 
     Raises:
         ConfigError: if both or neither data source is given, ``reference_dir`` has no
@@ -806,20 +890,21 @@ def run_preflight(
     if data_dir is None:
         data_dir = _synthetic_data(output_dir, n_per_split, seed)
         stream.write(f"synthetic data ({n_per_split} stamps per split) in {data_dir}\n")
-    checks = [check_resources(data_dir, output_dir), check_data(data_dir)]
-    if checks[-1].status != "FAIL":  # never record a manifest of data that failed its check
-        checks.append(check_manifest(data_dir))
-    if not all([record(step) for step in checks]) or len(checks) < 3:
-        stream.write("preflight: FAIL (the data is not usable; the dry chain did not run)\n")
-        return False
+    # In order, stopping at the first failure: the RAM check must come before the hashing
+    # reads every array, and a manifest must never record data that failed a check.
+    for check in (check_resources, check_data, check_manifest):
+        if not record(check(data_dir, output_dir)):
+            stream.write("preflight: FAIL (the dry chain did not run)\n")
+            return False
     chain, timed = dry_chain(
         reference_dir=reference_dir,
         data_dir=data_dir,
         output_dir=output_dir,
         accelerator=accelerator,
-        runs=runs,
+        runs=_ALL_RUNS if runs is None else runs,
         overrides=list(overrides),
         steps=steps,
+        strict=runs is not None,
     )
     record(chain)
     real_dir = data_dir

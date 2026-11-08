@@ -69,8 +69,9 @@ Facts that constrain the design (verified with uv 0.11 on toy projects; plan rev
    | any | < 525 | none: update the driver |
    | no NVIDIA GPU | | `uv sync --locked --extra cpu` |
 
-   **Windows:** PyPI torch for native Windows is CPU-only; run the project inside WSL2
-   (the Windows driver serves WSL2, and `nvidia-smi` inside WSL2 reports it).
+   **Windows:** PyPI torch for native Windows is CPU-only; run the project inside WSL2.
+   The Windows driver serves WSL2: `nvidia-smi` and `libcuda` live in `/usr/lib/wsl/lib`,
+   which non-login shells (ssh) may not have on PATH; the preflight looks there too.
 
    `astro-simclr preflight` (step 1; `scripts/gpu-preflight.sh`) applies this table
    (`preflight.choose_torch_build`), then checks the installed build against the machine:

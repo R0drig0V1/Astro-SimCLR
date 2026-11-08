@@ -3,8 +3,9 @@
 #   astro-simclr linear-eval --config configs/reference/R3-linear-eval.yaml --seed 0
 #     --pretrained OUT/R3/pretrain --set dataset=DATASET --output-dir OUT/R3/linear-eval-P
 #   with DATASET td_ztf_stamp_17_06_20_sup_1 (1 %, the default below),
-#   td_ztf_stamp_17_06_20_sup_10 (10 %) and td_ztf_stamp_17_06_20 (100 %; stand-in:
-#   td_ztf_stamp_17_06_20_red-002).
+#   td_ztf_stamp_17_06_20_sup_10 (10 %) and td_ztf_stamp_17_06_20_red-002 (100 %: the
+#   received stand-in of the legacy td_ztf_stamp_17_06_20.pkl, as in R1).
+# compare-reference --ref R3 needs all three fractions.
 # The preflight also runs fine-tune with this config (lr x fine_tune_lr_factor 0.2, as the
 # legacy fine_tuning.py); fine-tuning is not part of R3's gate.
 #

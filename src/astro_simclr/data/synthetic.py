@@ -31,9 +31,11 @@ from astro_simclr.data.schema import FEATURE_NAMES, LABEL_NAMES, SPLITS, STAMP_S
 
 __all__ = ["CLASSIFIER_FILES", "PRETRAINING_FILE", "class_pattern", "make_synthetic"]
 
-#: Classifier file names (the legacy names of the 100 %, 10 % and 1 % label sets).
+#: Classifier file names: the 100 %, 10 % and 1 % label sets, named as the received files
+#: (the 100 % one is ``red-002``, the deduplicated original that stands in for the legacy
+#: ``td_ztf_stamp_17_06_20.pkl``, never received), so configs work on both.
 CLASSIFIER_FILES: tuple[str, ...] = (
-    "td_ztf_stamp_17_06_20.pkl",
+    "td_ztf_stamp_17_06_20_red-002.pkl",
     "td_ztf_stamp_17_06_20_sup_10.pkl",
     "td_ztf_stamp_17_06_20_sup_1.pkl",
 )

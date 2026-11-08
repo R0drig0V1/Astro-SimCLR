@@ -168,8 +168,10 @@ directory that do not fit in RAM, and checks the RAM for the prepared arrays.
    changed or re-prepared file is noticed, without hashing the multi-GB pickles again.
 
 Without the real data, `astro-simclr make-synthetic --out DIR --n-per-split N --seed S`
-writes all four files (`td_ztf_stamp_17_06_20{,_sup_10,_sup_1}.pkl` and
-`td_ztf_stamp_simclr_300.pkl`). They have the real containers and dtypes, and a strong
+writes all four files (`td_ztf_stamp_17_06_20{_red-002,_sup_10,_sup_1}.pkl` and
+`td_ztf_stamp_simclr_300.pkl`). The 100 % file carries the name of the received stand-in
+`red-002` (task 1.7; it was `td_ztf_stamp_17_06_20.pkl` before), so the reference configs
+and the defaults name the same datasets on synthetic and on real data. They have the real containers and dtypes, and a strong
 rotation-invariant class pattern in the central 27×27 crop. Every split of every file has
 N stamps (N ≥ 5, classes balanced). The 1 % and 10 % files draw their Train split from the
 full Train split with duplicates, and share its Validation and Test. The same seed gives

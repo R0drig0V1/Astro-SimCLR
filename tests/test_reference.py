@@ -11,6 +11,7 @@ import pytest
 
 from astro_simclr.cli import main
 from astro_simclr.config import ConfigError
+from astro_simclr.hparams import LABEL_FRACTION_DATASETS
 from astro_simclr.reference import REFERENCES, compare_reference, exit_code, pass_rule
 
 
@@ -23,7 +24,8 @@ def _run(
     val: float | None = 0.95,
     test: float | None = 0.94,
     model: str = "stamp_classifier",
-    dataset: str = "td_ztf_stamp_17_06_20",
+    dataset: str = "td_ztf_stamp_17_06_20_red-002",
+    pretrained: str | None = None,
     validation_counts: list[int] | None = None,
     **extra: Any,
 ) -> Path:
@@ -34,7 +36,7 @@ def _run(
         "seed": seed,
         "val_acc_best": val,
         "test_acc_at_best": test,
-        "config": {"supervised_model": model, "dataset": dataset},
+        "config": {"supervised_model": model, "dataset": dataset, "pretrained": pretrained},
         "data": {"class_counts": {"Validation": validation_counts or [100] * 5}},
         **extra,
     }
@@ -88,36 +90,92 @@ def test_r2_needs_the_resnet(tmp_path: Path) -> None:
         compare_reference("R2", [_run(tmp_path, "stamp", val=0.90)])
 
 
-def test_r3_baseline_gate(tmp_path: Path) -> None:
+def _r3_runs(root: Path, **linear: Any) -> list[Path]:
     pretrain = _run(
-        tmp_path,
+        root,
         "pre",
         command="pretrain",
         val=None,
         test=None,
         monitor="loss_train_enc",
         monitor_best=4.2,
+        dataset="td_ztf_stamp_simclr_300",
     )
     fractions = [
-        _run(tmp_path, f"le{i}", command="linear-eval", dataset=d, val=0.5, test=0.45)
-        for i, d in enumerate(("sup_1", "sup_10", "full"))
+        _run(
+            root,
+            f"le{fraction}",
+            command="linear-eval",
+            dataset=dataset,
+            val=0.5,
+            test=0.45,
+            pretrained=str(pretrain / "checkpoints" / "best.ckpt")
+            if fraction != 10
+            else str(pretrain),
+            **linear,
+        )
+        for fraction, dataset in LABEL_FRACTION_DATASETS.items()
     ]
-    assert compare_reference("R3", [pretrain, *fractions]).result == "PASS"
-    # Imbalanced validation: the majority baseline is 0.6, so 0.5 is not above it.
-    imbalanced = _run(
+    return [pretrain, *fractions]
+
+
+def test_r3_passes_with_every_fraction(tmp_path: Path) -> None:
+    comparison = compare_reference("R3", _r3_runs(tmp_path))
+    assert comparison.result == "PASS", comparison.lines
+
+
+def test_r3_needs_every_fraction_and_the_pretrain_run(tmp_path: Path) -> None:
+    pretrain, one, ten, full = _r3_runs(tmp_path)
+    comparison = compare_reference("R3", [pretrain, one, ten])
+    assert comparison.result == "FAIL"
+    assert "incomplete, no linear-eval run at 100 % (td_ztf_stamp_17_06_20_red-002)" in (
+        "\n".join(comparison.lines)
+    )
+    comparison = compare_reference("R3", [one, ten, full])
+    assert comparison.result == "FAIL"
+    assert "no pretrain run given" in "\n".join(comparison.lines)
+
+
+def test_r3_runs_must_come_from_the_given_pretrain(tmp_path: Path) -> None:
+    pretrain, one, ten, _ = _r3_runs(tmp_path)
+    other = _run(
         tmp_path,
-        "imb",
+        "other",
         command="linear-eval",
-        dataset="x",
+        dataset=LABEL_FRACTION_DATASETS[100],
         val=0.5,
-        validation_counts=[60, 10, 10, 10, 10],
+        test=0.45,
+        pretrained="/somewhere/else",
     )
-    assert compare_reference("R3", [imbalanced]).result == "FAIL"
-    diverged = _run(
-        tmp_path, "nanpre", command="pretrain", val=None, test=None, monitor_best=None, dataset="y"
+    comparison = compare_reference("R3", [pretrain, one, ten, other])
+    assert comparison.result == "FAIL"
+    assert "not on the given pretrain run" in "\n".join(comparison.lines)
+
+
+def test_r3_baseline_and_nan(tmp_path: Path) -> None:
+    root = tmp_path / "imbalanced"
+    root.mkdir()
+    # Imbalanced validation: the majority baseline is 0.6, so 0.5 is not above it.
+    runs = _r3_runs(root, validation_counts=[60, 10, 10, 10, 10])
+    assert compare_reference("R3", runs).result == "FAIL"
+    root = tmp_path / "nan"
+    root.mkdir()
+    pretrain, *fractions = _r3_runs(root)
+    metrics = json.loads((pretrain / "metrics.json").read_text())
+    metrics["monitor_best"] = None
+    (pretrain / "metrics.json").write_text(json.dumps(metrics))
+    assert compare_reference("R3", [pretrain, *fractions]).result == "FAIL"
+
+
+def test_config_differences_warn(tmp_path: Path) -> None:
+    # An R4-like run (no features, 1 % labels) given as R1 is judged, but flagged.
+    run = _run(tmp_path, "r4", val=0.95, dataset=LABEL_FRACTION_DATASETS[1])
+    comparison = compare_reference("R1", [run])
+    text = "\n".join(comparison.lines)
+    assert "WARN:" in text
+    assert (
+        "dataset='td_ztf_stamp_17_06_20_sup_1' (expected 'td_ztf_stamp_17_06_20_red-002')" in text
     )
-    assert compare_reference("R3", [diverged, fractions[0]]).result == "FAIL"
-    assert compare_reference("R3", [pretrain]).result == "FAIL"  # no linear-eval run
 
 
 def test_r4_reports(tmp_path: Path) -> None:

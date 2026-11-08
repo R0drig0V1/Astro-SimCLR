@@ -64,7 +64,7 @@ of one run.
 
   | Field | Default | Read by |
   |---|---|---|
-  | `dataset` | `td_ztf_stamp_17_06_20` (the run reads `data_dir/<dataset>`) | all four |
+  | `dataset` | `td_ztf_stamp_17_06_20_red-002`, the received 100 % file (the run reads `data_dir/<dataset>`) | all four |
   | `image_size`, `batch_size`, `lr`, `optimizer`, `augmentation` | 27, 45, 0.002495…, `AdamW`, `center_crop` | all four (`pretrain`: encoder lr and optimizer) |
   | `beta_loss`, `drop_rate`, `with_features` | 0.01606…, 0.2, true | the classifiers (`drop_rate`: stamp classifier, fine-tuning head) |
   | `supervised_model` | `stamp_classifier` (or `resnet18/34/50/152`) | `train-supervised` |
@@ -74,6 +74,10 @@ of one run.
 
   The classifier defaults are `results/hparams_best_ce.yaml` with `AdamW` (the optimizer of
   every tuned trial behind it; the plan's known defects). Optional fields accept `null`.
+  Float fields also accept numeric strings such as `1e-3`, which YAML 1.1 (PyYAML) does not
+  read as a float. `hparams.LABEL_FRACTION_DATASETS` names the 1, 10 and 100 % datasets by
+  the received files; the legacy 100 % `td_ztf_stamp_17_06_20.pkl` was never received, and
+  `red-002` (the same file without duplicate stamps) stands in for it.
 - `load_settings(path, overrides, defaults=...)`: `defaults` (a subcommand's legacy
   protocol) sits between the dataclass defaults and the file. `read_settings_file` reads a
   YAML mapping without checking keys; `settings_to_plain` gives the plain (YAML/JSON) form
@@ -582,9 +586,15 @@ checked (command, `supervised_model`, no duplicate seed) and `val_acc_best` aggr
   `/5`; the code uses the real repeat counts: R1 0.9496 ± 0.002191 (n=5,
   `summary_tuning_ce.csv` row 10), R2 0.902667 ± 0.009866 (**n=3**: the ResNet tuning ran 3
   trials per configuration).
-- **R3, baseline:** pretrain runs need a finite selected loss; every linear-eval run needs
-  finite accuracies and a validation accuracy above the majority-class baseline of its own
-  Validation split (class counts copied from `meta.json` into `metrics.json`).
+- **R3, baseline:** the pretrain run and a linear-eval run at each of 1, 10 and 100 % are
+  all required (otherwise FAIL, "incomplete"); each linear-eval run must name one of the
+  given pretrain runs in its `pretrained` setting. The pretrain loss must be finite; every
+  linear-eval run needs finite accuracies and a validation accuracy above the
+  majority-class baseline of its own Validation split (class counts copied from
+  `meta.json` into `metrics.json`).
+- Every run's config is compared with the distinguishing settings of its reference config
+  (`Reference.expected`, tested against `configs/reference/`); differences print WARN
+  lines, so an R4 run given as R1 is flagged.
 - **R4:** report only. R1 also prints the Carrasco-Davis et al. 2021 figures as context.
 
 ## `preflight` (task 1.7)
@@ -593,16 +603,25 @@ checked (command, `supervised_model`, no duplicate seed) and `val_acc_best` aggr
 `scripts/gpu-preflight.sh`. Each step prints PASS, FAIL, WARN or SKIP; a failed step 1, or
 a failed step 2-4, stops it.
 
-1. **CUDA:** `nvidia-smi` (driver, compute capability; injectable for tests) →
+1. **CUDA:** `nvidia-smi` (driver, compute capability; injectable for tests), looked up on
+   PATH and then at `/usr/lib/wsl/lib/nvidia-smi` (WSL2 shells that are not login shells,
+   such as ssh, lack it on PATH). Without it but with CUDA in torch, the GPU comes from
+   `torch.cuda.get_device_name/get_device_capability`, the driver checks are skipped and
+   the step is a WARN (with a WSL2 hint) →
    `choose_torch_build`, the table of ADR 0001 rule 6 (capability < 7.5 → `cu126`;
    Blackwell → default build with driver >= 580; else driver >= 580 → default, below →
-   `cu126`; `cu126` needs >= 525). Then the installed build: `torch.version.cuda` set, a
+   `cu126`; `cu126` needs >= 525; with the driver unknown, by capability only). Then the
+   installed build: `torch.version.cuda` set, a
    driver new enough for it, `torch.cuda.is_available()`, and `arch_supported(capability,
-   torch.cuda.get_arch_list())`. A mismatch prints the exact `uv sync` command. With
+   torch.cuda.get_arch_list())` (same major and a lower or equal minor; `sm_XYa`
+   arch-specific code only on that exact GPU). A mismatch prints the exact `uv sync`
+   command. With
    `--accelerator` other than `cuda` the step is a SKIP that still checks the accelerator.
-2. **Resources:** RAM (`MemAvailable`, or total memory where that is all the OS reports)
+2. **Resources** (first, from `meta.json` and file sizes only, before any array is read):
+   RAM (`MemAvailable`, or total memory where that is all the OS reports)
    >= the largest prepared dataset's arrays (from `meta.json`) + 2 GiB; 2 GiB free disk
-   under the output directory. Pickles in the data directory only warn.
+   under the output directory. Pickles in the data directory only warn. Steps 2, 3 and 4
+   run in order and stop at the first FAIL.
 3. **Data:** `inspect-data` (`summarize`) on every prepared directory: schema, `meta.json`,
    hashes.
 4. **Manifest:** `data-manifest.json` in the data directory (per dataset: kind, source,
@@ -612,11 +631,13 @@ a failed step 2-4, stops it.
    fine-tune on that checkpoint → R1, R2, R4; `--runs` selects) through `run_command`, with
    `max_epochs=1`, `limit_train_batches=steps+1`, `limit_val_batches=2`, at the reference
    batch sizes (capped to the Train size), on the chosen accelerator, so a batch that does
-   not fit the GPU fails here. A dataset that is not prepared is a SKIP (WARN).
+   not fit the GPU fails here. Without `--runs`, a run whose dataset is not prepared is a
+   SKIP (WARN); a run named in `--runs` must run, or the step FAILs.
 6. **Throughput:** `ThroughputTimer` measures steps/s between consecutive batches of an
    epoch (first batch untimed; the device is synchronised so the clock measures work), with
    the real DataLoader. The estimate per run is `(n_train // batch) * max_epochs / rate`,
    times 5 seeds (R1, R2) for the full set, with R3's linear evaluation summed over the 1,
    10 and 100 % files; an upper bound, without validation time. With `--synthetic` (the
-   four synthetic files, `--n-per-split` 2400 by default, under the output directory) it
+   four synthetic files, named as the received ones, `--n-per-split` 2400 by default,
+   under the output directory) it
    uses the real Train counts of `docs/data.md` (`REAL_TRAIN_COUNTS`).

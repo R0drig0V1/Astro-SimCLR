@@ -40,6 +40,7 @@ REFERENCE = ROOT / "configs" / "reference"
 CU126_ARCHS = ["sm_50", "sm_60", "sm_70", "sm_75", "sm_80", "sm_86", "sm_90"]
 CU13_ARCHS = ["sm_75", "sm_80", "sm_86", "sm_90", "sm_100", "sm_120", "compute_120"]
 GTX_1050 = GpuInfo("NVIDIA GeForce GTX 1050", "582.53", (6, 1))
+FULL = "td_ztf_stamp_17_06_20_red-002"
 
 
 # --- Step 1: choosing and checking the build -----------------------------------------------
@@ -78,6 +79,8 @@ def test_choose_torch_build(
         ((12, 0), CU126_ARCHS, False),
         ((12, 0), CU13_ARCHS, True),
         ((9, 0), ["sm_90a", "compute_90"], True),
+        ((9, 1), ["sm_90a"], False),  # arch-specific code runs only on 9.0
+        ((7, 5), ["sm_70"], True),  # same major, lower minor: binary compatible
         ((9, 0), ["compute_90", "sm_x"], False),
     ],
 )
@@ -99,6 +102,33 @@ def test_query_gpus_parses_nvidia_smi() -> None:
     assert query_gpus(runner) == [GTX_1050]
     assert calls[0][1] == "--query-gpu=name,driver_version,compute_cap"
     assert GTX_1050.driver_major == 582
+
+
+def test_query_gpus_falls_back_to_the_wsl_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An ssh shell on WSL2: /usr/lib/wsl/lib is not on PATH (the GTX 1050 machine).
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    tried: list[str] = []
+
+    def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+        tried.append(command[0])
+        if command[0] == "nvidia-smi":
+            raise FileNotFoundError(command[0])
+        return _completed("NVIDIA GeForce GTX 1050, 582.53, 6.1\n")
+
+    assert query_gpus(runner) == [GTX_1050]
+    assert tried == ["nvidia-smi", "/usr/lib/wsl/lib/nvidia-smi"]
+
+
+def test_query_gpus_uses_the_binary_found_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: "/opt/bin/nvidia-smi")
+    tried: list[str] = []
+
+    def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+        tried.append(command[0])
+        return _completed("Tesla T4, 570.1, 7.5\n")
+
+    assert query_gpus(runner) == [GpuInfo("Tesla T4", "570.1", (7, 5))]
+    assert tried == ["/opt/bin/nvidia-smi"]
 
 
 def test_query_gpus_without_compute_cap_or_driver() -> None:
@@ -174,10 +204,42 @@ def test_check_cuda_capability_from_torch_and_a_working_non_recommended_build(
 
 
 def test_no_driver(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_torch(monkeypatch, cuda=None, available=False)
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(preflight, "_is_wsl", lambda: False)
     step = check_cuda(None)
     assert step.status == "FAIL"
+    assert "looked on PATH and at /usr/lib/wsl/lib/nvidia-smi" in step.lines[0]
     assert "run this project inside WSL2" in step.lines[-1]
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(preflight, "_is_wsl", lambda: True)
+    assert "install or update the driver on Windows" in check_cuda(None).lines[-1]
+
+
+def test_no_nvidia_smi_but_cuda_in_torch_warns(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_torch(monkeypatch, cuda="12.6", archs=CU126_ARCHS, capability=(6, 1))
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda device=None: "GTX 1050")
+    monkeypatch.setattr(preflight, "_is_wsl", lambda: True)
+    step = check_cuda(None)
+    text = "\n".join(step.lines)
+    assert step.status == "WARN", text
+    assert "the driver version is unknown, so its check is skipped" in text
+    assert "add /usr/lib/wsl/lib to PATH" in text
+    assert "GPU 0: GTX 1050, driver unknown, compute capability (6, 1)" in text
+    assert "needed: uv sync --locked --extra cu126" in text
+    # The arch check still runs: the default build cannot serve sm_61.
+    _fake_torch(monkeypatch, cuda="13.0", archs=CU13_ARCHS, capability=(6, 1))
+    assert check_cuda(None).status == "FAIL"
+
+
+@pytest.mark.parametrize(
+    ("capability", "extra"), [((6, 1), "cu126"), ((8, 6), None), ((12, 0), None)]
+)
+def test_choose_torch_build_without_a_driver(
+    capability: tuple[int, int], extra: str | None
+) -> None:
+    build = choose_torch_build(None, capability)
+    assert (build.extra, build.supported) == (extra, True)
 
 
 # --- Steps 2-4: resources, data, manifest --------------------------------------------------
@@ -206,11 +268,11 @@ def test_resources(data_copy: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 def test_data_check(data_copy: Path, tmp_path: Path) -> None:
     assert check_data(data_copy).status == "PASS"
-    labels = data_copy / "td_ztf_stamp_17_06_20" / "Test" / "labels.npy"
+    labels = data_copy / FULL / "Test" / "labels.npy"
     labels.write_bytes(labels.read_bytes()[:-1] + b"\x01")
     step = check_data(data_copy)
     assert step.status == "FAIL"
-    assert "td_ztf_stamp_17_06_20" in "\n".join(step.lines)
+    assert FULL in "\n".join(step.lines)
     assert check_data(tmp_path / "empty").status == "FAIL"
 
 
@@ -220,7 +282,7 @@ def test_manifest_written_then_verified(data_copy: Path) -> None:
     assert first.lines[0].startswith("wrote")
     manifest = data_copy / "data-manifest.json"
     assert set(json.loads(manifest.read_text())["datasets"]) == {
-        "td_ztf_stamp_17_06_20",
+        FULL,
         "td_ztf_stamp_17_06_20_sup_1",
         "td_ztf_stamp_17_06_20_sup_10",
         "td_ztf_stamp_simclr_300",
@@ -228,14 +290,14 @@ def test_manifest_written_then_verified(data_copy: Path) -> None:
     assert check_manifest(data_copy).status == "PASS"
 
     recorded = json.loads(manifest.read_text())
-    recorded["datasets"]["td_ztf_stamp_17_06_20"]["source"]["sha256"] = "0" * 64
+    recorded["datasets"][FULL]["source"]["sha256"] = "0" * 64
     recorded["datasets"]["gone"] = {}
     del recorded["datasets"]["td_ztf_stamp_17_06_20_sup_1"]
     manifest.write_text(json.dumps(recorded))
     step = check_manifest(data_copy)
     text = "\n".join(step.lines)
     assert step.status == "FAIL"
-    assert "td_ztf_stamp_17_06_20: differs from the manifest" in text
+    assert f"{FULL}: differs from the manifest" in text
     assert "gone: in the manifest but missing" in text
     assert "WARN: td_ztf_stamp_17_06_20_sup_1 is not in the manifest" in text
 
@@ -259,7 +321,7 @@ def test_estimate() -> None:
         "full": 45_000,
         "td_ztf_stamp_17_06_20_sup_1": 450,
         "td_ztf_stamp_17_06_20_sup_10": 4_500,
-        "td_ztf_stamp_17_06_20": 45_000,
+        FULL: 45_000,
     }
     step = estimate(timed, counts.get)
     text = "\n".join(step.lines)
@@ -329,12 +391,53 @@ def test_preflight_on_a_data_dir_without_the_reference_datasets(
         runs=["R4"],
         stream=stream,
     )
+    # R4 was requested explicitly: it must run, so a missing dataset fails.
     assert not passed
-    assert "SKIP R4: dataset td_ztf_stamp_17_06_20_sup_1 is not prepared" in stream.getvalue()
+    assert "FAIL R4: dataset td_ztf_stamp_17_06_20_sup_1 is not prepared" in stream.getvalue()
+    assert "(requested with --runs)" in stream.getvalue()
+
+
+def test_default_runs_skip_missing_data_with_a_warning(data_copy: Path, tmp_path: Path) -> None:
+    for name in ("td_ztf_stamp_simclr_300", FULL):  # R3 pretrain, R1 and R2 cannot run
+        shutil.rmtree(data_copy / name)
+    stream = io.StringIO()
+    passed = run_preflight(
+        output_dir=tmp_path / "out",
+        data_dir=data_copy,
+        accelerator="cpu",
+        reference_dir=REFERENCE,
+        overrides=["num_workers=0"],
+        steps=1,
+        stream=stream,
+    )
+    text = stream.getvalue()
+    assert passed, text
+    assert "[WARN] dry-chain" in text
+    assert "SKIP R1: dataset td_ztf_stamp_17_06_20_red-002 is not prepared" in text
+    assert "SKIP R3-linear-eval: no pretrain checkpoint" in text
+
+
+def test_resources_are_checked_before_the_data_is_read(
+    data_copy: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(preflight, "_available_memory", lambda: (1000, "available"))
+    read: list[Path] = []
+    monkeypatch.setattr(preflight, "check_data", lambda *args: read.append(args[0]))
+    stream = io.StringIO()
+    assert not run_preflight(
+        output_dir=tmp_path,
+        data_dir=data_copy,
+        accelerator="cpu",
+        reference_dir=REFERENCE,
+        stream=stream,
+    )
+    assert "[FAIL] resources" in stream.getvalue()
+    assert read == []  # nothing was hashed
+    assert not (data_copy / "data-manifest.json").exists()
 
 
 def test_preflight_fails_on_bad_data(data_copy: Path, tmp_path: Path) -> None:
-    (data_copy / "td_ztf_stamp_17_06_20" / "meta.json").write_text("{")
+    (data_copy / FULL / "meta.json").write_text("{")
     stream = io.StringIO()
     assert not run_preflight(
         output_dir=tmp_path,

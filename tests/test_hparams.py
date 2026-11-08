@@ -160,3 +160,33 @@ def test_r3_uses_the_31b10c9_settings() -> None:
         "without_aug",
         40,
     )
+
+
+@pytest.mark.parametrize("name", ["R1", "R2", "R3", "R4"])
+def test_compare_reference_expectations_match_the_configs(name: str) -> None:
+    from astro_simclr.reference import REFERENCES
+
+    files = {
+        "R1": {"train-supervised": "R1.yaml"},
+        "R2": {"train-supervised": "R2.yaml"},
+        "R3": {"pretrain": "R3-pretrain.yaml", "linear-eval": "R3-linear-eval.yaml"},
+        "R4": {"train-supervised": "R4.yaml"},
+    }[name]
+    expected = REFERENCES[name].expected
+    assert set(expected) == set(files)
+    for command, file in files.items():
+        settings = _reference(file)
+        for key, value in expected[command].items():
+            assert getattr(settings, key) == value, (name, key)
+
+
+def test_reference_datasets_are_the_received_files() -> None:
+    from astro_simclr.data.synthetic import CLASSIFIER_FILES
+    from astro_simclr.hparams import LABEL_FRACTION_DATASETS
+
+    assert _reference("R1.yaml").dataset == LABEL_FRACTION_DATASETS[100]
+    assert _reference("R2.yaml").dataset == LABEL_FRACTION_DATASETS[100]
+    assert _reference("R4.yaml").dataset == LABEL_FRACTION_DATASETS[1]
+    assert Settings().dataset == LABEL_FRACTION_DATASETS[100]
+    # make-synthetic writes the same names, so the configs run on synthetic data too.
+    assert {Path(name).stem for name in CLASSIFIER_FILES} == set(LABEL_FRACTION_DATASETS.values())

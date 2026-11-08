@@ -305,7 +305,7 @@ def _compare_reference(args: argparse.Namespace) -> int:
 def _preflight(args: argparse.Namespace) -> int:
     from astro_simclr.preflight import run_preflight
 
-    runs = [name.strip() for name in args.runs.split(",") if name.strip()]
+    runs = None if args.runs is None else [n.strip() for n in args.runs.split(",") if n.strip()]
     passed = run_preflight(
         output_dir=args.output_dir,
         data_dir=args.data_dir,
@@ -356,7 +356,11 @@ def _add_check_commands(commands: argparse._SubParsersAction[argparse.ArgumentPa
         "--reference-dir", type=Path, default=Path("configs/reference"), metavar="DIR"
     )
     preflight.add_argument(
-        "--runs", default="R1,R2,R3,R4", metavar="LIST", help="comma-separated (default: all)"
+        "--runs",
+        default=None,
+        metavar="LIST",
+        help="comma-separated, e.g. R1,R2,R4; each must run (default: every run whose data "
+        "is present)",
     )
     preflight.add_argument(
         "--n-per-split", type=int, default=2400, metavar="N", help="synthetic stamps per split"
