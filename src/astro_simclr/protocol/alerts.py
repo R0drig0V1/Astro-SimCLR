@@ -27,6 +27,10 @@ alerts by ``candid``. The splits group rows by :attr:`AlertTable.group` (the ``o
 ``group`` column is given: :attr:`AlertTable.group_key`); the first-stamp view always
 groups by ``oid`` (the object).
 
+A ``raw-alerts`` layout (task 3.1b, :mod:`astro_simclr.data.raw_alerts`) gives its table
+with :func:`alert_table_from_raw`, without a CSV round trip; its ``index.npy`` follows the
+same ``oid``, ``candid`` and ``jd`` rules.
+
 **First stamp** (:func:`first_stamps`): the earliest alert of each object *in the table*
 (smallest ``jd``; ties broken by the smaller ``candid``), which is RJ23's "first stamp"
 view only if the table holds each object's first detection.
@@ -48,6 +52,7 @@ from typing import Final, Literal
 import numpy as np
 import numpy.typing as npt
 
+from astro_simclr.data.raw_alerts import RawAlerts
 from astro_simclr.data.schema import LABEL_NAMES, DataError
 
 __all__ = [
@@ -57,6 +62,7 @@ __all__ = [
     "RJ23_LABEL_NAMES",
     "AlertTable",
     "LabelConflict",
+    "alert_table_from_raw",
     "first_stamps",
     "label_conflicts",
     "read_alert_table",
@@ -192,6 +198,27 @@ class AlertTable:
         if missing.size:
             raise DataError(f"candid {int(missing[0])} is not in the alert table")
         return clipped.astype(np.int64)
+
+
+def alert_table_from_raw(data: RawAlerts, group: Sequence[str] | None = None) -> AlertTable:
+    """The alert table of a loaded ``raw-alerts`` layout, under its own label names.
+
+    ``group`` is an optional group key per layout row (in the layout's row order), as the
+    ``group`` column of a CSV table. The rows are checked and sorted by ``candid``
+    (:meth:`AlertTable.from_rows`); :meth:`RawAlerts.rows_of` maps them back.
+
+    Raises:
+        DataError: as :meth:`AlertTable.from_rows`.
+    """
+    index = data.index
+    return AlertTable.from_rows(
+        [str(oid) for oid in index["oid"]],
+        index["candid"].tolist(),
+        index["jd"].tolist(),
+        index["label"].tolist(),
+        data.label_names,
+        None if group is None else list(group),
+    )
 
 
 def _parse_row(
