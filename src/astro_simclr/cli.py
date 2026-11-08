@@ -509,7 +509,7 @@ def _add_training_commands(
                 "et al. 2021 (float input, Adam (0.9, 0.999), the iteration schedule; ADR "
                 "0003), carrasco2021-no-features its without-features variant; rj23-<scenario> "
                 "trains RJ23's classifier of that input on a raw-alerts layout with their "
-                "regime (Keras Adam, class-uniform batches, macro-F1 patience; ADR 0016) and "
+                "regime (Keras Adam, class-uniform batches, macro-F1 patience; ADR 0018) and "
                 "needs --splits",
             )
             _add_split_arguments(sub)

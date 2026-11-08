@@ -131,6 +131,10 @@ uv run astro-simclr compare-variants --splits $SPLITS \
 Both are described in [docs/evaluation-protocol.md](docs/evaluation-protocol.md)
 ("Running a decision end to end").
 
+The same split runs answer the feature diagnostic (ADR 0016): `--set feature_set=position`
+keeps only the 6 sky coordinates of the 23 features, `--set feature_set=none` the images
+only (the same model as `with_features: false`).
+
 ### 4. Raw alerts
 
 `fetch-alerts` (task 3.1) recovers the raw alerts behind a prepared split from ALeRCE's
@@ -151,7 +155,7 @@ alerts") and [ADR 0011](docs/decisions/0011-raw-alert-store.md). The other phase
 
 RJ23's four classifiers train on a `raw-alerts` layout and its object splits with their
 regime (Keras Adam, class-uniform batches, the validation macro-F1 every 500 steps with
-patience 5; [ADR 0016](docs/decisions/0016-rj23-training-regime.md)); `--screen` stops on
+patience 5; [ADR 0018](docs/decisions/0018-rj23-training-regime.md)); `--screen` stops on
 the selection half instead of the whole Validation:
 
 ```bash

@@ -41,6 +41,7 @@ __all__ = [
     "CARRASCO2021_EVAL_BATCH_SIZE",
     "CONTEXTS",
     "EPOCHS",
+    "FEATURE_SETS",
     "FP32_PRECISIONS",
     "GROUP_ARCHS",
     "PAPER_ARCHS",
@@ -99,6 +100,12 @@ PAPER_ARCHS: Final = ("rot4", "single", "p4", "p4m")
 GROUP_ARCHS: Final = ("p4", "p4m")
 #: ``Settings.context`` (task 2.5-models; ``paper_variants.CONTEXTS``).
 CONTEXTS: Final = ("none", "avgpool63")
+
+#: ``Settings.feature_set`` (task 2.5 diagnostic; ADR 0016): the alert features the paper
+#: model's head reads: ``all`` 23 (faithful), ``position`` the 6 sky coordinates, ``none``
+#: (the images only; the same model as ``with_features: false``). See
+#: :mod:`astro_simclr.feature_sets`.
+FEATURE_SETS: Final = ("all", "position", "none")
 
 #: ``Settings.fp32_precision`` (ADR 0010): ``ieee`` keeps float32 convolutions and matmuls
 #: in full float32 on every device; ``tf32`` lets Ampere and newer CUDA GPUs run them in
@@ -271,6 +278,13 @@ class Settings:
     #: degrees (drawn from ``seed`` and the step, so a resumed run repeats it). The control
     #: arm of the single-pass model; a no-op in exact arithmetic for the invariant archs.
     rot90_augment: bool = False
+    #: ``paper_stamp_classifier``: the alert features its head reads; see
+    #: :data:`FEATURE_SETS`. ``all`` is faithful; ``position`` keeps ``ra``, ``dec`` and the
+    #: ecliptic and galactic coordinates of the 23 (the features BN and fc2 shrink to them);
+    #: ``none`` drops them, bit-identical to ``with_features: false``. ``position`` needs
+    #: ``with_features: true``. A diagnostic: how much an images-only or images+position
+    #: model loses (ADR 0016).
+    feature_set: str = "all"
 
     # --- Paper-model class-aware augmentation (plan rows C5 and C6; ADR 0006) ---------------
 
@@ -298,7 +312,7 @@ class Settings:
     #: C7: the largest ``k``.
     flux_k_max: float = 1.5
 
-    # --- The RJ23 regime (task 3.4b; ADR 0016) ----------------------------------------------
+    # --- The RJ23 regime (task 3.4b; ADR 0018) ----------------------------------------------
 
     #: ``rj23``: the input and its Table 2 classifier; see :data:`RJ23_SCENARIOS`.
     rj23_scenario: str = "full"
@@ -352,7 +366,11 @@ class Settings:
                 raise ConfigError(f"{name} {value!r} is not one of: {', '.join(valid)}")
 
     def _check_paper_variants(self) -> None:
-        for name, valid in (("paper_arch", PAPER_ARCHS), ("context", CONTEXTS)):
+        for name, valid in (
+            ("paper_arch", PAPER_ARCHS),
+            ("context", CONTEXTS),
+            ("feature_set", FEATURE_SETS),
+        ):
             value = getattr(self, name)
             if value not in valid:
                 raise ConfigError(f"{name} {value!r} is not one of: {', '.join(valid)}")
@@ -417,8 +435,13 @@ class Settings:
                 f"needs context=none, got {self.context!r}"
             )
             raise ConfigError(msg)
+        if self.feature_set == "position" and not self.with_features:
+            raise ConfigError("feature_set 'position' needs with_features=true")
         if self.aug_feature_jitter and not self.with_features:
             raise ConfigError("aug_feature_jitter needs with_features=true")
+        if self.aug_feature_jitter and self.feature_set == "none":
+            # The head reads no feature: the jitter would be drawn and then ignored.
+            raise ConfigError("aug_feature_jitter needs feature_set 'all' or 'position'")
 
     def _check_hyperparameters(self) -> None:
         for name in ("image_size", "batch_size", "projection_dim"):

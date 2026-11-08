@@ -144,13 +144,23 @@ def test_semantic_config_holds_every_other_field() -> None:
     assert semantic["command"] == "train-supervised"
     settings = semantic["settings"]
     assert isinstance(settings, dict)
-    # The hash-neutral fields (num_workers 0, the rj23_* defaults) are semantic, but left
-    # out at their neutral values.
-    neutral = set(HASH_NEUTRAL_DEFAULTS)
+    # The hash-neutral fields are semantic, but left out at their neutral values: num_workers
+    # 0, feature_set all (ADR 0016) and the rj23_* defaults (task 3.4b; ADR 0018).
+    neutral = {
+        "num_workers",
+        "feature_set",
+        "rj23_scenario",
+        "rj23_bn_position",
+        "rj23_large_values",
+    }
+    assert set(HASH_NEUTRAL_DEFAULTS) == neutral
     assert set(settings) == FIELDS - set(NON_SEMANTIC_KEYS) - set(IDENTITY_KEYS) - neutral
     with_workers = semantic_config("train-supervised", Settings(num_workers=2))["settings"]
     assert isinstance(with_workers, dict)
     assert with_workers["num_workers"] == 2
+    position = semantic_config("train-supervised", Settings(feature_set="position"))["settings"]
+    assert isinstance(position, dict)
+    assert position["feature_set"] == "position"
 
 
 @pytest.mark.parametrize(

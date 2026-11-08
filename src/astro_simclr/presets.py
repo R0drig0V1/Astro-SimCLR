@@ -14,7 +14,8 @@ the authority (ADR 0003):
 - the paper model (``paper_stamp_classifier``) on the float path: the stored float32 stamps,
   ``crop_split(21)`` with the NaN approximation, zero-padded to 27 by the model;
 - the 23 features (``with_features``; the ``-no-features`` variant drops them, an assumption:
-  M1's hyperparameters on the 100-per-class split);
+  M1's hyperparameters on the 100-per-class split); ``feature_set: all``, so that the
+  ``position`` and ``none`` diagnostics of ADR 0016 are deviations of ``carrasco2021``;
 - Train tiled to the largest class; the leaked Train stamp (``red`` Train 2995) removed
   from Train only; batch 64;
 - Adam (0.9, 0.999), epsilon 1e-8, lr 1e-3, no weight decay; ``CE - 0.5 H``;
@@ -31,7 +32,7 @@ recorded by :func:`preset_report` in the run's ``metrics.json["preset"]`` (``fai
 false, and the key in ``deviations``), so a diagnostic run can never pass for the
 replication.
 
-**The ``rj23-<scenario>`` presets** (task 3.4b; ADR 0016), one per input of Reyes-Jainaga et
+**The ``rj23-<scenario>`` presets** (task 3.4b; ADR 0018), one per input of Reyes-Jainaga et
 al. 2023 (``full``, ``cropped``, ``lowres``, ``multiscale``): the scenario's Table 2
 classifier (``supervised_model: rj23``, ``rj23_model.RJ23_TABLE2``) with its Table 2 learning
 rate, Keras' Adam (``optimizer: Adam`` is built by ``rj23_regime.keras_adam``: epsilon 1e-7,
@@ -108,6 +109,9 @@ _CARRASCO2021: Final[Mapping[str, object]] = {
     "group_fields": None,
     "context": "none",
     "rot90_augment": False,
+    # The features the head reads (a 2.5 diagnostic; ADR 0016): all 23. Listed so that a
+    # position-only or images-only run is recorded as a deviation.
+    "feature_set": "all",
     # Class-aware augmentation (plan rows C5 and C6; ADR 0006): off. Listed for the same
     # reason, so that an augmented run is recorded as a deviation.
     "aug_noise": 0.0,

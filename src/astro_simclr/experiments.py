@@ -408,6 +408,8 @@ _PAPER_VARIANT_DEFAULTS: Final[Mapping[str, object]] = {
     "group_fields": None,
     "context": "none",
     "rot90_augment": False,
+    # The features the head reads (a 2.5 diagnostic; ADR 0016).
+    "feature_set": "all",
     # Class-aware augmentation (plan rows C5 and C6; ADR 0006).
     "aug_noise": 0.0,
     "aug_feature_jitter": 0.0,
@@ -456,7 +458,7 @@ def paper_module(settings: Settings) -> PaperClassifierModule:
     ``group_fields``, ``context``, ``rot90_augment``) and the C5 / C6 augmentation
     (``aug_noise``, ``aug_feature_jitter``, ``synthetic_bogus``, ``aug_min_r2``) and the C7
     flux rescaling (``flux_rescale``, ``flux_k_min``, ``flux_k_max``), whose
-    draws are seeded with ``seed``.
+    draws are seeded with ``seed``, and the ``feature_set`` diagnostic (ADR 0016).
 
     Raises:
         UnknownOptimizerError, ValueError: as ``PaperClassifierModule``.
@@ -481,6 +483,7 @@ def paper_module(settings: Settings) -> PaperClassifierModule:
         flux_rescale=settings.flux_rescale,
         flux_k_min=settings.flux_k_min,
         flux_k_max=settings.flux_k_max,
+        feature_set=settings.feature_set,
     )
 
 

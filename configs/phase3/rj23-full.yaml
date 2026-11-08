@@ -1,5 +1,5 @@
 # rj23-full: RJ23's full scenario (Reyes-Jainaga et al. 2023, ApJL 952, L43,
-# arXiv:2304.13080) with their training regime (task 3.4b; ADR 0016). The same values as
+# arXiv:2304.13080) with their training regime (task 3.4b; ADR 0018). The same values as
 # `train-supervised --preset rj23-full` (src/astro_simclr/presets.py;
 # tests/test_presets.py keeps them equal).
 #

@@ -30,7 +30,8 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  ├──► protocol (make-splits, compare-variants: the phase-2 evaluation protocol) ──► data
  ├──► oracle (fetch-m1, m1-oracle: the published M1 vs our input path) ──► paper_model, data
  ├──► alerts (fetch-alerts, alerts-summary: raw alerts from ALeRCE) ──► data (prepared, m1_features)
- │    (training ──► paper_variants: rot4 / single / p4 / p4m ──► paper_model, group_conv)
+ │    (training ──► paper_variants: rot4 / single / p4 / p4m ──► paper_model, group_conv;
+ │     paper_model ──► feature_sets: all / position / none)
  ├──► preflight ──► experiments, data (inspection, manifest)
  └──► engine (phase 4: the plain-PyTorch loop's contracts; imports no Lightning) ──► config
  └──► runs (phase 4, A0: run identity, manifest.json, layout, retention) ──► config, data
@@ -127,7 +128,7 @@ of one run.
   `eval_batch_size` must be 64 (the selection loss is TF's mean of batch-64 means),
   `early_stopping` false and `num_workers` 0 (`ConfigError` otherwise). The
   `carrasco2021` preset (task 2.2c, see `presets`) sets them.
-- **Task 3.4b fields** (the `rj23` schedule; see `training`, "The rj23 schedule"; ADR 0016).
+- **Task 3.4b fields** (the `rj23` schedule; see `training`, "The rj23 schedule"; ADR 0018).
   `schedule: rj23` reuses `max_steps` (the hard cap), `val_every_n_steps` (the validation
   interval, step 0 included) and `patience` (in validations), and adds:
 
@@ -161,6 +162,7 @@ of one run.
   | `group_fields` | null | `p4` / `p4m`: fields of conv1-conv2 (conv3-conv5 twice); null is `32 // \|G\|` (8 / 4). An error with `rot4` / `single` |
   | `context` | `none` | `avgpool63`: the 63×63 stamp average-pooled to 21×21 as 3 more channels (B1'); needs `paper_input: float32` |
   | `rot90_augment` | false | rotate each training stamp by a random multiple of 90° (seeded by `seed` and the step) |
+  | `feature_set` | `all` | the features the head reads (a diagnostic; ADR 0016): `all` 23 (faithful), `position` the 6 sky coordinates (`ra`, `dec`, `ecl_lat`, `ecl_long`, `gal_lat`, `gal_long`), `none` the images only (bit-identical to `with_features: false`). `position` needs `with_features` |
 - **Plan rows C5 and C6** (the paper model's class-aware training augmentation;
   `training.class_augment`, ADR 0006). Off by default, listed in the presets like the
   2.5-models flags:
@@ -168,7 +170,7 @@ of one run.
   | Field | Default | Meaning |
   |---|---|---|
   | `aug_noise` | 0.0 | C5: the largest background-noise scale (in units of each crop channel's background sigma) added to the science and template; the difference follows. ≥ 0; needs `paper_input: float32` |
-  | `aug_feature_jitter` | 0.0 | C5: Gaussian jitter sigma (standardised units) on the continuous features; the discrete ones never change. ≥ 0; needs `with_features` |
+  | `aug_feature_jitter` | 0.0 | C5: Gaussian jitter sigma (standardised units) on the continuous features; the discrete ones never change. ≥ 0; needs `with_features` and a `feature_set` other than `none` |
   | `synthetic_bogus` | 0.0 | C6: fraction of each training batch replaced by synthetic hot-pixel Bogus, in [0, 1); needs `paper_input: float32` and `context: none` |
   | `aug_min_r2` | 0.5 | C5 / C6: stamps whose `diff ~ a·sci + b·tmpl + c` fit has a lower R² are not noised nor used as C6 sources; in [0, 1] |
 - **Plan row C7** (transient flux rescaling; `training.flux_rescale`, ADR 0007). Off by
@@ -614,6 +616,39 @@ dropout_active=False, drop_rate=0.5)`, ALeRCE's `DeepHitsWithFeatures` (without 
   `scripts/characterize/paper_model/generate.py`): `in_channels=3` (6 with the 63×63
   context; only `conv1` widens) and `rotation_mean=True` (`False`: the `single` arch, one
   pass, no mean). `check_paper_images` is the shared input check.
+- The `feature_set` diagnostic (ADR 0016; `feature_sets`) adds `feature_set="all"`: the
+  head reads the 23 features, only the 6 sky coordinates (`position`: `bn_features` and
+  fc2's feature inputs shrink to 6, **439,953** parameters) or none (`none`: exactly the
+  `with_features=False` model). `forward` still takes (N, 23) features and selects the
+  columns itself with `index_select` through a non-persistent `feature_index` buffer
+  (`None` for all 23 or none: the faithful forward pass does no indexing, and the
+  `state_dict` keeps M1's keys). `feature_index(columns)` builds it.
+
+## `feature_sets` (task 2.5 diagnostic; ADR 0016)
+
+`src/astro_simclr/feature_sets.py`: the columns of the 23 kept features (`KEPT_FEATURES`,
+the stored 26 without `rb`, `distnr`, `magnr`; equal to `class_augment.KEPT_FEATURE_NAMES`,
+tested) that the paper model's head reads, per `Settings.feature_set`.
+
+| `feature_set` | Columns | Kept indices |
+|---|---|---|
+| `all` | the 23 (faithful) | 0-22 |
+| `position` | `POSITION_FEATURES`: `ra`, `dec`, `ecl_lat`, `ecl_long`, `gal_lat`, `gal_long` | 10, 11, 16, 17, 18, 19 |
+| `none` | none (images only; the `with_features: false` model) | — |
+
+- `feature_columns(feature_set, *, with_features=True)` and `feature_names(...)`: pure
+  functions, no randomness, no engine import (ADR 0014). `with_features=False` reads
+  nothing; with `position` it is a `ValueError`, as an unknown set is.
+- The selection is in the model, not in the data: batches keep the 23 columns, so the split
+  runs, C5's jitter and C7's `magpsf` / `sigmapsf` update are unchanged (ADR 0016,
+  decision 2). A run: `train-supervised --preset carrasco2021 --set feature_set=position`.
+- **Tested** (`tests/test_feature_sets.py`): the columns by name against the schema; `none`
+  equal to `with_features: false` for every `paper_arch` (initial tensors, logits) and
+  after a CPU training run (checkpoint tensors and prediction-file bytes); `position`
+  ignores the other 17 columns and reloads from its checkpoint; the settings checks, the
+  preset deviation and the CD21 grouping. `all` reproduces the golden fixture
+  (`tests/test_paper_variants.py`), and the split runs take the flag with the 2.5 flags
+  (`tests/test_split_runs.py`).
 
 ## `group_conv` (task 2.5-models)
 
@@ -686,7 +721,7 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
   layers and initialisation); tested equal to `PaperStampClassifier`'s head with the same
   weights.
 - `build_paper_model(arch, *, group_fields, context, with_features, dropout_active,
-  drop_rate)`: the factory `PaperClassifierModule` uses; the defaults build the faithful
+  drop_rate, n_classes, feature_set)`: the factory `PaperClassifierModule` uses; the defaults build the faithful
   model. `paper_in_channels(context)`, `default_group_fields(arch)`.
 - `count_parameters(model)`; `count_macs(model, *, in_channels)`: MACs per stamp of an
   eval forward, from `torch.utils.flop_counter` (convolutions and matrix products, not the
@@ -772,7 +807,7 @@ into training.
 
 The training regime of RJ23 as **engine-free** objects (the phase-4 rule from B0 on: no
 Lightning; the Lightning adapter is `training.rj23`, the plain engine of phase 4 adapts the
-same objects). ADR 0016 pins what the sources leave open.
+same objects). ADR 0018 pins what the sources leave open.
 
 `src/astro_simclr/rj23_regime.py`:
 
@@ -1311,7 +1346,10 @@ each stamp by `k·90°`, `k` from `numpy.random.default_rng([augment_seed, globa
 (device-independent, exact on resume); validation and test are not augmented. Plan rows
 C5 and C6 add `aug_noise`, `aug_feature_jitter`, `synthetic_bogus` and `aug_min_r2` (all
 off by default; see "Class-aware augmentation" below), and row C7 `flux_rescale`,
-`flux_k_min`, `flux_k_max` (see "Transient flux rescaling").
+`flux_k_min`, `flux_k_max` (see "Transient flux rescaling"). The `feature_set` diagnostic
+(ADR 0016) adds `feature_set="all"`, passed to the model; with `none` the module's
+`with_features` reads false. It is saved in the hyperparameters only when it is not `all`,
+so the faithful `hparams.yaml` and checkpoints are unchanged.
 
 ### Class-aware augmentation (plan rows C5 and C6)
 
@@ -1452,7 +1490,7 @@ fold's training part's) and its exact resume.
 ### The `rj23` schedule (task 3.4b)
 
 `src/astro_simclr/training/rj23.py`: thin Lightning adapters of `rj23_regime` and
-`rj23_data` (ADR 0016), run by `train-supervised --preset rj23-<scenario> --splits
+`rj23_data` (ADR 0018), run by `train-supervised --preset rj23-<scenario> --splits
 OBJECT_SPLITS [--screen] [--alerts CSV]`.
 
 - `RJ23Module(scenario, n_classes, bn_position, lr)`: `rj23_model.build_rj23_classifier`,
@@ -1548,9 +1586,11 @@ Decisions and provenance: ADR 0003.
   unchanged), so that a variant run is reported as a deviation, not as faithful. Plan rows
   C5 and C6 add `aug_noise: 0.0`, `aug_feature_jitter: 0.0`, `synthetic_bogus: 0.0` and
   `aug_min_r2: 0.5` the same way (ADR 0006), row C7 `flux_rescale: 0.0`,
-  `flux_k_min: 0.5`, `flux_k_max: 1.5` (ADR 0007), and ADR 0010 `fp32_precision: ieee`, so
-  that a TF32 run is a deviation.
-- `PRESETS["rj23-<scenario>"]` (`RJ23_PRESETS`, task 3.4b; ADR 0016), one per scenario
+  `flux_k_min: 0.5`, `flux_k_max: 1.5` (ADR 0007), ADR 0010 `fp32_precision: ieee`, so
+  that a TF32 run is a deviation, and ADR 0016 `feature_set: all`, so that a `position` or
+  `none` run is a deviation of `carrasco2021` (`preset_for` still goes by
+  `with_features`).
+- `PRESETS["rj23-<scenario>"]` (`RJ23_PRESETS`, task 3.4b; ADR 0018), one per scenario
   of RJ23 (`full`, `cropped`, `lowres`, `multiscale`): `supervised_model: rj23`, the
   scenario, `rj23_bn_position: after_concat`, `rj23_large_values: paper`,
   `with_features: false`; `optimizer: Adam` (built as Keras' Adam) with Table 2's
@@ -1708,8 +1748,9 @@ checked (command, `supervised_model`, no duplicate seed) and `val_acc_best` aggr
   predate the 2.5 flags, do not warn about them.
 - **R4:** report only. R1 also prints the Carrasco-Davis et al. 2021 figures as context.
 - **CD21 (task 2.3), two-tier gate of the paper replication**, on the with-features runs'
-  `test_acc_at_best` (the without-features runs are compared with 0.883 ± 0.006 and only
-  reported). The runs must be `supervised_model: paper_stamp_classifier` (task 2.2a); a run
+  `test_acc_at_best` (the without-features runs, `with_features: false` or
+  `feature_set: none`, are compared with 0.883 ± 0.006 and only reported; a
+  `feature_set: position` run counts as with features and warns as a deviation). The runs must be `supervised_model: paper_stamp_classifier` (task 2.2a); a run
   whose config differs from the `carrasco2021` preset (`Reference.expected` is
   `presets.PRESETS["carrasco2021"]` without `with_features`; task 2.2c) gets a WARN line,
   so a diagnostic or shortened run is flagged. *Faithful*: `|mean - 0.941| <= 0.005` and the M1 oracle passed
@@ -1796,11 +1837,13 @@ calls `record.start_run` and `RunRecord.end` around the fit (task A1).
   is its SHA-256.
   - `HASH_NEUTRAL_DEFAULTS` leaves semantic fields out at one value: `num_workers: 0`
     (with workers, per-worker seeding changes the augmentation draws, so any other count is
-    hashed), and fields added later at the value that keeps old hashes (task 3.4b:
-    `rj23_scenario: full`, `rj23_bn_position: after_concat`, `rj23_large_values: paper`).
+    hashed), and fields added later at the value that keeps old hashes: `feature_set: all`
+    (ADR 0016) and, task 3.4b, `rj23_scenario: full`, `rj23_bn_position: after_concat`,
+    `rj23_large_values: paper`.
   - `semantic_config_from_plain(command, view, complete=True)` and `semantic_diff` are the
     hook of the nested config (4.2): lower to the flat view, then compare hashes.
-  - The pinned hashes of the `carrasco2021` presets, of eight 2.5 variants and of the two
+  - The pinned hashes of the `carrasco2021` presets, of ten 2.5 variants (`feature_set:
+    position` and `none` among them) and of the two
     legacy protocols are in `tests/fixtures/runs/canonical_configs.json`; regenerate them with
     `uv run python tests/_canonical_cases.py`, and only on purpose.
 - **`identity`**: `RunIdentity` holds the config hash, `seed`, `split` (a fold, `"screen"`,

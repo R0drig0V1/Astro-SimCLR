@@ -52,8 +52,8 @@ first (A0) so that A1-A3 and 4.2 can build on them in parallel.
    content, not its location, is what matters.
 5. **Run id** = SHA-256 of the canonical JSON of `RunIdentity`: the config hash, the seed,
    the split (a fold, `"screen"`, `"whole"`, or none; `"whole"`, an `rj23` replication
-   run on an object-splits file's own parts, added by ADR 0016), the data SHA-256, the splits file's SHA-256, the
-   pretrained checkpoint's SHA-256, the machine class, the engine and `numerics_epoch`. Two
+   run on an object-splits file's own parts, added by ADR 0018), the data SHA-256, the
+   splits file's SHA-256, the pretrained checkpoint's SHA-256, the machine class, the engine and `numerics_epoch`. Two
    of these are additions to the plan's list. The pretrained checkpoint: without it, two
    evaluations of different encoders would share an id. The engine: a plain-engine run must
    never pass for an attempt of a Lightning run (plan A1 compares a new-engine variant only
