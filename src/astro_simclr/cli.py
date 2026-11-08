@@ -37,6 +37,10 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   macro-F1 (± std over seeds), per class and on the first-stamp view, and with a baseline
   the paired bootstrap CI of the macro-F1 difference and McNemar (always exit 0: a report);
 - ``preflight`` (:mod:`astro_simclr.preflight`): exit 0 if no step failed, else 1.
+- the run registry (task A2, :mod:`astro_simclr.registry`): ``runs reindex [ROOT ...]``,
+  ``runs ls``, ``runs show KEY`` and ``runs compare SPEC`` (by experiment spec); exit 1
+  when the registry cannot be used or a comparison does not resolve. Registered by
+  :func:`astro_simclr.registry.parser.add_runs_command`, whose handlers load on use.
 - M1 oracle (task 2.2b, :mod:`astro_simclr.oracle`): ``fetch-m1`` downloads M1 at the
   pinned commit (SHA-256 checked) into a local cache and converts it to ``.npz``;
   ``m1-oracle --data-dir DIR --out DIR`` runs the port-equivalence and data-path checks
@@ -85,6 +89,7 @@ from astro_simclr.config import (
     settings_to_plain,
 )
 from astro_simclr.hparams import COMMAND_DEFAULTS, COMMANDS, load_legacy_hparams
+from astro_simclr.registry.parser import add_runs_command
 
 if TYPE_CHECKING:
     from astro_simclr.oracle.m1 import M1Files
@@ -1207,6 +1212,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_check_commands(commands)
     _add_oracle_commands(commands)
     _add_alert_commands(commands)
+    add_runs_command(commands)
     return parser
 
 
