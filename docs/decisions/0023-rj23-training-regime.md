@@ -118,7 +118,8 @@ from `engine.randomness.host_generator` with a reserved stream.
     `astro-simclr run` with `runtime.engine: plain` trains it. The 4.7(a) differential test
     pins the two engines bit for bit (each scenario, both protocols, the sensitivity
     flags, the stop at patience and at the cap, the training batches of stream 10, a
-    mid-run resume); the plain resume is exact, dropout masks included. The engine
+    mid-run resume, resumes just before and at a patience stop); the plain resume is
+    exact, dropout masks included. The engine
     gained three extension points for it (ADR 0014, amendment of task 3.4b).
 
 ## Consequences
