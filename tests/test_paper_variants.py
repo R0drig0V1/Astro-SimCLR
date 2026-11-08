@@ -48,6 +48,7 @@ from astro_simclr.paper_variants import (
     count_parameters,
     default_group_fields,
     paper_in_channels,
+    paper_input_side,
 )
 from astro_simclr.presets import (
     CARRASCO2021_NO_FEATURES,
@@ -68,6 +69,8 @@ _FLAG_DEFAULTS: dict[str, object] = {
     "rot90_augment": False,
     # The features the head reads (ADR 0016).
     "feature_set": "all",
+    # The ConvNeXt backbone's initial weights (plan row B8; ADR 0022).
+    "backbone_weights": "none",
     # Plan rows C5 and C6 (ADR 0006).
     "aug_noise": 0.0,
     "aug_feature_jitter": 0.0,
@@ -401,7 +404,7 @@ def test_model_errors() -> None:
         model(torch.zeros(2, 3, 21, 21), torch.zeros(2, 23))
     with pytest.raises(ValueError, match="x_feat"):
         model(torch.zeros(2, 6, 21, 21))
-    assert PAPER_ARCHS == ("rot4", "single", "p4", "p4m")
+    assert PAPER_ARCHS == ("rot4", "single", "p4", "p4m", "convnext_atto", "convnext_pico")
     assert CONTEXTS == ("none", "avgpool63")
 
 
@@ -433,7 +436,9 @@ def test_every_named_variant_builds(name: str) -> None:
     settings = _preset(**variant.overrides)
     assert module.rot90_augment == settings.rot90_augment
     channels = paper_in_channels(settings.context)
-    assert module(torch.zeros(2, channels, 21, 21), torch.zeros(2, 23)).shape == (2, 5)
+    side = paper_input_side(settings.paper_arch)
+    assert settings.image_size == side
+    assert module(torch.zeros(2, channels, side, side), torch.zeros(2, 23)).shape == (2, 5)
     assert variant.description
 
 
@@ -469,8 +474,12 @@ def test_tensor_split_takes_the_context_channels() -> None:
     features = np.zeros((2, 23), dtype=np.float32)
     split = TensorSplit(np.zeros((2, 6, 21, 21), dtype=np.float32), features, labels)
     assert split.images.shape[1] == 6
-    with pytest.raises(ValueError, match=r"\(N, 3 or 6, 21, 21\) with N = 2"):
+    with pytest.raises(ValueError, match=r"\(N, 3 or 6, 21, 21\) or \(N, 3, 63, 63\) with N = 2"):
         TensorSplit(np.zeros((2, 4, 21, 21), dtype=np.float32), features, labels)
+    # Whole stamps (plan row B8) have 3 channels only.
+    assert TensorSplit(np.zeros((2, 3, 63, 63), dtype=np.float32), features, labels)
+    with pytest.raises(ValueError, match=r"TensorSplit\.images must be"):
+        TensorSplit(np.zeros((2, 6, 63, 63), dtype=np.float32), features, labels)
 
 
 def test_float_crops_with_context(classifier_f32_dir: Path) -> None:
