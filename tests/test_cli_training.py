@@ -17,9 +17,9 @@ from astro_simclr.cli import build_parser, main, training_settings
 from astro_simclr.config import ConfigError, Settings
 from astro_simclr.experiments import (
     AcceleratorError,
-    _finite,
     _recalls,
     check_accelerator,
+    json_safe,
     load_pretrained,
     resolve_resume,
 )
@@ -307,7 +307,7 @@ def test_resnet_supervised_model(data_dir: Path, tmp_path: Path) -> None:
 
 
 def test_non_finite_values_become_null() -> None:
-    assert _finite({"a": [1.0, float("nan")], "b": (float("inf"), "x"), "c": 2}) == {
+    assert json_safe({"a": [1.0, float("nan")], "b": (float("inf"), "x"), "c": 2}) == {
         "a": [1.0, None],
         "b": [None, "x"],
         "c": 2,

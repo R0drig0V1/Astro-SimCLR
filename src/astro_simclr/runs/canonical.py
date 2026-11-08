@@ -103,6 +103,10 @@ NON_SEMANTIC_KEYS: Final[Mapping[str, str]] = {
         "how often last.ckpt is written, the resume granularity: saving a checkpoint "
         "draws no random numbers and changes no training state"
     ),
+    "rj23_keep": (
+        "which of the two kept weights (stop, best) an rj23 run names primary: every run "
+        "trains, keeps, evaluates and writes both (task 3.4b; ADR 0016)"
+    ),
 }
 
 #: Settings left out of the config hash because they are components of the run id of
@@ -122,13 +126,21 @@ IDENTITY_KEYS: Final[Mapping[str, str]] = {
 #: hold it keep the hash they would have without the field. Two uses:
 #:
 #: - a field added after canonical version 1, at the value that reproduces the behaviour
-#:   before it (none yet), so existing hashes and recorded manifests stay valid;
+#:   before it, so existing hashes and recorded manifests stay valid: the ``rj23_*`` fields
+#:   of task 3.4b at their defaults (they apply only to ``schedule: rj23``, which no run
+#:   had before them; an ``rj23`` run hashes the scenario only when it is not ``full``,
+#:   which is harmless: the schedule and learning rate already tell the presets apart);
 #: - ``num_workers`` at 0. With DataLoader workers, Lightning seeds each worker, so the
 #:   worker count decides which augmentations are drawn: 0, 2 and 3 workers are three
 #:   different runs, and a false run-id match would contaminate a comparison, while a
 #:   missed one only costs a rerun. At 0 (the default, and what the carrasco2021 schedule
 #:   requires) it is left out, so the phase-2 and 2.5 hashes do not depend on the field.
-HASH_NEUTRAL_DEFAULTS: Final[Mapping[str, object]] = {"num_workers": 0}
+HASH_NEUTRAL_DEFAULTS: Final[Mapping[str, object]] = {
+    "num_workers": 0,
+    "rj23_scenario": "full",
+    "rj23_bn_position": "after_concat",
+    "rj23_large_values": "paper",
+}
 
 _EXCLUDED: Final = frozenset(NON_SEMANTIC_KEYS) | frozenset(IDENTITY_KEYS)
 

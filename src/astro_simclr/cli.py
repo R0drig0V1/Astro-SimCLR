@@ -13,7 +13,11 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   defaults, the subcommand's legacy protocol (``hparams.COMMAND_DEFAULTS``), ``--preset``
   (``train-supervised`` only: ``carrasco2021`` or ``carrasco2021-no-features``, the paper
   replication of task 2.2c; :mod:`astro_simclr.presets`; and ``--splits FILE --fold K |
-  --screen``, a split run of task 2.5-infra: :mod:`astro_simclr.protocol.split_runs`),
+  --screen``, a split run of task 2.5-infra: :mod:`astro_simclr.protocol.split_runs`; or
+  ``rj23-full``, ``rj23-cropped``, ``rj23-lowres``, ``rj23-multiscale``, RJ23's regime of
+  task 3.4b on a ``raw-alerts`` layout, which needs ``--splits OBJECT_SPLITS`` (the paper
+  protocol; with ``--screen``, a decision run on the selection half) and optionally
+  ``--alerts ALERTS.csv``: :mod:`astro_simclr.training.rj23`),
   ``--hparams``
   (a legacy ``results/hparams_best_*.yaml``, through the mapping of
   :mod:`astro_simclr.hparams`), ``--config``, ``--set``, then the explicit flags
@@ -76,6 +80,7 @@ import yaml
 
 from astro_simclr.config import (
     ACCELERATORS,
+    RJ23,
     ConfigError,
     Settings,
     load_settings,
@@ -89,6 +94,7 @@ from astro_simclr.hparams import COMMAND_DEFAULTS, COMMANDS, load_legacy_hparams
 if TYPE_CHECKING:
     from astro_simclr.oracle.m1 import M1Files
     from astro_simclr.protocol.split_runs import SplitRequest
+    from astro_simclr.training.rj23 import RJ23Request
 
 __all__ = [
     "add_settings_arguments",
@@ -349,11 +355,44 @@ def _split_request(args: argparse.Namespace) -> SplitRequest | None:
     return SplitRequest(file, fold)
 
 
+def _rj23_request(args: argparse.Namespace) -> RJ23Request:
+    """The object splits, protocol and alert table of an ``rj23`` run.
+
+    Raises:
+        ConfigError: without ``--splits``, or with ``--fold`` (object splits have no folds).
+    """
+    from astro_simclr.training.rj23 import RJ23Request
+
+    file: Path | None = getattr(args, "splits", None)
+    if file is None:
+        raise ConfigError("schedule rj23 needs --splits OBJECT_SPLITS (make-object-splits)")
+    if getattr(args, "fold", None) is not None:
+        raise ConfigError("schedule rj23 has no CV folds: drop --fold (--screen: a decision run)")
+    screen = bool(getattr(args, "screen", False))
+    return RJ23Request(file, "decision" if screen else "replication", getattr(args, "alerts", None))
+
+
 def _train(args: argparse.Namespace) -> int:
     from astro_simclr.experiments import METRICS_FILE, run_command
 
     command: str = args.command
     settings = training_settings(command, args)
+    if settings.schedule == RJ23:
+        from astro_simclr.training.rj23 import run_rj23
+
+        metrics = run_rj23(settings, _rj23_request(args), resume=args.resume)
+        evaluation = metrics["evaluation"]
+        scores = ", ".join(
+            f"{stage} macro-F1 {e['macro_f1']:.4f}" for stage, e in evaluation.items()
+        )
+        sys.stdout.write(
+            f"{command} ({settings.rj23_keep} weights, step {metrics['stop_step']} stop / "
+            f"{metrics['best_step']} best, {metrics['schedule']['stopped_by']}): {scores}; "
+            f"wrote {settings.output_dir / METRICS_FILE}\n"
+        )
+        return 0
+    if getattr(args, "alerts", None) is not None:
+        raise ConfigError("--alerts belongs to the rj23 schedule (--preset rj23-<scenario>)")
     split = _split_request(args)
     metrics = run_command(command, settings, resume=args.resume, split=split)
     shown = {**metrics, "seconds_per_step": metrics.get("timing", {}).get("seconds_per_step")}
@@ -377,7 +416,14 @@ def _train(args: argparse.Namespace) -> int:
 
 #: ``train-supervised --preset`` choices (``presets.PRESETS``; spelled out here so that
 #: ``--help`` does not import the training stack).
-_TRAINING_PRESETS: Final = ("carrasco2021", "carrasco2021-no-features")
+_TRAINING_PRESETS: Final = (
+    "carrasco2021",
+    "carrasco2021-no-features",
+    "rj23-full",
+    "rj23-cropped",
+    "rj23-lowres",
+    "rj23-multiscale",
+)
 
 _TRAINING_HELP = {
     "pretrain": "SimCLR pretraining of an encoder (legacy iter_clr.py)",
@@ -396,7 +442,15 @@ def _add_split_arguments(sub: argparse.ArgumentParser) -> None:
         help="a stored decision splits file (make-splits; configs/splits/): train on one of "
         "its parts instead of Train, select on its selection part and predict its "
         "evaluation part; test is not loaded (carrasco2021 schedule; "
-        "docs/evaluation-protocol.md)",
+        "docs/evaluation-protocol.md). With --preset rj23-*: the object splits "
+        "(make-object-splits) of the raw-alerts layout, required",
+    )
+    sub.add_argument(
+        "--alerts",
+        type=Path,
+        metavar="CSV",
+        help="rj23 only: the alert table the object splits were drawn from (default: the "
+        "layout's own, grouped by oid)",
     )
     part = sub.add_mutually_exclusive_group()
     part.add_argument(
@@ -410,7 +464,8 @@ def _add_split_arguments(sub: argparse.ArgumentParser) -> None:
         "--screen",
         action="store_true",
         help="with --splits: the 250/250 screen: train on Train, select on the selection "
-        "half of Validation, predict the decision half (Validation indices)",
+        "half of Validation, predict the decision half (Validation indices); rj23: a "
+        "decision run (stop on the selection half, predict both halves; Test unread)",
     )
 
 
@@ -452,7 +507,10 @@ def _add_training_commands(
                 help="named settings applied after the legacy protocol and before --hparams, "
                 "--config and --set: carrasco2021 is the paper replication of Carrasco-Davis "
                 "et al. 2021 (float input, Adam (0.9, 0.999), the iteration schedule; ADR "
-                "0003), carrasco2021-no-features its without-features variant",
+                "0003), carrasco2021-no-features its without-features variant; rj23-<scenario> "
+                "trains RJ23's classifier of that input on a raw-alerts layout with their "
+                "regime (Keras Adam, class-uniform batches, macro-F1 patience; ADR 0016) and "
+                "needs --splits",
             )
             _add_split_arguments(sub)
         if command in ("linear-eval", "fine-tune"):

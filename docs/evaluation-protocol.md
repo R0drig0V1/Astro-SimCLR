@@ -401,6 +401,23 @@ item by item. The code is in
 `bench_report`, and `stats.paired_bootstrap_macro_f1`). The design choices are in ADR 0008.
 Everything is built and tested on synthetic tables. The real `oid`s come from task 3.1.
 
+### Training an RJ23 scenario on the benchmark (task 3.4b)
+
+`astro-simclr train-supervised --preset rj23-<scenario> --splits OBJECT_SPLITS` trains one
+of RJ23's four classifiers on a `raw-alerts` layout with their regime (ADR 0016) and writes
+a benchmark run for `bench-report` (below). Two protocols:
+
+- **replication** (no `--screen`, the paper protocol, as 2.4 for CD21): train on Train,
+  stop and select on the **whole Validation** (macro-F1 every 500 steps from step 0,
+  patience 5, a 100k cap), predict Validation and Test;
+- **decision** (`--screen`): stop on the **selection** half of Validation, predict the
+  selection and decision halves; Test is never read. Any phase-3 decision stops on the
+  selection half and decides on the decision half.
+
+Each run keeps the weights at the stop (primary, as RJ23) and at the best validation, and
+writes both sets of predictions; `metrics.json["schedule"]` records the history, whether the
+run stopped by patience or hit the cap (`capped`), and the stop and best steps.
+
 ### The input: an alert table
 
 The input is a CSV with one row per labelled alert. Task 3.1's index can feed it directly.

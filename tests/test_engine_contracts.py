@@ -30,6 +30,7 @@ from lightning.pytorch.trainer.connectors.accelerator_connector import _set_torc
 from torch import nn
 from torch.utils.data import DataLoader
 
+from astro_simclr import rj23_regime
 from astro_simclr.config import ConfigError, Settings
 from astro_simclr.engine import (
     CHECKPOINT_FORMAT,
@@ -338,6 +339,7 @@ def test_reserved_streams_are_the_augmentations_numbers() -> None:
         "aug_feature_jitter": class_augment.JITTER_STREAM,
         "synthetic_bogus": class_augment.SYNTHETIC_STREAM,
         "flux_rescale": flux_rescale.FLUX_STREAM,
+        "rj23_class_uniform": rj23_regime.STREAM,
     }
     assert len(set(RESERVED_STREAMS.values())) == len(RESERVED_STREAMS)
 

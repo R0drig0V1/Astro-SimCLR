@@ -20,7 +20,7 @@ the same legacy files. The notebooks in `jupyter_examples/` import the legacy co
 them from a checkout of the tag.
 
 ```
-cli ──► config, hparams (subcommand defaults, legacy key mapping), presets (carrasco2021)
+cli ──► config, hparams (subcommand defaults, legacy key mapping), presets (carrasco2021, rj23-*)
  │
  ├──► data ──────► augmentations (protocol)      registry of transforms (1.5)
  │                                    ▲
@@ -35,7 +35,10 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  └──► engine (phase 4: the plain-PyTorch loop's contracts; imports no Lightning) ──► config
  └──► runs (phase 4, A0: run identity, manifest.json, layout, retention) ──► config, data
 
-rj23_model (engine-free nn.Modules, not wired yet: task 3.4b) ──► data.rj23_input
+cli train-supervised --preset rj23-* ──► training.rj23 (thin Lightning adapters, task 3.4b)
+   ──► rj23_regime (schedule policy, class-uniform sampler, Keras Adam: engine-free)
+   ──► rj23_data (parts from a raw-alerts layout + object splits) ──► data.rj23_input, protocol
+   ──► rj23_model (engine-free nn.Modules) ──► data.rj23_input
 ```
 
 Conventions shared by every module:
@@ -124,6 +127,22 @@ of one run.
   `eval_batch_size` must be 64 (the selection loss is TF's mean of batch-64 means),
   `early_stopping` false and `num_workers` 0 (`ConfigError` otherwise). The
   `carrasco2021` preset (task 2.2c, see `presets`) sets them.
+- **Task 3.4b fields** (the `rj23` schedule; see `training`, "The rj23 schedule"; ADR 0016).
+  `schedule: rj23` reuses `max_steps` (the hard cap), `val_every_n_steps` (the validation
+  interval, step 0 included) and `patience` (in validations), and adds:
+
+  | Field | Default | Meaning |
+  |---|---|---|
+  | `rj23_scenario` | `full` | the input and its Table 2 classifier: `full`, `cropped`, `lowres`, `multiscale` (`RJ23_SCENARIOS`) |
+  | `rj23_bn_position` | `after_concat` | ADR 0013's BN placement; `before_concat` is the sensitivity arm |
+  | `rj23_keep` | `stop` | whose predictions are primary: the weights at the stop (RJ23's) or the best validation's; both are written |
+  | `rj23_large_values` | `paper` | `rj23_input.normalise(large_values=...)` (ADR 0009) |
+
+  Under `rj23`, `supervised_model: rj23`, `with_features: false`, `monitor: macro_f1_val`,
+  `early_stopping: false`, `num_workers: 0`, `patience >= 1`, and `max_steps` and
+  `checkpoint_every_n_steps` multiples of `val_every_n_steps` are required; the `rj23_*`
+  fields changed, or `supervised_model: rj23`, under another schedule are errors
+  (`ConfigError`). The `rj23-<scenario>` presets set them.
 - **Task 2.2c fields** (read by `paper_stamp_classifier` only; ADR 0003):
 
   | Field | Default | Meaning |
@@ -188,6 +207,11 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   PATH`; `train-supervised` also `--preset carrasco2021|carrasco2021-no-features` (task
   2.2c, see `presets`) and `--splits FILE --fold K | --screen` (task 2.5-infra, a split
   run; see `protocol`; `--fold`/`--screen` without `--splits`, or the reverse, exit 2).
+  With `--preset rj23-<scenario>` (or any `schedule: rj23`; task 3.4b) the run goes to
+  `training.rj23.run_rj23`: `--splits` is then the object-splits file of the `raw-alerts`
+  layout (required), `--screen` makes it a decision run, `--fold` is refused, and
+  `--alerts CSV` names the alert table the splits were drawn from (default: the layout's
+  own); `--alerts` outside `rj23` exits 2.
   Settings resolve as: `Settings` defaults → the subcommand's legacy
   protocol (`hparams.COMMAND_DEFAULTS`) → `--preset` → `--hparams` → `--config` → `--set` →
   the explicit flags
@@ -743,6 +767,64 @@ into training.
   and the arm; seeded determinism of builds, losses and gradients under
   `use_deterministic_algorithms`; eval logits and a training step on MPS and CUDA where
   present against the CPU.
+
+## `rj23_regime` and `rj23_data` (task 3.4b)
+
+The training regime of RJ23 as **engine-free** objects (the phase-4 rule from B0 on: no
+Lightning; the Lightning adapter is `training.rj23`, the plain engine of phase 4 adapts the
+same objects). ADR 0016 pins what the sources leave open.
+
+`src/astro_simclr/rj23_regime.py`:
+
+- `RJ23Schedule(eval_every=500, patience=5, max_steps=100_000, mode="max")`, the schedule
+  policy. `decide(step, history) -> RJ23Decision` is a pure function of the optimizer steps
+  done and the monitored values so far (`step // eval_every + 1` of them: validation `k`
+  is step `k·eval_every`, step 0 the initial weights). The decision: `validate` (the step
+  is on the grid), `stop`, `keep` (`{"best"}` at a new strict best, `"stop"` at the stop),
+  `reason` (`patience` or `cap`; `capped`), `best_step`, `best_value`, `wait`. Patience is
+  Keras' / Lightning's `EarlyStopping` with `min_delta=0`, counted in validations; NaN never
+  improves; `max_steps` must be a multiple of `eval_every`, so the cap step is validated,
+  and a stop there that patience did not cause is `cap`. A history that goes on past a
+  stop is an error.
+- `ClassUniformStream(labels, batch_size, seed, *, n_classes=None)`, RJ23's
+  `sample_from_datasets` with uniform weights: each item draws its class uniformly, then an
+  item of that class uniformly (with replacement). `batch(b)` uses
+  `engine.randomness.host_generator(seed, b, STREAM)` only (`STREAM` = 5,
+  `RESERVED_STREAMS["rj23_class_uniform"]`), so a batch is a pure function of `(seed, b)`
+  and a resume
+  at step `s` (the stored position) continues the stream exactly; `iterate(start)`,
+  `state()` (the definition a resume checks), `batches_per_pass` (`ceil(n / batch)`, the
+  logging epoch). Not CD21's tiling (`training.tiling`).
+- `KerasAdam(params, lr, betas=(0.9, 0.999), eps=1e-7)` and `keras_adam(params, lr)`:
+  Keras' update, `θ −= lr·sqrt(1 − β2^t)/(1 − β1^t) · m / (sqrt(v) + ε)`, ε added to the
+  uncorrected `sqrt(v)` (torch's `Adam` adds it to `sqrt(v̂)`).
+- `predict_probabilities(model, images, positions, batch_size)`: softmax in eval mode under
+  `no_grad`, in fixed batches, mode restored; float32 on the CPU.
+
+`src/astro_simclr/rj23_data.py`: `rj23_parts(data, splits, scenario, *, mode, table,
+large_values)` verifies the object splits (`protocol.object_splits`) against the alert table
+(default `protocol.alerts.alert_table_from_raw(data)`, grouped by `oid`; a CSV table for
+another group key), checks that every alert of a part is in the layout with the same label,
+and builds the parts of the protocol (`MODE_PARTS`):
+
+| Mode | Train on | Stop and select on | Evaluated (stage names) |
+|---|---|---|---|
+| `replication` (the paper protocol) | `Train` | the whole `Validation` | `Validation` (`val`), `Test` (`test`) |
+| `decision` (a phase-3 decision; `--screen`) | `Train` | the `selection` half | `selection`, `decision`; `Test` never read |
+
+Each `RJ23Part` holds the scenario's view `(N, C, H, W)` float32
+(`rj23_input.rj23_views` → `channels_first`), the unit-sphere position `(N, 3)`, the labels
+and the `candid`s (ascending).
+
+**Tested** (`tests/test_rj23_regime.py`, `tests/test_rj23_data.py`): the grid from step 0;
+the stop at patience on a strict improvement (an equal value is no improvement), the wait
+reset, NaN, `min` mode, purity, the cap flag (and patience at the cap step), refusals of an
+inconsistent history and bad values; the sampler's class shares (1/3 each on a 600/30/3
+split, within 5 sd of 51,200 draws), within-class uniformity, determinism and a resume from
+a stored position; Keras Adam against two hand-computed steps, against torch's placement
+(they differ by 6e-7 at step 1) and equal to torch's Adam with ε = 0; the parts of both
+modes for every scenario (shapes, counts, `candid` order), a CSV table, a label mismatch,
+an alert missing from the layout, splits of another table or of other classes.
 
 ## `oracle` (task 2.2b)
 
@@ -1367,6 +1449,58 @@ module (training only), the settings and the preset deviation; a p4 run on every
 accelerator; and in `tests/test_split_runs.py` an augmented fold run (the fits are the
 fold's training part's) and its exact resume.
 
+### The `rj23` schedule (task 3.4b)
+
+`src/astro_simclr/training/rj23.py`: thin Lightning adapters of `rj23_regime` and
+`rj23_data` (ADR 0016), run by `train-supervised --preset rj23-<scenario> --splits
+OBJECT_SPLITS [--screen] [--alerts CSV]`.
+
+- `RJ23Module(scenario, n_classes, bn_position, lr)`: `rj23_model.build_rj23_classifier`,
+  unweighted cross-entropy (`loss_train`), `keras_adam`. No validation step.
+- `RJ23DataModule(parts, train, batch_size, seed, n_classes, identity)`: every part on the
+  training device; the training loader yields `ClassUniformStream` batch `s` at global step
+  `s` (an epoch is `batches_per_pass` steps, for logging only), and its checkpoint state is
+  the stream definition plus the run identity (splits SHA-256, mode, scenario): a resume of
+  another run is a `ConfigError`, of another stream (data, batch size, seed) a `DataError`.
+- `RJ23ScheduleCallback(schedule, datamodule, selection, ...)`: Lightning's validation loop
+  is off (`limit_val_batches=0`); the callback computes the selection part's macro-F1
+  (`predict_probabilities`, `benchmark_metrics.macro_f1`) after step 0 (`on_train_start`)
+  and after every grid step (`on_train_batch_end`), calls `decide`, snapshots the kept
+  weights, sets `trainer.should_stop`, and writes `last.ckpt` after the validations of
+  every `checkpoint_every_n_steps` steps and at the stop. Its state (schedule, selection
+  part, history, snapshots) is in `last.ckpt`; a resumed run that had stopped trains
+  nothing.
+- `run_rj23(settings, RJ23Request(splits, mode, alerts), *, resume, callbacks,
+  progress_bar)`: the run; a fit that ends before the policy stops it (interrupted) is a
+  `ConfigError` that says to resume. Outputs: `checkpoints/{last,stop,best}.ckpt` (`stop`
+  and `best` are plain dicts of the weights and step, read with `weights_only=True`),
+  `predictions_<stage>.npz` of the primary keep (`rj23_keep`) and
+  `predictions_<stage>_<other keep>.npz`, index = `candid`, and `metrics.json`: the
+  `bench-report` contract (`seed`, `machine`, `benchmark.splits_sha256`,
+  `predictions.<stage>.file`), `benchmark` (splits, mode, alerts, per-part class counts),
+  `schedule` (`history` of `[step, macro-F1]`, `stopped_by`, `capped`, `stop_step`,
+  `best_step`), `keep` (both keeps' step, checkpoint, evaluation and predictions),
+  `evaluation` (the primary's: accuracy, balanced accuracy, macro-F1, recalls, confusion
+  counts), `preset`, `data`, `config`, `versions`, `timing`, and `run` (run id, attempt,
+  config hash). `manifest.json` is written around the fit as for `run_command`
+  (`runs.record.start_run`, ADR 0015): a replication run hashes its object splits through
+  `object_splits=` (split part `whole`), a decision run passes them as a screen.
+
+**Resume** restores the weights, the optimizer, the step, the history and the snapshots;
+the batch stream continues exactly. Lightning does not restore the global torch generator,
+so dropout masks after a resume differ (the plain engine's checkpoint keeps every stream).
+
+**Tested** (`tests/test_rj23_training.py`, CPU, a synthetic 5-class `raw-alerts` layout):
+an end-to-end run (the history agrees with the policy, the `bench-report` contract read by
+`benchmark_report`, both keeps written, the preset deviations); the stop weights reproduce
+the stored predictions; with scripted validations, the stop at patience keeping the stop
+and the best weights (equal to the weights after those steps, and different), `rj23_keep:
+best`, the cap (`capped`, best = stop = cap); a decision run; a CSV alert table; a crash at
+step 5 resumed from step 4 seeing the uninterrupted batches and history, a finished run
+resumed training nothing, refusals of another seed and another protocol; an early end that
+says to resume; the adapter's refusals; the presets against `RJ23_TABLE2` and the input
+constants; the settings rules; the CLI.
+
 ## `engine` (phase 4, task B0; ADR 0014)
 
 `src/astro_simclr/engine/`: the contracts of the plain-PyTorch training loop that replaces
@@ -1416,10 +1550,22 @@ Decisions and provenance: ADR 0003.
   `aug_min_r2: 0.5` the same way (ADR 0006), row C7 `flux_rescale: 0.0`,
   `flux_k_min: 0.5`, `flux_k_max: 1.5` (ADR 0007), and ADR 0010 `fp32_precision: ieee`, so
   that a TF32 run is a deviation.
+- `PRESETS["rj23-<scenario>"]` (`RJ23_PRESETS`, task 3.4b; ADR 0016), one per scenario
+  of RJ23 (`full`, `cropped`, `lowres`, `multiscale`): `supervised_model: rj23`, the
+  scenario, `rj23_bn_position: after_concat`, `rj23_large_values: paper`,
+  `with_features: false`; `optimizer: Adam` (built as Keras' Adam) with Table 2's
+  learning rate (`RJ23_LEARNING_RATES`: 7.589e-4, 3.4627e-4, 1.125e-3, 7.445e-4; a test
+  keeps them equal to `rj23_model.RJ23_TABLE2`), batch 256, `num_workers` 0;
+  `schedule: rj23`, `monitor: macro_f1_val`, validation every 500 steps, patience 5,
+  `max_steps` 100000, no EarlyStopping, `rj23_keep: stop`; `fp32_precision: ieee`. The
+  dataset and the splits are not part of a preset. One preset per scenario so that the
+  learning rate is the preset's and another one is a recorded deviation.
+  `configs/phase3/rj23-<scenario>.yaml` hold the same values with their provenance.
 - `preset_for(settings)`: the preset of a `carrasco2021`-schedule run (by `with_features`),
-  else `None`. `preset_report(settings)`: `name`, `faithful` (no preset key changed),
-  `deviations` (key → `{value, preset}`) and `diagnostics` (the flags turned on), written
-  to `metrics.json["preset"]`. Seed, paths, accelerator and `checkpoint_every_n_steps` are
+  `rj23-<rj23_scenario>` for an `rj23` run, else `None`. `preset_report(settings)`:
+  `name`, `faithful` (no preset key changed), `deviations` (key → `{value, preset}`) and
+  `diagnostics` (the flags turned on; `carrasco2021` only), written to
+  `metrics.json["preset"]`. Seed, paths, accelerator and `checkpoint_every_n_steps` are
   not compared.
 
 The pilot (task 2.2c, one seed on the GPU machine):
@@ -1525,6 +1671,11 @@ class's share of failed PSF fits) and `preset`
 (`presets.preset_report`: `name`, `faithful`, `deviations`, `diagnostics`). A resumed
 `carrasco2021` run is exact: the data stream is a function of the step, and the horizon
 and best weights come back from `last.ckpt`.
+
+**`rj23` (task 3.4b).** `run_command` refuses `schedule: rj23` (`ConfigError`): those runs
+go through `training.rj23.run_rj23` (see `training`, "The rj23 schedule"), which reuses
+`check_accelerator`, `dataset_path`, `resolve_resume`, `machine_record` (the `machine`
+block) and `json_safe` (non-finite floats to `null`), public for it.
 
 **Timing (task 2.2c).** Every run's metrics hold `timing`: `fit_seconds` (wall clock from
 the first step to the end of the fit loop, validation included), `steps` (the optimizer
@@ -1639,12 +1790,14 @@ calls `record.start_run` and `RunRecord.end` around the fit (task A1).
   NaN and infinity. `semantic_config(command, settings)` returns
   `{"canonical_version": 1, "command", "settings"}`: the resolved settings (defaults
   materialised) without `NON_SEMANTIC_KEYS` (`accelerator`, `data_dir`, `output_dir`,
-  `progress_bar_refresh_rate`, `checkpoint_every_n_steps`, each with its reason in the code)
+  `progress_bar_refresh_rate`, `checkpoint_every_n_steps`, `rj23_keep` (task 3.4b: both
+  keeps are computed, the setting only names the primary), each with its reason in the code)
   and `IDENTITY_KEYS` (`seed`, `pretrained`, which are run-id components). `config_sha256`
   is its SHA-256.
   - `HASH_NEUTRAL_DEFAULTS` leaves semantic fields out at one value: `num_workers: 0`
     (with workers, per-worker seeding changes the augmentation draws, so any other count is
-    hashed), and fields added later at the value that keeps old hashes.
+    hashed), and fields added later at the value that keeps old hashes (task 3.4b:
+    `rj23_scenario: full`, `rj23_bn_position: after_concat`, `rj23_large_values: paper`).
   - `semantic_config_from_plain(command, view, complete=True)` and `semantic_diff` are the
     hook of the nested config (4.2): lower to the flat view, then compare hashes.
   - The pinned hashes of the `carrasco2021` presets, of eight 2.5 variants and of the two
@@ -1690,7 +1843,9 @@ calls `record.start_run` and `RunRecord.end` around the fit (task A1).
   - a finished one deletes `last`, and keeps `best` only for `pretrain`;
   - records, results, logs, figures and unknown files are kept.
 - **`record`** (task A1): `start_run(command, settings, data=..., machine=..., split=...,
-  pretrained_file=..., resumed=...)` computes the identity, with the machine class from
+  object_splits=..., pretrained_file=..., resumed=...)` computes the identity
+  (`object_splits`, task 3.4b: an `rj23` replication run's object-splits file, hashed as
+  its splits with the split part `whole`; at most one of `split` and `object_splits`), with the machine class from
   the Trainer's device and `engine: lightning`, and writes `manifest.json` as `queued` then
   `running`. `RunRecord.end(status)` writes `finished`, `failed` or `cancelled`, once.
   Attempts, since `--output-dir` keeps only the latest attempt:

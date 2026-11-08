@@ -118,7 +118,7 @@ import torch
 from lightning.pytorch.callbacks import Callback
 
 from astro_simclr.augmentations import resolve_augmentation_name
-from astro_simclr.config import CARRASCO2021, ConfigError, Settings, settings_to_plain
+from astro_simclr.config import CARRASCO2021, RJ23, ConfigError, Settings, settings_to_plain
 from astro_simclr.data.prepared import is_prepared, load_prepared, read_meta
 from astro_simclr.data.schema import LABEL_NAMES, SPLITS, DataError
 from astro_simclr.paper_model import PAPER_CROP
@@ -171,7 +171,9 @@ __all__ = [
     "AcceleratorError",
     "check_accelerator",
     "dataset_path",
+    "json_safe",
     "load_pretrained",
+    "machine_record",
     "paper_module",
     "pretrained_checkpoint",
     "resolve_resume",
@@ -302,6 +304,20 @@ def load_pretrained(path: Path | None) -> SimCLRModule:
     if "encoder_name" not in hparams or "projection_dim" not in hparams:
         raise ConfigError(f"{path} is not a pretrain (SimCLR) checkpoint")
     return SimCLRModule.load_from_checkpoint(path, map_location="cpu", weights_only=True)
+
+
+def _refuse_rj23(settings: Settings) -> None:
+    """The ``rj23`` schedule has its own runner, ``training.rj23.run_rj23``.
+
+    Raises:
+        ConfigError: for ``schedule: rj23``.
+    """
+    if settings.schedule == RJ23:
+        msg = (
+            f"schedule {RJ23} trains through training.rj23.run_rj23: `astro-simclr "
+            "train-supervised --preset rj23-<scenario> --splits OBJECT_SPLITS`"
+        )
+        raise ConfigError(msg)
 
 
 def _check_names(settings: Settings) -> None:
@@ -654,14 +670,14 @@ def _build(
     return module, datamodule, ClassifierModule.MONITORABLE, None
 
 
-def _finite(value: object) -> object:
+def json_safe(value: object) -> object:
     """Recursively replace non-finite floats with None (strict JSON has no NaN)."""
     if isinstance(value, float):
         return value if math.isfinite(value) else None
     if isinstance(value, dict):
-        return {key: _finite(item) for key, item in value.items()}
+        return {key: json_safe(item) for key, item in value.items()}
     if isinstance(value, list | tuple):
-        return [_finite(item) for item in value]
+        return [json_safe(item) for item in value]
     return value
 
 
@@ -681,7 +697,7 @@ def _data_info(path: Path) -> dict[str, Any]:
     }
 
 
-def _machine(trainer: L.Trainer) -> dict[str, Any]:
+def machine_record(trainer: L.Trainer) -> dict[str, Any]:
     """The machine and build a run used (task 2.3: one comparison never mixes them).
 
     The device is the one Lightning chose (``trainer.strategy.root_device``); no device is
@@ -741,7 +757,7 @@ def _base_metrics(
             "lightning": L.__version__,
         },
         "accelerator": type(trainer.accelerator).__name__,
-        "machine": _machine(trainer),
+        "machine": machine_record(trainer),
         "data": _data_info(data),
         "config": settings_to_plain(settings),
     }
@@ -1051,7 +1067,8 @@ def run_command(
         AcceleratorError: if the accelerator is not available.
         ConfigError: on an invalid name (augmentation, model, monitor), a missing or wrong
             pretrained checkpoint, a missing ``--resume`` checkpoint, or a ``carrasco2021``
-            schedule with another command or model (and the paper model without it); with
+            schedule with another command or model (and the paper model without it), or
+            the ``rj23`` schedule (``training.rj23.run_rj23`` runs it); with
             ``split``, another command or schedule, or a fold the file does not have; a
             ``carrasco2021`` resume from a checkpoint of another split run (splits file,
             mode or fold), or across a split run and a normal run.
@@ -1060,6 +1077,7 @@ def run_command(
             a splits file that is malformed or does not belong to the prepared data
             (``SplitsError``).
     """
+    _refuse_rj23(settings)
     check_accelerator(settings.accelerator)
     _check_names(settings)
     # Before any module is built (ADR 0010): torch's default would run TF32 convolutions.
@@ -1096,7 +1114,7 @@ def run_command(
         command,
         settings,
         data=data,
-        machine=_machine(trainer),
+        machine=machine_record(trainer),
         split=split,
         pretrained_file=pretrained_checkpoint(settings.pretrained),
         resumed=ckpt_path is not None,
@@ -1109,7 +1127,7 @@ def run_command(
         metrics["timing"] = timer.report()
         built = (module, datamodule, checkpoint)
         _add_results(metrics, command, settings, trainer, built, paper_data, split_run)
-        cleaned = cast(dict[str, Any], _finite(metrics))
+        cleaned = cast(dict[str, Any], json_safe(metrics))
         text = json.dumps(cleaned, indent=2, allow_nan=False) + "\n"
         (out / METRICS_FILE).write_text(text, encoding="utf-8")
     except (KeyboardInterrupt, SystemExit):

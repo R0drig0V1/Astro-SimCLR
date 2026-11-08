@@ -30,6 +30,17 @@ the preset on purpose: ``adam_betas: paper``, ``dropout_active: true``,
 recorded by :func:`preset_report` in the run's ``metrics.json["preset"]`` (``faithful``
 false, and the key in ``deviations``), so a diagnostic run can never pass for the
 replication.
+
+**The ``rj23-<scenario>`` presets** (task 3.4b; ADR 0016), one per input of Reyes-Jainaga et
+al. 2023 (``full``, ``cropped``, ``lowres``, ``multiscale``): the scenario's Table 2
+classifier (``supervised_model: rj23``, ``rj23_model.RJ23_TABLE2``) with its Table 2 learning
+rate, Keras' Adam (``optimizer: Adam`` is built by ``rj23_regime.keras_adam``: epsilon 1e-7,
+Keras' placement), batch 256 drawn class-uniformly per sample, and the ``rj23`` schedule:
+the validation macro-F1 every 500 steps from step 0, patience 5, a 100,000-step cap, the
+weights at the stop as the primary result (``rj23_keep: stop``). One preset per scenario,
+named as the scenario's ``VIEW_NAMES`` entry, so that the learning rate belongs to the
+preset and a run with another one is recorded as a deviation (``preset_report``). The data
+(``dataset``: a ``raw-alerts`` layout) and the splits (``--splits``) are not part of it.
 """
 
 from __future__ import annotations
@@ -38,13 +49,23 @@ import dataclasses
 from collections.abc import Mapping
 from typing import Any, Final
 
-from astro_simclr.config import CARRASCO2021, CARRASCO2021_EVAL_BATCH_SIZE, Settings
+from astro_simclr.config import (
+    CARRASCO2021,
+    CARRASCO2021_EVAL_BATCH_SIZE,
+    RJ23,
+    RJ23_MODEL,
+    RJ23_MONITOR,
+    RJ23_SCENARIOS,
+    Settings,
+)
 
 __all__ = [
     "CARRASCO2021_NO_FEATURES",
     "CARRASCO2021_PRESET",
     "DIAGNOSTICS",
     "PRESETS",
+    "RJ23_LEARNING_RATES",
+    "RJ23_PRESETS",
     "preset_for",
     "preset_report",
 ]
@@ -102,10 +123,53 @@ _CARRASCO2021: Final[Mapping[str, object]] = {
     "fp32_precision": "ieee",
 }
 
+#: RJ23's Table 2 learning rates per scenario, as ``rj23_model.RJ23_TABLE2`` records them
+#: (repeated here so that the CLI does not import torch to resolve settings; a test keeps
+#: them equal).
+RJ23_LEARNING_RATES: Final[Mapping[str, float]] = {
+    "full": 7.589e-4,
+    "cropped": 3.4627e-4,
+    "lowres": 1.125e-3,
+    "multiscale": 7.445e-4,
+}
+
+
+def _rj23(scenario: str) -> Mapping[str, object]:
+    return {
+        # Model and input (tasks 3.3, 3.4; ADRs 0009, 0013).
+        "supervised_model": RJ23_MODEL,
+        "rj23_scenario": scenario,
+        "rj23_bn_position": "after_concat",
+        "rj23_large_values": "paper",
+        "with_features": False,
+        # Optimizer (Keras Adam, task 3.4b) and the class-uniform batch of 256.
+        "optimizer": "Adam",
+        "lr": RJ23_LEARNING_RATES[scenario],
+        "batch_size": 256,
+        "num_workers": 0,
+        # Schedule (task 3.4b): macro-F1 every 500 steps from step 0, patience 5, 100k cap.
+        "schedule": RJ23,
+        "monitor": RJ23_MONITOR,
+        "val_every_n_steps": 500,
+        "patience": 5,
+        "max_steps": 100_000,
+        "early_stopping": False,
+        "rj23_keep": "stop",
+        # Precision (ADR 0010), as the carrasco2021 presets.
+        "fp32_precision": "ieee",
+    }
+
+
+#: Preset name -> settings of the four RJ23 scenarios (``rj23-full``, ...).
+RJ23_PRESETS: Final[Mapping[str, Mapping[str, object]]] = {
+    f"{RJ23}-{scenario}": _rj23(scenario) for scenario in RJ23_SCENARIOS
+}
+
 #: Preset name -> the settings it sets (``train-supervised`` only).
 PRESETS: Final[Mapping[str, Mapping[str, object]]] = {
     CARRASCO2021_PRESET: _CARRASCO2021,
     CARRASCO2021_NO_FEATURES: {**_CARRASCO2021, "with_features": False},
+    **RJ23_PRESETS,
 }
 
 #: The documented diagnostic flags of the ``carrasco2021`` presets (plan, task 2.4), as the
@@ -119,11 +183,14 @@ DIAGNOSTICS: Final[Mapping[str, object]] = {
 
 
 def preset_for(settings: Settings) -> str | None:
-    """The preset a run's settings belong to: by schedule and ``with_features``.
+    """The preset a run's settings belong to: by schedule and ``with_features`` / scenario.
 
     A ``carrasco2021`` schedule run is judged against ``carrasco2021`` (with features) or
-    ``carrasco2021-no-features``; any other run has no preset (``None``).
+    ``carrasco2021-no-features``, an ``rj23`` run against ``rj23-<rj23_scenario>``; any
+    other run has no preset (``None``).
     """
+    if settings.schedule == RJ23:
+        return f"{RJ23}-{settings.rj23_scenario}"
     if settings.schedule != CARRASCO2021:
         return None
     return CARRASCO2021_PRESET if settings.with_features else CARRASCO2021_NO_FEATURES
@@ -135,8 +202,8 @@ def preset_report(settings: Settings) -> dict[str, Any] | None:
     Returns ``None`` outside a preset (:func:`preset_for`), else ``name``, ``faithful``
     (no preset key changed), ``deviations`` (key -> ``{"value", "preset"}``, in preset
     order) and ``diagnostics`` (the :data:`DIAGNOSTICS` keys among them that are turned
-    on). Keys outside the preset (seed, paths, accelerator, checkpoint interval) are not
-    compared.
+    on; ``carrasco2021`` presets only, empty for ``rj23``). Keys outside the preset (seed,
+    paths, accelerator, checkpoint interval) are not compared.
     """
     name = preset_for(settings)
     if name is None:
@@ -147,7 +214,11 @@ def preset_report(settings: Settings) -> dict[str, Any] | None:
         for key, expected in PRESETS[name].items()
         if values[key] != expected
     }
-    diagnostics = [key for key, on in DIAGNOSTICS.items() if values[key] == on]
+    diagnostics = (
+        [key for key, on in DIAGNOSTICS.items() if values[key] == on]
+        if settings.schedule == CARRASCO2021
+        else []
+    )
     return {
         "name": name,
         "faithful": not deviations,

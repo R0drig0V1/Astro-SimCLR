@@ -33,7 +33,14 @@ __all__ = ["RESERVED_STREAMS", "device_generator", "host_generator"]
 #: keeps the two-word ``[seed, step]`` of task 2.5-models and has no number. Phase 5's
 #: SimCLR views take new numbers here.
 RESERVED_STREAMS: Final = MappingProxyType(
-    {"aug_noise": 1, "aug_feature_jitter": 2, "synthetic_bogus": 3, "flux_rescale": 4}
+    {
+        "aug_noise": 1,
+        "aug_feature_jitter": 2,
+        "synthetic_bogus": 3,
+        "flux_rescale": 4,
+        # rj23_regime.ClassUniformStream (task 3.4b): the classes and items of each batch.
+        "rj23_class_uniform": 5,
+    }
 )
 
 

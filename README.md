@@ -149,6 +149,17 @@ The method, the timings and the store layout are in [docs/data.md](docs/data.md)
 alerts") and [ADR 0011](docs/decisions/0011-raw-alert-store.md). The other phase-3 tools are
 `make-object-splits`, `bench-report` and `leakage-audit`.
 
+RJ23's four classifiers train on a `raw-alerts` layout and its object splits with their
+regime (Keras Adam, class-uniform batches, the validation macro-F1 every 500 steps with
+patience 5; [ADR 0016](docs/decisions/0016-rj23-training-regime.md)); `--screen` stops on
+the selection half instead of the whole Validation:
+
+```bash
+uv run astro-simclr train-supervised --preset rj23-multiscale --splits SPLITS.json \
+    --data-dir DATA --set dataset=R5 --accelerator cuda --seed 0 --output-dir OUT/rj23-ms/seed-0
+uv run astro-simclr bench-report OUT/rj23-ms/seed-* --splits SPLITS.json --alerts ALERTS.csv
+```
+
 ## Repository map
 
 ```
