@@ -457,6 +457,22 @@ within noise). The prototypes are hand-written p4/p4m layers that run as plain `
 | C3 | Active dropout (a genuine change: M1 had none) and β tuning; the calibration error (ECE) | Regularisation, calibration |
 | C4 | Unbalanced training with post-hoc logit adjustment | Prior shift without tiling; needs its own unbalanced 5-seed baseline |
 
+| C5 | **Class-preserving augmentation** (training only): per-channel Gaussian noise scaled to each crop's own background σ, then the per-channel min-max again; small jitter on the continuous features | SN has 1,396 Train stamps against ~14.5k for AGN and VS, so tiling repeats each SN about 10×. Noise makes the copies differ. Validation SN recall is 0.876, the weakest class |
+| C6 | **Synthetic hot-pixel Bogus**: the template of a real stamp; science = template + noise + a 1–2 px spike at the centre (sharper than the PSF); difference = noise + the same spike; the features of a real Bogus plus jitter | Half the inspected Bogus are this type. The spike must stay sharper than the PSF, or the synthetic Bogus look like Asteroids (same empty template) |
+
+C5 and C6 come from a visual inspection of the Train stamps per class and channel and the
+replication's **validation** confusion matrix (2026-11-08):
+- SN → Asteroid 37 and SN → Bogus 25 of 2,500;
+- AGN → VS 26;
+- the Bogus errors are spread over the other classes.
+
+Stamps of other classes are **never relabelled** as Bogus by adding an artefact: an SN with a
+cosmic ray is still an SN. Later idea: fake SN injected on real host galaxies (the surveys'
+standard technique), aimed at SN → Asteroid.
+
+**User decision (2026-11-08):** C5 and C6 run alongside the architecture line, not only if
+it plateaus.
+
 **Reference line, not an ablation:** a seed ensemble of 5 runs (no extra training).
 
 FFT input (Carvajal et al. 2025) is left out: its gains are on satellites, which this
