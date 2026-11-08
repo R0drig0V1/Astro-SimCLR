@@ -92,8 +92,9 @@ uvx copier@9.19.1 update           # pull python-template improvements (clean tr
      number in `RESERVED_STREAMS`; never from a global or unseeded generator.
   3. Wire it into each engine with a thin adapter (today: the Lightning module; with 4.1:
      the plain `Task`), and test the pure function directly.
-  4. Add it to the 4.7(a) CPU differential test's parametrisation once that test exists:
-     the flag must give bit-identical runs on both engines.
+  4. Add it to the 4.7(a) CPU differential test's parametrisation (`_FLAGS` in
+     `tests/test_engine_differential.py`): the flag must give bit-identical runs on both
+     engines.
   5. If it changes the numbers of an existing config, say so in the PR (and bump
      `numerics_epoch` once task A0 lands); a non-faithful default is a preset deviation.
   6. A new `Settings` field gets one nested home in `config_tree.schema` (ADR 0017), with

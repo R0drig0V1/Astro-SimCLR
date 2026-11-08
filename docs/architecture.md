@@ -34,7 +34,7 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  │    (training ──► paper_variants: rot4 / single / p4 / p4m ──► paper_model, group_conv;
  │     paper_model ──► feature_sets: all / position / none)
  ├──► preflight ──► experiments, data (inspection, manifest)
- └──► engine (phase 4: the loop's contracts, the data tiers; imports no Lightning) ──► config, data
+ └──► engine (phase 4: the contracts, the loop, the data tiers; imports no Lightning) ──► config, data, runs
  └──► runs (phase 4, A0: run identity, manifest.json, layout, retention) ──► config, data
  └──► registry (phase 4, A2: runs reindex | ls | show | compare; SQLite) ──► runs, reference
 
@@ -1313,7 +1313,8 @@ memory-mapped:
   it on Ampere+ GPUs). Process-global; `run_command` calls it before anything is built.
   `fp32_precision_record(device)`: the effective policy (`tf32` only on a CUDA device of
   compute capability 8.0+ that allows it), the torch settings read back
-  (`fp32_backends`) and `compute_capability`, for `metrics.json["machine"]`.
+  (`fp32_backends`) and `compute_capability`, for `metrics.json["machine"]`. Since task
+  4.1 both are `engine.precision`'s (the plain engine shares them; same behaviour).
 - `build_callbacks(settings, monitorable, dirpath, filename="best")`: `EarlyStopping` and
   `ModelCheckpoint(save_top_k=1, enable_version_counter=False)` (the legacy
   `ModelCheckpoint_V2` overrode a private method to the same effect), both on
@@ -1640,6 +1641,48 @@ Lightning behaviour the loop reproduces (C1-C11) and the test that pins each.
 gradient `None` at validation, `no_grad` in the fit's validations and `inference_mode` in
 `trainer.validate`, the epoch numbering of `metrics.json`), so an upgrade that changes one
 fails here.
+
+### The engine core (task 4.1; ADR 0014, amendment of task 4.1)
+
+The loop itself, against the contracts above. The CLI is not wired to it yet (task 4.6);
+the Lightning path is unchanged.
+
+| Module | What it does |
+|---|---|
+| `loop` | `fit(build, train, validation, schedule=, device=, seed=, run_dir=, identity=, resume=, on_validation=, progress=) -> (task, FitResult)`: precision and flags (`DevicePolicy.apply`), `seed_everything`, `build()` on the CPU, the move, `make_optimizer()`; per step forward, `zero_grad(set_to_none=True)`, backward, `step()`; after each step the grid, then the validation (`zero_grad`, every submodule's mode captured, `eval()`, `no_grad`, the modes restored), the policies (`Monitor`, `Horizon`, `EarlyStop.update`), `last` if due; the loop ends when `steps_done >= horizon` after that. `evaluate(task, sources)` (`inference_mode`) and `evaluate_kept(task, result, sources, keep)` (`stop` first, then the restored best). `FitResult`: `last_step`, `horizon`, `best_step`, `best_score`, the derived `best_epoch` / `last_epoch`, this fit's `validations`, `steps`, `fit_seconds`, the best weights. Only `loss_val` is monitored for now. |
+| `checkpoint` (4.1 part) | `capture_rng` / `restore_rng` (Python, NumPy's global, torch CPU, CUDA or MPS); `numerics_record`; `save_checkpoint` (atomic: a temporary file, then a rename); `load_checkpoint` (`weights_only`, `check_resumable`); `check_identity` (run id and split run; the attempt may differ) and `check_numerics` (precision and determinism); `BestWeights`, `ckpt/best.pt`'s record (weights of the best validation, not resumable), read by `load_best`. |
+| `policies` (4.1 part) | `EarlyStop.update(value, best, wait, mode)`: Lightning's `_evaluate_stopping_criteria` in its order and float32 arithmetic. |
+| `precision` | ADR 0010's `apply_fp32_precision(precision)` and `fp32_precision_record(device)`, moved from `training.runs` (which delegates). |
+| `randomness` (4.1 part) | `seed_everything(seed)`: `lightning.seed_everything`'s three calls, without its environment variables. |
+| `scalars` | `ScalarLog`: `scalars.jsonl`, one flushed line per validation (step, epoch, `loss_val`, mean `loss_train` since the previous validation, `improved`, horizon, wait count, seconds); a resume keeps the lines of steps up to the checkpoint's; NaN is `null`. `read_scalars`. |
+| `record` | `machine_record(device)` (`experiments._machine`'s keys, `engine: plain`) and `recorded(record)`, which ends a `runs.record.start_run(..., engine="plain")` record `finished`, `failed` or `cancelled`. |
+
+Run outputs under `run_dir` (ADR 0015's layout): `scalars.jsonl`, `ckpt/last.pt` (after the
+validation of every `checkpoint_every_n_steps` steps and at the end of training, if a step
+ran), `ckpt/best.pt` (at the end, if `best` is kept). **No progress bar**: a `progress`
+stream gets one line per validation when given.
+
+**Resume order** (ADR 0014, C10): `load_checkpoint`, `check_identity`, `check_numerics`;
+precision and seed; `build()` and `model` loaded on the CPU; the move; the optimizer and its
+state; `task.load_state`; the policy (the monitor must match; `Horizon.resumed`); the
+stream (`TrainSource.resume`, refused on another stream); the RNG streams last.
+
+**Tested.** `tests/test_engine_loop.py` (a toy task with an active dropout and a frozen
+submodule): the grid and the horizon, the step keys, the modes, gradients and no-grad /
+inference contexts, `keep`, early stopping against Lightning's `EarlyStopping` over value
+sequences, the checkpoint contents, exact resume through the global RNG streams (and its
+control: without `restore_rng` it is not exact), every resume refusal, atomic writes, the
+seeding and flags, the scalars, and the `engine: plain` manifest.
+`tests/test_engine_differential.py` is **the 4.7(a) CPU differential test**, a CI gate:
+`run_command`'s `carrasco2021` path and the plain engine (`tests/_plain_paper.py`, a test
+adapter of `PaperClassifierModule` to `Task` on the `device` tier) run in one process on
+the synthetic data, with a horizon extension, and agree bit for bit (initial weights; the
+steps, `loss_val` and every `state_dict` tensor after each validation; `best_step`,
+horizon, `last_step`, `monitor_best`, the epochs; the final probabilities and accuracies),
+over the 2.5 flags (`single`, `p4`, `p4m`, `context`, `rot90`, C5, C6, C7, both
+`feature_set` diagnostics, all of C5-C7 with `p4`), a fold and the screen, a mid-run plain
+resume, and each accelerator present (deterministic). It also ports the three
+Lightning-bound resume tests to the plain engine.
 
 ### The data layer (task 4.3; ADR 0018)
 
