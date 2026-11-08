@@ -32,23 +32,22 @@ Este proyecto busca responder algunas preguntas como:
 * ¿Las aumentaciones utilizadas en SimCLR son igual de útiles en datasets astronómicos?
 
 
-## Requerimientos
+## Requirements
 
-### Instalación del entorno
-```
-conda env create --name simclr --file env.yml
-```
-### Activación del entorno
-```
-conda activate simclr
+The environment is managed by [uv](https://docs.astral.sh/uv/) (see [Development](#development)).
+The original 2021 research code (root scripts, `utils/`, `models/`, `losses/`) and its conda
+environment (`env.yml`) were retired from the tree; they stay readable at the git tag
+`legacy-final`:
+
+```bash
+git fetch origin tag legacy-final        # once, if the tag is not local
+git show legacy-final:utils/training.py  # read one legacy file
+git show legacy-final:env.yml            # the legacy conda environment
+git worktree add ../Astro-SimCLR-legacy legacy-final   # the whole legacy tree
 ```
 
-### Incorporación del entorno a jupyter-notebook
-
-```
-conda install -c anaconda ipykernel
-python -m ipykernel install --user --name=simclr
-```
+The notebooks in `jupyter_examples/` import the legacy code, so run them from such a
+checkout of the tag.
 
 ## Development
 

@@ -1,5 +1,8 @@
 """Generate the characterization fixtures of the losses from the legacy ``losses/losses.py``.
 
+The legacy package is read at the ``legacy-final`` tag (``legacy_tree.py``), not from the
+checkout.
+
 Runs the legacy ``NT_Xent`` and ``P_stamps_loss`` on fixed random inputs and records their
 outputs and input gradients in ``tests/fixtures/losses/*.npz``, together with the git commit
 of the legacy code and the torch version. ``tests/test_losses.py`` checks the port against
@@ -11,11 +14,9 @@ the repository root, without installing the project:
     uv run --isolated --no-project --with torch==2.14.1 --with numpy python \
         scripts/characterize/losses/generate.py
 
-It refuses to run if ``losses/`` has uncommitted changes (the recorded SHA would lie).
 Excluded from ruff, mypy and pytest (``scripts/characterize/``).
 """
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -23,7 +24,10 @@ import numpy as np
 import torch
 
 ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "scripts" / "characterize"))
+import legacy_tree  # noqa: E402
+
+LEGACY_SHA = legacy_tree.put_on_path("losses")
 
 from losses.losses import NT_Xent, P_stamps_loss  # noqa: E402  (legacy package)
 
@@ -34,18 +38,6 @@ TEMPERATURES = (0.1791, 0.5)
 #: Batch sizes the legacy class supports directly (its constructor batch size).
 BATCH_SIZES = (1, 2, 7, 150)
 DIM = 16
-
-
-def legacy_commit():
-    dirty = subprocess.run(
-        ["git", "status", "--porcelain", "--", "losses/"],
-        cwd=ROOT, capture_output=True, text=True, check=True,
-    ).stdout
-    if dirty:
-        sys.exit("losses/ has uncommitted changes; commit or revert them first")
-    return subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True
-    ).stdout.strip()
 
 
 def nt_xent_case(loss_fn, z_i, z_j):
@@ -102,7 +94,7 @@ def p_stamps_fixture(gen):
 
 
 def main():
-    meta = {"legacy_commit": np.array(legacy_commit()), "torch_version": np.array(torch.__version__)}
+    meta = {"legacy_commit": np.array(LEGACY_SHA), "torch_version": np.array(torch.__version__)}
     gen = torch.Generator().manual_seed(0)
     OUT.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(OUT / "nt_xent.npz", **meta, **nt_xent_fixture(gen))

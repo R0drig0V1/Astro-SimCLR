@@ -2,10 +2,22 @@
      its own section, so parallel PRs do not conflict. Plan: docs/phases/01-runnable-package.md. -->
 # Architecture
 
-`src/astro_simclr/` is the typed, tested package that replaces the legacy research code at
-the repository root (`utils/`, `models/`, `losses/`, the root scripts). Phase 1 ports the
-legacy modules one task at a time; until a module is ported, its legacy file is the
-characterization oracle and stays excluded from ruff, mypy and coverage.
+`src/astro_simclr/` is the typed, tested package that replaced the legacy research code
+(`utils/`, `models/`, `losses/`, the root scripts and `env.yml`). Phase 1 ported the legacy
+modules one task at a time, each against a characterization fixture generated from the
+legacy code; task 1.8 then deleted the legacy code from the tree.
+
+**Legacy code.** Every legacy path cited on this page and in the docstrings (`utils/training.py`,
+`iter_clr.py`, ...) is readable at the git tag `legacy-final`, the last commit of `main` that
+had it: `git show legacy-final:utils/training.py` (or `git fetch origin tag legacy-final`
+first). Paths cited with another commit (`b357b43^`, `31b10c9`) are read at that commit. The
+generators in `scripts/characterize/` import the legacy code through
+`scripts/characterize/legacy_tree.py`, which names the tag once (`LEGACY_REF`; the
+environment variable `ASTRO_SIMCLR_LEGACY_REF` overrides it) and copies the legacy packages
+into a temporary directory. Their recorded `legacy_sha`/`legacy_commit` is the commit the
+tag points at; fixtures generated before task 1.8 recorded the `HEAD` they ran at, which had
+the same legacy files. The notebooks in `jupyter_examples/` import the legacy code too: run
+them from a checkout of the tag.
 
 ```
 cli ──► config, hparams (subcommand defaults, legacy key mapping), presets (carrasco2021)
