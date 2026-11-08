@@ -331,6 +331,53 @@ Exit codes follow `compare-reference`: 0 for a pass (ADOPT, KEEP), 1 for a fail 
 ADOPTED, DROP) and for unusable data, 2 for invalid arguments or runs that cannot be
 compared.
 
+## The results report: `report-phase2` (task 2.6)
+
+`docs/results-phase2.md` is generated, never written by hand:
+
+```bash
+astro-simclr report-phase2 \
+    --replication results/phase2/replication \
+    --screen runs/screen --screen-splits configs/splits/td_ztf_stamp_17_06_20_red-002.json \
+    --cv runs/cv --cv-splits configs/splits/td_ztf_stamp_17_06_20_red-002-grouped.json \
+    --non-inferiority p4 p4m p4-ctx \
+    --out docs/results-phase2.md
+```
+
+- **Layout.** Each directory holds one subdirectory per arm, with that arm's runs at any
+  depth: `runs/cv/<arm>/fold0-seed1/metrics.json` (the layout of the commands above). The
+  arm names are the directory names; the baseline arm is `--baseline-arm` (default
+  `rot4`). Any section can be left out, but each of `--screen` and `--cv` needs its splits
+  file.
+- **No statistics of its own.** The replication section prints `compare-reference --ref
+  CD21` on all its runs (with `m1_oracle.json`); the screen and CV sections run
+  `compare-variants --splits` (`compare_decision`) for every arm against the baseline and
+  print its output verbatim, with the same checks: a run of another splits file, mixed
+  machines or unpaired cells stop the report (exit 2), as they stop the comparison.
+- **CV verdicts.** Every arm shows both rules on the same bootstrap interval: superiority
+  and non-inferiority (`--margin`, default 0.005). The **pre-registered** rule of an arm is
+  superiority unless the arm is listed in `--non-inferiority` (the efficiency rows); the
+  verdict in bold and the printed `compare-variants` output are that rule's. Choosing the
+  rule after seeing both columns would be a selection on the decision data, so the list
+  is fixed before the CV runs.
+- **Per-class recall and confusion matrices** of the pooled CV (every arm, the baseline
+  included) use the same per-stamp scores as the pooled balanced accuracy: each pool stamp
+  once, as the fraction of its fold's seeds that predict each class. The diagonal of each
+  row-normalised matrix is the recall, and the mean recall is the pooled balanced
+  accuracy.
+- **Throughput.** The s/step of each arm (`metrics.json["timing"]`) comes with the GPU and
+  the `concurrent_jobs` of the runs' manifests: an arm with a run measured beside another
+  job is flagged "measured under concurrency", and is not a throughput claim. The archived
+  runs, which predate the manifest, say "not recorded".
+- **Provenance.** The git commits and config hashes (one per arm expected) of the manifest
+  runs; with `--registry [FILE]` (default `$ASTRO_SIMCLR_HOME/registry.sqlite`), how many
+  runs are indexed and whether any `metrics.json` changed since the last `runs reindex`.
+- **Test** appears only in the replication section, where it is archived and reported once.
+  The screen and CV sections never read test (split runs do not compute it).
+- The output is deterministic for the same inputs and `--n-boot` / `--seed` (default
+  10,000 and 0, the values of `compare-variants`): rerunning the command must give a
+  byte-identical file.
+
 ## Leakage
 
 Two kinds of leakage connect the splits of `red`. `astro-simclr leakage-audit PREPARED_DIR`

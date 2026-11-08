@@ -58,8 +58,14 @@ def fits_bytes(
     data = np.asarray(image).astype(dtype).tobytes()
     data += b"\0" * (-len(data) % _BLOCK)
     raw = text.encode("ascii") + data
-    return gzip.compress(raw) if compress else raw
+    # mtime=0: gzip would stamp the current second into the header, so two calls made
+    # across a second boundary gave different bytes (a test that searched an alert for
+    # these bytes failed about once in 300 runs).
+    return gzip.compress(raw, mtime=0) if compress else raw
 
+
+#: The avro sync marker of every container :func:`avro_bytes` writes (16 bytes).
+SYNC_MARKER = bytes(range(0xA0, 0xB0))
 
 #: Our own alert schema: the fields the parser reads, plus extras it must skip.
 _CUTOUT = {
@@ -136,13 +142,26 @@ def avro_bytes(
     *,
     codec: str = "snappy",
     records: int = 1,
+    stamp_data: tuple[bytes, bytes, bytes] | None = None,
 ) -> bytes:
-    """An avro alert file of ``records`` copies of one alert with ``cutouts`` ``(H, W, 3)``."""
+    """An avro alert file of ``records`` copies of one alert with ``cutouts`` ``(H, W, 3)``.
+
+    ``stamp_data`` gives the three stamps' bytes (science, template, difference) directly,
+    in place of the FITS files of ``cutouts``: the way to write a corrupt or mismatched
+    stamp. The output is deterministic: fixed FITS bytes and a fixed sync marker (fastavro
+    would draw one from ``os.urandom``).
+    """
+    names = ("sci", "ref", "diff")
     stamps: list[dict[str, Any] | None] = [None, None, None]
-    if cutouts is not None:
+    if stamp_data is not None:
+        stamps = [
+            {"fileName": f"{name}.fits.gz", "stampData": data}
+            for name, data in zip(names, stamp_data, strict=True)
+        ]
+    elif cutouts is not None:
         stamps = [
             {"fileName": f"{name}.fits.gz", "stampData": fits_bytes(cutouts[:, :, k])}
-            for k, name in enumerate(("sci", "ref", "diff"))
+            for k, name in enumerate(names)
         ]
     alert = {
         "objectId": oid,
@@ -153,7 +172,13 @@ def avro_bytes(
         "cutoutDifference": stamps[2],
     }
     out = io.BytesIO()
-    fastavro.writer(out, fastavro.parse_schema(ALERT_SCHEMA), [alert] * records, codec=codec)
+    fastavro.writer(
+        out,
+        fastavro.parse_schema(ALERT_SCHEMA),
+        [alert] * records,
+        codec=codec,
+        sync_marker=SYNC_MARKER,
+    )
     return out.getvalue()
 
 
