@@ -136,11 +136,12 @@ def fake_split_run(
     fold: int | None = None,
     machine: dict[str, Any] | None = None,
     source: str = "0" * 64,
+    **extra: Any,
 ) -> Path:
     """A ``train-supervised --splits`` run directory: ``protocol`` and evaluation predictions.
 
     ``fold=None`` makes a screen run. ``sha256`` is the splits file's, as ``experiments``
-    records it.
+    records it. ``extra`` adds top-level ``metrics.json`` keys (``timing``, ...).
     """
     out = root / name
     out.mkdir(parents=True)
@@ -162,6 +163,7 @@ def fake_split_run(
                 "n": int(pred.labels.size),
             }
         },
+        **extra,
     }
     (out / "metrics.json").write_text(json.dumps(metrics))
     return out
