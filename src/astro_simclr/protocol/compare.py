@@ -4,11 +4,12 @@
   two sets of runs (a baseline and a variant, one run per seed), the seed-mean accuracies,
   **McNemar on the seed ensembles** and the **paired bootstrap over stamps**. It always
   *reports*: on ``test`` because test is never a decision input, and on ``val`` because a
-  normal run's Validation stamps chose its checkpoint. Runs from different machines or
-  builds are refused (plan: a comparison never mixes them), unless explicitly allowed, and
-  so are runs on different data (``metrics.json["data"]["source"]["sha256"]``): a normal
-  run's ``index`` is ``arange(N)``, so only the data identity and the labels can show that
-  two runs saw the same stamps.
+  normal run's Validation stamps chose its checkpoint. Runs from different machines,
+  builds or effective float32 precisions (ADR 0010) are refused (plan: a comparison never
+  mixes them), unless explicitly allowed, and so are runs on different data
+  (``metrics.json["data"]["source"]["sha256"]``): a normal run's ``index`` is
+  ``arange(N)``, so only the data identity and the labels can show that two runs saw the
+  same stamps.
 - :func:`screen_comparison` and :func:`cv_comparison` are the *decision* helpers. They take
   predictions on the screen's decision half or on each CV fold's evaluation part
   (``splits.ProtocolSplits``) and apply the screen rule or the adoption rule. They check
@@ -170,8 +171,9 @@ def _check_machines(runs: Sequence[RunPredictions], allow_mixed: bool, out: list
         detail = "; ".join(sorted(map(str, machines)))
         if not allow_mixed:
             raise ConfigError(
-                f"the runs come from different machines or builds ({detail}); a comparison "
-                "never mixes them (pass --allow-mixed-machines to override)"
+                f"the runs come from different machines, builds or float32 precisions "
+                f"({detail}); a comparison never mixes them (pass --allow-mixed-machines to "
+                "override)"
             )
         out.append(f"  WARN: mixed machines or builds: {detail}")
 
