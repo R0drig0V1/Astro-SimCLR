@@ -1,5 +1,5 @@
-<!-- ADR 0018: the SimCLR pilot of phase 5 (task 5.0b): engine-free views, network, loss, LARS and schedule, probe, diagnostics, and a minimal plain-PyTorch loop. -->
-# 0018: The 5.0b SimCLR pilot: engine-free functions and a minimal plain loop
+<!-- ADR 0019: the SimCLR pilot of phase 5 (task 5.0b): engine-free views, network, loss, LARS and schedule, probe, diagnostics, and a minimal plain-PyTorch loop. -->
+# 0019: The 5.0b SimCLR pilot: engine-free functions and a minimal plain loop
 
 - **Status:** accepted (2026-11-08, phase 5, task 5.0b; plan review
   `docs/plan-reviews/2026-11-08-phase-5.md`, findings F7, F8, F10, F11; the SimCLR review
@@ -69,16 +69,19 @@ ablations only).
 
 ### 3. Randomness: four new streams
 
-`RESERVED_STREAMS` gains `simclr_views` (5), `simclr_view_noise` (6),
-`simclr_batch_order` (7) and `simclr_diagnostics` (8). The per-sample parameters of both
-views of step `s` come from the host generator `default_rng([seed, s, 5])`, drawn in full
+`RESERVED_STREAMS` gains `simclr_views` (6), `simclr_view_noise` (7),
+`simclr_batch_order` (8) and `simclr_diagnostics` (9); 5 is left to task 4.3's
+`block_shuffle` (PR #42). Each stream has its own third word, so none shares a generator
+with another (unlike the two-word `[seed, j]` of `rot90_augment` and the `row` stream's
+passes, the correlation phase 4 records). The per-sample parameters of both
+views of step `s` come from the host generator `default_rng([seed, s, 6])`, drawn in full
 every step (`k` (2, B), offsets (2, B, 2), noise strengths (2, B, 2)) so that turning the
 noise on never changes the geometry. The noise's per-pixel fields come from the device
-generator of `[seed, s, 6]` (device-dependent values; `pilot.json` records
+generator of `[seed, s, 7]` (device-dependent values; `pilot.json` records
 `noise_fields: device-dependent`). The batch order is a permutation per pass, keyed
-`[seed, pass, 7]` (the second word is the pass, not the step: one permutation serves all
+`[seed, pass, 8]` (the second word is the pass, not the step: one permutation serves all
 of a pass's steps); the last partial batch of a pass is dropped. The diagnostics' fixed
-sample and views use `[seed, 0, 8]` and `[seed, 1, 8]`.
+sample and views use `[seed, 0, 9]` and `[seed, 1, 9]`.
 
 ### 4. Network, loss, optimizer, schedule
 

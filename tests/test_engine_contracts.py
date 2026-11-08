@@ -338,11 +338,11 @@ def test_reserved_streams_are_the_augmentations_numbers() -> None:
         "aug_feature_jitter": class_augment.JITTER_STREAM,
         "synthetic_bogus": class_augment.SYNTHETIC_STREAM,
         "flux_rescale": flux_rescale.FLUX_STREAM,
-        # Phase 5's SimCLR pilot (astro_simclr.simclr), numbered after the augmentations.
-        "simclr_views": 5,
-        "simclr_view_noise": 6,
-        "simclr_batch_order": 7,
-        "simclr_diagnostics": 8,
+        # Phase 5's SimCLR pilot (astro_simclr.simclr); 5 is task 4.3's block_shuffle (PR #42).
+        "simclr_views": 6,
+        "simclr_view_noise": 7,
+        "simclr_batch_order": 8,
+        "simclr_diagnostics": 9,
     }
     assert len(set(RESERVED_STREAMS.values())) == len(RESERVED_STREAMS)
 

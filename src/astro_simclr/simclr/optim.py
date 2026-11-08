@@ -1,4 +1,4 @@
-"""SimCLR's optimizer and learning-rate schedule (phase 5, task 5.0b; ADR 0018).
+"""SimCLR's optimizer and learning-rate schedule (phase 5, task 5.0b; ADR 0019).
 
 - **LARS** (:func:`build_lars`): the package's :class:`astro_simclr.optim.LARS` with the
   fixed trust ratio (``legacy_trust_ratio=False``: the ratio ``eeta * ||w|| / ||g||`` is

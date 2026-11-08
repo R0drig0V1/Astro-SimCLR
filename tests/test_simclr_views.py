@@ -207,7 +207,7 @@ def test_noised_views_are_reproducible_from_the_step() -> None:
 
 
 def test_class_augment_re_exports_the_stamp_relation() -> None:
-    """The move to stamp_relation (ADR 0018) left every class_augment name in place."""
+    """The move to stamp_relation (ADR 0019) left every class_augment name in place."""
     from astro_simclr import stamp_relation
     from astro_simclr.training import class_augment
 

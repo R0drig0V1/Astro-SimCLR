@@ -5,7 +5,7 @@ Engine-free (no Lightning import): the paper model's class-aware augmentation
 (:mod:`astro_simclr.simclr.views`) both use these functions, so they live outside the
 ``training`` package, whose ``__init__`` imports Lightning. ``class_augment`` re-exports
 every name, so its callers are unchanged; the behaviour is the one ADR 0006 records, moved
-without a change (ADR 0018 records the move).
+without a change (ADR 0019 records the move).
 
 - :func:`stamp_fits`: per stamp, the least-squares fit ``diff ~ a*sci + b*tmpl + c``, its
   R^2 and the background sigmas of the science and the template (1.4826 x the MAD of the

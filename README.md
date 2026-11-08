@@ -131,6 +131,10 @@ uv run astro-simclr compare-variants --splits $SPLITS \
 Both are described in [docs/evaluation-protocol.md](docs/evaluation-protocol.md)
 ("Running a decision end to end").
 
+The same split runs answer the feature diagnostic (ADR 0016): `--set feature_set=position`
+keeps only the 6 sky coordinates of the 23 features, `--set feature_set=none` the images
+only (the same model as `with_features: false`).
+
 ### 4. Raw alerts
 
 `fetch-alerts` (task 3.1) recovers the raw alerts behind a prepared split from ALeRCE's
@@ -156,7 +160,7 @@ on the CD21 Train stamps, with checkpoints, diagnostics and a final embedding du
 `simclr-embed --random-init` dumps the untrained network's embeddings, `make-label-subsets`
 stores the probe's label subsets and `simclr-probe` scores a linear probe on the screen
 halves. The whole sequence is in [docs/architecture.md](docs/architecture.md) (`simclr`)
-and the decisions in [ADR 0018](docs/decisions/0018-simclr-pilot.md).
+and the decisions in [ADR 0019](docs/decisions/0019-simclr-pilot.md).
 
 ```bash
 uv run --no-sync astro-simclr simclr-pilot dataset/prepared/td_ztf_stamp_17_06_20_red-002 \

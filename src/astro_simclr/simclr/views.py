@@ -1,4 +1,4 @@
-"""The SimCLR views of phase 5 (task 5.2's family, written for the 5.0b pilot; ADR 0018).
+"""The SimCLR views of phase 5 (task 5.2's family, written for the 5.0b pilot; ADR 0019).
 
 A view of a 63x63 stamp (``(B, C, 63, 63)`` float32 on the training device, channels
 science, template, difference first, per-channel min-max with NaN -> 0 as stored) is, in
