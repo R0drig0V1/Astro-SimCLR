@@ -44,6 +44,7 @@ from lightning.pytorch.trainer.states import TrainerFn
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch import nn
 
+from astro_simclr.feature_sets import feature_columns
 from astro_simclr.losses import NT_Xent, P_stamps_loss
 from astro_simclr.models import (
     N_CLASSES,
@@ -387,6 +388,13 @@ class PaperClassifierModule(ClassifierModule):
     ``magpsf`` / ``sigmapsf`` follow. It needs the 11-column fits (``flux_rescale.
     AUGMENT_COLUMNS``) in the batches, and no context channels.
 
+    ``feature_set`` (:mod:`astro_simclr.feature_sets`, ADR 0016) picks the features the
+    model's head reads from the 23 of every batch: ``all`` (faithful), ``position`` (the 6
+    sky coordinates) or ``none`` (exactly the ``with_features=False`` module: the same model
+    and draws, and ``with_features`` reads false). It is recorded in the hyperparameters
+    only when it is not ``all``, so the faithful module's ``hparams.yaml`` and checkpoints
+    are what they were before it existed.
+
     Raises:
         UnknownOptimizerError: if ``optimizer`` is not a known name.
         ValueError: if ``adam_betas`` is not a key of ``PAPER_ADAM_BETAS``, ``augment_seed``
@@ -394,7 +402,8 @@ class PaperClassifierModule(ClassifierModule):
             ``aug_min_r2`` not in [0, 1], ``flux_rescale`` not in [0, 1], not ``0 <
             flux_k_min <= flux_k_max``, ``synthetic_bogus`` or ``flux_rescale`` is set with
             context channels or with ``n_classes`` other than 5, ``n_classes`` is not an
-            integer >= 2, or the variant is invalid (``build_paper_model``).
+            integer >= 2, or the variant or ``feature_set`` is invalid
+            (``build_paper_model``).
     """
 
     def __init__(
@@ -420,12 +429,15 @@ class PaperClassifierModule(ClassifierModule):
         flux_k_min: float = 0.5,
         flux_k_max: float = 1.5,
         n_classes: int = N_CLASSES,
+        feature_set: str = "all",
     ) -> None:
+        # Fails here on an unknown set or position without features; none: no features.
+        reads_features = bool(feature_columns(feature_set, with_features=with_features))
         super().__init__(
             beta_loss=beta_loss,
             lr=lr,
             optimizer=optimizer,
-            with_features=with_features,
+            with_features=reads_features,
             n_classes=n_classes,
         )
         if adam_betas not in PAPER_ADAM_BETAS:
@@ -462,8 +474,10 @@ class PaperClassifierModule(ClassifierModule):
             dropout_active=dropout_active,
             drop_rate=drop_rate,
             n_classes=n_classes,
+            feature_set=feature_set,
         )
-        self.save_hyperparameters(ignore=_hparams_ignore(n_classes))
+        default_set = ["feature_set"] if feature_set == "all" else []
+        self.save_hyperparameters(ignore=_hparams_ignore(n_classes, *default_set))
 
     def forward(self, x_img: torch.Tensor, x_feat: torch.Tensor) -> torch.Tensor:
         """Crops (B, C, 21, 21) and features -> (B, n_classes) logits (C: 3, or 6 with context)."""

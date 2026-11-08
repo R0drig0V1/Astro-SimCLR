@@ -52,6 +52,9 @@ CONFIG_CASES: Final[Mapping[str, tuple[str, Mapping[str, object]]]] = {
     "carrasco2021+c6": ("train-supervised", {**_CD21, "synthetic_bogus": 0.1}),
     "carrasco2021+c7": ("train-supervised", {**_CD21, "flux_rescale": 0.5}),
     "carrasco2021+tf32": ("train-supervised", {**_CD21, "fp32_precision": "tf32"}),
+    # The feature_set diagnostic (ADR 0016): all is hash-neutral, position and none are not.
+    "carrasco2021+position": ("train-supervised", {**_CD21, "feature_set": "position"}),
+    "carrasco2021+feature-set-none": ("train-supervised", {**_CD21, "feature_set": "none"}),
     # The legacy protocols (phase 1).
     "pretrain-legacy": ("pretrain", {}),
     "train-supervised-legacy": ("train-supervised", {}),

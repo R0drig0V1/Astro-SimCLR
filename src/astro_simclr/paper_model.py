@@ -43,6 +43,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from astro_simclr.feature_sets import feature_columns
 from astro_simclr.models import N_CLASSES, N_FEATURES, check_n_classes
 
 __all__ = [
@@ -52,6 +53,7 @@ __all__ = [
     "PAPER_PAD",
     "PaperStampClassifier",
     "check_paper_images",
+    "feature_index",
 ]
 
 #: Side of the centre crop the paper model takes (ALeRCE ``CROP_SIZE`` 21).
@@ -83,6 +85,16 @@ def _glorot_bias_(bias: torch.Tensor) -> None:
     """
     limit = math.sqrt(3.0 / bias.shape[0])
     nn.init.uniform_(bias, -limit, limit)
+
+
+def feature_index(columns: tuple[int, ...]) -> torch.Tensor | None:
+    """The ``index_select`` index of a feature subset, or ``None`` for all 23 or none.
+
+    ``None`` keeps the faithful model free of any indexing (its outputs stay bit-identical).
+    """
+    if not columns or len(columns) == N_FEATURES:
+        return None
+    return torch.tensor(columns, dtype=torch.long)
 
 
 def check_paper_images(x_img: torch.Tensor, channels: int, model: str) -> None:
@@ -147,12 +159,22 @@ class PaperStampClassifier(nn.Module):
       unrotated batch, with no mean (a quarter of the MACs, not invariant; the control arm
       trained with rot90 augmentation).
 
+    And the ``feature_set`` diagnostic (:mod:`astro_simclr.feature_sets`, ADR 0016): the head
+    reads ``all`` 23 features (faithful), only the 6 sky coordinates (``position``:
+    ``bn_features`` and fc2's feature inputs shrink to 6, 439,953 parameters) or none
+    (``none``: exactly the ``with_features=False`` model). ``forward`` still takes the
+    (N, 23) features and selects the columns itself.
+
     Raises:
         ValueError: at construction, if ``drop_rate`` is not in [0, 1), ``in_channels``
-            is not positive or ``n_classes`` is not an integer >= 2; in ``forward``, if the
+            is not positive, ``n_classes`` is not an integer >= 2, or ``feature_set`` is
+            unknown or ``position`` without features; in ``forward``, if the
             images are not (N, ``in_channels``, 21, 21), or with features if ``x_feat`` is
             missing or not (N, 23).
     """
+
+    #: The selected feature columns (int64), or ``None`` when the head reads all 23 or none.
+    feature_index: torch.Tensor | None
 
     def __init__(
         self,
@@ -163,6 +185,7 @@ class PaperStampClassifier(nn.Module):
         in_channels: int = PAPER_IN_CHANNELS,
         rotation_mean: bool = True,
         n_classes: int = N_CLASSES,
+        feature_set: str = "all",
     ) -> None:
         super().__init__()
         if not 0 <= drop_rate < 1:
@@ -170,7 +193,10 @@ class PaperStampClassifier(nn.Module):
         if in_channels < 1:
             raise ValueError(f"in_channels must be >= 1, got {in_channels}")
         check_n_classes(n_classes)
+        columns = feature_columns(feature_set, with_features=with_features)
+        with_features = bool(columns)  # feature_set none: the without-features model
         self.with_features = with_features
+        self.feature_set = feature_set
         self.dropout_active = dropout_active
         self.in_channels = in_channels
         self.rotation_mean = rotation_mean
@@ -187,13 +213,16 @@ class PaperStampClassifier(nn.Module):
         self.fc1 = nn.Linear(64 * _LAST_SIDE * _LAST_SIDE, _HIDDEN)
         self.drop1 = nn.Dropout(drop_rate)
         self.bn_features = (
-            nn.BatchNorm1d(N_FEATURES, eps=_BN_EPS, momentum=0.0) if with_features else None
+            nn.BatchNorm1d(len(columns), eps=_BN_EPS, momentum=0.0) if with_features else None
         )
-        self.fc2 = nn.Linear(_HIDDEN + (N_FEATURES if with_features else 0), _HIDDEN)
+        self.fc2 = nn.Linear(_HIDDEN + len(columns), _HIDDEN)
         self.drop2 = nn.Dropout(drop_rate)
         self.fc3 = nn.Linear(_HIDDEN, _HIDDEN)
         self.drop3 = nn.Dropout(drop_rate)
         self.logits = nn.Linear(_HIDDEN, n_classes)
+        # Not persistent: the columns follow from feature_set (a hyperparameter), and the
+        # faithful model's state_dict keeps M1's keys. None for all 23: no indexing at all.
+        self.register_buffer("feature_index", feature_index(columns), persistent=False)
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
@@ -249,6 +278,8 @@ class PaperStampClassifier(nn.Module):
                 got = None if x_feat is None else tuple(x_feat.shape)
                 msg = f"with_features=True needs x_feat of shape (N, {N_FEATURES}); got {got}"
                 raise ValueError(msg)
+            if self.feature_index is not None:
+                x_feat = x_feat.index_select(1, self.feature_index)
             h = torch.cat((h, self.bn_features(x_feat)), dim=1)
         h = self._dropout(self.drop2, F.relu(self.fc2(h)))
         h = self._dropout(self.drop3, F.relu(self.fc3(h)))

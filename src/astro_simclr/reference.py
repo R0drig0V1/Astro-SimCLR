@@ -38,7 +38,9 @@ sample standard deviation (ddof=1), as in the legacy tables.
   replication misses the faithful tier about 8 % of the time, so the plan allows one
   confirmatory 5-seed rerun (judged as its own set). The gate is defined on exactly 5
   seeds: another count gives REPORT (provisional), never PASS. The without-features runs
-  (``with_features: false``) are compared with 0.883 ± 0.006 and only reported (advisory).
+  (``with_features: false``, or ``feature_set: none``; ADR 0016) are compared with
+  0.883 ± 0.006 and only reported (advisory). A ``feature_set: position`` run counts as
+  with features, and its WARN line names the deviation.
 
 Each run's resolved config is also compared with the distinguishing settings of its
 reference config (``Reference.expected``: dataset, features, model, optimizer, protocol);
@@ -421,7 +423,10 @@ def _machine_warnings(runs: Sequence[dict[str, Any]]) -> list[str]:
 
 
 def _with_features(run: dict[str, Any]) -> bool:
-    return run.get("config", {}).get("with_features") is not False
+    """Whether the run's model read features: ``with_features`` and a ``feature_set`` not
+    ``none`` (ADR 0016; a key missing from an older run reads as its default)."""
+    config = run.get("config", {})
+    return config.get("with_features") is not False and config.get("feature_set") != "none"
 
 
 def _accuracies(runs: Sequence[dict[str, Any]], key: str) -> list[float] | None:
