@@ -695,6 +695,123 @@ Every file is deterministic: no wall time or request count. The layouts, the ale
 `deviations.csv`, `drops.csv`, `eras.csv`, `split_counts.csv` and `build.json` hold only
 counts and hashes, so they may be committed as results.
 
+## Archive corpus (phase 5, task 5.1a)
+
+The unlabelled pretraining corpus comes from the ZTF public alert archive
+(`https://ztf.uw.edu/alerts/public/`): one `ztf_public_YYYYMMDD.tar.gz` per night, one avro
+alert per member. `astro-simclr ingest-archive` turns tarballs into raw 63×63 stamps of
+first alerts, one shard per night. Code: `src/astro_simclr/archive/`; decisions: ADR 0019.
+**Nothing is downloaded by the code**, and the bulk download waits for the user's
+approval (and for the 5.0b go/no-go).
+
+### What is kept
+
+Each avro member is parsed as an untrusted alert, with the size limits of
+[Raw alerts](#raw-alerts-task-31), and is counted under the first rule it fails:
+
+| Count | Rule |
+|---|---|
+| `malformed` | not one valid alert (bad avro, missing fields, invalid cutouts) |
+| `not_63x63` | cutouts of another shape (CCD edge; CD21 dropped its 650 non-square stamps) |
+| `invalid_values` | an `oid`, `candid`, `jd`, `fid`, `ra`/`dec`, `ndethist` or `isdiffpos` the index cannot hold |
+| `not_first:previous` | a detection (an entry with a `candid`) in `prv_candidates`, its 30-day history |
+| `not_first:oid_year` | the `oid`'s year (`ZTF18…`) differs from the UT year of the alert's `jd`: an object from an earlier year |
+| `not_first:ndethist` | `ndethist > N`, only with `--max-ndethist N` (off by default) |
+| `excluded` | the `oid` is in the exclusion file |
+| `duplicate_candid`, `duplicate_oid` | already kept this night (the first one in tar order stays) |
+| `kept` | written to the night |
+
+- **First alert by `oid`.** The archive alert does not carry its object's whole history.
+  The rules above use what it carries, and `corpus_index` keeps one alert per `oid` over
+  every ingested night (the earliest).
+- **`ndethist` is not used by default.** It counts detections down to S/N ≈ 3 on the same
+  field and readout channel only, so it includes detections that never made an alert.
+  CD21 clips it at 20, so its own first alerts reach such values.
+- **No cut on `rb`, `drb`, `nbad`, `fwhm`, `elong` or `magdiff`.** CD21 states none, and a
+  real-bogus threshold would remove the Bogus class. The index keeps `rb`, `drb`,
+  `ndethist` and `isdiffpos`, so a cut can be applied when the corpus is read.
+- **Exclusions:** the integrator builds the file: the union of the evaluation sets'
+  objects (CD21's, R5 Validation/Test, and every later benchmark), one `oid` per line,
+  `#` comments allowed. It is required: `--no-exclusions` must be asked for explicitly. A
+  longer list later is applied with `corpus_index(out, exclude=...)`, without
+  re-ingesting.
+
+### Layout
+
+```
+OUT/
+    corpus.json                 format astro-simclr-archive v1, kind archive-corpus: the
+                                selection rules and the exclusion file (name, SHA-256, count)
+    nights/
+        20200925/
+            meta.json           kind archive-night: the night; the source (tarball name,
+                                compressed and decompressed bytes, SHA-256, member counts);
+                                the selection; the exclusions; the counts above; n; and the
+                                dtype, shape and SHA-256 of every file
+            index.npy           structured (n,): oid, candid, jd, fid, ra, dec, night,
+                                ndethist, isdiffpos, rb, drb (NaN when absent), member
+            cutouts-00000.npy   float32 (<= 4096, 63, 63, 3): science, reference,
+            cutouts-00001.npy   difference, raw (NaN and inf kept)
+        .20201104.partial/      a night being written; removed by the next ingest
+```
+
+- Row `i` of `index.npy` is row `i` of the cutout files, concatenated in order. `member`
+  is the alert's position in the tarball.
+- A night exists only once it is complete: it is written under `.partial`, fsynced, and
+  renamed.
+- `load_night` opens a night memory-mapped, after checking every file against
+  `meta.json`. `verify_night` re-hashes it.
+- The phase-2 readers refuse the format, and nothing is pickled.
+- Like every array of ADR 0012, none of this goes into git.
+
+### Running it (after approval)
+
+```bash
+# one night piped in: no tarball is stored (about 30 min and 8 GB per 2020 night)
+curl -sf https://ztf.uw.edu/alerts/public/ztf_public_20200925.tar.gz \
+  | uv run astro-simclr ingest-archive - --night 20200925 \
+      --out ~/Astro-SimCLR/dataset/archive --exclude exclude_oids.txt
+# or local files; complete nights are skipped
+uv run astro-simclr ingest-archive ztf_public_2020*.tar.gz --out DIR --exclude FILE
+uv run astro-simclr archive-summary DIR [--verify] [--json]   # counts, objects, hashes
+```
+
+- A complete night is skipped without reading its input. Check `archive-summary` before
+  starting a download for a night that is already done.
+- An interrupted night is redone from the start.
+- A different file for a complete night is refused unless `--overwrite`.
+- A corpus refuses other rules or another exclusion file: use a new `--out`.
+- One ingest at a time per corpus (`OUT/.lock`): a second one exits 1 at once. To run
+  nights in parallel, give each process its own `--out`.
+- A truncated or corrupt download, including its gzip trailer, fails the night (exit 1)
+  and commits nothing.
+
+### Sampling plan and budget
+
+`plan-archive-nights [--seed 0] [--out FILE]` draws the nights (ADR 0019, item 7):
+- **Strata:** each year from 2018-06-01 is cut into equal strata, 24 per year in
+  2018–2020 and 8 per year after.
+- **Draws:** each stratum gets a primary night and 2 spares, from
+  `default_rng([seed, year])`. A spare replaces an empty or missing night: 758 of 3,087
+  were empty.
+- **Uses:** each night is tagged `h1` (2018–2022) or `ablation` (later years).
+- **Pilot:** one night each of 2018, 2020 and 2024. For seed 0: 20181020, 20200925 and
+  20241022.
+
+The default budget for seed 0, with the **assumed** 17,500 stamps per night (10 % of the
+measured 175k alerts):
+
+| Use | Nights | Stamps | float32 | float16 | Download |
+|---|---:|---:|---:|---:|---:|
+| H1 (2018–2022) | 88 | 1.54M | 73.6 GB | 36.9 GB | 704 GB, about 44 h |
+| Ablation (2023–2026) | 32 | 0.56M | 26.8 GB | 13.4 GB | 256 GB, about 16 h |
+| Total | 120 | 2.1M | 100.3 GB | 50.3 GB | 960 GB, about 60 h |
+
+- **Exact:** each stamp is 47,773 bytes with its index row.
+- **Assumed:** the stamps per night. `--measured DIR` replaces them with the counts of
+  the ingested nights (per year, else their mean), and the download with their tarball
+  sizes. Run it after the pilot, before the user is asked.
+
 ## Workflow and manifest
 
 1. **Receive** the pickles into `dataset/`, and record their SHA-256 (`SHA256SUMS`, kept

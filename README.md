@@ -199,6 +199,25 @@ uv run --no-sync astro-simclr simclr-pilot dataset/prepared/td_ztf_stamp_17_06_2
     --output-dir runs/pilot/ssl --epochs 100 --device cuda
 ```
 
+### 6. Archive corpus (self-supervised pretraining data)
+
+`ingest-archive` (phase 5, task 5.1a) streams nightly ZTF public archive tarballs into
+the unlabelled corpus: files, or one night piped in so no tarball is stored. It keeps the
+first alert of each object with 63×63 cutouts, raw with NaN kept, drops every `oid` of an
+exclusion file, and writes one shard per night, resumable. `plan-archive-nights` draws the
+seeded night sample and its disk and transfer budget. Nothing is downloaded by the code;
+the bulk download waits for the user's approval.
+
+```bash
+uv run astro-simclr plan-archive-nights --seed 0 --out plan.json     # nights and budget
+curl -sf https://ztf.uw.edu/alerts/public/ztf_public_20200925.tar.gz \
+  | uv run astro-simclr ingest-archive - --night 20200925 --out DIR --exclude exclude_oids.txt
+uv run astro-simclr archive-summary DIR --verify
+```
+
+The rules, the layout and the budget are in [docs/data.md](docs/data.md) ("Archive
+corpus") and [ADR 0019](docs/decisions/0019-archive-corpus.md).
+
 ## Repository map
 
 ```

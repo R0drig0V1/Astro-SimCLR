@@ -241,7 +241,7 @@ the config hash is defined on, ADR 0015 rule 10), so it changes no numbers.
   `Settings` field has exactly one nested home.
 - `configs/runs/` holds nested configs (`carrasco2021.yaml`: the preset on `cuda`).
 
-## `cli` (task 1.1; subcommands from 1.2, 1.7, 3.1 and 3.5; `run` from 4.2)
+## `cli` (task 1.1; subcommands from 1.2, 1.7, 3.1, 3.5 and 5.1a; `run` from 4.2)
 
 The `astro-simclr` console script (`[project.scripts]`). `main(argv)` returns the exit code,
 so tests call it in-process. Every subcommand registers in `build_parser()` and takes the
@@ -318,6 +318,17 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   `build-r5` exits 0 when written (and matching `--expect`), 1 when incomplete, refused
   offline, or different from `--expect`; a dry run exits 0 and prints the next round's
   request count. The same signal handling as `fetch-alerts`.
+- `ingest-archive TARBALL... --out DIR (--exclude FILE | --no-exclusions) [--night N]
+  [--no-oid-year] [--max-ndethist N] [--rows-per-file 4096] [--overwrite] [--quiet]`,
+  `archive-summary CORPUS_DIR [--verify] [--json]` and `plan-archive-nights [--seed 0]
+  [--labelled-per-year 24] [--later-per-year 8] [--spares 2] [--first D] [--last D]
+  [--stamps-per-night N] [--tarball-gb GB] [--download-hours H] [--measured DIR] [--out
+  FILE] [--json]` (task 5.1a, see `archive`).
+  - `-` as the only TARBALL reads one night from stdin and needs `--night`; `--night`
+    without `-`, or `-` beside files, exits 2.
+  - `ingest-archive` exits 0 when every night is done. A bad tarball name, an unreadable
+    tarball, other rules than `corpus.json`'s, or another file for a done night exit 1.
+  - `archive-summary --verify` loads and re-hashes every night: a bad one exits 1.
 - `preflight (--synthetic | --data-dir DIR) [--accelerator cuda] [--runs R1,R2,R3,R4]
   [--set ...]` (see `preflight`): exit 0 if no step failed, else 1.
   `scripts/gpu-preflight.sh` is a thin `uv run --no-sync` wrapper.
@@ -1065,7 +1076,8 @@ prepared split ──targets (destandardise)──► fetch_row ──► Alerce
     record names differ from ZTF's). It checks `objectId`, `candid` and the required
     candidate fields and types, and keeps the scalar fields, non-finite floats as `null`.
   - The three cutouts are parsed by `fits.read_fits_image`, and CCD-edge ones repaired
-    with `repair_non_squared_stamp`.
+    with `repair_non_squared_stamp` (or refused with `CutoutShapeError` under
+    `repair=False`, the archive corpus; see `archive`).
 - `fits`: `gunzip` (a gzip stream with an output cap), and `read_fits_image`, a strict
   reader of one 2D `BITPIX -32/-64` image, at most 256 px per side, without scaling. It
   returns native float32 `(NAXIS2, NAXIS1)`, NaN kept, with no flip. It replaces a FITS
@@ -1173,6 +1185,97 @@ in its shards, and a fake service for the by-oid fetch). They cover:
 - the refusal of an incomplete snapshot;
 - `--expect`;
 - the CLI commands.
+
+## `archive` (phase 5, task 5.1a; ADR 0019)
+
+`src/astro_simclr/archive/`: the unlabelled pretraining corpus from the ZTF public alert
+archive. The rules, layout, commands and budget are in [`docs/data.md`](data.md),
+"Archive corpus"; the decisions in ADR 0019. Nothing in the package imports torch or opens
+a network connection.
+
+```
+tarball file or stdin ──► TarballStream ──Member──► parse_alert(repair=False) ──Alert──► _decide
+  (SHA-256, gzip cap,       (regular .avro            (alerts.parse: container,         │ invalid_values
+   tar stream mode,          members only,             schema and size checks,          │ first_detection_failure
+   member and count caps)    nothing extracted)        strict FITS)                     │ exclusions
+                                                                                         ▼
+           corpus.json (rules) ◄── check_corpus      NightWriter ──► nights/.N.partial ──rename──► nights/N
+                                                                                         │
+                                         corpus_index (one alert per oid, read-time exclusions) ◄──┘
+```
+
+- `stream`:
+  - `TarballStream(source, name=, max_member_bytes=1 MiB, max_decompressed_bytes=64 GiB,
+    max_members=5M)` takes a `Path` or a binary stream.
+  - The raw bytes pass through `_HashingReader` (SHA-256, byte count; drained to the end
+    so the hash covers the whole file), then `gzip.GzipFile`, then `_LimitedReader` (the
+    decompressed cap), then `tarfile.open(mode="r|")`.
+  - It yields `Member(position, name, data)` for regular `.avro` files under the member
+    cap. Everything else is counted in `StreamStats`.
+  - `_BoundedTarInfo._proc_member` refuses pax and GNU long-name headers over 1 MiB
+    (tarfile reads their body whole) and GNU sparse members, before any body is read.
+  - After the last member the gzip stream is read to its end, which checks its CRC-32
+    and length trailer.
+  - Corrupt or truncated input raises `TarballError` (a `DataError`); real I/O errors
+    propagate.
+  - `night_of` and `tarball_name` map `ztf_public_YYYYMMDD.tar.gz` to and from the night,
+    with a date check.
+- `selection`:
+  - `Selection(oid_year=True, max_ndethist=None)`.
+  - `first_detection_failure(alert, selection)` returns `previous`, `oid_year`,
+    `ndethist` or `None`, in that order. `oid_year` and `jd_year` are its helpers.
+  - `Exclusions` holds the oids, the file's SHA-256 and name. `load_exclusions(path)`
+    reads UTF-8 text, at most 64 MB, one oid per line, `#` comments, each line checked
+    against `raw_alerts.OID_PATTERN`.
+- `layout`:
+  - `INDEX_DTYPE` and `NightWriter(out, night, rows_per_file)`: `add` buffers one cutout
+    file; `commit(meta)` writes `index.npy` and `meta.json`, fsyncs them, renames the
+    `.partial` directory and fsyncs the parent.
+  - `check_corpus(out, record)` creates or compares `corpus.json` (written atomically).
+    `corpus_lock(out)` is an exclusive `flock` on `OUT/.lock`. `recover_night` puts back a
+    night that a crash left at `.<night>.replaced` during an overwrite.
+  - `load_night` checks `meta.json`, the files' dtypes and shapes, the row totals and the
+    index values. `verify_night` re-hashes. `Night.cutout(row)` reads one stamp.
+  - `list_nights` and `iter_nights` see complete nights only.
+  - `corpus_index(out, exclude=)` keeps the earliest alert of each `oid` (`jd`, then
+    `candid`), drops the excluded oids, and sorts by night and row. `excluded_rows` gives
+    the mask.
+- `ingest`:
+  - `Rules(selection, exclusions, rows_per_file, overwrite, limits)`.
+  - `ingest_archive(tarballs, out, rules, progress=)` refuses two tarballs for one night.
+    `ingest_tarball` handles one file, and `ingest_stream(handle, night, out, rules)` one
+    piped night.
+  - `_done` checks `corpus.json`, then skips a complete night (same name and, for a file,
+    the same size) without opening its input.
+  - `_decide` and `_index_row` apply the rules of `REASONS` in order. The counts go to
+    `meta.json`.
+- `plan`:
+  - `plan_nights(seed, labelled_per_year, later_per_year, spares, first, last)` returns
+    `NightPlan`: `PlannedNight(night, stratum, rank, pilot)` with `use` (`h1` or
+    `ablation`).
+  - The strata are drawn from `default_rng([seed, year])`, and the pilot stratum after
+    them.
+  - `estimate(plan, stamps_per_night, tarball_gb, download_hours, measured)` gives the
+    stamps, GB and hours per year, per use and in total. The basis is assumed or measured
+    on a corpus. `format_estimate` prints it.
+- `alerts.parse` changes for the archive:
+  - `oid` and `candid` are optional (the alert's own are taken).
+  - `repair=False` raises `CutoutShapeError` for non-63×63 cutouts.
+  - `Alert.previous_detections` counts the `prv_candidates` entries with a `candid`.
+
+Tests (`tests/test_archive_*.py`, offline): `_archive_support` writes ZTF-like avro alerts
+(three schema eras: 2018 without `drb`, 2020, and 2024 with `fp_hists`) and tarballs with
+hostile members. They cover:
+- streaming, and the hash of the whole file;
+- links, devices, and `..` and absolute names, with nothing extracted;
+- the member, decompressed-size (gzip bomb) and member-count caps;
+- truncated, non-gzip and corrupt files;
+- every reason of the ingest on one night, with the NaN of the cutouts kept bit for bit;
+- the optional rules, and a piped night;
+- resume without reading a complete night, and a night cut short and redone;
+- another file for a complete night, and a corpus refusing other rules;
+- a deterministic writer, `corpus_index`, the loader's checks and the CLI;
+- the plan's strata, seeds, spares, pilot and uses, and the assumed and measured estimates.
 
 ## `optim` (task 1.5)
 
