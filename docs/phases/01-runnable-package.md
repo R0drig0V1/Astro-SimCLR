@@ -474,7 +474,10 @@ This design was verified with uv 0.11 on toy projects (plan review, round 2).
   synthetic splits. Each block is tagged in the markdown, so that `nvidia-smi`, `uv sync`
   and `gpu-preflight.sh` lines are excluded.
 
-### 1.9b Reference runs (after 1.9a; manual)
+### 1.9b Reference runs (after 1.9a; manual) — optional since 2026-11-07
+
+(The user's goal is to replicate the paper, phase 2, not the 2022 numbers. Phase 1 is
+done without 1.9b; run it only if a legacy comparison is needed.)
 
 - **Acceptance (needs a GPU and the data, done by the user or on a rented machine):**
   - The preflight passes on the real data.
