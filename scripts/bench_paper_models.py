@@ -5,7 +5,8 @@ the G-CNNs and the control arms) this prints, and with ``--out`` writes as JSON:
 
 - the trainable parameters and the MACs per stamp (``count_parameters``, ``count_macs``);
   the ConvNeXt rows (B8) take whole 63x63 stamps and are built from scratch (the Zoobot
-  row's weights do not change its speed, so nothing is downloaded);
+  row's weights do not change its speed, so nothing is downloaded); the hybrid rows (B9)
+  are built with their ``hybrid_*`` shape flags;
 - on the CPU, with the default thread count and with 1 thread: the median latency of a
   batch of 1 (ms), the throughput at batch 512 (stamps/s) and the time of one training step
   at batch 64 (ms);
@@ -163,6 +164,10 @@ def bench(*, reps: int, cpu_only: bool) -> dict[str, Any]:
             group_fields=settings.group_fields,
             context=settings.context,
             with_features=settings.with_features,
+            hybrid_dim=settings.hybrid_dim,
+            hybrid_depth=settings.hybrid_depth,
+            hybrid_heads=settings.hybrid_heads,
+            hybrid_readout=settings.hybrid_readout,
         ).eval()
         row: dict[str, Any] = {
             "row": variant.row,

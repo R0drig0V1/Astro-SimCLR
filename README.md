@@ -141,6 +141,12 @@ parameters, 179 M / 446 M MACs per rotation). `--set backbone_weights=zoobot` st
 ConvNeXt-pico from the Zoobot weights (Apache-2.0), downloaded from Hugging Face at run time,
 pinned by commit and SHA-256; from scratch needs no network.
 
+The conv-attention hybrids of plan row B9 stay on the 21×21 crop: `--set paper_arch=hybrid`
+(the paper's convolutions, 2 attention blocks over their 6×6 grid, 4 rotations; 371 k
+parameters, 55 M MACs per view) or `--set paper_arch=hybrid_p4` (the p4 trunk, invariant in
+one pass; 154 k, 55 M per stamp). `hybrid_dim`, `hybrid_depth`, `hybrid_heads` and
+`hybrid_readout` (`mean` | `cls`) shape the attention part.
+
 ### 4. Raw alerts
 
 `fetch-alerts` (task 3.1) recovers the raw alerts behind a prepared split from ALeRCE's

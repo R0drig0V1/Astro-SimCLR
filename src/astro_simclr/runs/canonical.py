@@ -123,8 +123,10 @@ IDENTITY_KEYS: Final[Mapping[str, str]] = {
 #:
 #: - a field added after canonical version 1, at the value that reproduces the behaviour
 #:   before it, so existing hashes and recorded manifests stay valid: ``feature_set: all``
-#:   (ADR 0016; every feature, as before the field) and ``backbone_weights: none`` (ADR
-#:   0022; from scratch, the only initialisation before the field);
+#:   (ADR 0016; every feature, as before the field), ``backbone_weights: none`` (ADR
+#:   0022; from scratch, the only initialisation before the field) and the hybrids' shape
+#:   flags at their defaults (plan row B9; read only by ``paper_arch: hybrid*``, which did
+#:   not exist before them, so every earlier config holds the defaults);
 #: - ``num_workers`` at 0. With DataLoader workers, Lightning seeds each worker, so the
 #:   worker count decides which augmentations are drawn: 0, 2 and 3 workers are three
 #:   different runs, and a false run-id match would contaminate a comparison, while a
@@ -134,6 +136,10 @@ HASH_NEUTRAL_DEFAULTS: Final[Mapping[str, object]] = {
     "num_workers": 0,
     "feature_set": "all",
     "backbone_weights": "none",
+    "hybrid_dim": 64,
+    "hybrid_depth": 2,
+    "hybrid_heads": 4,
+    "hybrid_readout": "mean",
 }
 
 _EXCLUDED: Final = frozenset(NON_SEMANTIC_KEYS) | frozenset(IDENTITY_KEYS)

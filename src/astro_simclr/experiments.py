@@ -118,7 +118,13 @@ import torch
 from lightning.pytorch.callbacks import Callback
 
 from astro_simclr.augmentations import resolve_augmentation_name
-from astro_simclr.config import CARRASCO2021, ConfigError, Settings, settings_to_plain
+from astro_simclr.config import (
+    CARRASCO2021,
+    HYBRID_FLAGS,
+    ConfigError,
+    Settings,
+    settings_to_plain,
+)
 from astro_simclr.data.prepared import is_prepared, load_prepared, read_meta
 from astro_simclr.data.schema import LABEL_NAMES, SPLITS, DataError
 from astro_simclr.paper_variants import paper_input_side
@@ -400,6 +406,8 @@ _PAPER_VARIANT_DEFAULTS: Final[Mapping[str, object]] = {
     "feature_set": "all",
     # The ConvNeXt backbone's initial weights (plan row B8; ADR 0022).
     "backbone_weights": "none",
+    # The conv-attention hybrids' shape (plan row B9).
+    **HYBRID_FLAGS,
     # Class-aware augmentation (plan rows C5 and C6; ADR 0006).
     "aug_noise": 0.0,
     "aug_feature_jitter": 0.0,
@@ -448,7 +456,9 @@ def paper_module(settings: Settings) -> PaperClassifierModule:
     ``group_fields``, ``context``, ``rot90_augment``) and the C5 / C6 augmentation
     (``aug_noise``, ``aug_feature_jitter``, ``synthetic_bogus``, ``aug_min_r2``) and the C7
     flux rescaling (``flux_rescale``, ``flux_k_min``, ``flux_k_max``), whose
-    draws are seeded with ``seed``, and the ``feature_set`` diagnostic (ADR 0016).
+    draws are seeded with ``seed``, the ``feature_set`` diagnostic (ADR 0016) and the
+    hybrids' shape flags (``hybrid_dim``, ``hybrid_depth``, ``hybrid_heads``,
+    ``hybrid_readout``; plan row B9).
 
     Raises:
         UnknownOptimizerError, ValueError: as ``PaperClassifierModule``.
@@ -474,6 +484,10 @@ def paper_module(settings: Settings) -> PaperClassifierModule:
         flux_k_min=settings.flux_k_min,
         flux_k_max=settings.flux_k_max,
         feature_set=settings.feature_set,
+        hybrid_dim=settings.hybrid_dim,
+        hybrid_depth=settings.hybrid_depth,
+        hybrid_heads=settings.hybrid_heads,
+        hybrid_readout=settings.hybrid_readout,
     )
 
 

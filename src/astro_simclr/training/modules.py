@@ -44,7 +44,14 @@ from lightning.pytorch.trainer.states import TrainerFn
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch import nn
 
-from astro_simclr.config import CONVNEXT_ARCHS
+from astro_simclr.config import (
+    CONVNEXT_ARCHS,
+    DEFAULT_HYBRID_DEPTH,
+    DEFAULT_HYBRID_DIM,
+    DEFAULT_HYBRID_HEADS,
+    DEFAULT_HYBRID_READOUT,
+    HYBRID_FLAGS,
+)
 from astro_simclr.feature_sets import feature_columns
 from astro_simclr.losses import NT_Xent, P_stamps_loss
 from astro_simclr.models import (
@@ -373,7 +380,10 @@ class PaperClassifierModule(ClassifierModule):
     (``rot4``, faithful; ``single``; ``p4``; ``p4m``), ``group_fields`` and ``context``
     (``none`` or ``avgpool63``: the batches then have 6 channels); ``convnext_atto`` and
     ``convnext_pico`` (plan row B8, ADR 0022) take the whole stamps, (B, 3, 63, 63) batches,
-    and refuse C5's noise, C6 and C7 (defined on the crop). The defaults build the
+    and refuse C5's noise, C6 and C7 (defined on the crop); ``hybrid`` and ``hybrid_p4``
+    (plan row B9, ``hybrid_model``) are conv-attention hybrids on the crop, shaped by
+    ``hybrid_dim``, ``hybrid_depth``, ``hybrid_heads`` and ``hybrid_readout`` (recorded in
+    the hyperparameters only when they are not their defaults). The defaults build the
     faithful model with the same draws from the global generator. ``rot90_augment`` rotates
     every training stamp by ``k * 90`` degrees, ``k`` uniform in 0..3, drawn from a CPU
     generator seeded with ``[augment_seed, global_step]``: independent of the device and of
@@ -440,6 +450,10 @@ class PaperClassifierModule(ClassifierModule):
         flux_k_max: float = 1.5,
         n_classes: int = N_CLASSES,
         feature_set: str = "all",
+        hybrid_dim: int = DEFAULT_HYBRID_DIM,
+        hybrid_depth: int = DEFAULT_HYBRID_DEPTH,
+        hybrid_heads: int = DEFAULT_HYBRID_HEADS,
+        hybrid_readout: str = DEFAULT_HYBRID_READOUT,
     ) -> None:
         # Fails here on an unknown set or position without features; none: no features.
         reads_features = bool(feature_columns(feature_set, with_features=with_features))
@@ -495,14 +509,28 @@ class PaperClassifierModule(ClassifierModule):
             drop_rate=drop_rate,
             n_classes=n_classes,
             feature_set=feature_set,
+            hybrid_dim=hybrid_dim,
+            hybrid_depth=hybrid_depth,
+            hybrid_heads=hybrid_heads,
+            hybrid_readout=hybrid_readout,
         )
-        default_set = ["feature_set"] if feature_set == "all" else []
-        self.save_hyperparameters(ignore=_hparams_ignore(n_classes, *default_set))
+        # Flags at their defaults stay out of the hyperparameters, so the faithful module's
+        # hparams.yaml and checkpoints are what they were before the flags existed.
+        hybrid = {
+            "hybrid_dim": hybrid_dim,
+            "hybrid_depth": hybrid_depth,
+            "hybrid_heads": hybrid_heads,
+            "hybrid_readout": hybrid_readout,
+        }
+        defaults = [key for key, value in hybrid.items() if value == HYBRID_FLAGS[key]]
+        defaults += ["feature_set"] if feature_set == "all" else []
+        self.save_hyperparameters(ignore=_hparams_ignore(n_classes, *defaults))
 
     def forward(self, x_img: torch.Tensor, x_feat: torch.Tensor) -> torch.Tensor:
         """Crops (B, C, S, S) and features -> (B, n_classes) logits.
 
-        S is 21 (C: 3, or 6 with context), or 63 for the ConvNeXt archs (C: 3).
+        S is 21 (C: 3, or 6 with context; the hybrids too), or 63 for the ConvNeXt archs
+        (C: 3).
         """
         out: torch.Tensor = self.model(x_img, x_feat if self.with_features else None)
         return out

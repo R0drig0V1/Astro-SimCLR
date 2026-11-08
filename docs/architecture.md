@@ -31,6 +31,7 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  ├──► oracle (fetch-m1, m1-oracle: the published M1 vs our input path) ──► paper_model, data
  ├──► alerts (fetch-alerts, alerts-summary: raw alerts from ALeRCE) ──► data (prepared, m1_features)
  │    (training ──► paper_variants: rot4 / single / p4 / p4m ──► paper_model, group_conv;
+ │     paper_variants ──► convnext_model (B8), hybrid_model (B9) ──► paper_variants.PaperHead;
  │     paper_model ──► feature_sets: all / position / none)
  ├──► preflight ──► experiments, data (inspection, manifest)
  └──► engine (phase 4: the loop's contracts, the data tiers; imports no Lightning) ──► config, data
@@ -143,8 +144,12 @@ of one run.
 
   | Field | Default | Meaning |
   |---|---|---|
-  | `paper_arch` | `rot4` | `rot4` (faithful: 4 rotations, mean after fc1), `single` (one pass, not invariant), `p4` (B7), `p4m` (B2') |
-  | `group_fields` | null | `p4` / `p4m`: fields of conv1-conv2 (conv3-conv5 twice); null is `32 // \|G\|` (8 / 4). An error with `rot4` / `single` |
+  | `paper_arch` | `rot4` | `rot4` (faithful: 4 rotations, mean after fc1), `single` (one pass, not invariant), `p4` (B7), `p4m` (B2'), `convnext_atto` / `convnext_pico` (B8), `hybrid` / `hybrid_p4` (B9) |
+  | `group_fields` | null | `p4` / `p4m` / `hybrid_p4`: fields of conv1-conv2 (conv3-conv5 twice); null is `32 // \|G\|` (8 / 4). An error with the other archs |
+  | `hybrid_dim` | 64 | `hybrid` / `hybrid_p4` (B9): token width of the attention blocks, a multiple of `hybrid_heads`. Another value is an error with the other archs (all four `hybrid_*` fields) |
+  | `hybrid_depth` | 2 | the hybrids: pre-norm transformer encoder blocks (≥ 1) |
+  | `hybrid_heads` | 4 | the hybrids: attention heads per block (≥ 1) |
+  | `hybrid_readout` | `mean` | the hybrids: `mean` of the 36 grid tokens, or a learned `cls` token |
   | `context` | `none` | `avgpool63`: the 63×63 stamp average-pooled to 21×21 as 3 more channels (B1'); needs `paper_input: float32` |
   | `rot90_augment` | false | rotate each training stamp by a random multiple of 90° (seeded by `seed` and the step) |
   | `feature_set` | `all` | the features the head reads (a diagnostic; ADR 0016): `all` 23 (faithful), `position` the 6 sky coordinates (`ra`, `dec`, `ecl_lat`, `ecl_long`, `gal_lat`, `gal_long`), `none` the images only (bit-identical to `with_features: false`). `position` needs `with_features` |
@@ -694,6 +699,8 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
 | `p4`, `context: avgpool63` | B7 with the 63×63 context (B1') | 228,915 | 53,978,880 (+1.7 %) |
 | `convnext_atto`, `image_size: 63` | timm ConvNeXt-atto on the whole stamp, 4 rotations (B8; `convnext_model`) | 3,405,227 | 714,557,184 |
 | `convnext_pico`, `image_size: 63` | timm ConvNeXt-pico on the whole stamp, 4 rotations (B8) | 8,575,667 | 1,785,014,016 |
+| `hybrid` | the paper's convolutions, 2 attention blocks over the 6×6 grid, 4 rotations (B9; `hybrid_model`) | 371,251 | 221,357,824 |
+| `hybrid_p4` | the p4 trunk, orientation-pooled, 2 attention blocks with C4-tied positions, 1 pass (B9) | 153,907 | 55,246,720 |
 
 - `GroupStampClassifier(group, *, group_fields=None, with_features, dropout_active,
   drop_rate, in_channels)`: the paper's geometry with group layers: `ZeroPad2d(3)`,
@@ -707,7 +714,8 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
   layers and initialisation); tested equal to `PaperStampClassifier`'s head with the same
   weights.
 - `build_paper_model(arch, *, group_fields, context, with_features, dropout_active,
-  drop_rate, n_classes, feature_set)`: the factory `PaperClassifierModule` uses; the defaults build the faithful
+  drop_rate, n_classes, feature_set, hybrid_dim, hybrid_depth, hybrid_heads,
+  hybrid_readout)`: the factory `PaperClassifierModule` uses; the defaults build the faithful
   model. `paper_in_channels(context)`, `default_group_fields(arch)`, `paper_input_side(arch)`
   (21, or 63 for the ConvNeXts: what `image_size` must be).
 - `count_parameters(model)`; `count_macs(model, *, in_channels)`: MACs per stamp of an
@@ -717,7 +725,8 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
   passes (divide by 4 for a view).
 - `VARIANTS`: name → `Variant(row, overrides, description)`: `rot4` (A), `single-aug`
   (`single` + `rot90_augment`), `p4` (B7), `p4-16`, `p4m` (B2'), `p4-context` (B1'),
-  `convnext-atto`, `convnext-pico` and `convnext-pico-zoobot` (B8). A run
+  `convnext-atto`, `convnext-pico` and `convnext-pico-zoobot` (B8), `hybrid`,
+  `hybrid-cls`, `hybrid-wide` (dim 128, 4 blocks) and `hybrid-p4` (B9). A run
   is the `carrasco2021` preset plus `--set key=value` for each override, for example
   `train-supervised --preset carrasco2021 --set paper_arch=p4 --set context=avgpool63`.
   Split runs (`--splits FILE --fold K | --screen`, 2.5-infra) take the same flags: one crop
@@ -785,6 +794,66 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
   downloader (licence gate, size, SHA-256, keys, shapes, channels), from scratch with sockets
   disabled, the settings, the run wiring; a CPU split run of `convnext_atto` in
   `tests/test_split_runs.py`; the golden fixture with `backbone_weights: none`.
+
+## `hybrid_model` (task 2.5, plan row B9)
+
+`src/astro_simclr/hybrid_model.py`: conv-attention hybrids as `paper_arch` values of
+`paper_stamp_classifier`, on the paper's 21×21 crop (and the 6-channel context). Engine-free
+(no Lightning import; tested in a fresh interpreter).
+
+- `HybridStampClassifier(arch, *, dim, depth, heads, readout, group_fields, with_features,
+  dropout_active, drop_rate, in_channels, n_classes, feature_set)`: a conv trunk down to its
+  last 6×6 grid (36 tokens) → `embed` (linear to `dim`) + `positions` (learned 2-D table)
+  [+ a CLS token] → `depth` × `EncoderBlock` → LayerNorm → mean of the grid tokens or the
+  CLS token → `fc1` to 64, ReLU, dropout per view → the mean over the views → `PaperHead`
+  (`feature_set` honoured).
+  - `hybrid`: the paper's five convolutions (64 channels per token); one positional vector
+    per cell; **4 rotations as one batch, mean after fc1**: exactly invariant by
+    averaging (one view alone is not: the free table sees where a pattern is).
+  - `hybrid_p4`: the p4 G-CNN trunk (`group_fields` F, default 8: F/2F fields) then the
+    **mean over the 4 orientations** of each field (2F channels per token); the positional
+    table is **tied across C4** (one vector per orbit of the 6×6 grid, 9 orbits;
+    `c4_orbits`). A 90° rotation of the stamp then permutes the tokens, which attention,
+    the MLPs, LayerNorm and both readouts do not see: exactly invariant **in one pass**,
+    so no 4-rotation mean (it would average 4 equal representations at 4× the cost). Not
+    built: 144 tokens of one orientation each with positions tied over the joint
+    (cell, orientation) orbits, which keeps orientation information at 16× the attention
+    cost.
+- `EncoderBlock(dim, heads)`: pre-norm; LayerNorm → `qkv` → scaled dot-product attention
+  written as two batched products and a softmax (counted by `count_macs`, the same on every
+  backend) → `proj` → residual; LayerNorm → `fc_in` (2·dim, `MLP_RATIO`) → GELU → `fc_out`
+  → residual. No dropout, no stochastic depth. Tested equal to `nn.MultiheadAttention`
+  with the same weights, and permutation-equivariant.
+- `GridPositions(side, dim, *, tied_c4)`: the tied table is expanded by a constant one-hot
+  matrix product (each cell gets an exact copy of its orbit's row), so its backward is a
+  matrix product, not `index_select`'s scatter (no deterministic MPS kernel).
+- Initialisation (seeded global generator): trunks as their models (Glorot, zero biases;
+  `group_conv` fans for p4); embedding, attention, MLP, positions and CLS from a normal of
+  std 0.02 truncated at 2σ, zero biases, LayerNorm (1, 0); fc1 and the head as the paper's.
+- | arch | Parameters | MACs per view | MACs per stamp |
+  |---|---|---|---|
+  | `rot4` (the paper's) | 441,075 | 52.6 M | 210.6 M (4 views) |
+  | `hybrid` | 371,251 | 55.3 M | 221.4 M (4 views) |
+  | `hybrid`, `hybrid_readout: cls` | 371,315 | 55.4 M | 221.7 M |
+  | `hybrid`, `hybrid_dim: 128`, `hybrid_depth: 4` | 844,915 | 73.0 M | 292.0 M |
+  | `hybrid_p4` | 153,907 | 55.2 M | 55.2 M (1 view) |
+
+  (with the 23 features; defaults dim 64, depth 2, heads 4, mean.) The paper's 2304 → 64
+  fc1 (147k parameters) becomes the embedding (4k), two blocks (66k) and a 64 → 64 fc1;
+  attention adds about 2.7 M MACs per view (5 %).
+- Settings: `hybrid_dim`, `hybrid_depth`, `hybrid_heads`, `hybrid_readout` (defaults in
+  `config.HYBRID_FLAGS`); another value with a non-hybrid arch is a `ConfigError`. They are
+  listed in the `carrasco2021` presets (a changed shape is a deviation), hash-neutral at their
+  defaults (`runs.canonical.HASH_NEUTRAL_DEFAULTS`: no existing hash moves) and recorded in
+  the module's hyperparameters only when changed (the faithful `hparams.yaml` is unchanged).
+- **Tested** (`tests/test_hybrid_model.py`): shapes; float64 invariance under the 3
+  rotations with every parameter perturbed, both archs, both readouts, with and without the
+  context (a flip visible); one view not invariant for `hybrid` and invariant for
+  `hybrid_p4`; the orbits, the tied table, the block; the pinned and the analytic counts;
+  initialisation, seed, dropout, `feature_set`; the checks; the settings, deviations,
+  hyperparameters and a reload. The golden fixture with the four flags at their defaults
+  (`tests/test_paper_variants.py`); CPU split runs of `hybrid` (CLS, C5-C7 augmentation) and
+  `hybrid_p4` (context) in `tests/test_split_runs.py`.
 
 ## `rj23_model` (task 3.4)
 

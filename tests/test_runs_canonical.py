@@ -143,10 +143,12 @@ def test_semantic_config_holds_every_other_field() -> None:
     assert semantic["command"] == "train-supervised"
     settings = semantic["settings"]
     assert isinstance(settings, dict)
-    # num_workers, feature_set and backbone_weights are semantic, but left out at their
-    # hash-neutral values (num_workers 0; feature_set all and backbone_weights none, the
-    # behaviour before the field: ADR 0016, ADR 0022).
-    neutral = {"num_workers", "feature_set", "backbone_weights"}
+    # num_workers, feature_set, backbone_weights and the hybrids' shape flags are semantic,
+    # but left out at their hash-neutral values (num_workers 0; feature_set all,
+    # backbone_weights none and the hybrid defaults, the behaviour before the field: ADR
+    # 0016, ADR 0022, plan row B9).
+    hybrid = {"hybrid_dim", "hybrid_depth", "hybrid_heads", "hybrid_readout"}
+    neutral = {"num_workers", "feature_set", "backbone_weights", *hybrid}
     assert set(HASH_NEUTRAL_DEFAULTS) == neutral
     assert set(settings) == FIELDS - set(NON_SEMANTIC_KEYS) - set(IDENTITY_KEYS) - neutral
     with_workers = semantic_config("train-supervised", Settings(num_workers=2))["settings"]
@@ -159,6 +161,11 @@ def test_semantic_config_holds_every_other_field() -> None:
     weights = semantic_config("train-supervised", zoobot)["settings"]
     assert isinstance(weights, dict)
     assert weights["backbone_weights"] == "zoobot"
+    wide = Settings(paper_arch="hybrid", hybrid_dim=128)
+    shaped = semantic_config("train-supervised", wide)["settings"]
+    assert isinstance(shaped, dict)
+    assert shaped["hybrid_dim"] == 128
+    assert "hybrid_depth" not in shaped
 
 
 @pytest.mark.parametrize(
