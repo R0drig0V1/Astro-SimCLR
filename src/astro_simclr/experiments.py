@@ -90,6 +90,7 @@ optimizer steps it ran (fewer than ``last_step`` after a resume) and ``seconds_p
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 import platform
@@ -114,6 +115,7 @@ from astro_simclr.presets import preset_report
 from astro_simclr.protocol.leakage import find_duplicates, train_exclusions
 from astro_simclr.protocol.predictions import Predictions, predictions_file, save_predictions
 from astro_simclr.protocol.split_runs import SplitRequest, SplitRun, open_split_run
+from astro_simclr.training.class_augment import DEFAULT_MIN_R2, fit_exclusions, stamp_fits
 from astro_simclr.training.datamodules import ClassifierDataModule, ContrastiveDataModule
 from astro_simclr.training.device_data import (
     SPLIT_RUN_STATE,
@@ -353,17 +355,23 @@ def _check_schedule(command: str, settings: Settings) -> None:
     _check_paper_variant(paper_model, settings)
 
 
-#: The architecture flags of task 2.5-models and their defaults (the faithful model).
+#: The flags of task 2.5-models (architecture) and of C5 / C6 (augmentation), and their
+#: defaults (the faithful model).
 _PAPER_VARIANT_DEFAULTS: Final[Mapping[str, object]] = {
     "paper_arch": "rot4",
     "group_fields": None,
     "context": "none",
     "rot90_augment": False,
+    # Class-aware augmentation (plan rows C5 and C6; ADR 0006).
+    "aug_noise": 0.0,
+    "aug_feature_jitter": 0.0,
+    "synthetic_bogus": 0.0,
+    "aug_min_r2": DEFAULT_MIN_R2,
 }
 
 
 def _check_paper_variant(paper_model: bool, settings: Settings) -> None:
-    """The 2.5-models flags apply to the paper model only: elsewhere they would be ignored.
+    """The 2.5 flags apply to the paper model only: elsewhere they would be ignored.
 
     Raises:
         ConfigError: if a flag of :data:`_PAPER_VARIANT_DEFAULTS` is changed for another
@@ -395,7 +403,9 @@ def paper_module(settings: Settings) -> PaperClassifierModule:
     """The ``PaperClassifierModule`` of ``settings`` (the model drawn from the global generator).
 
     The paper model's fields, including the 2.5-models variant flags (``paper_arch``,
-    ``group_fields``, ``context``, ``rot90_augment`` with ``seed`` as its seed).
+    ``group_fields``, ``context``, ``rot90_augment``) and the C5 / C6 augmentation
+    (``aug_noise``, ``aug_feature_jitter``, ``synthetic_bogus``, ``aug_min_r2``), whose
+    draws are seeded with ``seed``.
 
     Raises:
         UnknownOptimizerError, ValueError: as ``PaperClassifierModule``.
@@ -413,6 +423,10 @@ def paper_module(settings: Settings) -> PaperClassifierModule:
         context=settings.context,
         rot90_augment=settings.rot90_augment,
         augment_seed=settings.seed,
+        aug_noise=settings.aug_noise,
+        aug_feature_jitter=settings.aug_feature_jitter,
+        synthetic_bogus=settings.synthetic_bogus,
+        aug_min_r2=settings.aug_min_r2,
     )
 
 
@@ -467,12 +481,22 @@ def _build_paper(
         info["n_train"] = len(splits["Train"].labels)
         return splits
 
+    def with_fits(splits: dict[str, TensorSplit]) -> dict[str, TensorSplit]:
+        # C5 / C6 need each Train stamp's cross-channel fit (computed once, on the run's
+        # own Train role, which for a split run is the fold's training part).
+        if not (settings.aug_noise or settings.synthetic_bogus):
+            return splits
+        train = splits["Train"]
+        fits = stamp_fits(train.images)
+        info["class_augment"] = fit_exclusions(fits, train.labels, settings.aug_min_r2)
+        return {**splits, "Train": dataclasses.replace(train, fits=fits)}
+
     def source() -> dict[str, TensorSplit]:
         if split_run is not None:
-            return split_source(split_run)
+            return with_fits(split_source(split_run))
         splits = without_train_indices(crops(SPLITS), excluded)
         info["n_train"] = len(splits["Train"].labels)
-        return splits
+        return with_fits(splits)
 
     seed_run(settings)
     module = paper_module(settings)

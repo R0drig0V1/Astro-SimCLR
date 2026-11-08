@@ -68,7 +68,7 @@ def test_train_epoch_is_one_pass_of_the_tiled_stream() -> None:
     batches = list(loader)
     assert len(batches) == 6
     labels = np.array(_TRAIN_LABELS)
-    for b, (images, features, one_hot) in enumerate(batches):
+    for b, (images, features, one_hot, *_) in enumerate(batches):
         expected = tiled[stream.batch(b)]
         assert images.shape == (4, 3, 21, 21)
         assert images.dtype == torch.float32
@@ -84,7 +84,7 @@ def test_train_loader_starts_at_the_global_step() -> None:
     loader._position = lambda: 8  # mid-epoch 1 of 6-batch epochs: batches 8..11
     stream = PermutationStream(25, 4, 3)
     tiled = tile_indices(_TRAIN_LABELS)
-    starts = [int(images[0, 0, 0, 0]) for images, _, _ in loader]
+    starts = [int(images[0, 0, 0, 0]) for images, *_ in loader]
     assert starts == [int(tiled[stream.batch(b)][0]) for b in (8, 9, 10, 11)]
 
 

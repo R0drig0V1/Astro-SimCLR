@@ -56,6 +56,16 @@ from astro_simclr.models import (
 from astro_simclr.optim import cosine_warmup_scheduler
 from astro_simclr.paper_model import PAPER_DROP_RATE
 from astro_simclr.paper_variants import build_paper_model
+from astro_simclr.training.class_augment import (
+    DEFAULT_MIN_R2,
+    JITTER_STREAM,
+    NOISE_STREAM,
+    SYNTHETIC_STREAM,
+    augment_rng,
+    jitter_features,
+    noise_augment,
+    synthetic_bogus,
+)
 from astro_simclr.training.metrics import METRIC_NAMES, classification_metrics, confusion_matrix
 from astro_simclr.training.optimizers import (
     PAPER_ADAM_BETAS,
@@ -76,6 +86,8 @@ __all__ = [
 
 #: A classifier batch: images (B, 3, S, S), features (B, 23), one-hot labels (B, 5).
 ClassifierBatch = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+#: A paper-model training batch with the stamp fits (B, 6) of ``class_augment.stamp_fits``.
+AugmentBatch = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
 #: A SimCLR batch: the two views (B, 3, S, S) of each stamp.
 PairBatch = tuple[torch.Tensor, torch.Tensor]
 
@@ -298,10 +310,22 @@ class PaperClassifierModule(ClassifierModule):
     the other random draws, and the same after a ``--resume``. Validation and test are
     never augmented.
 
+    The class-aware augmentation of plan rows C5 and C6 (:mod:`training.class_augment`,
+    ADR 0006), after the rotation: ``synthetic_bogus`` replaces that fraction of the batch
+    with synthetic hot-pixel Bogus, ``aug_noise`` adds background noise to the other rows
+    (the difference follows the science and the template), ``aug_feature_jitter`` jitters
+    the continuous features of every row; ``aug_min_r2`` excludes the stamps whose
+    difference the cross-channel fit does not explain. Each has its own generator seeded
+    with ``[augment_seed, global_step, stream]``. ``aug_noise`` and ``synthetic_bogus``
+    need training batches with the stamp fits as a fourth element (a Train
+    ``TensorSplit`` with ``fits``).
+
     Raises:
         UnknownOptimizerError: if ``optimizer`` is not a known name.
         ValueError: if ``adam_betas`` is not a key of ``PAPER_ADAM_BETAS``, ``augment_seed``
-            is negative, or the variant is invalid (``build_paper_model``).
+            or an augmentation strength is negative, ``synthetic_bogus`` is not in [0, 1),
+            ``aug_min_r2`` not in [0, 1], ``synthetic_bogus`` is set with context channels,
+            or the variant is invalid (``build_paper_model``).
     """
 
     def __init__(
@@ -319,6 +343,10 @@ class PaperClassifierModule(ClassifierModule):
         context: str = "none",
         rot90_augment: bool = False,
         augment_seed: int = 0,
+        aug_noise: float = 0.0,
+        aug_feature_jitter: float = 0.0,
+        synthetic_bogus: float = 0.0,
+        aug_min_r2: float = DEFAULT_MIN_R2,
     ) -> None:
         super().__init__(
             beta_loss=beta_loss, lr=lr, optimizer=optimizer, with_features=with_features
@@ -328,9 +356,21 @@ class PaperClassifierModule(ClassifierModule):
             raise ValueError(f"adam_betas must be one of {valid}, got {adam_betas!r}")
         if augment_seed < 0:
             raise ValueError(f"augment_seed must be >= 0, got {augment_seed}")
+        if not (aug_noise >= 0 and aug_feature_jitter >= 0):
+            raise ValueError("aug_noise and aug_feature_jitter must be >= 0")
+        if not 0 <= synthetic_bogus < 1:
+            raise ValueError(f"synthetic_bogus must be in [0, 1), got {synthetic_bogus}")
+        if not 0 <= aug_min_r2 <= 1:
+            raise ValueError(f"aug_min_r2 must be in [0, 1], got {aug_min_r2}")
+        if synthetic_bogus and context != "none":
+            raise ValueError("synthetic_bogus builds no context channels: needs context='none'")
         self.adam_betas = adam_betas
         self.rot90_augment = rot90_augment
         self.augment_seed = augment_seed
+        self.aug_noise = aug_noise
+        self.aug_feature_jitter = aug_feature_jitter
+        self.synthetic_bogus = synthetic_bogus
+        self.aug_min_r2 = aug_min_r2
         self.model = build_paper_model(
             paper_arch,
             group_fields=group_fields,
@@ -356,18 +396,52 @@ class PaperClassifierModule(ClassifierModule):
         rng = np.random.default_rng([self.augment_seed, step])
         return torch.from_numpy(rng.integers(0, 4, size=n, dtype=np.int64))
 
-    def training_step(self, batch: ClassifierBatch, batch_idx: int) -> torch.Tensor:
-        """One optimisation step, on rotated stamps when ``rot90_augment``."""
+    def training_step(self, batch: ClassifierBatch | AugmentBatch, batch_idx: int) -> torch.Tensor:
+        """One optimisation step, on rotated and C5 / C6 augmented stamps when enabled.
+
+        Raises:
+            ValueError: if ``aug_noise`` or ``synthetic_bogus`` is on and the batch has no
+                stamp fits (a fourth element).
+        """
+        x_img, x_feat, targets = batch[0], batch[1], batch[2]
         if self.rot90_augment:
-            x_img, x_feat, targets = batch
             k = self.rotation_steps(x_img.shape[0], self.global_step).to(x_img.device)
             rotations = torch.stack([torch.rot90(x_img, j, dims=(2, 3)) for j in range(4)])
-            batch = (
-                rotations[k, torch.arange(x_img.shape[0], device=x_img.device)],
-                x_feat,
-                targets,
+            x_img = rotations[k, torch.arange(x_img.shape[0], device=x_img.device)]
+        if self.aug_noise or self.synthetic_bogus:
+            if len(batch) != 4:
+                msg = (
+                    "aug_noise and synthetic_bogus need the stamp fits in the training "
+                    "batches: build the Train TensorSplit with fits=class_augment.stamp_fits"
+                )
+                raise ValueError(msg)
+            x_img, x_feat, targets = self.class_augment(x_img, x_feat, targets, batch[3])
+        if self.aug_feature_jitter:
+            rng = augment_rng(self.augment_seed, self.global_step, JITTER_STREAM)
+            x_feat = jitter_features(x_feat, self.aug_feature_jitter, rng)
+        return self._step((x_img, x_feat, targets), "train")
+
+    def class_augment(
+        self, x_img: torch.Tensor, x_feat: torch.Tensor, targets: torch.Tensor, fits: torch.Tensor
+    ) -> ClassifierBatch:
+        """C6 then C5's noise on a training batch, drawn for the current global step.
+
+        Synthetic Bogus rows (``synthetic_bogus``) are not noised again. Returns the new
+        ``(images, features, targets)``; the inputs are not modified.
+        """
+        step = self.global_step
+        replaced = None
+        if self.synthetic_bogus:
+            rng = augment_rng(self.augment_seed, step, SYNTHETIC_STREAM)
+            x_img, x_feat, targets, replaced = synthetic_bogus(
+                x_img, x_feat, targets, fits, self.synthetic_bogus, rng, min_r2=self.aug_min_r2
             )
-        return self._step(batch, "train")
+        if self.aug_noise:
+            rng = augment_rng(self.augment_seed, step, NOISE_STREAM)
+            x_img, _ = noise_augment(
+                x_img, fits, self.aug_noise, rng, min_r2=self.aug_min_r2, skip=replaced
+            )
+        return x_img, x_feat, targets
 
     def configure_optimizers(self) -> OptimizerLRScheduler:
         """The optimizer with the betas ``adam_betas`` names, no LR schedule."""

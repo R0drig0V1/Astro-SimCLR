@@ -1,0 +1,76 @@
+{
+  "dataset": "td_ztf_stamp_17_06_20_red-002",
+  "r2_exclusions": {
+    "min_r2": 0.5,
+    "excluded": {
+      "AGN": 0.10555631962591115,
+      "SN": 0.06876790830945559,
+      "VS": 0.13776951160708134,
+      "Asteroid": 0.047713303469111366,
+      "Bogus": 0.15245060790273557
+    },
+    "count": {
+      "AGN": 14542,
+      "SN": 1396,
+      "VS": 14517,
+      "Asteroid": 9599,
+      "Bogus": 10528
+    }
+  },
+  "c6_source_share": {
+    "AGN": 0.874,
+    "SN": 0.912,
+    "VS": 0.678,
+    "Asteroid": 0.919,
+    "Bogus": 0.699
+  },
+  "widest_spike_fwhm_px": 0.481,
+  "MIN_PSF_FWHM_PX": 1.19,
+  "psf": {
+    "Asteroid science": {
+      "fits_kept": 3943,
+      "stamps": 9599,
+      "fwhm_px_min_p0.1_p1_p5_median": [
+        0.307,
+        0.394,
+        1.25,
+        1.436,
+        1.974
+      ]
+    },
+    "Asteroid difference": {
+      "fits_kept": 4021,
+      "stamps": 9599,
+      "fwhm_px_min_p0.1_p1_p5_median": [
+        1.205,
+        1.344,
+        1.509,
+        1.655,
+        2.057
+      ]
+    },
+    "SN science": {
+      "fits_kept": 424,
+      "stamps": 1396,
+      "fwhm_px_min_p0.1_p1_p5_median": [
+        0.315,
+        0.323,
+        1.22,
+        1.429,
+        2.286
+      ]
+    },
+    "SN difference": {
+      "fits_kept": 587,
+      "stamps": 1396,
+      "fwhm_px_min_p0.1_p1_p5_median": [
+        1.192,
+        1.263,
+        1.413,
+        1.553,
+        1.96
+      ]
+    },
+    "min_fwhm_px": 1.192
+  }
+}

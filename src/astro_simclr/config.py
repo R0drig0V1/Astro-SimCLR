@@ -232,6 +232,22 @@ class Settings:
     #: arm of the single-pass model; a no-op in exact arithmetic for the invariant archs.
     rot90_augment: bool = False
 
+    # --- Paper-model class-aware augmentation (plan rows C5 and C6; ADR 0006) ---------------
+
+    #: ``paper_stamp_classifier`` C5: the largest background-noise scale added to the
+    #: science and template of each training crop, in units of the crop channel's own
+    #: background sigma (``training.class_augment``); the difference follows them. 0: off.
+    aug_noise: float = 0.0
+    #: C5: the sigma, in standardised units, of the Gaussian jitter on the continuous
+    #: training features (``class_augment.DISCRETE_FEATURES`` never change). 0: off.
+    aug_feature_jitter: float = 0.0
+    #: C6: the fraction of each training batch replaced by synthetic hot-pixel Bogus,
+    #: in [0, 1). 0: off.
+    synthetic_bogus: float = 0.0
+    #: C5 / C6: a stamp whose ``diff ~ a*sci + b*tmpl + c`` fit has a lower R^2 is not
+    #: noised nor used as a synthetic Bogus source. In [0, 1].
+    aug_min_r2: float = 0.5
+
     def __post_init__(self) -> None:
         """Check the values that a type alone cannot (ranges and names).
 
@@ -279,12 +295,37 @@ class Settings:
                 raise ConfigError(msg)
             if self.group_fields < 1:
                 raise ConfigError(f"group_fields must be >= 1, got {self.group_fields}")
+        self._check_class_augment()
         if self.context != "none" and self.paper_input != "float32":
             msg = (
                 f"context {self.context!r} is part of the float input path: it needs "
                 f"paper_input=float32, got {self.paper_input!r}"
             )
             raise ConfigError(msg)
+
+    def _check_class_augment(self) -> None:
+        for name in ("aug_noise", "aug_feature_jitter"):
+            if not getattr(self, name) >= 0:
+                raise ConfigError(f"{name} must be >= 0, got {getattr(self, name)}")
+        if not 0 <= self.synthetic_bogus < 1:
+            raise ConfigError(f"synthetic_bogus must be in [0, 1), got {self.synthetic_bogus}")
+        if not 0 <= self.aug_min_r2 <= 1:
+            raise ConfigError(f"aug_min_r2 must be in [0, 1], got {self.aug_min_r2}")
+        on_crops = [name for name in ("aug_noise", "synthetic_bogus") if getattr(self, name)]
+        if on_crops and self.paper_input != "float32":
+            msg = (
+                f"{', '.join(on_crops)} re-normalise the crops like the float input path: "
+                f"they need paper_input=float32, got {self.paper_input!r}"
+            )
+            raise ConfigError(msg)
+        if self.synthetic_bogus and self.context != "none":
+            msg = (
+                "synthetic_bogus builds the 21x21 crop only, not a synthetic context: it "
+                f"needs context=none, got {self.context!r}"
+            )
+            raise ConfigError(msg)
+        if self.aug_feature_jitter and not self.with_features:
+            raise ConfigError("aug_feature_jitter needs with_features=true")
 
     def _check_hyperparameters(self) -> None:
         for name in ("image_size", "batch_size", "projection_dim"):
