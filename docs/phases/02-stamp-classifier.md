@@ -264,7 +264,7 @@ Results (`results/phase2/replication/m1_oracle.json`):
   - the M1 validation curve, saved as `results/phase2/replication/m1_val_curve.csv`
     (derived numbers only).
 
-### 2.2c Preset `carrasco2021` (after 2.2b)
+### 2.2c Preset `carrasco2021` (after 2.2b) — done (PR #15, merged as da3e3ee, 2026-11-08)
 
 - CLI wiring of `train-supervised --preset carrasco2021`:
   - the float path and the tiling;
@@ -284,6 +284,18 @@ Results (`results/phase2/replication/m1_oracle.json`):
     logged.
   - The best validation loss occurs before iteration 10,000, with validation accuracy
     ≥ 0.94 near the best.
+  - **Pilot result (GTX 1050, seed 0, initial horizon 40 by mistake, so no 30k minimum):**
+    - 25.7 min (0.050 s/step);
+    - best validation loss −0.0688 at iteration 20,770, validation accuracy 0.942, test
+      0.926.
+  - **"Best before 10k" was a wrong criterion.** The training-dynamics diagnostic
+    (2026-11-08) found no systematic difference from M1:
+    - data pipeline, loss, optimiser, BN, dropout and precision all match TF1, item by
+      item;
+    - 3 MPS seeds track M1's curve through 6k iterations and reach −0.063 to −0.068 by
+      ~5k;
+    - M1's "best at 4,780" is a noise spike on 500 validation stamps.
+  - Replication seed 0 with the full preset: **test 0.942**, validation 0.946.
 
 ### 2.3 Evaluation protocol (now) — done (PR #13, merged as 71980de, 2026-11-08). Real-data finding: `red` Train 2995 (labelled Bogus) is the same stamp as Validation 115 (labelled SN); excluded from Train only.
 
