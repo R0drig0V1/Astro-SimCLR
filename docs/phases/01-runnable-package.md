@@ -383,7 +383,7 @@ This design was verified with uv 0.11 on toy projects (plan review, round 2).
   - The LR scheduler steps once per epoch.
   - On fixed, imbalanced predictions, accuracy equals the legacy micro value.
 
-### 1.7 CLI, end-to-end smoke test, synthetic preflight (after 1.6)
+### 1.7 CLI, end-to-end smoke test, synthetic preflight (after 1.6) — done (PR #11, merged as 790923c, 2026-11-07; preflight verified on the GTX 1050)
 
 - Subcommands `pretrain`, `linear-eval`, `fine-tune` and `train-supervised`. Each takes
   `--config`, `--data-dir`, `--output-dir`, `--seed`, `--accelerator` and generic
