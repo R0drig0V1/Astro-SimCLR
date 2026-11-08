@@ -50,7 +50,7 @@ so the replication runs of task 2.4 no longer warn about them.
 
 Every gate also prints a WARN line when the runs come from different machines or builds
 (``metrics.json["machine"]``, :func:`machine_signature`), or with different effective
-float32 precisions (ADR 0008): the runs of one comparison use the same machine, build and
+float32 precisions (ADR 0010): the runs of one comparison use the same machine, build and
 precision (plan, phase 2, "Machines").
 
 The result is ``PASS`` (for CD21 with its tier), ``FAIL`` or ``REPORT``; :func:`exit_code`
@@ -284,10 +284,10 @@ def load_run(run_dir: Path) -> dict[str, Any]:
 
 def machine_signature(run: dict[str, Any]) -> tuple[object, ...] | None:
     """What must match between runs of one comparison: device type, GPU, torch, CUDA and
-    the effective float32 precision (``ieee`` or ``tf32``; ADR 0008).
+    the effective float32 precision (``ieee`` or ``tf32``; ADR 0010).
 
     Read from ``metrics.json["machine"]`` (written since task 2.3); ``None`` if absent. A
-    run written before ADR 0008 has no ``fp32_precision`` and reads as ``ieee``: every such
+    run written before ADR 0010 has no ``fp32_precision`` and reads as ``ieee``: every such
     run ran on hardware without TF32 (the GTX 1050, CPU or MPS; ``results/``).
     """
     machine = run.get("machine")

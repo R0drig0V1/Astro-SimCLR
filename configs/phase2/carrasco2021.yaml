@@ -81,6 +81,6 @@ flux_rescale: 0.0
 flux_k_min: 0.5
 flux_k_max: 1.5
 
-# Precision (ADR 0008): float32 convolutions and matmuls, as on the GTX 1050. torch 2.14
+# Precision (ADR 0010): float32 convolutions and matmuls, as on the GTX 1050. torch 2.14
 # would otherwise run cuDNN convolutions in TF32 on Ampere and newer GPUs.
 fp32_precision: ieee

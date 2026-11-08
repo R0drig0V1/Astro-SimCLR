@@ -58,7 +58,7 @@ of one run.
   change the loss); `deterministic: false` (the legacy runs used `benchmark=True`); the
   protocol defaults are the legacy classifier values (220 epochs, patience 40,
   `min_delta` 0.001, `accuracy_val`, eval batch 100).
-- `fp32_precision: ieee | tf32` (ADR 0008; default `ieee`): the float32 precision of cuDNN
+- `fp32_precision: ieee | tf32` (ADR 0010; default `ieee`): the float32 precision of cuDNN
   convolutions and of matmuls. `ieee` is full float32 on every device; `tf32` lets Ampere+
   GPUs use TensorFloat-32 (torch 2.14's own default for convolutions). Set at the start of
   every run (`training.runs.apply_fp32_precision`) and recorded, with its effect, in
@@ -772,7 +772,7 @@ memory-mapped:
 **Run helpers** (`runs.py`):
 
 - `seed_run(settings)`: `L.seed_everything(settings.seed, workers=True)`.
-- `apply_fp32_precision(settings)` (ADR 0008): `torch.backends.cudnn.conv.fp32_precision`
+- `apply_fp32_precision(settings)` (ADR 0010): `torch.backends.cudnn.conv.fp32_precision`
   and `torch.set_float32_matmul_precision("highest" | "high")` from `fp32_precision`
   (the matmul call, not `torch.backends.cuda.matmul.fp32_precision`, because after the
   latter is set to `tf32` `torch.get_float32_matmul_precision()` raises, and Lightning calls
@@ -1081,7 +1081,7 @@ Decisions and provenance: ADR 0003.
   unchanged), so that a variant run is reported as a deviation, not as faithful. Plan rows
   C5 and C6 add `aug_noise: 0.0`, `aug_feature_jitter: 0.0`, `synthetic_bogus: 0.0` and
   `aug_min_r2: 0.5` the same way (ADR 0006), row C7 `flux_rescale: 0.0`,
-  `flux_k_min: 0.5`, `flux_k_max: 1.5` (ADR 0007), and ADR 0008 `fp32_precision: ieee`, so
+  `flux_k_min: 0.5`, `flux_k_max: 1.5` (ADR 0007), and ADR 0010 `fp32_precision: ieee`, so
   that a TF32 run is a deviation.
 - `preset_for(settings)`: the preset of a `carrasco2021`-schedule run (by `with_features`),
   else `None`. `preset_report(settings)`: `name`, `faithful` (no preset key changed),
@@ -1132,7 +1132,7 @@ preflight alike:
 1. `check_accelerator`: `cuda` without `torch.cuda.is_available()` (or `mps`, `gpu`
    without one) raises `AcceleratorError`, naming the torch build and the preflight, before
    anything is built;
-2. `apply_fp32_precision` (ADR 0008), then `dataset_path`: `data_dir/<dataset>` must be a
+2. `apply_fp32_precision` (ADR 0010), then `dataset_path`: `data_dir/<dataset>` must be a
    prepared layout (`DataError` says how to
    prepare it);
 3. `seed_run` before any module is built (downstream: after loading the pretrained
@@ -1151,7 +1151,7 @@ Outputs, all under `output_dir`: `checkpoints/{best,last}.ckpt`,
 `confusion_matrix_{val,test}.png`. `metrics.json`: command, seed, `best_epoch` (0-based),
 `last_epoch`, monitor and `monitor_best`, versions, accelerator, `machine` (task 2.3:
 `device` from `trainer.strategy.root_device`, `gpu` = the CUDA device name or `null`,
-`torch`, `cuda`, `cudnn`, `platform`, `processor`, `python`; ADR 0008: `fp32_precision`,
+`torch`, `cuda`, `cudnn`, `platform`, `processor`, `python`; ADR 0010: `fp32_precision`,
 the effective `ieee` or `tf32`, `fp32_backends` and `compute_capability`), the data (prepared path,
 source SHA-256, class counts per split from `meta.json`), the resolved `config`; the
 classifiers add `val_acc_best` (micro accuracy on Validation at the best checkpoint: with
@@ -1234,7 +1234,7 @@ checked (command, `supervised_model`, no duplicate seed) and `val_acc_best` aggr
   Runs with and without features may share seeds (`Reference.split_by_features`); the
   result line is `CD21: PASS (faithful|acceptable)`. Constants: `CD21_*`.
 - Every gate prints a WARN line when the runs' `machine_signature` (device, GPU, torch,
-  CUDA and the effective float32 precision, ADR 0008; a run without it reads as `ieee`)
+  CUDA and the effective float32 precision, ADR 0010; a run without it reads as `ieee`)
   differ.
 
 ## `protocol` (task 2.3; split runs and decisions in 2.5-infra)

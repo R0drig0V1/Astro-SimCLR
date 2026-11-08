@@ -77,7 +77,7 @@ GROUP_ARCHS: Final = ("p4", "p4m")
 #: ``Settings.context`` (task 2.5-models; ``paper_variants.CONTEXTS``).
 CONTEXTS: Final = ("none", "avgpool63")
 
-#: ``Settings.fp32_precision`` (ADR 0008): ``ieee`` keeps float32 convolutions and matmuls
+#: ``Settings.fp32_precision`` (ADR 0010): ``ieee`` keeps float32 convolutions and matmuls
 #: in full float32 on every device; ``tf32`` lets Ampere and newer CUDA GPUs run them in
 #: TensorFloat-32 (10-bit mantissa; Pascal, CPU and MPS have no TF32 and stay float32).
 FP32_PRECISIONS: Final = ("ieee", "tf32")
@@ -118,7 +118,7 @@ class Settings:
     seed: int = 0
     #: ``Trainer(deterministic=...)``. False keeps the legacy ``benchmark=True`` behaviour.
     deterministic: bool = False
-    #: float32 convolutions and matmuls; see :data:`FP32_PRECISIONS` (ADR 0008). Applied by
+    #: float32 convolutions and matmuls; see :data:`FP32_PRECISIONS` (ADR 0010). Applied by
     #: ``training.runs.apply_fp32_precision`` before any module is built, and recorded with
     #: its effect in ``metrics.json["machine"]``. torch's own default is TF32 convolutions.
     fp32_precision: str = "ieee"

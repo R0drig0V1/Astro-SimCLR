@@ -6,7 +6,7 @@ and a ``ModelCheckpoint_V2`` (a subclass that overrode a private method to drop 
 suffix) on ``accuracy_val`` or ``loss_train_enc``, and no seed. Here:
 
 - :func:`apply_fp32_precision` sets torch's float32 policy of convolutions and matmuls from
-  ``fp32_precision`` (ADR 0008), and :func:`fp32_precision_record` reads back what a run
+  ``fp32_precision`` (ADR 0010), and :func:`fp32_precision_record` reads back what a run
   used (``metrics.json["machine"]``);
 - :func:`seed_run` calls ``lightning.seed_everything(seed, workers=True)``; it must run
   before the modules are built, because their initial weights consume the generators;
@@ -62,7 +62,7 @@ def apply_fp32_precision(settings: Settings) -> None:
     torch 2.14 runs cuDNN convolutions in TF32 by default
     (``torch.backends.cudnn.conv.fp32_precision == "tf32"``), so without this a run on an
     Ampere or newer GPU would silently use 10-bit-mantissa convolutions while the GTX 1050
-    (Pascal, no TF32) uses float32 (ADR 0008). Call it at the start of every run, before
+    (Pascal, no TF32) uses float32 (ADR 0010). Call it at the start of every run, before
     any module is built; the setting is process-global, so it also replaces whatever an
     earlier run in the same process set.
 

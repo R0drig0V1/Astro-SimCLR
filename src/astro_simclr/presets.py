@@ -22,7 +22,7 @@ the authority (ADR 0003):
   validation loss, batch 64 in file order) every 10 steps, horizon +10,000 per new best, no
   EarlyStopping;
 - dropout layers present but inactive (``dropout_active: false``; rate 0.5 when active);
-- float32 convolutions and matmuls (``fp32_precision: ieee``; ADR 0008), never TF32.
+- float32 convolutions and matmuls (``fp32_precision: ieee``; ADR 0010), never TF32.
 
 **Diagnostics** (:data:`DIAGNOSTICS`, plan task 2.4) are single settings that move away from
 the preset on purpose: ``adam_betas: paper``, ``dropout_active: true``,
@@ -97,7 +97,7 @@ _CARRASCO2021: Final[Mapping[str, object]] = {
     "flux_rescale": 0.0,
     "flux_k_min": 0.5,
     "flux_k_max": 1.5,
-    # Precision (ADR 0008): float32 convolutions and matmuls, as on the GTX 1050 (no TF32).
+    # Precision (ADR 0010): float32 convolutions and matmuls, as on the GTX 1050 (no TF32).
     # Listed so that a TF32 run (``fp32_precision: tf32``) is recorded as a deviation.
     "fp32_precision": "ieee",
 }

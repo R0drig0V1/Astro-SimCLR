@@ -5,7 +5,7 @@
   **McNemar on the seed ensembles** and the **paired bootstrap over stamps**. It always
   *reports*: on ``test`` because test is never a decision input, and on ``val`` because a
   normal run's Validation stamps chose its checkpoint. Runs from different machines,
-  builds or effective float32 precisions (ADR 0008) are refused (plan: a comparison never
+  builds or effective float32 precisions (ADR 0010) are refused (plan: a comparison never
   mixes them), unless explicitly allowed, and so are runs on different data
   (``metrics.json["data"]["source"]["sha256"]``): a normal run's ``index`` is
   ``arange(N)``, so only the data identity and the labels can show that two runs saw the

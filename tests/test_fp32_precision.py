@@ -1,4 +1,4 @@
-"""The float32 precision policy of a run (ADR 0008): set, recorded and never mixed.
+"""The float32 precision policy of a run (ADR 0010): set, recorded and never mixed.
 
 torch 2.14 runs cuDNN convolutions in TF32 by default, so ``Settings.fp32_precision``
 (default ``ieee``) is applied at the start of every run, recorded with its effect in
@@ -138,7 +138,7 @@ def test_machine_signature_holds_the_effective_policy() -> None:
         None,
         "tf32",
     )
-    # A run written before ADR 0008 ran without TF32: it reads as ieee.
+    # A run written before ADR 0010 ran without TF32: it reads as ieee.
     old = machine_signature({"machine": MACHINE})
     assert old == machine_signature({"machine": {**MACHINE, "fp32_precision": "ieee"}})
 

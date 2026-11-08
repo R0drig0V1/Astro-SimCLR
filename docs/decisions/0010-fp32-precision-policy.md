@@ -1,5 +1,5 @@
-<!-- ADR 0008: the float32 precision policy of convolutions and matmuls (TF32), set and recorded per run. -->
-# 0008: Full float32 by default; TF32 only behind `fp32_precision: tf32`
+<!-- ADR 0010: the float32 precision policy of convolutions and matmuls (TF32), set and recorded per run. -->
+# 0010: Full float32 by default; TF32 only behind `fp32_precision: tf32`
 
 - **Status:** accepted (2026-11-08, audit item 1, "Record and set the conv TF32 policy")
 - **Implemented by:** `Settings.fp32_precision` (`config.py`),
