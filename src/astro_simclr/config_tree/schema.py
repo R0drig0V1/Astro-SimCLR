@@ -255,6 +255,9 @@ class PaperStampClassifier:
     group_fields: int | None = _flat("group_fields")
     #: ``none`` or ``avgpool63`` (``config.CONTEXTS``).
     context: str = _flat("context")
+    #: The alert features the head reads: ``all`` (faithful), ``position``, ``none``
+    #: (``config.FEATURE_SETS``; ADR 0016).
+    feature_set: str = _flat("feature_set")
     #: ``float32`` (the paper's input) or ``uint8`` (a diagnostic).
     input: str = _flat("paper_input")
     nan_approximation: bool = _flat("nan_approximation")

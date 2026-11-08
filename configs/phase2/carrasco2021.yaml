@@ -66,6 +66,9 @@ paper_arch: rot4
 group_fields: null
 context: none
 rot90_augment: false
+# The alert features the head reads (a task 2.5 diagnostic; ADR 0016): all 23. A diagnostic
+# run sets position (the 6 sky coordinates) or none (images only).
+feature_set: all
 
 # Class-aware augmentation (plan rows C5 and C6; ADR 0006): off. An augmented run sets
 # aug_noise / aug_feature_jitter / synthetic_bogus (src/astro_simclr/training/class_augment.py).

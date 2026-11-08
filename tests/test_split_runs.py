@@ -579,8 +579,17 @@ def test_resume_of_the_same_fold_continues(
         ({"paper_arch": "p4", "context": "avgpool63"}, {"fold": 1}),
         ({"paper_arch": "p4m", "group_fields": 2, "rot90_augment": True}, {}),
         (_AUGMENT, {"fold": 3}),
+        # The feature_set diagnostic (ADR 0016) with the 2.5 flags, C5's jitter included.
+        ({**_AUGMENT, "feature_set": "position"}, {"fold": 1}),
+        ({"paper_arch": "single", "rot90_augment": True, "feature_set": "none"}, {}),
     ],
-    ids=["p4-context-fold", "p4m-screen", "p4-augment-fold"],
+    ids=[
+        "p4-context-fold",
+        "p4m-screen",
+        "p4-augment-fold",
+        "position-augment-fold",
+        "none-screen",
+    ],
 )
 def test_variant_split_runs(
     cv_data: tuple[Path, Path, ProtocolSplits],
@@ -625,7 +634,7 @@ def test_variant_split_runs(
     assert np.array_equal(predictions.index, parts.evaluation_index)
     # C5 / C6 / C7 (ADR 0006, 0007): the fits are those of the fold's own training part.
     assert fits["Validation"] is None and fits["Test"] is None
-    if changes is _AUGMENT:
+    if changes.get("synthetic_bogus"):  # _AUGMENT, alone or with a feature set
         training = table[parts.training]
         expected = np.concatenate([stamp_fits(training), fit_central_psf(training)], axis=1)
         np.testing.assert_array_equal(fits["Train"].cpu().numpy(), expected)

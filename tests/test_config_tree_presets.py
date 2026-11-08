@@ -54,6 +54,8 @@ NESTED_CASES: Final[Mapping[str, tuple[str, tuple[str, ...]]]] = {
     "carrasco2021+c6": ("carrasco2021", ("augment.synthetic_bogus=0.1",)),
     "carrasco2021+c7": ("carrasco2021", ("augment.flux_rescale=0.5",)),
     "carrasco2021+tf32": ("carrasco2021", ("runtime.fp32_precision=tf32",)),
+    "carrasco2021+position": ("carrasco2021", ("model.feature_set=position",)),
+    "carrasco2021+feature-set-none": ("carrasco2021", ("model.feature_set=none",)),
     "pretrain-legacy": ("pretrain-legacy", ()),
     "train-supervised-legacy": ("train-supervised-legacy", ()),
 }

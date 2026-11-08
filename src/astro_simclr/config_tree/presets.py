@@ -58,6 +58,7 @@ _CARRASCO2021: Final = Config(
         arch="rot4",
         group_fields=None,
         context="none",
+        feature_set="all",
         input="float32",
         nan_approximation=True,
         exclude_leaked_train=True,
