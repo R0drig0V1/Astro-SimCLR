@@ -100,6 +100,7 @@ def test_missing_file(tmp_path: Path) -> None:
         ({"patience": -1}, "patience must be >= 0"),
         ({"num_workers": -1}, "num_workers must be >= 0"),
         ({"seed": -1}, "seed must be >= 0"),
+        ({"progress_bar_refresh_rate": -1}, "progress_bar_refresh_rate must be >= 0"),
         ({"min_delta": -0.1}, "min_delta must be >= 0"),
         ({"monitor": ""}, "monitor must not be empty"),
     ],
