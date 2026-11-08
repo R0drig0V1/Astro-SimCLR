@@ -21,6 +21,7 @@ from torch.utils.data import DataLoader
 from astro_simclr.augmentations import (
     AUGMENTATIONS,
     DEFERRED_AUGMENTATIONS,
+    LEGACY_ALIASES,
     Augmentation,
     DeferredAugmentationError,
     GaussianBlur,
@@ -29,6 +30,7 @@ from astro_simclr.augmentations import (
     Stamp,
     UnknownAugmentationError,
     get_augmentation,
+    resolve_augmentation_name,
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "augmentations" / "legacy_views.npz"
@@ -85,13 +87,38 @@ def test_object_without_pair_is_not_an_augmentation() -> None:
 def test_registry_holds_exactly_the_phase1_names() -> None:
     assert set(AUGMENTATIONS) == {
         "simclr",
+        "simclr_centered",
+        "astro_perspective",
+        "astro_perspective_gray",
+        "rotate_flip",
+        "center_crop",
+    }
+    assert set(LEGACY_ALIASES) == {
+        "simclr",
         "simclr2",
         "astro7",
         "astro8",
         "rotation_v3",
         "without_aug",
     }
-    assert not set(AUGMENTATIONS) & DEFERRED_AUGMENTATIONS
+    assert set(LEGACY_ALIASES.values()) == set(AUGMENTATIONS)
+    # No new name may shadow a different legacy transform.
+    assert not (set(AUGMENTATIONS) | set(LEGACY_ALIASES)) & DEFERRED_AUGMENTATIONS
+
+
+@pytest.mark.parametrize(("legacy_name", "name"), sorted(LEGACY_ALIASES.items()))
+def test_legacy_alias_builds_the_same_augmentation(legacy_name: str, name: str) -> None:
+    assert resolve_augmentation_name(legacy_name) == name
+    assert resolve_augmentation_name(name) == name
+    aug = get_augmentation(legacy_name, 27)
+    assert aug.name == name
+    img = _stamps(1)[0]
+    seed_everything(5, verbose=False)
+    via_alias = aug.pair(img)
+    seed_everything(5, verbose=False)
+    via_name = get_augmentation(name, 27).pair(img)
+    assert torch.equal(via_alias[0], via_name[0])
+    assert torch.equal(via_alias[1], via_name[1])
 
 
 @pytest.mark.parametrize("name", ["astro9", "rot_elastic", "simclr3", "gray_scale"])
@@ -104,6 +131,7 @@ def test_unknown_name_lists_valid_names() -> None:
     with pytest.raises(UnknownAugmentationError, match="valid names") as info:
         get_augmentation("simclr_v9", 27)
     assert not isinstance(info.value, DeferredAugmentationError)
+    assert "rotate_flip" in str(info.value)
     assert "rotation_v3" in str(info.value)
 
 
@@ -114,10 +142,10 @@ def test_bad_size_is_rejected(size: object) -> None:
 
 
 def test_augmentation_satisfies_protocol_and_has_repr() -> None:
-    aug = get_augmentation("astro8", 27)
+    aug = get_augmentation("astro_perspective_gray", 27)
     assert isinstance(aug, Augmentation)
     assert isinstance(aug, PipelineAugmentation)
-    assert repr(aug) == "PipelineAugmentation(name='astro8')"
+    assert repr(aug) == "PipelineAugmentation(name='astro_perspective_gray')"
 
 
 # --- shapes, ranges, randomness -----------------------------------------------------------
@@ -139,7 +167,7 @@ def test_views_have_shape_dtype_and_range(name: str, size: int) -> None:
             assert torch.allclose(scaled, scaled.round(), atol=1e-3)
 
 
-@pytest.mark.parametrize("name", [n for n in NAMES if n != "without_aug"])
+@pytest.mark.parametrize("name", [n for n in NAMES if n != "center_crop"])
 def test_random_augmentations_give_two_different_views(name: str) -> None:
     seed_everything(0, verbose=False)
     aug = get_augmentation(name, 27)
@@ -147,9 +175,9 @@ def test_random_augmentations_give_two_different_views(name: str) -> None:
     assert any(not torch.equal(*aug.pair(img)) for _ in range(5))
 
 
-def test_without_aug_is_the_deterministic_centre_crop() -> None:
+def test_center_crop_is_deterministic() -> None:
     img = _stamps(1)[0]
-    first, second = get_augmentation("without_aug", 27).pair(img)
+    first, second = get_augmentation("center_crop", 27).pair(img)
     expected = torch.from_numpy(img[18:45, 18:45]).permute(2, 0, 1).float() / 255
     assert torch.equal(first, expected)
     assert torch.equal(second, expected)
@@ -182,15 +210,19 @@ def test_fixture_records_provenance(legacy: dict[str, np.ndarray]) -> None:
 
 
 @pytest.mark.parametrize("size", [27, 63])
-@pytest.mark.parametrize("name", NAMES)
-def test_port_matches_legacy_views(legacy: dict[str, np.ndarray], name: str, size: int) -> None:
+@pytest.mark.parametrize("legacy_name", sorted(LEGACY_ALIASES))
+def test_port_matches_legacy_views(
+    legacy: dict[str, np.ndarray], legacy_name: str, size: int
+) -> None:
+    # The fixture is keyed by the legacy names; compare under the registry name.
+    name = LEGACY_ALIASES[legacy_name]
     seed = int(legacy["seed"])
     aug = get_augmentation(name, size)
     for n, img in enumerate(legacy["stamps"]):
         _seed_all(seed + n)
         first, second = aug.pair(img)
         for got, key in ((first, "first"), (second, "second")):
-            want = legacy[f"{name}_{size}_{key}"][n].astype(np.int16)
+            want = legacy[f"{legacy_name}_{size}_{key}"][n].astype(np.int16)
             diff = np.abs(np.rint(got.numpy() * 255).astype(np.int16) - want)
             # The only float step that is not exact is the Gaussian blur's conv2d, whose
             # last bit can differ between CPUs (fixtures are made on arm64, CI is x86),
@@ -266,12 +298,12 @@ def _first_two_batches(name: str, num_workers: int, seed: int) -> list[list[torc
     return batches
 
 
-# astro8 uses all three generators: torch (torchvision), `random` (centre crop) and
+# astro_perspective_gray uses all three generators: torch (torchvision), `random` (centre crop) and
 # np.random (blur).
 @pytest.mark.parametrize("num_workers", [0, 2])
 def test_same_seed_gives_identical_first_two_batches(num_workers: int) -> None:
-    first = _first_two_batches("astro8", num_workers, seed=11)
-    second = _first_two_batches("astro8", num_workers, seed=11)
+    first = _first_two_batches("astro_perspective_gray", num_workers, seed=11)
+    second = _first_two_batches("astro_perspective_gray", num_workers, seed=11)
     assert len(first) == len(second) == 2
     for batch_a, batch_b in zip(first, second, strict=True):
         for a, b in zip(batch_a, batch_b, strict=True):
@@ -279,5 +311,5 @@ def test_same_seed_gives_identical_first_two_batches(num_workers: int) -> None:
     if num_workers == 0:
         # Sanity check that the seed matters; only in-process, because each spawned worker
         # (the macOS default) costs seconds of torch import.
-        other = _first_two_batches("astro8", num_workers, seed=12)
+        other = _first_two_batches("astro_perspective_gray", num_workers, seed=12)
         assert not torch.equal(first[0][0], other[0][0])
