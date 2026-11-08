@@ -6,7 +6,8 @@
 - **Status:** accepted (2026-11-08, phase 3, task 3.4b)
 - **Implemented by:** `src/astro_simclr/rj23_regime.py`, `src/astro_simclr/rj23_data.py`
   (engine-free); `src/astro_simclr/training/rj23.py` (the Lightning adapters);
-  `src/astro_simclr/presets.py` (`rj23-<scenario>`), `configs/phase3/rj23-*.yaml`
+  `src/astro_simclr/presets.py` (`rj23-<scenario>`), `configs/phase3/rj23-*.yaml`,
+  `src/astro_simclr/config_tree/` (the nested variants and presets)
 - **Checked by:** `tests/test_rj23_regime.py`, `tests/test_rj23_data.py`,
   `tests/test_rj23_training.py`, `tests/test_presets.py`
 
@@ -113,6 +114,12 @@ from `engine.randomness.host_generator` with a reserved stream.
   error that says to resume it.
 - The Keras ε placement makes `rj23` runs non-comparable, at the 1e-7 level, with a torch
   Adam run of the same settings; nothing compares them.
+- The nested config (ADR 0017) holds the regime as three variants: `model.kind rj23`
+  (`scenario`, `bn_position`, `large_values`), `schedule.kind rj23` (`max_steps`,
+  `val_every_n_steps`, `patience`, `checkpoint_every_n_steps`, `monitor`, `keep`; lowers
+  `early_stopping: false`) and `augment.kind none` (RJ23 has no augmentation besides the
+  model's 8 views), allowed only together, with the four `rj23-<scenario>` presets written
+  out; `astro-simclr run` therefore trains an RJ23 scenario too.
 - `bench-report` reads the primary keep; reporting the other keep needs a flag there (not
   needed by 3.6).
 - The numbers of no existing config change (`numerics_epoch` unchanged): the regime adds new

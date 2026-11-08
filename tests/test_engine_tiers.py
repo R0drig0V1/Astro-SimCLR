@@ -247,8 +247,9 @@ def test_quantised_storage_is_a_recorded_deviation(
         if dtype == "float16":
             dequantised = values.astype(np.float16).astype(np.float32)
         else:
-            dequantised = np.rint(values * np.float32(255)).astype(np.uint8)
-            dequantised = torch.from_numpy(dequantised).float().div(255.0).numpy()
+            # numpy's correctly rounded k / 255: CUDA's tensor / scalar is off by one ulp.
+            stored = np.rint(values * np.float32(255)).astype(np.uint8)
+            dequantised = stored.astype(np.float32) / np.float32(255)
         assert np.array_equal(got[0].numpy(), dequantised)
         assert torch.equal(got[1], want[1])  # only the images are quantised
 

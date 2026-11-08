@@ -58,6 +58,7 @@ __all__ = [
     "SCHEDULES",
     "ConfigError",
     "Settings",
+    "coerce_value",
     "load_settings",
     "parse_override",
     "read_settings_file",
@@ -655,6 +656,20 @@ def _coerce(hint: Any, value: object) -> Any:
                 expected.append(str(err))
         raise TypeError(" or ".join(expected))
     return _COERCERS[hint](value)
+
+
+def coerce_value(hint: Any, value: object) -> Any:
+    """Convert ``value`` to the type ``hint`` with the rules of :func:`settings_from_mapping`.
+
+    ``hint`` is one of the field types of :class:`Settings` (``int``, ``float``, ``bool``,
+    ``str``, ``Path``, ``None``) or a union of them. The nested config
+    (:mod:`astro_simclr.config_tree`) uses it, so that both forms accept exactly the same
+    values.
+
+    Raises:
+        TypeError: with a description of the expected type, if ``value`` does not fit.
+    """
+    return _coerce(hint, value)
 
 
 def settings_from_mapping(data: Mapping[str, object]) -> Settings:

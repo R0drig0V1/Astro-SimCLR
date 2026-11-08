@@ -17,17 +17,21 @@ Two kinds, by what the draw is for:
 ``step`` is always the number of optimizer steps done before the step, and ``stream`` a
 number from :data:`RESERVED_STREAMS` (a new augmentation takes a new number; reusing one
 would correlate two augmentations).
+
+:func:`seed_everything` seeds the **global** streams at the start of a run (ADR 0014, C1),
+as ``lightning.seed_everything`` does, so both engines build the same initial weights.
 """
 
 from __future__ import annotations
 
+import random
 from types import MappingProxyType
 from typing import Final
 
 import numpy as np
 import torch
 
-__all__ = ["RESERVED_STREAMS", "device_generator", "host_generator"]
+__all__ = ["RESERVED_STREAMS", "device_generator", "host_generator", "seed_everything"]
 
 #: Stream numbers in use (the third ``SeedSequence`` word), by augmentation. ``rot90``
 #: keeps the two-word ``[seed, step]`` of task 2.5-models and has no number (the same two
@@ -79,3 +83,26 @@ def device_generator(seed: int, step: int, stream: int, device: torch.device) ->
     generator = torch.Generator(device=device)
     generator.manual_seed(word)
     return generator
+
+
+#: NumPy's legacy seeding accepts 32-bit unsigned seeds only (Lightning's bounds).
+_MAX_SEED: Final = 2**32 - 1
+
+
+def seed_everything(seed: int) -> int:
+    """Seed Python's ``random``, NumPy's global generator and torch (CPU and every CUDA device).
+
+    The three calls of ``lightning.seed_everything(seed)``, in its order (``random.seed``,
+    ``np.random.seed``, ``torch.manual_seed``, which also seeds every CUDA device), without
+    its environment variables (``PL_GLOBAL_SEED``, ``PL_SEED_WORKERS``: the plain engine has
+    no worker processes). Returns ``seed``.
+
+    Raises:
+        ValueError: if ``seed`` is not in ``[0, 2**32 - 1]``.
+    """
+    if isinstance(seed, bool) or not 0 <= seed <= _MAX_SEED:
+        raise ValueError(f"seed must be in [0, {_MAX_SEED}], got {seed!r}")
+    random.seed(seed)
+    np.random.seed(seed)  # the global stream is what is being seeded
+    torch.manual_seed(seed)
+    return seed

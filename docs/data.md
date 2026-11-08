@@ -572,6 +572,129 @@ class):
 - 157 requests, 203 s: 4.06 s per alert;
 - `--from-snapshot` rebuilt the same 50 statuses offline in 0.9 s.
 
+## R5 (task 3.5)
+
+R5 is phase 3's 5-class, object-level benchmark (AGN, SN, VS, Asteroid, Bogus). It is
+built under RJ23's recipe from public sources only (code: `src/astro_simclr/r5/`;
+decisions: ADR 0020). It is reported as "on R5", never as RJ23's result.
+
+### Sources
+
+| Source | What R5 takes | Terms | Cite |
+|---|---|---|---|
+| ALeRCE light-curve labelled set, Zenodo [10.5281/zenodo.4279623](https://doi.org/10.5281/zenodo.4279623) (`labeled_set_lc_classifier_SanchezSaez_2020.csv` inside the 1.12 GB archive; 123,496 rows on 2026-11-08) | AGN (`AGN`, `Blazar`, `QSO`), VS (`E`, `LPV`, `RRL`, `YSO`, `DSCT`, `CEP`, `Periodic-Other`), SN (`SNIa`, `SNII`, `SNIbc`, `SLSN`) | CC BY 4.0 | Sánchez-Sáez et al. 2021, AJ 161, 141 |
+| ZTF Bright Transient Survey explorer, [sites.astro.caltech.edu/ztf/bts](https://sites.astro.caltech.edu/ztf/bts/explorer.php): spectroscopic SN, quality and purity cuts, CSV (6,758 rows on 2026-11-08; no login) | SN not in Zenodo | No terms of use or licence on `explorer.php`, `bts.php` or `explorer_info.html` (checked 2026-11-08); the explorer asks to cite the BTS papers | Fremling et al. 2020, ApJ 895, 32; Perley et al. 2020, ApJ 904, 35 |
+| CD21 through task 3.1's store (`fetch-alerts`) | Asteroid, Bogus | not public (ADR 0012) | Carrasco-Davis et al. 2021 |
+
+`astro-simclr r5-sources --out SOURCES` writes `SOURCES/zenodo-4279623.csv` and
+`SOURCES/bts.csv`, each with a JSON record: the URL, the UTC retrieval time, size, SHA-256,
+licence or terms, and citation.
+- The Zenodo archive is checked against Zenodo's size (1,121,636,335 bytes) and MD5
+  (`f0c8c47fb530613718a3cf0c4678a3e4`). The CSV is read out of it by base name, as a
+  regular file, without extracting anything, and the archive is deleted unless
+  `--keep-archive`.
+- The build refuses a source whose SHA-256 no longer matches its record.
+- Neither file is committed.
+
+### Recipe
+
+- **Cutoff.** `JD_MAX` = 2022-12-31T23:59:59 UTC (JD 2459945.49998843), pre-registered as
+  a stand-in for RJ23's build date. Only detections with `jd ≤ JD_MAX` count:
+  `jd = mjd + 2400000.5` from the detection list.
+- **One alert per object.** The detections with a stamp (`has_stamp`) and `jd ≤ JD_MAX`,
+  sorted by `candid`. One is drawn with
+  `numpy.random.default_rng([seed, oid_hash]).integers(n)`, where `oid_hash` is the first
+  8 bytes of SHA-256(oid). A drawn alert that is not a full 63×63 stamp drops the object
+  (counted, no redraw).
+- **ndet** is counted on the stored list (distinct candids with `jd ≤ JD_MAX`), not taken
+  from today's API.
+- **Per class:**
+
+| Class | Rule (target: RJ23's count) |
+|---|---|
+| AGN | per subclass, a seeded permutation of Zenodo's objects, walked to RJ23's count: AGN 3,916, Blazar 1,932 (Zenodo has 1,267), QSO 3,926; cap 4,000 |
+| VS | the same: EB = Zenodo `E` 2,339 (cap 2,400), LPV 1,167, RRL 1,158, YSO 1,168, DSCT 1,175, Ceph = `CEP` 973 (Zenodo has 618), Periodic-Other 1,051 (cap 1,200); RSCVn (1,171) and ZZ (9) are absent from Zenodo |
+| SN | Zenodo's SN (seeded), then BTS SN not in Zenodo (seeded), up to 3,615 |
+| Asteroid | CD21's resolved rows with `ndet == 1` |
+| Bogus | CD21's resolved rows with `ndet < 10` and no `oid` in Zenodo or BTS; ghosts dropped and counted |
+
+An object whose sources disagree on its class is dropped (a CD21 Bogus label yields to
+a known object). The drop causes are listed in `r5.select.CAUSES`.
+
+- **Groups and splits.**
+  - R5's objects and every CD21 row are grouped by `oid` and by 1.5″ (union-find,
+    ghosts included).
+  - The splits are RJ23's 60/20/20 per class, grouped, under the 3.2 matrix: a group with
+    a CD21 Train row only to R5 Train; one with a CD21 Validation or Test row only to R5
+    Validation or Test. A group with both is dropped.
+  - So R5's Asteroid and Bogus Validation and Test come only from CD21's Validation and
+    Test, about 100 objects each (ADR 0020, Consequences).
+- **First-stamp view** (R5 Test only, as RJ23): the earliest eligible detection whose
+  alert is a full 63×63 stamp.
+
+### Build
+
+```bash
+astro-simclr r5-sources --out dataset/r5/sources
+astro-simclr build-r5 --sources dataset/r5/sources \
+    --cd21-raw dataset/raw/td_ztf_stamp_17_06_20_red-002 \
+    --fetched dataset/r5/fetched --dry-run          # the next round's request count
+astro-simclr build-r5 ... --out dataset/r5/R5-2026-11 --rate 1.5 --quiet   # online
+astro-simclr build-r5 ... --from-snapshot --out /tmp/R5-check \
+    --expect dataset/r5/R5-2026-11/build.json       # offline rebuild, byte for byte
+```
+
+- **Online.** Each round runs the selection on the snapshots, then fetches exactly what
+  is missing into `--fetched` (`fetch-alerts --oids` machinery: the same rate limit,
+  retries, cooldown, shards, SHA-256 and resume as 3.1). This repeats until nothing is
+  missing (`--max-rounds`, default 20).
+  - A walk stops once accepted + pending reaches its target, so each round asks for just
+    enough. Stopping (a signal, a failed round) loses nothing: run it again.
+  - It needs 3.1's store of all three CD21 splits.
+- **Offline** (`--from-snapshot`): no network. An incomplete snapshot is refused (exit 1).
+
+**Expected load** (estimate before the build; `--dry-run` gives the real first-round
+count):
+
+| Requests | About |
+|---|---|
+| Detection lists: Zenodo AGN and VS walks (about 3 % losses), Zenodo SN, the BTS top-up (about 60 % of BTS-only SN have a stamp before 2023) | 23k |
+| Drawn alerts of the accepted AGN, VS and SN (about 21.3k objects) | 21.5k |
+| Drawn Bogus alerts that are not CD21's own (CD21's lists and Asteroid alerts are in 3.1's snapshot) | 3–5k |
+| First stamps of R5 Test's AGN, VS and SN | 4.3k |
+| **Total** | **about 52–54k** |
+
+That is about 10 h at a nominal 1.5 req/s. The requests are latency-bound (1.29 s per
+request in 3.1's smoke run), so plan for about 19 h, plus retries.
+
+### Outputs
+
+```
+OUT/
+    r5/                 raw-alerts layout (format 3): one drawn alert per object,
+                        label_source zenodo-4279623 | bts | cd21, source_dataset/row
+    r5-first/           raw-alerts layout: R5 Test's first stamps (source_dataset r5-first-stamp)
+    alerts.csv          alert table of r5/ (oid, candid, jd, label, group)
+    first-alerts.csv    alert table of r5-first/
+    splits.json         object splits of alerts.csv (format 2, with the constraints)
+    index.csv           frozen index, one line per object: oid, candid, jd, year, label,
+                        subclass, label_source, source_dataset, source_row, group, split,
+                        half, ndet, n_eligible, draw_index, first_candid, the SHA-256 of
+                        the detection list, drawn avro and first-stamp avro, cd21_splits
+    deviations.csv      target, cap, available, visited, achieved, deviation and cause,
+                        per class and subclass (the pre-registered deviation table)
+    drops.csv           count per class, subclass and cause
+    eras.csv            class × year of the drawn alert (the era table)
+    split_counts.csv    class × split, objects and fractions
+    build.json          parameters, the sources' records, CD21's index SHA-256, counts,
+                        the cross-benchmark matrix, and the SHA-256 of every file above
+```
+
+Every file is deterministic: no wall time or request count. The layouts, the alert tables,
+`splits.json` and `index.csv` list the label set's objects and stay out of git (ADR 0012).
+`deviations.csv`, `drops.csv`, `eras.csv`, `split_counts.csv` and `build.json` hold only
+counts and hashes, so they may be committed as results.
+
 ## Workflow and manifest
 
 1. **Receive** the pickles into `dataset/`, and record their SHA-256 (`SHA256SUMS`, kept
