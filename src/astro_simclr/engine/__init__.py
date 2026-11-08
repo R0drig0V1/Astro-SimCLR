@@ -25,6 +25,15 @@ Task 4.3 (ADR 0018) implements the data layer against them:
   ``open_eval`` -> :class:`~.tiers.EvalBatches`), exact with each other;
 - :mod:`.bench`: the tiers' throughput microbenchmark (``python -m astro_simclr.engine.bench``).
 
+Task 4.1 implements the engine core:
+
+- :mod:`.loop`: :func:`~.loop.fit` (the loop, its validations, checkpoints and exact
+  resume), :func:`~.loop.evaluate` and :func:`~.loop.evaluate_kept` (the final evaluation
+  of the kept weights);
+- :mod:`.precision`: ADR 0010's float32 policy (shared with the Lightning path);
+- :mod:`.scalars`: the local scalars, ``scalars.jsonl``;
+- :mod:`.record`: the machine record and the manifest's lifecycle (``engine: plain``).
+
 **Engine-free rule** (ADR 0014, CLAUDE.md): nothing in this package imports Lightning, so a
 flag written against these contracts works on both engines until Lightning is removed (4.8).
 ``tests/test_engine_contracts.py`` checks it.
@@ -35,11 +44,14 @@ from __future__ import annotations
 from astro_simclr.engine.checkpoint import (
     CHECKPOINT_FORMAT,
     CHECKPOINT_KEYS,
+    BestWeights,
     Checkpoint,
     IdentityState,
     PolicyState,
     RngState,
     check_resumable,
+    load_best,
+    load_checkpoint,
 )
 from astro_simclr.engine.data import (
     Batch,
@@ -51,6 +63,15 @@ from astro_simclr.engine.data import (
 )
 from astro_simclr.engine.dataset import Dataset, prepared_split, raw_alerts_dataset
 from astro_simclr.engine.device import CUBLAS_WORKSPACE_CONFIG, DevicePolicy
+from astro_simclr.engine.loop import (
+    Evaluation,
+    FitResult,
+    TrainStream,
+    Validation,
+    evaluate,
+    evaluate_kept,
+    fit,
+)
 from astro_simclr.engine.policies import (
     EarlyStop,
     Horizon,
@@ -60,7 +81,14 @@ from astro_simclr.engine.policies import (
     ValidationGrid,
     ValidationTrigger,
 )
-from astro_simclr.engine.randomness import RESERVED_STREAMS, device_generator, host_generator
+from astro_simclr.engine.randomness import (
+    RESERVED_STREAMS,
+    device_generator,
+    host_generator,
+    seed_everything,
+)
+from astro_simclr.engine.record import machine_record, recorded
+from astro_simclr.engine.scalars import ScalarLog, read_scalars
 from astro_simclr.engine.stream import TrainOrder
 from astro_simclr.engine.task import EvalOutput, Task, mean_of_batch_losses
 from astro_simclr.engine.tiers import EvalBatches, StreamSpec, TrainSource, open_eval, open_train
@@ -72,6 +100,7 @@ __all__ = [
     "RESERVED_STREAMS",
     "Batch",
     "BatchSource",
+    "BestWeights",
     "Checkpoint",
     "DataTier",
     "Dataset",
@@ -80,12 +109,15 @@ __all__ = [
     "EvalBatches",
     "EvalOutput",
     "EvalSource",
+    "Evaluation",
+    "FitResult",
     "Horizon",
     "IdentityState",
     "Keep",
     "Monitor",
     "PolicyState",
     "RngState",
+    "ScalarLog",
     "Schedule",
     "StreamSpec",
     "Task",
@@ -93,14 +125,25 @@ __all__ = [
     "TrainBatch",
     "TrainOrder",
     "TrainSource",
+    "TrainStream",
+    "Validation",
     "ValidationGrid",
     "ValidationTrigger",
     "check_resumable",
     "device_generator",
+    "evaluate",
+    "evaluate_kept",
+    "fit",
     "host_generator",
+    "load_best",
+    "load_checkpoint",
+    "machine_record",
     "mean_of_batch_losses",
     "open_eval",
     "open_train",
     "prepared_split",
     "raw_alerts_dataset",
+    "read_scalars",
+    "recorded",
+    "seed_everything",
 ]
