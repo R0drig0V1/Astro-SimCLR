@@ -80,7 +80,8 @@ Facts that constrain the design (verified with uv 0.11 on toy projects; plan rev
    `torch.cuda.get_arch_list()` (same major, minor <= the GPU's). On a mismatch it prints
    the `uv sync` command that fixes it.
 
-7. **CI** (on `ubuntu-latest` x86_64 and, since task 1.6, `macos-latest` arm64) runs
+7. **CI** (on `ubuntu-latest` x86_64 and, since task 1.6, `macos-latest` arm64; since
+   ADR 0021, ubuntu on each code push to `main` and macOS weekly or on demand) runs
    `uv sync --locked --extra cpu`, checks that no `nvidia-*` package is
    installed, runs `scripts/check-torch-wheels.sh` and then `scripts/check.sh` with
    `UV_NO_SYNC=1`. The assertion script checks exact strings (dry-runs, no download):
@@ -107,5 +108,5 @@ Facts that constrain the design (verified with uv 0.11 on toy projects; plan rev
   torch back to the default build (correct, but a 3 GB download on Linux). The runbook and
   the reference configs (`accelerator: cuda`, which fails fast without a GPU) guard against it.
 - torch stays on 2.14 until a newer minor has all three builds.
-- pip-audit (`quality.yml`) audits the default fork, PyPI torch 2.14.1 included; the `+cpu`
+- pip-audit (`quality-dependencies.yml`) audits the default fork, PyPI torch 2.14.1 included; the `+cpu`
   and `+cu126` builds are the same source release.
