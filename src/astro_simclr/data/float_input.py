@@ -34,6 +34,26 @@ The uint8 path of phase 1 (``center_crop`` at 27, torchvision's ``CenterCrop``: 
 ``[18, 45)``) and this crop are concentric: the 21x21 crop is the 27x27 one minus 3 pixels
 per side, which the paper's model zero-pads back to 27 (task 2.2a). ``tests/
 test_data_float_input.py`` checks that alignment.
+
+**The 63x63 context (task 2.5-models, plan row B1').** :func:`context_then_normalise` gives
+the model the whole stamp at the crop's resolution budget: the 63x63 stamp average-pooled
+by 3 to 21x21 (each output pixel the mean of a 3x3 block; 63 = 3 x 21, so the blocks tile
+the stamp symmetrically and the context rotates with the stamp). It is normalised **the
+same way as the crop**, on its own pixels: per channel, ``x -= nanmin``, ``x /= nanmax``
+without epsilon, NaN -> 0. The NaN handling follows the crop too: with
+``nan_approximation``, the same :func:`former_nan_mask` pixels become NaN before pooling,
+and the pooling ignores them (``nanmean``: a block with some former NaNs is the mean of
+its valid pixels; a block of only former NaNs stays NaN and becomes 0, the minimum, after
+the normalisation, exactly as a NaN pixel of the crop). The pooling is linear and the
+min-max affine-invariant, so on the stored stamps (already min-max normalised over 63x63)
+this equals the same pipeline on the raw stamps, except for the former NaNs, as for the
+crop. One more pixel differs in a channel that had NaNs: its minimum, 0 in the stored stamp
+like the NaNs, is masked with them and left out of its block's mean (for the crop this
+happens only when the minimum lies inside the crop; here it always does). Normalising
+the pooled image, rather than pooling the stored [0, 1] stamp, keeps both the crop and
+the context channels on [0, 1] with minimum 0 and maximum 1. The block means are
+accumulated in float64, so the context commutes exactly with the rotations and flips.
+:func:`context_split` runs it over a whole split (ADR 0005, ``docs/data.md``).
 """
 
 from __future__ import annotations
@@ -47,8 +67,11 @@ import numpy.typing as npt
 from astro_simclr.data.schema import STAMP_SHAPE
 
 __all__ = [
+    "CONTEXT_FACTOR",
     "PAPER_CROP",
     "approximated_stamps",
+    "context_split",
+    "context_then_normalise",
     "crop_bounds",
     "crop_split",
     "crop_then_normalise",
@@ -57,6 +80,9 @@ __all__ = [
 
 #: The paper's crop side (ALeRCE's ``CROP_SIZE`` of M1: ``inputsize21``).
 PAPER_CROP = 21
+
+#: Pooling factor of the 63x63 context: 3x3 blocks, 63 -> 21 (the crop's side).
+CONTEXT_FACTOR = 3
 
 #: Default number of stamps per chunk in :func:`crop_split` (about 190 MB of float32
 #: 63x63x3 temporaries).
@@ -121,16 +147,94 @@ def crop_then_normalise[F: np.floating[Any]](
     cropped: npt.NDArray[F] = np.array(stamps[window], copy=True)
     if nan_approximation:
         cropped[former_nan_mask(stamps)[window]] = np.nan
+    return _min_max_nan_to_zero(cropped)
+
+
+def _min_max_nan_to_zero[F: np.floating[Any]](images: npt.NDArray[F]) -> npt.NDArray[F]:
+    """ALeRCE's per-channel min-max without epsilon, then NaN -> 0, in place on ``images``.
+
+    ``images`` is ``(..., H, W, C)``; constant and all-NaN channels give NaN, then 0.
+    """
     axes = (-3, -2)
     with warnings.catch_warnings(), np.errstate(invalid="ignore", divide="ignore"):
-        # All-NaN crops ("All-NaN slice encountered") and constant crops (0 / 0) give NaN,
-        # as in ALeRCE; both become 0 below.
+        # All-NaN channels ("All-NaN slice encountered") and constant ones (0 / 0) give
+        # NaN, as in ALeRCE; both become 0 below.
         warnings.simplefilter("ignore", RuntimeWarning)
-        cropped -= np.nanmin(cropped, axis=axes, keepdims=True)
+        images -= np.nanmin(images, axis=axes, keepdims=True)
         # ALeRCE writes `images = images / nanmax`; in place gives the same values.
-        cropped /= np.nanmax(cropped, axis=axes, keepdims=True)
-    cropped[np.isnan(cropped)] = 0
-    return cropped
+        images /= np.nanmax(images, axis=axes, keepdims=True)
+    images[np.isnan(images)] = 0
+    return images
+
+
+def context_then_normalise[F: np.floating[Any]](
+    stamps: npt.NDArray[F], factor: int = CONTEXT_FACTOR, *, nan_approximation: bool = True
+) -> npt.NDArray[F]:
+    """The whole stamp, average-pooled by ``factor``, normalised like the crop (task 2.5).
+
+    ``stamps`` is ``(..., H, W, C)`` floating point and square, with ``H`` a multiple of
+    ``factor``. The result is a new ``(..., H / factor, W / factor, C)`` array of the same
+    dtype in [0, 1]: each pixel is the mean of a ``factor`` x ``factor`` block (accumulated
+    in float64, then cast back), ignoring NaNs (and, with ``nan_approximation``, the former
+    NaNs of :func:`former_nan_mask`);
+    then per channel, min-max without epsilon and NaN -> 0, as :func:`crop_then_normalise`
+    (see the module docstring). The input is never modified.
+
+    Raises:
+        ValueError: if ``stamps`` is not floating point, has fewer than 3 dimensions, is
+            not square, ``factor < 1``, or the side is not a multiple of ``factor``.
+    """
+    if not np.issubdtype(stamps.dtype, np.floating):
+        raise ValueError(f"stamps must be floating point, got dtype {stamps.dtype}")
+    if stamps.ndim < 3 or stamps.shape[-3] != stamps.shape[-2]:
+        raise ValueError(f"stamps must be (..., H, W, C) with H == W, got {stamps.shape}")
+    side = stamps.shape[-3]
+    if factor < 1 or side % factor:
+        raise ValueError(f"factor must be >= 1 and divide the side {side}, got {factor}")
+    values: npt.NDArray[F] = np.array(stamps, copy=True)
+    if nan_approximation:
+        values[former_nan_mask(stamps)] = np.nan
+    out = side // factor
+    blocks = values.reshape(*values.shape[:-3], out, factor, out, factor, values.shape[-1])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # "Mean of empty slice": all NaN
+        # Accumulated in float64, so that a block's mean does not depend on the order of
+        # its pixels: the context then commutes exactly with the rotations and flips.
+        means = np.nanmean(blocks, axis=(-4, -2), dtype=np.float64)
+    pooled: npt.NDArray[F] = means.astype(stamps.dtype)
+    return _min_max_nan_to_zero(pooled)
+
+
+def context_split(
+    images: npt.NDArray[np.float32],
+    *,
+    nan_approximation: bool = True,
+    chunk: int = _CHUNK,
+) -> npt.NDArray[np.float32]:
+    """:func:`context_then_normalise` over a whole split, ``chunk`` stamps at a time.
+
+    ``images`` is a float32 ``(N, 63, 63, 3)`` array, usually the memory map of
+    ``images_f32.npy``; the result is ``(N, 21, 21, 3)`` float32, the same as one call on
+    the whole array.
+
+    Raises:
+        ValueError: if ``images`` is not float32 ``(N, 63, 63, 3)`` or ``chunk < 1``.
+    """
+    if images.dtype != np.float32 or images.shape[1:] != STAMP_SHAPE:
+        raise ValueError(
+            f"images must be float32 (N, {', '.join(map(str, STAMP_SHAPE))}), "
+            f"got {images.dtype} {images.shape}"
+        )
+    if chunk < 1:
+        raise ValueError(f"chunk must be >= 1, got {chunk}")
+    side = STAMP_SHAPE[0] // CONTEXT_FACTOR
+    out = np.empty((len(images), side, side, STAMP_SHAPE[2]), dtype=np.float32)
+    for start in range(0, len(images), chunk):
+        block = np.asarray(images[start : start + chunk])
+        out[start : start + chunk] = context_then_normalise(
+            block, CONTEXT_FACTOR, nan_approximation=nan_approximation
+        )
+    return out
 
 
 def crop_split(

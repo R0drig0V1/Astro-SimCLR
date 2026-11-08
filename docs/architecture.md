@@ -17,6 +17,7 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  ├──► reference (compare-reference: the gates of R1-R4 and CD21)
  ├──► protocol (make-splits, compare-variants: the phase-2 evaluation protocol) ──► data
  ├──► oracle (fetch-m1, m1-oracle: the published M1 vs our input path) ──► paper_model, data
+ │    (training ──► paper_variants: rot4 / single / p4 / p4m ──► paper_model, group_conv)
  └──► preflight ──► experiments, data (inspection, manifest)
 ```
 
@@ -105,6 +106,18 @@ of one run.
   | `nan_approximation` | true | `float32` input: `crop_split(nan_approximation=...)`; false is a diagnostic |
   | `exclude_leaked_train` | true | drop the Train stamps that duplicate a Validation/Test stamp (`protocol.leakage`), from Train only |
   | `adam_betas` | `code` | Adam/AdamW betas: `code` (0.9, 0.999), `paper` (0.5, 0.9; a diagnostic). The phase-1 modules keep (0.5, 0.9) |
+- **Task 2.5-models fields** (the paper model's architecture variants; `paper_variants`,
+  ADR 0005). The defaults are the faithful model, and the `carrasco2021` presets list them,
+  so a variant run is a recorded deviation:
+
+  | Field | Default | Meaning |
+  |---|---|---|
+  | `paper_arch` | `rot4` | `rot4` (faithful: 4 rotations, mean after fc1), `single` (one pass, not invariant), `p4` (B7), `p4m` (B2') |
+  | `group_fields` | null | `p4` / `p4m`: fields of conv1-conv2 (conv3-conv5 twice); null is `32 // \|G\|` (8 / 4). An error with `rot4` / `single` |
+  | `context` | `none` | `avgpool63`: the 63×63 stamp average-pooled to 21×21 as 3 more channels (B1'); needs `paper_input: float32` |
+  | `rot90_augment` | false | rotate each training stamp by a random multiple of 90° (seeded by `seed` and the step) |
+
+  `experiments` rejects a changed one with another `supervised_model` (`ConfigError`).
 - `load_settings(path, overrides, defaults=...)`: `defaults` (a subcommand's legacy
   protocol) sits between the dataclass defaults and the file. `read_settings_file` reads a
   YAML mapping without checking keys; `settings_to_plain` gives the plain (YAML/JSON) form
@@ -266,6 +279,12 @@ Task 2.1 adds the paper's float input path (`docs/data.md`, "Float input path"):
   `crop_bounds` (ALeRCE's crop arithmetic: `(21, 42)` for 21 on 63). Golden fixture:
   `tests/fixtures/data/alerce_crop.npz`, from ALeRCE's own functions
   (`scripts/characterize/data/alerce_crop.py`).
+- `float_input`, task 2.5-models (plan row B1'): `context_then_normalise(stamps, factor=3,
+  *, nan_approximation=True)` is the whole stamp average-pooled by 3 (63 → 21; block means
+  accumulated in float64, ignoring NaNs and, with the approximation, the former NaNs), then
+  the crop's per-channel min-max without epsilon and NaN → 0; `context_split` runs it over
+  a split. It commutes exactly with the rotations and flips of the stamp (tested). Ours,
+  not ALeRCE's; the choice and its NaN handling are in `docs/data.md` and ADR 0005.
 - `m1_features`: `M1_FEATURE_NORM_STATS` (M1's 23 means and stds, recorded as constants
   with provenance; `scripts/characterize/data/m1_feature_stats.py` re-derives them with
   `pickletools`), `destandardise`, and `check_destandardisation`, behind
@@ -416,6 +435,95 @@ dropout_active=False, drop_rate=0.5)`, ALeRCE's `DeepHitsWithFeatures` (without 
 - Layer names map to M1's variable scopes (table in the module docstring) for the 2.2b
   weight mapping: HWIO → OIHW, dense kernels transposed, `fc1` rows permuted from TF's
   (h, w, c) flatten to (c, h, w).
+- Task 2.5-models adds two keyword arguments whose defaults keep the faithful model (same
+  layers, same draws from the global generator, same outputs; tested against
+  `tests/fixtures/paper_model/faithful.npz`, generated from the commit before them by
+  `scripts/characterize/paper_model/generate.py`): `in_channels=3` (6 with the 63×63
+  context; only `conv1` widens) and `rotation_mean=True` (`False`: the `single` arch, one
+  pass, no mean). `check_paper_images` is the shared input check.
+
+## `group_conv` (task 2.5-models)
+
+`src/astro_simclr/group_conv.py`: hand-written p4 (C4) and p4m (D4) group convolutions
+(Cohen & Welling 2016), no new dependency (escnn needs a Fortran compiler; the portability
+rule). Each layer expands its parameters into a plain `conv2d` kernel on every call and
+runs one `F.conv2d`, so it works on CPU, CUDA and MPS, and costs what a plain CNN with
+`fields × |G|` channels costs.
+
+- `Group("p4" | "p4m")`: elements `(m, r)` acting as `rot90(flip^m(x), r)`, the Cayley table
+  `mul` (derived from the transforms) and `inv`. Regular maps have channels in
+  `(field, g)` order.
+- `LiftingConv(group, in_channels, out_fields, k, padding)`: image → regular map;
+  `GroupConv(group, in_fields, out_fields, k, padding)`: regular → regular, with the input
+  orientations permuted by `h → g⁻¹h` for output `g` (a stack of slices, not an advanced
+  index: the index's backward has no deterministic MPS kernel); `GroupReadout(group,
+  in_fields, out_fields, k)`: a valid `GroupConv` covering the whole k×k map (the paper's
+  fc1); `orientation_mean(x, order)`: the invariant mean over the orientations of each
+  field. Biases: one per field.
+- **Glorot fans** (the initialisation of the faithful model, defined for group layers):
+  those of the expanded linear map. Convolutions use Keras' convention on the expanded
+  kernel, `fan_in = in_channels·k²`, `fan_out = out_fields·|G|·k²` (= `xavier_uniform_`'s
+  fans of the expanded kernel; for p4 8/16 the expanded kernels have the paper's shapes, so
+  the same bounds). The readout is a dense layer (1×1 output): `fan_in = in_fields·|G|·k²`,
+  `fan_out = out_fields·|G|` (2304 and 256 for B7, against the paper fc1's 2304 and 64).
+- **Geometry:** exact equivariance needs every op to map its grid onto itself under the
+  rotations about the centre: valid convolutions, odd "same" convolutions with symmetric
+  padding, 2×2 pooling of even sides. The paper's 27 → 24 → 12 → 6 does.
+- **Tested** (`tests/test_group_conv.py`): the group axioms and the table against the
+  transforms; the equivariance law `layer(T_g x) = T_g(layer(x))` with the orientation
+  permutation, for every element, kernel parity and padding, in float64 with random
+  biases; the readout's invariance after the orientation mean; the fans and bounds.
+
+## `paper_variants` (task 2.5-models)
+
+`src/astro_simclr/paper_variants.py`: the plan's rows B7, B2' and B1' and their control arms
+as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `context`,
+`rot90_augment`; ADR 0005).
+
+| `paper_arch` | Trunk | Parameters (features) | MACs per stamp |
+|---|---|---|---|
+| `rot4` | the paper's, 4 rotations, mean after fc1 (faithful) | 441,075 | 210,577,152 |
+| `single` | the paper's trunk, one pass (not invariant) | 441,075 | 52,651,776 |
+| `p4` | p4 G-CNN, 8/16 fields (B7) | 228,531 | 53,094,144 |
+| `p4`, `group_fields: 16` | p4 G-CNN, 16/32 fields (capacity control) | 587,635 | 209,397,504 |
+| `p4m` | p4m G-CNN, 4/8 fields (B2') | 193,107 | 53,683,968 |
+| `p4`, `context: avgpool63` | B7 with the 63×63 context (B1') | 228,915 | 53,978,880 (+1.7 %) |
+
+- `GroupStampClassifier(group, *, group_fields=None, with_features, dropout_active,
+  drop_rate, in_channels)`: the paper's geometry with group layers: `ZeroPad2d(3)`,
+  `conv1` lifting 4×4 valid (24), `conv2` 5×5 same, max-pool (12), `conv3`-`conv5` 5×5
+  same, max-pool (6), `fc1` a 6×6 `GroupReadout` to 64 fields, ReLU, `drop1` per
+  orientation, the orientation mean (64), then `PaperHead`. `group_fields` (default
+  `32 // |G|`) are conv1-conv2's fields; conv3-conv5 have twice as many. Initialisation:
+  `group_conv`'s Glorot kernels, zero conv biases, the readout's field biases
+  U(±sqrt(3/64)) like the paper's fc1, then the head.
+- `PaperHead`: the paper model's head (frozen feature BN, fc2, fc3, logits, their dropout
+  layers and initialisation); tested equal to `PaperStampClassifier`'s head with the same
+  weights.
+- `build_paper_model(arch, *, group_fields, context, with_features, dropout_active,
+  drop_rate)`: the factory `PaperClassifierModule` uses; the defaults build the faithful
+  model. `paper_in_channels(context)`, `default_group_fields(arch)`.
+- `count_parameters(model)`; `count_macs(model, *, in_channels)`: MACs per stamp of an
+  eval forward, from `torch.utils.flop_counter` (convolutions and matrix products, not the
+  kernel expansion, pooling or BN), tested against the analytic counts.
+- `VARIANTS`: name → `Variant(row, overrides, description)`: `rot4` (A), `single-aug`
+  (`single` + `rot90_augment`), `p4` (B7), `p4-16`, `p4m` (B2'), `p4-context` (B1'). A run
+  is the `carrasco2021` preset plus `--set key=value` for each override, for example
+  `train-supervised --preset carrasco2021 --set paper_arch=p4 --set context=avgpool63`.
+- `scripts/bench_paper_models.py`: parameters, MACs, CPU latency (batch 1) and
+  throughput (batch 512, default threads and 1 thread) and, on the accelerator torch
+  reports, batch 1 / 512 / 4096, for every variant (`--out FILE` writes JSON). The group
+  layers re-expand their kernels on every call, which shows in the batch-1 latency, not in
+  the throughput; an exported, constant-folded model does not pay it.
+- **Tested** (`tests/test_paper_variants.py`): once per new flag, the faithful preset with
+  that flag at its default reproduces the golden fixture (parameter count, every initial
+  tensor's sum, float64 logits); every invariant configuration (`rot4`, `p4`, `p4` 16/32,
+  `p4m`, with and without context and features) has max |Δlogit| < 1e-5 under the
+  rotations by 90° in float32 (< 1e-10 in float64), and p4m also under the flips, with
+  random biases, on the whole model; `single` is not invariant and p4 not flip-invariant
+  (the check can fail); invariance through the input path (rotate the 63×63 stamp, then
+  crop and pool); the counts; the settings checks; CPU (and MPS/CUDA when present) training
+  smoke runs through `run_command`.
 
 ## `oracle` (task 2.2b)
 
@@ -699,7 +807,8 @@ documented exception to "randomness comes from `seed_everything`", and what make
 mid-epoch resume exact. TF's random numbers are not reproduced.
 
 **Device data** (`device_data.py`). `TensorSplit(images, features, labels)`: float32
-(N, 3, 21, 21), float32 (N, 23), int64 (N,), validated. `DeviceTensorDataModule(source,
+(N, 3, 21, 21) (or (N, 6, 21, 21) with the 63×63 context of task 2.5-models), float32
+(N, 23), int64 (N,), validated. `DeviceTensorDataModule(source,
 batch_size=64, eval_batch_size=64, seed=0, balance=True)` takes the three splits (a mapping,
 or a callable resolved once at the first `setup`), moves them once to
 `trainer.strategy.root_device` (CPU without a Trainer) and yields `(crops, features,
@@ -717,10 +826,12 @@ one-hot labels)`:
 
 The splits come from a prepared layout (task 2.2c):
 
-- `float_crops(path, nan_approximation=True)`, **the paper's input**: each split's
-  `images_f32.npy` through `data.float_input.crop_split(21)` (per-crop min-max without
-  epsilon, NaN → 0, the NaN approximation), channels first, and the 23 kept features. A
-  layout without float32 stamps raises `DataError` naming `prepare-data --images float32`.
+- `float_crops(path, nan_approximation=True, context=False)`, **the paper's input**: each
+  split's `images_f32.npy` through `data.float_input.crop_split(21)` (per-crop min-max
+  without epsilon, NaN → 0, the NaN approximation), channels first, and the 23 kept
+  features; `context=True` (`Settings.context: avgpool63`) appends the 3 channels of
+  `context_split`. A layout without float32 stamps raises `DataError` naming
+  `prepare-data --images float32`.
 - `interim_uint8_crops(path)`, the stand-in of 2.2a (centre 21×21 of the uint8 stamps / 255,
   no re-normalisation), kept as the `paper_input: uint8` diagnostic.
 - `without_train_indices(splits, excluded)` drops Train stamps (the leaked one) in file
@@ -764,7 +875,11 @@ factory's with `adam_betas=optimizers.PAPER_ADAM_BETAS[adam_betas]`: `code` (0.9
 ALeRCE's, or `paper` (0.5, 0.9), a diagnostic (task 2.2c). `build_optimizer` takes
 `adam_betas` (default the legacy (0.5, 0.9)); Adam and AdamW use `eps=1e-8`, and Adam has no
 weight decay (torch's defaults, now explicit). TF1 places ε differently; ADR 0003 explains
-why torch's placement is kept.
+why torch's placement is kept. Task 2.5-models adds `paper_arch="rot4"`,
+`group_fields=None`, `context="none"` (the model from `paper_variants.build_paper_model`)
+and `rot90_augment=False`, `augment_seed=0`: with augmentation, `training_step` rotates
+each stamp by `k·90°`, `k` from `numpy.random.default_rng([augment_seed, global_step])`
+(device-independent, exact on resume); validation and test are not augmented.
 
 **Tested:** the tiling example and exact balance; the stream against the concatenated
 permutations; batches against the tiled stream, on the CPU; eval file order; validation at
@@ -797,6 +912,9 @@ Decisions and provenance: ADR 0003.
   values with their provenance (`--config`); `tests/test_presets.py` keeps them equal.
 - `DIAGNOSTICS`: the documented diagnostic flags of 2.4 (`dropout_active: true`,
   `adam_betas: paper`, `nan_approximation: false`, `paper_input: uint8`).
+- Task 2.5-models adds `paper_arch: rot4`, `group_fields: null`, `context: none` and
+  `rot90_augment: false` to both presets (the defaults, so the faithful settings are
+  unchanged), so that a variant run is reported as a deviation, not as faithful.
 - `preset_for(settings)`: the preset of a `carrasco2021`-schedule run (by `with_features`),
   else `None`. `preset_report(settings)`: `name`, `faithful` (no preset key changed),
   `deviations` (key → `{value, preset}`) and `diagnostics` (the flags turned on), written
@@ -885,7 +1003,8 @@ above (EarlyStopping only if `early_stopping`). `carrasco2021` requires `train-s
 with `supervised_model: paper_stamp_classifier` and `image_size: 21` (and the paper model
 requires the schedule; `ConfigError` otherwise). It builds `PaperClassifierModule` and a
 `DeviceTensorDataModule` over `float_crops` (or `interim_uint8_crops` with
-`paper_input: uint8`), with Train minus the stamps `protocol.leakage` finds in Validation or
+`paper_input: uint8`; the module from `paper_module(settings)`, which also passes the
+2.5-models flags), with Train minus the stamps `protocol.leakage` finds in Validation or
 Test (`exclude_leaked_train`, found on the uint8 stamps before training), and a Trainer
 with `max_epochs=-1`, `max_steps`, `val_check_interval=val_every_n_steps`,
 `check_val_every_n_epoch=None`, no sanity validation, a `HorizonCallback` on `monitor`

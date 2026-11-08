@@ -74,7 +74,7 @@ import json
 import math
 import platform
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any, Final, Protocol, cast
@@ -129,6 +129,7 @@ __all__ = [
     "check_accelerator",
     "dataset_path",
     "load_pretrained",
+    "paper_module",
     "resolve_resume",
     "run_command",
 ]
@@ -324,6 +325,33 @@ def _check_schedule(command: str, settings: Settings) -> None:
             f"set image_size={PAPER_CROP}"
         )
         raise ConfigError(msg)
+    _check_paper_variant(paper_model, settings)
+
+
+#: The architecture flags of task 2.5-models and their defaults (the faithful model).
+_PAPER_VARIANT_DEFAULTS: Final[Mapping[str, object]] = {
+    "paper_arch": "rot4",
+    "group_fields": None,
+    "context": "none",
+    "rot90_augment": False,
+}
+
+
+def _check_paper_variant(paper_model: bool, settings: Settings) -> None:
+    """The 2.5-models flags apply to the paper model only: elsewhere they would be ignored.
+
+    Raises:
+        ConfigError: if a flag of :data:`_PAPER_VARIANT_DEFAULTS` is changed for another
+            model.
+    """
+    if paper_model:
+        return
+    changed = [
+        key for key, default in _PAPER_VARIANT_DEFAULTS.items() if getattr(settings, key) != default
+    ]
+    if changed:
+        msg = f"{', '.join(changed)} apply only to supervised_model={PAPER_STAMP_CLASSIFIER}"
+        raise ConfigError(msg)
 
 
 def _leaked_train(settings: Settings, data: Path) -> list[int]:
@@ -336,6 +364,31 @@ def _leaked_train(settings: Settings, data: Path) -> list[int]:
     if not settings.exclude_leaked_train:
         return []
     return train_exclusions(find_duplicates(load_prepared(data)))
+
+
+def paper_module(settings: Settings) -> PaperClassifierModule:
+    """The ``PaperClassifierModule`` of ``settings`` (the model drawn from the global generator).
+
+    The paper model's fields, including the 2.5-models variant flags (``paper_arch``,
+    ``group_fields``, ``context``, ``rot90_augment`` with ``seed`` as its seed).
+
+    Raises:
+        UnknownOptimizerError, ValueError: as ``PaperClassifierModule``.
+    """
+    return PaperClassifierModule(
+        beta_loss=settings.beta_loss,
+        lr=settings.lr,
+        optimizer=settings.optimizer,
+        with_features=settings.with_features,
+        dropout_active=settings.dropout_active,
+        drop_rate=settings.drop_rate,
+        adam_betas=settings.adam_betas,
+        paper_arch=settings.paper_arch,
+        group_fields=settings.group_fields,
+        context=settings.context,
+        rot90_augment=settings.rot90_augment,
+        augment_seed=settings.seed,
+    )
 
 
 def _build_paper(
@@ -367,7 +420,11 @@ def _build_paper(
 
     def source() -> dict[str, TensorSplit]:
         if settings.paper_input == "float32":
-            splits = float_crops(data, nan_approximation=settings.nan_approximation)
+            splits = float_crops(
+                data,
+                nan_approximation=settings.nan_approximation,
+                context=settings.context != "none",
+            )
         else:
             splits = interim_uint8_crops(data)
         splits = without_train_indices(splits, excluded)
@@ -375,15 +432,7 @@ def _build_paper(
         return splits
 
     seed_run(settings)
-    module = PaperClassifierModule(
-        beta_loss=settings.beta_loss,
-        lr=settings.lr,
-        optimizer=settings.optimizer,
-        with_features=settings.with_features,
-        dropout_active=settings.dropout_active,
-        drop_rate=settings.drop_rate,
-        adam_betas=settings.adam_betas,
-    )
+    module = paper_module(settings)
     datamodule = DeviceTensorDataModule(
         source,
         batch_size=settings.batch_size,

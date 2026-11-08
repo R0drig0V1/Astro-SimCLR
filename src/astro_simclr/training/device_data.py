@@ -5,8 +5,8 @@ would dominate the run on the GTX 1050. So the 21x21 float crops of every split 
 once per run (about 270 MB for ``red``), moved to the training device once, and batches are
 gathered there by index: no worker processes, no host-to-device copy per step.
 
-- :class:`TensorSplit`: one split as float32 crops (N, 3, 21, 21), the 23 kept features and
-  the int64 labels.
+- :class:`TensorSplit`: one split as float32 crops (N, 3, 21, 21), or (N, 6, 21, 21) with
+  the 63x63 context channels (task 2.5-models), the 23 kept features and the int64 labels.
 - :class:`DeviceTensorDataModule`: takes the splits (a mapping, or a callable that builds
   them, called once in ``setup``) and yields ``(crops, features, one-hot labels)`` batches,
   the batch format of ``ClassifierModule``:
@@ -31,7 +31,10 @@ The splits come from a prepared layout through one of two builders:
 - :func:`float_crops` (task 2.2c), **the paper's input**: 2.1's float path,
   ``data.float_input.crop_split`` (centre 21x21, per-channel min-max on the crop without
   epsilon, NaN -> 0, the NaN approximation on by default) on the stored float32 stamps
-  (``images_f32.npy``, written by ``prepare-data --images float32``);
+  (``images_f32.npy``, written by ``prepare-data --images float32``); with
+  ``context=True`` (``Settings.context: avgpool63``, plan row B1'), the 3 channels of
+  ``data.float_input.context_split`` (the whole stamp average-pooled to 21x21, normalised
+  like the crop, the same NaN approximation) follow the crop's;
 - :func:`interim_uint8_crops` (task 2.2a), the stand-in that ran the schedule before the
   float path existed: the centre 21x21 of the uint8 stamps divided by 255, no
   re-normalisation. It stays as the ``paper_input: uint8`` diagnostic.
@@ -52,7 +55,7 @@ import numpy as np
 import numpy.typing as npt
 import torch
 
-from astro_simclr.data.float_input import crop_split
+from astro_simclr.data.float_input import context_split, crop_split
 from astro_simclr.data.prepared import load_prepared
 from astro_simclr.data.schema import (
     DISCARDED_FEATURES,
@@ -67,6 +70,7 @@ from astro_simclr.protocol.leakage import train_keep_indices
 from astro_simclr.training.tiling import PermutationStream, tile_indices
 
 __all__ = [
+    "IMAGE_CHANNELS",
     "DeviceTensorDataModule",
     "SplitSource",
     "TensorSplit",
@@ -74,6 +78,9 @@ __all__ = [
     "interim_uint8_crops",
     "without_train_indices",
 ]
+
+#: The image channels a :class:`TensorSplit` may have: the crop, or the crop and the context.
+IMAGE_CHANNELS = (3, 6)
 
 #: (crops, features, one-hot labels), as ``ClassifierModule`` expects.
 Batch = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
@@ -85,7 +92,8 @@ class TensorSplit:
     """One labelled split, ready for the paper model.
 
     Attributes:
-        images: float32 (N, 3, 21, 21) crops, channels first.
+        images: float32 (N, C, 21, 21) crops, channels first; C is 3, or 6 with the
+            context channels (:data:`IMAGE_CHANNELS`).
         features: float32 (N, 23), the kept alert features.
         labels: int64 (N,), values in ``range(5)``.
 
@@ -101,16 +109,22 @@ class TensorSplit:
     def __post_init__(self) -> None:
         """Check dtypes, shapes, lengths and label values."""
         n = len(self.labels)
+        channels = self.images.shape[1] if self.images.ndim == 4 else 0
+        channels = channels if channels in IMAGE_CHANNELS else IMAGE_CHANNELS[0]
         expected = {
-            "images": (np.float32, (n, 3, PAPER_CROP, PAPER_CROP)),
+            "images": (np.float32, (n, channels, PAPER_CROP, PAPER_CROP)),
             "features": (np.float32, (n, N_FEATURES)),
             "labels": (np.int64, (n,)),
         }
         for name, (dtype, shape) in expected.items():
             array = getattr(self, name)
             if array.dtype != dtype or array.shape != shape:
+                wanted = str(shape)
+                if name == "images":  # the channel count may be either of IMAGE_CHANNELS
+                    choices = " or ".join(map(str, IMAGE_CHANNELS))
+                    wanted = f"(N, {choices}, {PAPER_CROP}, {PAPER_CROP}) with N = {n}"
                 msg = (
-                    f"TensorSplit.{name} must be {np.dtype(dtype)} {shape}, "
+                    f"TensorSplit.{name} must be {np.dtype(dtype)} {wanted}, "
                     f"got {array.dtype} {array.shape}"
                 )
                 raise ValueError(msg)
@@ -377,14 +391,18 @@ def interim_uint8_crops(path: Path) -> dict[str, TensorSplit]:
     return splits
 
 
-def float_crops(path: Path, *, nan_approximation: bool = True) -> dict[str, TensorSplit]:
+def float_crops(
+    path: Path, *, nan_approximation: bool = True, context: bool = False
+) -> dict[str, TensorSplit]:
     """The splits of the prepared layout ``path`` through the paper's float input path.
 
     Each split's stored float32 stamps (``images_f32.npy``, read from the memory map in
     chunks) go through ``crop_split(images, 21, nan_approximation=...)`` (task 2.1: ALeRCE's
     ``image_crop_at_center`` -> ``image_normalize_by_image`` -> ``image_nan_to_num``),
-    then channels first. The features are the 23 kept ones, as float32. For ``red`` the
-    crops take about 270 MB, plus a transient copy of the same size per split.
+    then channels first. With ``context``, ``context_split(images, nan_approximation=...)``
+    adds 3 channels after the crop's (task 2.5-models). The features are the 23 kept ones,
+    as float32. For ``red`` the crops take about 270 MB (twice that with the context), plus
+    a transient copy of the same size per split.
 
     Raises:
         DataError: if ``path`` is not a valid prepared layout of a classifier file, or it
@@ -403,6 +421,11 @@ def float_crops(path: Path, *, nan_approximation: bool = True) -> dict[str, Tens
             raise DataError(msg)
         features, labels = _labelled(path, name, split)
         crops = crop_split(split.images_f32, PAPER_CROP, nan_approximation=nan_approximation)
+        if context:
+            crops = np.concatenate(
+                (crops, context_split(split.images_f32, nan_approximation=nan_approximation)),
+                axis=-1,
+            )
         splits[name] = TensorSplit(
             images=np.ascontiguousarray(crops.transpose(0, 3, 1, 2)),
             features=features,
