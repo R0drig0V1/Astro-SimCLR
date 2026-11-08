@@ -51,7 +51,7 @@ import hashlib
 import io
 import json
 import os
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import asdict, dataclass, fields
 from importlib.metadata import version
 from pathlib import Path
@@ -525,6 +525,38 @@ class Snapshot:
     def __len__(self) -> int:
         """The number of distinct URLs in the snapshot."""
         return len(self._where)
+
+    def __contains__(self, url: object) -> bool:
+        """True if the snapshot holds a response for ``url``."""
+        return url in self._where
+
+    def iter_many(self, urls: Iterable[str]) -> Iterator[tuple[str, bytes, str, str]]:
+        """(url, body, retrieval time, SHA-256) for the ``urls`` the snapshot holds.
+
+        The URLs are grouped by shard and each shard's bodies are loaded once, so a bulk
+        read of thousands of responses is cheap and holds one shard in memory at a time;
+        URLs not in the snapshot are skipped. The order is by shard, then as given.
+
+        Raises:
+            DataError: if a shard cannot be loaded or a body does not match its SHA-256.
+        """
+        by_shard: dict[int, list[str]] = {}
+        for url in dict.fromkeys(urls):
+            if url in self._where:
+                by_shard.setdefault(self._where[url][0], []).append(url)
+        for shard_id, shard_urls in sorted(by_shard.items()):
+            path = shard_path(self.split_dir, shard_id)
+            bodies = _load_npz(path, ("bodies",))["bodies"]
+            for url in shard_urls:
+                record = self._where[url][1]
+                body = bodies[record["offset"] : record["offset"] + record["size"]].tobytes()
+                if hashlib.sha256(body).hexdigest() != record["sha256"]:
+                    raise DataError(f"{path}: {url}: SHA-256 differs")
+                yield url, body, str(record["retrieved_at"]), str(record["sha256"])
+
+    def read_many(self, urls: Iterable[str]) -> dict[str, tuple[bytes, str, str]]:
+        """URL -> (body, retrieval time, SHA-256): :meth:`iter_many` as a dict."""
+        return {url: (body, at, sha) for url, body, at, sha in self.iter_many(urls)}
 
     def fetch(self, url: str, max_bytes: int) -> tuple[bytes, str]:
         """The stored body of ``url`` and its retrieval time.

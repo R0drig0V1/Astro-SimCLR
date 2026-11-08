@@ -91,8 +91,9 @@ checkpoint must record of the stream.
 5. **Quantised storage stays an explicit, recorded flag.** `TierChoice.storage_dtype`
    `float16` or `uint8` quantises the images once, when the tier is built (`uint8` stores
    `rint(255 x)` and needs finite images in [0, 1], else `DataError`), and dequantises them
-   on the device after each gather (`float16 → float32`; `uint8 → float32 / 255`); features
-   and fits stay float32. It is part of the stream definition (a resume under another dtype
+   on the device after each gather (`float16 → float32`; `uint8 → k / 255`, correctly
+   rounded, gathered from a host-computed table so the bits do not depend on the device);
+   features and fits stay float32. It is part of the stream definition (a resume under another dtype
    is refused) and of `TrainSource.describe()`, the manifest record (`deviation: true`). The
    `memmap` tier serves the file's float32 only (`ConfigError` otherwise): quantising a file
    larger than memory is a conversion of the file, not a load-time flag.

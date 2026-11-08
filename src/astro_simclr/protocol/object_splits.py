@@ -19,14 +19,24 @@ of every split and records them (``on_conflict="drop"``).
 alerts, :func:`~astro_simclr.protocol.grouping.grouped_halves`), so that phase-2-style
 decisions (``docs/evaluation-protocol.md``) are possible on the imbalanced 6-class set.
 
+**Constraints** (task 3.5, the cross-benchmark rule). ``allowed`` restricts named groups to
+some splits: R5 puts an object of CD21's Train only in its own Train, and one of CD21's
+Validation or Test only in Validation or Test
+(:func:`~astro_simclr.protocol.grouping.assign_groups`, "constraints"). The stratification
+bound is then checked only for the classes without a constrained group; the constraints
+themselves are checked for every group.
+
 The splits are **stored**, and the stored file is the source of truth (as for the phase-2
 splits, ADR 0004: numpy does not promise one seeded permutation across versions). File
-format (JSON, ``format`` ``astro-simclr-object-splits``, version 1)::
+format (JSON, ``format`` ``astro-simclr-object-splits``, version 2; version 1 files, which
+have no constraints, are still read)::
 
     table        name (informational), sha256 (AlertTable.sha256), n_alerts, n_groups
     group_key    "oid", or "group" (the table's own group column)
     label_names, seed, fractions (Train, Validation, Test)
     conflicts    the groups left out for conflicting labels: {group, labels}
+    constraints  the constrained groups: [{splits, groups}], one entry per set of allowed
+                 splits (version 2)
     groups       per split, the sorted group ids
     halves       selection and decision: the sorted group ids of Validation's halves
     counts       per split and half, alerts and groups per class (for a reader; verified)
@@ -42,8 +52,8 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass, field
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any, Final, Literal
@@ -77,8 +87,10 @@ __all__ = [
 
 #: ``format`` of a stored object-splits file.
 FORMAT: Final = "astro-simclr-object-splits"
-#: Bumped on any incompatible change of the file.
-FORMAT_VERSION: Final = 1
+#: Bumped on any incompatible change of the file (2: ``constraints``).
+FORMAT_VERSION: Final = 2
+#: The versions :func:`read_object_splits` reads.
+READ_VERSIONS: Final = (1, 2)
 #: RJ23's stratified 60/20/20.
 DEFAULT_FRACTIONS: Final = (0.6, 0.2, 0.2)
 #: The two halves of Validation.
@@ -96,7 +108,8 @@ class ObjectSplits:
     ``groups`` maps each split name to its sorted group ids, ``halves`` each half name to
     Validation's; ``counts`` maps each split and half name to its ``alerts`` and
     ``groups`` per class, in label order; ``table`` holds ``name``, ``sha256``,
-    ``n_alerts`` and ``n_groups``.
+    ``n_alerts`` and ``n_groups``. ``constraints`` maps each constrained group to the
+    splits it may be in (empty when the splits were drawn without constraints).
     """
 
     table: dict[str, Any]
@@ -108,6 +121,7 @@ class ObjectSplits:
     groups: dict[str, tuple[str, ...]]
     halves: dict[str, tuple[str, ...]]
     counts: Counts
+    constraints: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def split_of(self, table: AlertTable) -> Member:
         """Per alert row of ``table``: its split's index in :data:`SPLIT_NAMES`, or -1.
@@ -168,22 +182,26 @@ def make_object_splits(
     fractions: Sequence[float] = DEFAULT_FRACTIONS,
     on_conflict: OnConflict = "refuse",
     name: str = "",
+    allowed: Mapping[str, Collection[str]] | None = None,
 ) -> ObjectSplits:
     """Draw the grouped, class-stratified splits and Validation's halves of ``table``.
 
-    ``name`` is recorded as the table's name (informational). Deterministic for a given
-    table, seed and numpy version.
+    ``name`` is recorded as the table's name (informational). ``allowed`` maps group ids to
+    the split names they may be in (module docstring, "Constraints"); ids the table lacks
+    are ignored. Deterministic for a given table, seed, constraints and numpy version.
 
     Raises:
         SplitsError: on invalid fractions (three positive numbers summing to 1) or
-            ``on_conflict``, a group with two labels and ``on_conflict="refuse"``, or a
-            class too small for every split (and half) to get one of its groups.
+            ``on_conflict``, a group with two labels and ``on_conflict="refuse"``, a class
+            too small for every split (and half) to get one of its groups, or an unknown
+            split name in ``allowed``.
     """
     shares = check_fractions(fractions)
     if len(shares) != len(SPLIT_NAMES):
         raise SplitsError(f"fractions must be {len(SPLIT_NAMES)} numbers (Train, Val, Test)")
     if on_conflict not in ("refuse", "drop"):
         raise SplitsError(f"on_conflict must be refuse or drop, got {on_conflict!r}")
+    constraints = _constraints(table, allowed)
     split_of = grouped_split(
         table.group,
         table.label,
@@ -191,6 +209,7 @@ def make_object_splits(
         seed=seed,
         drop_conflicts=on_conflict == "drop",
         names=table.label_names,
+        allowed={g: [SPLIT_NAMES.index(n) for n in names] for g, names in constraints.items()},
     )
     validation = np.flatnonzero(split_of == SPLIT_NAMES.index("Validation"))
     selection, decision = grouped_halves(
@@ -199,6 +218,7 @@ def make_object_splits(
     half_of = np.full(len(table), -1, dtype=np.int64)
     half_of[validation[selection]] = 0
     half_of[validation[decision]] = 1
+    conflicting = _conflicting(table)
     return ObjectSplits(
         table={
             "name": name,
@@ -214,7 +234,45 @@ def make_object_splits(
         groups=_parts(table, split_of, SPLIT_NAMES),
         halves=_parts(table, half_of, HALF_NAMES),
         counts=_all_counts(table, split_of, half_of),
+        constraints={g: names for g, names in constraints.items() if g not in conflicting},
     )
+
+
+def _conflicting(table: AlertTable) -> set[str]:
+    return {c.group for c in label_conflicts(table)}
+
+
+def _constraints(
+    table: AlertTable, allowed: Mapping[str, Collection[str]] | None
+) -> dict[str, tuple[str, ...]]:
+    """The constraints on the table's own groups, split names in :data:`SPLIT_NAMES` order.
+
+    A group allowed in every split is not a constraint and is left out.
+    """
+    if not allowed:
+        return {}
+    present = set(table.group.tolist())
+    result: dict[str, tuple[str, ...]] = {}
+    for group, names in sorted(allowed.items()):
+        unknown = set(names) - set(SPLIT_NAMES)
+        if unknown or not names:
+            raise SplitsError(f"group {group!r}: allowed splits {sorted(names)} are invalid")
+        ordered = tuple(n for n in SPLIT_NAMES if n in names)
+        if group in present and len(ordered) < len(SPLIT_NAMES):
+            result[group] = ordered
+    return result
+
+
+def _constraint_entries(constraints: Mapping[str, tuple[str, ...]]) -> list[dict[str, Any]]:
+    by_splits: dict[tuple[str, ...], list[str]] = {}
+    for group, names in constraints.items():
+        by_splits.setdefault(names, []).append(group)
+    return [
+        {"splits": list(names), "groups": sorted(groups)}
+        for names, groups in sorted(
+            by_splits.items(), key=lambda kv: [SPLIT_NAMES.index(n) for n in kv[0]]
+        )
+    ]
 
 
 def _to_plain(splits: ObjectSplits) -> dict[str, Any]:
@@ -228,6 +286,7 @@ def _to_plain(splits: ObjectSplits) -> dict[str, Any]:
         "seed": splits.seed,
         "fractions": dict(zip(SPLIT_NAMES, splits.fractions, strict=True)),
         "conflicts": [{"group": c.group, "labels": list(c.labels)} for c in splits.conflicts],
+        "constraints": _constraint_entries(splits.constraints),
         "groups": {name: list(splits.groups[name]) for name in SPLIT_NAMES},
         "halves": {name: list(splits.halves[name]) for name in HALF_NAMES},
         "counts": splits.counts,
@@ -281,6 +340,28 @@ def _parse_conflicts(
     return tuple(conflicts)
 
 
+def _parse_constraints(value: object, path: Path) -> dict[str, tuple[str, ...]]:
+    if not isinstance(value, list):
+        raise SplitsError(f"{path}: constraints must be a list")
+    result: dict[str, tuple[str, ...]] = {}
+    for entry in value:
+        names = entry.get("splits") if isinstance(entry, dict) else None
+        if (
+            not isinstance(names, list)
+            or not names
+            or any(not isinstance(n, str) or n not in SPLIT_NAMES for n in names)
+            or names != [n for n in SPLIT_NAMES if n in names]
+            or len(names) == len(SPLIT_NAMES)
+        ):
+            raise SplitsError(f"{path}: each constraint needs 1-2 split names, in order")
+        assert isinstance(entry, dict)  # noqa: S101 - narrowed above, for mypy
+        for group in _id_list(entry.get("groups"), "constraints.groups", path):
+            if group in result:
+                raise SplitsError(f"{path}: group {group} has two constraints")
+            result[group] = tuple(names)
+    return result
+
+
 def _disjoint(parts: dict[str, tuple[str, ...]], what: str, path: Path) -> set[str]:
     seen: set[str] = set()
     for name, ids in parts.items():
@@ -308,6 +389,7 @@ def _parse(raw: dict[str, Any], path: Path) -> ObjectSplits:
             groups={n: _id_list(raw["groups"][n], f"groups.{n}", path) for n in SPLIT_NAMES},
             halves={n: _id_list(raw["halves"][n], f"halves.{n}", path) for n in HALF_NAMES},
             counts=counts,
+            constraints=_parse_constraints(raw.get("constraints", []), path),
         )
     except (KeyError, TypeError, ValueError, IndexError) as err:
         raise SplitsError(f"{path}: malformed object-splits file ({err!r})") from None
@@ -329,7 +411,7 @@ def read_object_splits(path: Path) -> ObjectSplits:
         raise SplitsError(f"{path}: cannot read the object-splits file ({err})") from None
     if not isinstance(raw, dict) or raw.get("format") != FORMAT:
         raise SplitsError(f"{path}: not a {FORMAT} file")
-    if raw.get("format_version") != FORMAT_VERSION:
+    if raw.get("format_version") not in READ_VERSIONS:
         raise SplitsError(f"{path}: unsupported format_version {raw.get('format_version')!r}")
     splits = _parse(raw, path)
     seed = splits.seed
@@ -351,6 +433,9 @@ def read_object_splits(path: Path) -> ObjectSplits:
         raise SplitsError(f"{path}: the halves must hold Validation groups only")
     if seen.intersection(c.group for c in splits.conflicts):
         raise SplitsError(f"{path}: a conflicting group is also in a split")
+    for group, names in splits.constraints.items():
+        if not any(group in splits.groups[n] for n in names):
+            raise SplitsError(f"{path}: group {group} is outside its allowed splits {names}")
     return splits
 
 
@@ -398,10 +483,23 @@ def verify_object_splits(splits: ObjectSplits, table: AlertTable) -> None:
     halves = {g for name in HALF_NAMES for g in splits.halves[name]}
     if halves != set(splits.groups["Validation"]):
         raise SplitsError("the halves do not cover Validation's groups")
+    if not set(splits.constraints) <= expected:
+        raise SplitsError("a constrained group is not a group of the table")
     split_of, half_of = splits.split_of(table), splits.half_of(table)
     names = table.label_names
+    for group, allowed in splits.constraints.items():
+        if not any(group in splits.groups[n] for n in allowed):
+            raise SplitsError(f"group {group} is outside its allowed splits {allowed}")
+    # The bound holds only for the classes without a constrained group (module docstring).
+    constrained = np.isin(table.group, list(splits.constraints))
+    free = ~np.isin(table.label, np.unique(table.label[constrained]))
     check_stratified(
-        table.group, table.label, split_of, splits.fractions, names=names, part_names=SPLIT_NAMES
+        table.group[free],
+        table.label[free],
+        split_of[free],
+        splits.fractions,
+        names=names,
+        part_names=SPLIT_NAMES,
     )
     val = split_of == SPLIT_NAMES.index("Validation")
     check_stratified(
