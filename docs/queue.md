@@ -60,20 +60,25 @@ host. Today:
 
 | Machine | ssh host | Machine class | `machine.extra` | Worker hosted in |
 |---------|----------|---------------|-----------------|------------------|
-| GTX 1050 (WSL2) | `rvidal@desktop-qj6b97d` | `cuda-nvidia-geforce-gtx-1050` | `cu126` (driver < 580) | systemd user service, or tmux |
-| RTX 5090 (Blackwell) | `rvidal@100.105.188.13` | `cuda-nvidia-geforce-rtx-5090` | none (PyPI's default CUDA 13 build) | tmux |
+| GTX 1050 (WSL2) | `gpu-1050` | `cuda-nvidia-geforce-gtx-1050` | `cu126` (driver < 580) | systemd user service, or tmux |
+| RTX 5090 (Blackwell) | `gpu-5090` | `cuda-nvidia-geforce-rtx-5090` | none (PyPI's default CUDA 13 build) | tmux |
 
 The machine class is `runs.identity.default_machine_class` of the GPU's name (ADR 0015), so
-a queued run and a run launched by hand on the same GPU share run ids. The submitting side
-uses ssh in batch mode (no password prompt): put the 5090's key in `~/.ssh/config` and use
-the alias as the host:
+a queued run and a run launched by hand on the same GPU share run ids.
+
+`gpu-1050` and `gpu-5090` are ssh-config aliases, not real addresses. The submitting side
+uses ssh in batch mode (no password prompt), so each alias must resolve, with its key, in
+the submitting user's `~/.ssh/config`:
 
 ```
-Host gpu5090
-    HostName 100.105.188.13
-    User rvidal
-    IdentityFile ~/.ssh/id_ed25519_go001
+Host gpu-5090
+    HostName <the machine's address>
+    User <user>
+    IdentityFile ~/.ssh/<your-key>
 ```
+
+Machine addresses, login users and key file names belong in each user's `~/.ssh/config`,
+never in the repository: not in docs, specs, tests or commit messages.
 
 ### Once per machine
 
@@ -129,10 +134,10 @@ measurement, plan task A3), `--lease-seconds` (120), `--poll-seconds` (5),
 
 ```bash
 git push                                   # the runner fetches the commit from origin
-uv run astro-simclr queue submit configs/specs/c5.yaml --host rvidal@desktop-qj6b97d
-uv run astro-simclr queue status --host rvidal@desktop-qj6b97d
-uv run astro-simclr queue sync --host rvidal@desktop-qj6b97d --dest ~/runs/gtx1050
-uv run astro-simclr queue sync --host gpu5090 --dest ~/runs/rtx5090
+uv run astro-simclr queue submit configs/specs/c5.yaml --host gpu-1050
+uv run astro-simclr queue status --host gpu-1050
+uv run astro-simclr queue sync --host gpu-1050 --dest ~/runs/gtx1050
+uv run astro-simclr queue sync --host gpu-5090 --dest ~/runs/rtx5090
 ```
 
 - `submit` refuses a dirty tree, an uncommitted spec or a commit on no remote branch,

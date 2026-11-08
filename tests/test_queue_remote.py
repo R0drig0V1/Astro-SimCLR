@@ -70,7 +70,7 @@ class Env:
         monkeypatch.setenv("FAKE_SSH_ASTRO_HOME", str(self.config.home))
         monkeypatch.setenv("FAKE_SSH_HOME", str(tmp_path))
         monkeypatch.setenv("FAKE_SSH_DROP", str(self.drop))
-        self.transport = SshTransport("rvidal@runner", ssh=(sys.executable, str(FAKE_SSH)))
+        self.transport = SshTransport("user@gpu-host", ssh=(sys.executable, str(FAKE_SSH)))
 
     def submit(self, path: Path | None = None, **kwargs: object) -> dict[str, object]:
         report = submit(
@@ -220,7 +220,7 @@ def test_sync_runs_reindex(env: Env) -> None:
 
 def test_a_dropped_connection(env: Env) -> None:
     env.drop.write_text("")
-    with pytest.raises(SubmitError, match="ssh to rvidal@runner failed"):
+    with pytest.raises(SubmitError, match="ssh to user@gpu-host failed"):
         env.submit()
     with pytest.raises(SubmitError, match="ssh"):
         sync(env.transport, env.tmp / "d", specs_dest=env.tmp / "s", remote_cli=CLI)
