@@ -75,5 +75,15 @@ torch default change would mix them while looking like one machine.
   setting.
 - Caveat on rule 5: a pre-ADR run made on an Ampere+ GPU would be misread as `ieee`. None
   exists; this ADR is why one will not.
+- Caveat on "keeps its numerics": `ieee` only rules out TF32. cuDNN still picks its float32
+  algorithm per GPU and shape, and some are far from a float32 dot product. On the RTX 5090
+  (torch 2.14.1+cu130, cuDNN 9.24) the 5x5 convolutions of the faithful model and of the
+  p4/p4m variants run as non-fused Winograd F(5x5) on 9x9 tiles (`winogradForwardData9x9_5x5`)
+  whatever the policy, with 4e-3 relative error on a 32 -> 32 channel layer against 6e-7 on
+  the CPU; the logits of the faithful model are 1.3e-5 from float64 there against 2e-7 on
+  the CPU (measured in the fix/cuda-tests PR). `cudnn.deterministic` does not change the
+  choice; only disabling cuDNN does. So a CUDA run is about 1e-5 from float64 in the logits
+  under either policy, and two GPUs (or cuDNN versions) need not pick the same algorithm:
+  "keeps its numerics" means no TF32, not the same bits.
 - Revisit when torch removes `set_float32_matmul_precision` or makes the new matmul API
   readable by Lightning: then rule 3's exception goes.

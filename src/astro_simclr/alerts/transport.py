@@ -38,6 +38,7 @@ __all__ = [
     "HttpError",
     "Opener",
     "RateLimiter",
+    "https_opener",
     "urllib_opener",
 ]
 
@@ -90,6 +91,14 @@ class _HttpsRedirects(urllib.request.HTTPRedirectHandler):
 
 
 _OPENER = urllib.request.build_opener(_HttpsRedirects())
+
+
+def https_opener() -> urllib.request.OpenerDirector:
+    """A urllib opener that follows redirects to ``https://`` URLs only (as :func:`urllib_opener`).
+
+    For streaming downloads too large for :class:`Fetcher` (task 3.5's Zenodo archive).
+    """
+    return urllib.request.build_opener(_HttpsRedirects())
 
 
 def urllib_opener(

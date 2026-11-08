@@ -435,7 +435,10 @@ def test_synthetic_preflight_on_cpu(tmp_path: Path) -> None:
     assert not (tmp_path / "synthetic" / "raw").exists()
 
 
-def test_preflight_stops_when_cuda_fails(tmp_path: Path) -> None:
+def test_preflight_stops_when_cuda_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # No nvidia-smi and no CUDA in torch, whatever the host has: on a GPU machine torch
+    # would describe the GPU and step 1 would pass, so the dry chain would run.
+    _fake_torch(monkeypatch, cuda=None, available=False)
     stream = io.StringIO()
     assert not run_preflight(
         output_dir=tmp_path,

@@ -1,0 +1,16 @@
+# carrasco2021, nested form (task 4.2; ADR 0017): the paper replication of Carrasco-Davis
+# et al. 2021 on a GPU. The preset holds every value (src/astro_simclr/config_tree/presets.py);
+# their provenance is in configs/phase2/carrasco2021.yaml, the flat form, which has the
+# same config hash (tests/test_config_tree_presets.py).
+#
+# Run (one seed):
+#   astro-simclr run configs/runs/carrasco2021.yaml --set run.seed=S \
+#       run.output_dir=OUT/carrasco2021/seed-S
+# A 2.5 variant changes its section, for example:
+#   --set model.arch=p4m model.group_fields=8 | augment.flux_rescale=0.5
+# Print the resolved config and its config hash without training: add --show.
+preset: carrasco2021
+
+runtime:
+  # A missing GPU must fail instead of training on the CPU.
+  accelerator: cuda

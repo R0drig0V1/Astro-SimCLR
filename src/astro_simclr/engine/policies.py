@@ -15,7 +15,8 @@ and that the 4.7(a) differential test checks against Lightning (ADR 0014):
 - :data:`Keep`: which weights a run ends with, ``best`` (restored, CD21) or ``stop`` (the
   last, RJ23's primary); ``rj23`` reports both from one run.
 
-The loop logic itself (when the rules are applied) arrives in 4.1.
+The loop (``engine.loop``, task 4.1) applies the rules after each validation; the rules
+themselves stay here, pure, so a test can check each against Lightning's.
 """
 
 from __future__ import annotations
@@ -23,6 +24,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from typing import Literal, Protocol
+
+import torch
 
 from astro_simclr.config import ConfigError
 
@@ -157,6 +160,34 @@ class EarlyStop:
             raise ConfigError(f"patience must be >= 1, got {self.patience}")
         if self.min_delta < 0:
             raise ConfigError(f"min_delta must be >= 0, got {self.min_delta}")
+
+    def update(
+        self, value: float, best: float | None, wait_count: int, mode: MonitorMode
+    ) -> tuple[float | None, int, bool]:
+        """One validation's update: ``(best, wait_count, stop)`` after the value ``value``.
+
+        Lightning's ``EarlyStopping._evaluate_stopping_criteria``, in its order and in its
+        float32 tensor arithmetic (``best`` ``None`` is its initial infinity): a non-finite
+        value stops when ``check_finite``; a value worse than ``divergence_threshold``
+        stops; ``value -/+ min_delta`` strictly better than ``best`` is an improvement (the
+        count resets); otherwise the count grows and reaching ``patience`` stops.
+        """
+        current = torch.tensor(value, dtype=torch.float32)
+        better = torch.lt if mode == "min" else torch.gt
+        if self.check_finite and not bool(torch.isfinite(current)):
+            return best, wait_count, True
+        threshold = self.divergence_threshold
+        if threshold is not None and bool(better(-current, -threshold)):
+            return best, wait_count, True
+        reference = torch.tensor(
+            (math.inf if mode == "min" else -math.inf) if best is None else best,
+            dtype=torch.float32,
+        )
+        delta = -self.min_delta if mode == "min" else self.min_delta
+        if bool(better(current - delta, reference)):
+            return value, 0, False
+        wait_count += 1
+        return best, wait_count, wait_count >= self.patience
 
 
 @dataclass(frozen=True, slots=True)
