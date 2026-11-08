@@ -37,6 +37,10 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   macro-F1 (± std over seeds), per class and on the first-stamp view, and with a baseline
   the paired bootstrap CI of the macro-F1 difference and McNemar (always exit 0: a report);
 - ``preflight`` (:mod:`astro_simclr.preflight`): exit 0 if no step failed, else 1.
+- SimCLR pilot (task 5.0b, :mod:`astro_simclr.simclr.commands`): ``simclr-pilot``
+  pretrains, ``simclr-embed`` dumps ``h`` of a checkpoint or of the random init,
+  ``make-label-subsets`` stores the probe's label subsets and ``simclr-probe`` scores the
+  probe on the screen halves (exit 0 when they finish).
 - M1 oracle (task 2.2b, :mod:`astro_simclr.oracle`): ``fetch-m1`` downloads M1 at the
   pinned commit (SHA-256 checked) into a local cache and converts it to ``.npz``;
   ``m1-oracle --data-dir DIR --out DIR`` runs the port-equivalence and data-path checks
@@ -85,6 +89,7 @@ from astro_simclr.config import (
     settings_to_plain,
 )
 from astro_simclr.hparams import COMMAND_DEFAULTS, COMMANDS, load_legacy_hparams
+from astro_simclr.simclr.commands import add_simclr_commands
 
 if TYPE_CHECKING:
     from astro_simclr.oracle.m1 import M1Files
@@ -1207,6 +1212,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_check_commands(commands)
     _add_oracle_commands(commands)
     _add_alert_commands(commands)
+    add_simclr_commands(commands)
     return parser
 
 

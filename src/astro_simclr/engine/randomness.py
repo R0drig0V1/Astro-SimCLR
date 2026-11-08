@@ -30,10 +30,23 @@ import torch
 __all__ = ["RESERVED_STREAMS", "device_generator", "host_generator"]
 
 #: Stream numbers in use (the third ``SeedSequence`` word), by augmentation. ``rot90``
-#: keeps the two-word ``[seed, step]`` of task 2.5-models and has no number. Phase 5's
-#: SimCLR views take new numbers here.
+#: keeps the two-word ``[seed, step]`` of task 2.5-models and has no number. Phase 5
+#: (task 5.0b, :mod:`astro_simclr.simclr`): ``simclr_views`` the per-sample view parameters
+#: (host), ``simclr_view_noise`` the views' per-pixel noise fields (device),
+#: ``simclr_batch_order`` the permutation of each pass over the stamps (its second word is
+#: the pass, not the step) and ``simclr_diagnostics`` the fixed diagnostic sample and views
+#: (second word 0).
 RESERVED_STREAMS: Final = MappingProxyType(
-    {"aug_noise": 1, "aug_feature_jitter": 2, "synthetic_bogus": 3, "flux_rescale": 4}
+    {
+        "aug_noise": 1,
+        "aug_feature_jitter": 2,
+        "synthetic_bogus": 3,
+        "flux_rescale": 4,
+        "simclr_views": 5,
+        "simclr_view_noise": 6,
+        "simclr_batch_order": 7,
+        "simclr_diagnostics": 8,
+    }
 )
 
 
