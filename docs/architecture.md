@@ -1146,8 +1146,9 @@ float32 (N, 23), int64 (N,), and optionally the float32 (N, 6) `class_augment.st
 of the crops (C5 / C6), or (N, 11) with `flux_rescale.fit_central_psf` after them (C7),
 validated. `without_train_indices` keeps Train's fits with its
 stamps; `protocol_splits` builds roles without fits. When the Train split has fits, its
-training batches carry them as a fourth element (validation and test never do). `DeviceTensorDataModule(source,
-batch_size=64, eval_batch_size=64, seed=0, balance=True)` takes the three splits (a mapping,
+training batches carry them as a fourth element (validation and test never do).
+`DeviceTensorDataModule(source, batch_size=64, eval_batch_size=64, seed=0, balance=True,
+planner=None)` takes the three splits (a mapping,
 or a callable resolved once at the first `setup`), moves them once to
 `trainer.strategy.root_device` (CPU without a Trainer) and yields `(crops, features,
 one-hot labels)`:
@@ -1233,8 +1234,9 @@ off by default; see "Class-aware augmentation" below), and row C7 `flux_rescale`
 ### Class-aware augmentation (plan rows C5 and C6)
 
 `src/astro_simclr/training/class_augment.py`; decisions in ADR 0006. Training only, in
-`PaperClassifierModule.augmented_batch` (called by `training_step`), on the device-resident
-batch: C6, C7 (below), then C5's noise on the rows C6 did not replace, **then** the rotation
+`PaperClassifierModule.augment_plan` (host, planned ahead by the training loader; see
+"Prefetch" below) and `apply_plan` (in `training_step`, on the device-resident batch): C6,
+C7 (below), then C5's noise on the rows C6 did not replace, **then** the rotation
 of `rot90_augment`, then the feature jitter on every row. The class augmentation runs before
 the rotation because the stamp fits describe the unrotated crop (C7's PSF centroid in
 particular; C5 / C6 are rotation-agnostic). Validation and test are never augmented.
@@ -1285,6 +1287,19 @@ particular; C5 / C6 are rotation-agnostic). Validation and test are never augmen
   `default_rng([seed, global_step, stream])`, streams 1 (noise), 2 (jitter), 3 (synthetic);
   every draw has a fixed size per batch. Device-independent, exact on resume, and
   `rot90_augment`'s `[seed, step]` draws are unchanged.
+- **Prefetch** (ADR 0006, item 10): each augmentation is a host *plan* and a device *apply*
+  (`plan_noise` / `apply_noise`, `plan_synthetic` / `apply_synthetic`, `plan_jitter`;
+  C7's `plan_flux` / `apply_flux`; the public `noise_augment`, `synthetic_bogus`,
+  `jitter_features`, `flux_rescale` are apply(plan(...))). `PaperClassifierModule.
+  augment_plan(host_batch, step)` plans a whole step (C6, C7, C5, rotation, jitter: a dict
+  of CPU tensors); `apply_plan(batch, plan)` applies it with the same torch operations.
+  For an augmented run (`module.augmenting`), `experiments` gives the data module
+  `planner=module.augment_plan`: the training loader keeps a CPU copy of the Train split,
+  gathers the step's rows there, plans, and yields `(*batch, plan)` with the plan uploaded
+  by `upload_plan` (pinned + `non_blocking` on CUDA); `training_step` recognises the plan
+  (a trailing dict) and only applies it. No `.cpu()` and no blocking copy in the step;
+  bit for bit the in-step path (`augmented_batch`), which stays for direct calls
+  (`tests/test_augment_prefetch.py`).
 
 **Tested** (`tests/test_class_augment.py`, `tests/test_split_runs.py`): the fit recovers
 known `a, b, c`; the computed difference equals `a·sci + b·tmpl + c` before the min-max;
