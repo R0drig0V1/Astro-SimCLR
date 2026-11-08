@@ -417,11 +417,20 @@ Every row is one flag with 5 seeds against the replication, decided by the proto
 2.3, with test archived. If 2.5 runs on another machine than 2.4, the 5-seed baseline is
 re-run there first (budgeted).
 
+**Object-level leakage (2026-11-08, phase-3 review; verified).** Some Validation and Test rows share a position (within 1.5″) with a Train alert. These are different alerts of the same object or artefact:
+- Validation: 24 of 500 (Bogus 20 of 100);
+- Test: 27 of 500 (Bogus 21 of 100).
+
+The stored splits are stratified but not grouped, so a CV fold can train on one alert of an artefact and evaluate on another, which favours flags that memorise. Consequences:
+- **The 2.5 CV decisions use grouped splits.** Task "grouped decision splits", agent `grouped-splits`, writes `configs/splits/td_ztf_stamp_17_06_20_red-002-grouped.json`. The CV waits for it.
+- The architecture screen already running used the ungrouped file. It is drop-only, and all its arms see the same leak, so its drops stand.
+- The replication (2.4) keeps CD21's protocol, with this caveat.
+
 **2.5-arch: architectural changes (the user's main interest).**
 
 | Id | Change | Hypothesis |
 |---|---|---|
-| B1 | Field of view: 21 + pad / 27 / 41 / 63 and multi-scale 4×16² (Reyes-Jainaga 2023); fc1 sized from the input. 41/63 px only on the 5090, or with a per-batch path (the crops do not fit next to the model on 4 GB) | More context helps SN (the host galaxy) |
+| B1 | Field of view: 21 + pad / 27 / 41 / 63 and multi-scale 4×8² (Reyes-Jainaga 2023: 1″/2″/4″/8″ per pixel, 256 values); fc1 sized from the input. 41/63 px only on the 5090, or with a per-batch path (the crops do not fit next to the model on 4 GB) | More context helps SN (the host galaxy) |
 | B2 | D4 invariance: 8 copies (rotations × flips), or p4m group-equivariant convolutions | An exact sky symmetry |
 | B3 | Batch norm in the conv trunk | Optimisation stability |
 | B4 | Width / depth (filters ×1.5–2; one more conv block) | Capacity |
