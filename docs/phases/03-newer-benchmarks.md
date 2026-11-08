@@ -1,5 +1,5 @@
 <!-- Phase 3 of the roadmap (docs/phases/README.md); owned by the integrator. Draft amended
-after review round 1 (docs/plan-reviews/2026-11-08-phase-3.md); round 2 after task 3.0. -->
+after review round 1 and task 3.0's research (docs/plan-reviews/2026-11-08-phase-3.md). -->
 # Phase 3: the newer benchmarks and the raw-alert dataset (draft, review round 1 applied)
 
 ## Goal
@@ -58,12 +58,76 @@ label source** (circular). Never unpickle downloads, and treat downloaded data a
 - **Unlabelled corpus source:** the ZTF public alert archive (`ztf.uw.edu/alerts/public/`),
   for the next phase.
 
+## Task 3.0 results (research, 2026-11-08)
+
+Each claim is marked verified, inferred or unknown in the research report. The main points:
+
+- **RJ23 code is public under MIT** (`github.com/alercebroker/multiscale_stamps`), but
+  incomplete: `models.py` and `config.py` are missing. No data or weights are published. The
+  rule stands: we reimplement and cite, we do not copy.
+- **C25 and N24:** no code, data or weights found.
+- **The light-curve labelled set** (Zenodo 4279623, CC BY 4.0) has 123,496 rows, `oid`
+  and class but **no `candid`**, and 1,718 SN (RJ23 has 3,615).
+- **No public stamp-classifier labelled set with `candid`s exists** (not CD21, RJ23 or C25).
+- **The RJ23 input, exactly:**
+  - normalisation `(x − min|x|) / (p99|x| − min|x| + 1e-8)`, clipped to [−2, 2], per
+    stamp and channel on the full 63×63, before any crop or pooling;
+  - a 3-channel invalid mask, 1 where a pixel is NaN or ±inf;
+  - channel order: sci, ref, diff, then their 3 masks;
+  - the multi-scale view built by iterated 2×2 average pooling ('same' padding) after
+    normalisation, masks pooled too, ordered by scale 1″/2″/4″/8″, giving
+    **256×8×8×24**;
+  - crop offsets 24:40 (16 px) and 28:36 (8 px).
+
+  RJ23's code leaves values with |x| > 1e10 out of the statistics but does not zero
+  them, unlike the paper.
+- **RJ23 alerts:** one random detection per object from ALeRCE's API, with an unseeded
+  `sample()`. Only the "ghost bogus" reuse CD21's cutouts. Recovering CD21's stamps (3.1)
+  therefore does **not** reproduce RJ23's inputs.
+- **RJ23 training:**
+  - Table 2 filters, dropout and learning rates per scenario;
+  - 8 rotation and flip views averaged;
+  - position (x, y, z) concatenated after dropout, then BN, FC and FC-6;
+  - Adam, unweighted cross-entropy, batch 256 class-balanced;
+  - validation macro-F1 every 500 iterations with patience 5;
+  - **the model saved at the stopping iteration** (not the best);
+  - 5 runs on one split (60/20/20, `random_state=0`).
+- **RJ23 unknowns:** the activation, the conv padding, the flatten point and the BN
+  placement (lost with `models.py`).
+- **RJ23 Table 1, test macro-F1:** Full 86.68, Cropped 86.19, Low-res 82.69, Multi-scale
+  87.39. First-stamp view: 86.65 / 86.10 / 82.65 / 87.30.
+- **C25:**
+  - quote the v2/A&A numbers: satellite accuracy 72.0 → 87.8 % (v1 said 66.9 → 79.7 %);
+  - labels: RJ23's 49,310 alerts with 624 Bogus moved to Satellite (Bogus 15,326,
+    Satellite 1,204);
+  - Table 2 F1 per model (A–F): 91.0, 91.1, 87.9, 91.0, 90.5, 90.9; test 9,888; no
+    first-stamp view;
+  - FFT details not stated (the median of what, the placement, fftshift, log or
+    normalisation), so they need an ADR.
+- **RJ23 label sources:**
+  - SN, VS and AGN from ALeRCE's internal cross-match table, VS capped at 1,200 and AGN at
+    4,000 per subclass;
+  - Bogus from CD21 after cuts;
+  - Asteroids are CD21's with ndet == 1;
+  - **satellites tagged by hand in SN Hunter, whose reports are not public**, so this class
+    cannot be rebuilt from public data and needs a documented substitute.
+- **N24:** Part III uses CD21's data, 52,244 first alerts (a cross-check for our counts).
+  The rest is out of scope.
+- **TNS:** the daily `tns_public_objects.csv.zip` needs a `tns_marker` User-Agent, and an
+  anonymous request returned 401. **A free TNS account and bot API key are needed (a user
+  action)**, kept out of the repo.
+
+**Consequence:** an exact RJ23 replication needs ALeRCE's list (3.0a). Without it, 3.5
+rebuilds from Zenodo (VS, AGN, part of SN), TNS (more SN), CD21 (Bogus, Asteroids, with
+RJ23's cuts), one random detection per object (seeded) and a satellite substitute. The
+result is reported only as "on our reconstruction".
+
 ## Tasks
 
 Running now: 3.0, 3.1, 3.2, and phase 2's grouped splits. 3.0a is the user's decision.
 After 3.0 and review round 2: 3.1b, then 3.3/3.4, then 3.5 and 3.6.
 
-### 3.0 Research: availability and exact specifications (running; no repo change)
+### 3.0 Research: availability and exact specifications — done (2026-11-08; results above)
 - For RJ23 and C25: a **per-scenario specification table**, each value marked as
   published, inferred or unknown. It covers:
   - layers and filters, dense sizes, dropout and BatchNorm;
