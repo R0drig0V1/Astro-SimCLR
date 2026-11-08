@@ -35,6 +35,7 @@ from astro_simclr.presets import (
     preset_report,
 )
 from astro_simclr.training.class_augment import (
+    CENTRE_SOURCE_Z,
     DISCRETE_FEATURES,
     FIT_COLUMNS,
     KEPT_FEATURE_NAMES,
@@ -54,6 +55,7 @@ from astro_simclr.training.class_augment import (
     spike_patterns,
     stamp_fits,
     synthetic_bogus,
+    template_centre_z,
 )
 from astro_simclr.training.device_data import TensorSplit, without_train_indices
 from astro_simclr.training.modules import PaperClassifierModule
@@ -295,14 +297,20 @@ def test_moment_fwhm_is_the_fwhm_of_a_pixel_integrated_gaussian() -> None:
         moment_fwhm(-single)
 
 
+_AGN, _SN, _VS, _ASTEROID = (LABEL_NAMES.index(c) for c in ("AGN", "SN", "VS", "Asteroid"))
+
+
 def _synthetic_inputs(
     n: int = 8,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Rows: a = +1 (even) or -1 (odd); AGN, SN, VS, Asteroid, Bogus, Bogus, AGN, SN."""
+    """Rows: a = +1 (even) or -1 (odd); Asteroid, SN, Bogus, Asteroid, Bogus, Bogus, AGN, VS.
+
+    C6 sources (Asteroid or Bogus, a > 0): rows 0, 2 and 4. Bogus rows 2 and 4 are positive
+    alerts (stored isdiffpos 0), row 5 a negative one.
+    """
     images, fits = _batch(n)
     features = torch.randn(n, 23)
-    labels = torch.tensor([0, 1, 2, 3, _BOGUS, _BOGUS, 0, 1])[:n]
-    # Bogus row 4 is a positive alert (stored isdiffpos 0), row 5 a negative one.
+    labels = torch.tensor([_ASTEROID, _SN, _BOGUS, _ASTEROID, _BOGUS, _BOGUS, _AGN, _VS])[:n]
     features[:, _ISDIFFPOS] = 0.0
     features[5, _ISDIFFPOS] = 2.1225
     targets = torch.nn.functional.one_hot(labels, 5).float()
@@ -322,21 +330,23 @@ def test_synthetic_rows_are_bogus_with_a_sharp_central_spike() -> None:
     images, features, targets, fits = _synthetic_inputs()
     rng = augment_rng(0, 0, SYNTHETIC_STREAM)
     out, feats, tgts, replaced = synthetic_bogus(images, features, targets, fits, 0.5, rng)
-    # Sources: positive alerts (a > 0: even rows) that are not SN: rows 0, 2, 4 and 6.
-    assert replaced.tolist() == [True, False, True, False, True, False, True, False]
+    # Sources: positive alerts (a > 0: even rows) of Asteroid or Bogus: rows 0, 2 and 4.
+    assert replaced.tolist() == [True, False, True, False, True, False, False, False]
     rows = np.flatnonzero(replaced)
-    assert torch.equal(tgts[rows].argmax(dim=1), torch.full((4,), _BOGUS))
+    assert torch.equal(tgts[rows].argmax(dim=1), torch.full((3,), _BOGUS))
     # Real stamps are never relabelled: the other rows are untouched.
     keep = np.flatnonzero(~replaced)
     assert torch.equal(tgts[keep], targets[keep])
     assert torch.equal(out[keep], images[keep])
     assert torch.equal(feats[keep], features[keep])
     _check_min_max(out[rows], torch.zeros_like(out[rows], dtype=torch.bool))
+    # A Bogus source keeps its features; the Asteroid takes a positive-alert Bogus donor's.
+    assert torch.equal(feats[2], features[2])
+    assert torch.equal(feats[4], features[4])
+    assert torch.equal(feats[0], features[2]) or torch.equal(feats[0], features[4])
     centre = _SIDE // 2
     for row in rows:
         assert torch.equal(out[row, 1], images[row, 1])  # the template is unchanged
-        # The donor is the batch's positive-alert real Bogus.
-        assert torch.equal(feats[row], features[4])
         science, difference = out[row, 0], out[row, 2]
         assert science[centre, centre] == 1  # the spike is the science's maximum
         # Sharp: at most 2 pixels above half the maximum, at or next to the centre.
@@ -350,30 +360,72 @@ def test_synthetic_rows_are_bogus_with_a_sharp_central_spike() -> None:
 
 def test_synthetic_differences_are_central_peaks_for_every_row() -> None:
     # Every replaced row, at any fraction and step: the difference's centre is a positive
-    # peak against its border (no central dip, which no real alert has), and no negative
-    # alert or SN row is ever a source.
+    # peak against its border (no central dip, which no real alert has), and only positive
+    # Asteroid or Bogus rows are sources.
     images, features, targets, fits = _synthetic_inputs()
+    labels = targets.argmax(dim=1).numpy()
     for step in range(20):
         rng = augment_rng(1, step, SYNTHETIC_STREAM)
         out, _, _, replaced = synthetic_bogus(images, features, targets, fits, 0.99, rng)
         assert replaced.any()
         assert not replaced[fits[:, 0].numpy() < 0].any()
-        assert not replaced[targets.argmax(dim=1).numpy() == LABEL_NAMES.index("SN")].any()
+        assert set(labels[replaced].tolist()) <= {_ASTEROID, _BOGUS}
         for row in np.flatnonzero(replaced):
             assert _centre_z(out[row, 2]) > 0
+
+
+def _with_central_source(images: torch.Tensor, rows: list[int]) -> torch.Tensor:
+    """``images`` with a bright Gaussian (sigma 1.2 px) added at the template's centre."""
+    yy, xx = np.mgrid[:_SIDE, :_SIDE] - _SIDE // 2
+    blob = torch.from_numpy(np.exp(-(xx**2 + yy**2) / (2 * 1.2**2))).float()
+    out = images.clone()
+    out[rows, 1] += 3.0 * blob
+    return out
+
+
+def test_template_centre_z_finds_a_source_at_the_centre() -> None:
+    images, _ = _batch(4)
+    z = template_centre_z(_with_central_source(images, [1, 3]).numpy())
+    assert z.shape == (4,)
+    assert np.all(z[[1, 3]] > CENTRE_SOURCE_Z)
+    assert np.all(z[[0, 2]] < CENTRE_SOURCE_Z)
+    flat = np.zeros((1, 3, _SIDE, _SIDE))
+    assert template_centre_z(flat).tolist() == [0.0]
+
+
+def test_synthetic_templates_are_no_fuller_than_real_positive_bogus() -> None:
+    # The integrator's check (2026-11-08), on a synthetic batch: the AGN and VS templates
+    # have a source at the centre (as on red: 100 % and 98 %), the Bogus ones do not. The
+    # synthetic Bogus' templates (their sources') must have a source at the centre at most
+    # as often as the real positive-alert Bogus, + 0.05. The first C6 version, which also
+    # took AGN sources, fails it (about a quarter of its rows come from the AGN row 6).
+    images, features, targets, _ = _synthetic_inputs()
+    images = _with_central_source(images, [6, 7])
+    fits = torch.from_numpy(stamp_fits(images.numpy()))
+    labels = targets.argmax(dim=1).numpy()
+    has_source = template_centre_z(images.numpy()) > CENTRE_SOURCE_Z
+    positive_bogus = (labels == _BOGUS) & (fits[:, 0].numpy() > 0)
+    real = has_source[positive_bogus].mean()
+    synthetic = []
+    for step in range(50):
+        rng = augment_rng(2, step, SYNTHETIC_STREAM)
+        *_, replaced = synthetic_bogus(images, features, targets, fits, 0.25, rng)
+        synthetic.extend(has_source[replaced].tolist())
+    assert synthetic
+    assert np.mean(synthetic) <= real + 0.05
 
 
 def test_synthetic_bogus_needs_sources_and_donors() -> None:
     images, features, targets, fits = _synthetic_inputs()
     rng = augment_rng(0, 0, SYNTHETIC_STREAM)
     no_bogus = targets.clone()
-    no_bogus[4:6] = torch.nn.functional.one_hot(torch.tensor([0, 0]), 5).float()
+    no_bogus[[2, 4, 5]] = torch.nn.functional.one_hot(torch.tensor([_AGN] * 3), 5).float()
     *_, replaced = synthetic_bogus(images, features, no_bogus, fits, 0.5, rng)
-    assert not replaced.any()
+    assert not replaced.any()  # the Asteroid has no donor, nothing else is a source
     negative_donors = features.clone()
-    negative_donors[:, _ISDIFFPOS] = 2.1225  # only negative-alert Bogus: no donor
+    negative_donors[:, _ISDIFFPOS] = 2.1225  # no positive-alert Bogus donor
     *_, replaced = synthetic_bogus(images, negative_donors, targets, fits, 0.5, rng)
-    assert not replaced.any()
+    assert replaced.tolist() == [False, False, True, False, True, False, False, False]
     low = fits.clone()
     low[:, 3] = 0.1
     *_, replaced = synthetic_bogus(images, features, targets, low, 0.5, rng)
@@ -424,7 +476,7 @@ def test_training_is_augmented_and_evaluation_is_not() -> None:
     batch = (images, features, targets)
     aug_images, aug_features, aug_targets = module.class_augment(images, features, targets, fits)
     assert not torch.equal(aug_images, images)
-    assert (aug_targets.argmax(dim=1) == _BOGUS).sum() > (targets.argmax(dim=1) == _BOGUS).sum()
+    assert (aug_targets.argmax(dim=1) == _BOGUS).sum() >= (targets.argmax(dim=1) == _BOGUS).sum()
     again = module.class_augment(images, features, targets, fits)
     expected_batch = (aug_images, aug_features, aug_targets)
     assert all(torch.equal(x, y) for x, y in zip(again, expected_batch, strict=True))

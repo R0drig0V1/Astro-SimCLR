@@ -18,16 +18,36 @@
     }
   },
   "c6_source_share": {
-    "AGN": 0.435,
+    "AGN": 0.0,
     "SN": 0.0,
-    "VS": 0.357,
+    "VS": 0.0,
     "Asteroid": 0.919,
     "Bogus": 0.57
   },
+  "c6_synthetic_sources": {
+    "AGN": 0.0,
+    "SN": 0.0,
+    "VS": 0.0,
+    "Asteroid": 0.616,
+    "Bogus": 0.384
+  },
+  "template_centre_source": {
+    "z_threshold": 5.0,
+    "real_positive_bogus": 0.295,
+    "synthetic": 0.061,
+    "passed": true,
+    "real_per_class": {
+      "AGN": 0.994,
+      "SN": 0.605,
+      "VS": 0.985,
+      "Asteroid": 0.019,
+      "Bogus": 0.328
+    }
+  },
   "difference_centre_z": {
     "synthetic": {
-      "median": 30.7,
-      "min": 8.6
+      "median": 29.1,
+      "min": 8.3
     },
     "real_median": {
       "AGN a>0": 7.7,
