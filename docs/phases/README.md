@@ -68,7 +68,7 @@ Carrasco-Davis 2021 (CD21)?
   - also evaluated on each object's first stamp.
 
   Not comparable with CD21's accuracy.
-- **Pérez-Carrasco et al. / Carvajal et al. 2025** (A&A 697, A119, arXiv:2411.03258) use the
+- **Carvajal et al. 2025** (A&A 697, A119, arXiv:2411.03258) use the
   RJ23 dataset. The 2D FFT of the difference image raises the satellite accuracy of the
   16″ model from 72.0 % to 87.8 %. Other classes change little.
 - **Other directions:**
