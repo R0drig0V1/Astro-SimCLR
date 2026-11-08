@@ -11,7 +11,9 @@ or unexpected keys all raise :class:`SchemaError`, naming the file, split and ke
 Stamps are converted with :func:`stamp_to_uint8` one by one, in the dtype they were
 *stored* in. Converting float64 to float32 first changes the rounding of some pixels
 (59 out of 10M uniform values), and stamp by stamp the peak memory stays at the unpickled
-object plus the uint8 result.
+object plus the uint8 result. With ``float32=True`` the stored stamps are also kept, as
+float32 (the classifier files store float32, so this is a plain copy; a float64 stamp is
+rounded to float32), for the paper's float input path; that adds 4 bytes per pixel.
 
 Training never calls this module: ``prepare-data`` converts each pickle once into the
 prepared ``.npy`` layout (:mod:`astro_simclr.data.prepared`).
@@ -121,21 +123,26 @@ def read_pickle(path: Path) -> object:
             raise DataError(f"{path}: cannot unpickle ({type(err).__name__}: {err})") from None
 
 
-def load_pickle(path: Path) -> StampData:
+def load_pickle(path: Path, *, float32: bool = False) -> StampData:
     """Read a ZTF stamp pickle and validate it (see :func:`validate`).
+
+    With ``float32``, every split also keeps its stored stamps as float32
+    (:attr:`SplitData.images_f32`).
 
     Raises:
         DataError: if the file cannot be read or unpickled (see :func:`read_pickle`).
         SchemaError: if its content does not match the classifier or pretraining schema.
     """
-    return validate(path, read_pickle(path))
+    return validate(path, read_pickle(path), float32=float32)
 
 
-def validate(path: Path, raw: object) -> StampData:
+def validate(path: Path, raw: object, *, float32: bool = False) -> StampData:
     """Check an unpickled object against its schema and convert it to :class:`StampData`.
 
     The kind is ``pretraining`` when the ``Train`` split holds only ``images``, otherwise
-    ``classifier``. ``path`` is used only in error messages.
+    ``classifier``. ``path`` is used only in error messages. With ``float32``, each split's
+    stored stamps are also returned as float32 (:attr:`SplitData.images_f32`), after the
+    same checks as the uint8 conversion (finite, in [0, 1]).
 
     Raises:
         SchemaError: on a missing or unexpected split or key, an empty split, a stamp that
@@ -154,13 +161,13 @@ def validate(path: Path, raw: object) -> StampData:
         _check_keys(
             path, content, frozenset({"images"}) if unlabelled else _LABELLED_KEYS, split, "keys"
         )
-        images = _images(path, split, content["images"])
+        images, images_f32 = _images(path, split, content["images"], float32=float32)
         if unlabelled:
-            splits[split] = SplitData(images, None, None)
+            splits[split] = SplitData(images, None, None, images_f32)
             continue
         labels = _labels(path, split, content["labels"], len(images))
         features = _features(path, split, content["features"], len(images))
-        splits[split] = SplitData(images, labels, features)
+        splits[split] = SplitData(images, labels, features, images_f32)
     return StampData(kind, splits)
 
 
@@ -196,9 +203,12 @@ def _sequence(path: Path, split: str, key: str, value: object) -> Sequence[Any] 
     return value
 
 
-def _images(path: Path, split: str, value: object) -> npt.NDArray[np.uint8]:
+def _images(
+    path: Path, split: str, value: object, *, float32: bool
+) -> tuple[npt.NDArray[np.uint8], npt.NDArray[np.float32] | None]:
     items = _sequence(path, split, "images", value)
     out = np.empty((len(items), *STAMP_SHAPE), dtype=np.uint8)
+    out_f32 = np.empty((len(items), *STAMP_SHAPE), dtype=np.float32) if float32 else None
     for index, item in enumerate(items):
         stamp = np.asarray(item)  # an ndarray item keeps its stored dtype
         if stamp.shape != STAMP_SHAPE:
@@ -212,7 +222,16 @@ def _images(path: Path, split: str, value: object) -> npt.NDArray[np.uint8]:
             out[index] = stamp_to_uint8(stamp)
         except ValueError as err:
             raise SchemaError(path, f"stamp {index}: {err}", split=split, key="images") from None
-    return out
+        if out_f32 is not None:
+            # stamp_to_uint8 checked it is floating point and finite. The rounding check
+            # allows values up to about 0.002 outside [0, 1], which the float path would
+            # keep, so the range is checked exactly here.
+            out_f32[index] = stamp
+            if out_f32[index].min() < 0 or out_f32[index].max() > 1:
+                raise SchemaError(
+                    path, f"stamp {index}: values outside [0, 1]", split=split, key="images"
+                )
+    return out, out_f32
 
 
 def _labels(path: Path, split: str, value: object, n: int) -> npt.NDArray[np.int64]:

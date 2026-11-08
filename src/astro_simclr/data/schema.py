@@ -2,8 +2,8 @@
 
 Every reader in :mod:`astro_simclr.data` (the pickle loader and the prepared ``.npy``
 layout) returns a :class:`StampData`: one :class:`SplitData` per split, with the stamps
-already converted to uint8. The two file kinds, checked against the real files on
-2026-11-07 (``docs/data.md``):
+already converted to uint8 (and, on request, also kept as float32). The two file kinds,
+checked against the real files on 2026-11-07 (``docs/data.md``):
 
 - **classifier** (``td_ztf_stamp_17_06_20*.pkl``): ``Train``, ``Validation`` and ``Test``,
   each with ``images`` (63x63x3 floats in [0, 1]), ``labels`` (integers 0-4, see
@@ -120,12 +120,17 @@ class SplitData:
 
     ``labels`` is int64 (N,) with values in ``range(len(LABEL_NAMES))``; ``features`` is
     float64 (N, 26) with every value finite. Both are ``None`` for the unlabelled
-    pretraining ``Train`` split. The arrays may be read-only memory maps.
+    pretraining ``Train`` split. ``images_f32`` holds the stored stamps themselves as
+    float32 (N, 63, 63, 3), finite and in [0, 1], for the paper's float input path
+    (:mod:`astro_simclr.data.float_input`); it is ``None`` unless the data was loaded or
+    prepared with ``float32=True`` (``prepare-data --images float32``). The arrays may be
+    read-only memory maps.
     """
 
     images: npt.NDArray[np.uint8]
     labels: npt.NDArray[np.int64] | None
     features: npt.NDArray[np.float64] | None
+    images_f32: npt.NDArray[np.float32] | None = None
 
     def __len__(self) -> int:
         return int(self.images.shape[0])

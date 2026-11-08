@@ -5,7 +5,9 @@ Each subcommand registers itself in :func:`build_parser` and reads its settings 
 the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subcommands:
 
 - ``show-config``: the resolved settings;
-- data (task 1.2, ``docs/data.md``): ``inspect-data``, ``make-synthetic``, ``prepare-data``;
+- data (task 1.2, ``docs/data.md``): ``inspect-data``, ``make-synthetic``, ``prepare-data``
+  (``--images float32``, task 2.1), and ``check-features`` (task 2.1: were the stored
+  features standardised with M1's statistics? Exit 1 if not);
 - training (task 1.7, :mod:`astro_simclr.experiments`): ``pretrain``, ``linear-eval``,
   ``fine-tune``, ``train-supervised``. Their settings resolve as: the ``Settings``
   defaults, the subcommand's legacy protocol (``hparams.COMMAND_DEFAULTS``), ``--hparams``
@@ -134,9 +136,42 @@ def _prepare_data(args: argparse.Namespace) -> int:
     settings = settings_from_args(args)
     out: Path = settings.data_dir if args.out is None else args.out
     source: Path = args.pickle
-    dest = prepare(source, out, overwrite=args.overwrite)
+    dest = prepare(source, out, overwrite=args.overwrite, images=args.images)
     sys.stdout.write(f"wrote {dest}\n")
     return 0
+
+
+def _check_features(args: argparse.Namespace) -> int:
+    from astro_simclr.data.m1_features import check_destandardisation
+    from astro_simclr.data.prepared import load_prepared
+
+    settings_from_args(args)  # validates --config/--set, which check-features does not use
+    path: Path = args.path
+    data = load_prepared(path)
+    report: dict[str, list[dict[str, object]]] = {}
+    for split, content in data.splits.items():
+        if content.features is None:
+            continue
+        report[split] = [
+            {"feature": c.feature, "test": c.test, "passed": c.passed, "detail": c.detail}
+            for c in check_destandardisation(content.features)
+        ]
+    passed = all(check["passed"] for checks in report.values() for check in checks)
+    if args.json:
+        sys.stdout.write(json.dumps({"path": str(path), "passed": passed, "splits": report}))
+        sys.stdout.write("\n")
+    else:
+        lines = [f"{path}: features de-standardised with M1's statistics"]
+        for split, checks in report.items():
+            lines.append(f"  {split}:")
+            lines.extend(
+                f"    {'PASS' if c['passed'] else 'FAIL'}  {c['feature']:<15} {c['test']:<9} "
+                f"{c['detail']}"
+                for c in checks
+            )
+        lines.append("PASS" if passed else "FAIL")
+        sys.stdout.write("\n".join(lines) + "\n")
+    return 0 if passed else 1
 
 
 def _add_data_commands(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -182,9 +217,17 @@ def _add_data_commands(commands: argparse._SubParsersAction[argparse.ArgumentPar
         help="convert a stamp pickle into the prepared .npy layout",
         description="Unpickle a trusted stamp pickle (it needs about its size in RAM), "
         "check it, and write OUT/<pickle stem>/ with uint8 images, labels, features and "
-        "meta.json. Training reads only this layout.",
+        "meta.json. Training reads only this layout. With --images float32 it also writes "
+        "the stored float32 stamps (images_f32.npy, 4x the size of images.npy), which the "
+        "paper's float input path needs.",
     )
     prepare.add_argument("pickle", type=Path, metavar="PKL")
+    prepare.add_argument(
+        "--images",
+        choices=("uint8", "float32"),
+        default="uint8",
+        help="uint8: images.npy only (default); float32: also images_f32.npy",
+    )
     prepare.add_argument(
         "--out",
         type=Path,
@@ -197,6 +240,19 @@ def _add_data_commands(commands: argparse._SubParsersAction[argparse.ArgumentPar
     )
     add_settings_arguments(prepare)
     prepare.set_defaults(handler=_prepare_data)
+
+    features = commands.add_parser(
+        "check-features",
+        help="check that the stored features were standardised with M1's statistics",
+        description="De-standardise the features of a prepared directory with the "
+        "normalisation statistics of the paper's model (M1) and check them: integer "
+        "ndethist, ncovhist and non_detections; a floor of -1 on the clipped sgscore and "
+        "distpsnr features; isdiffpos in {0, 1}. Exits with 1 if a check fails.",
+    )
+    features.add_argument("path", type=Path, metavar="DIR", help="a prepared directory")
+    features.add_argument("--json", action="store_true", help="print the report as JSON")
+    add_settings_arguments(features)
+    features.set_defaults(handler=_check_features)
 
 
 def training_settings(command: str, args: argparse.Namespace) -> Settings:

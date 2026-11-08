@@ -6,6 +6,10 @@ Submodules (``docs/data.md`` has the file schemas, ``docs/architecture.md`` the 
 - :mod:`~astro_simclr.data.preprocessing`: the legacy stamp preprocessing functions;
 - :mod:`~astro_simclr.data.pickle_loader`: the only place that unpickles;
 - :mod:`~astro_simclr.data.prepared`: the ``.npy`` layout that training reads;
+- :mod:`~astro_simclr.data.float_input`: the paper's float input (crop 21, per-crop
+  min-max, the NaN approximation);
+- :mod:`~astro_simclr.data.m1_features`: M1's feature statistics and the
+  de-standardisation check;
 - :mod:`~astro_simclr.data.datasets`: ``StampDataset`` and ``ContrastiveDataset`` (torch);
 - :mod:`~astro_simclr.data.synthetic`: the synthetic stand-ins of the four pickles;
 - :mod:`~astro_simclr.data.inspection`: what ``inspect-data`` prints.
