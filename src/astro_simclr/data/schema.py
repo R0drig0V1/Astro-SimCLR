@@ -38,7 +38,9 @@ __all__ = [
     "TruncatedFileError",
 ]
 
-#: Class names, indexed by label (``utils/dataset.py:label_names``).
+#: Class names of CD21's pickles and their split layouts, indexed by label
+#: (``utils/dataset.py:label_names``). A ``raw-alerts`` layout (task 3.1b) carries its own
+#: label names in ``meta.json`` (``raw_alerts.label_names_of``).
 LABEL_NAMES: tuple[str, ...] = ("AGN", "SN", "VS", "Asteroid", "Bogus")
 
 #: The 26 ALeRCE features stored per stamp, in file order (``utils/dataset.py``). The real

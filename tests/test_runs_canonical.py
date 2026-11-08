@@ -125,6 +125,7 @@ def test_excluded_keys_are_settings_fields_with_a_reason() -> None:
         "data_dir",
         "output_dir",
         "num_workers",
+        "progress_bar_refresh_rate",
         "checkpoint_every_n_steps",
     }
     assert set(IDENTITY_KEYS) == {"seed", "pretrained"}
@@ -152,6 +153,7 @@ def test_semantic_config_holds_every_other_field() -> None:
         {"data_dir": "/elsewhere/dataset"},
         {"output_dir": "elsewhere/run"},
         {"num_workers": 4},
+        {"progress_bar_refresh_rate": 0},
         {"checkpoint_every_n_steps": 2_000},
         {"seed": 7},
         {"pretrained": "/runs/encoder/checkpoints/best.ckpt"},

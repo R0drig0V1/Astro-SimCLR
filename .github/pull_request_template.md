@@ -7,5 +7,5 @@
 ## Test plan
 - [ ] `scripts/check.sh` (ruff, mypy, pytest)
 - [ ] Numerics: this PR does not change what an existing config computes, or it bumps
-      `NUMERICS_EPOCH` (`src/astro_simclr/runs/identity.py`; ADR 0012)
+      `NUMERICS_EPOCH` (`src/astro_simclr/runs/identity.py`; ADR 0013)
 - [ ] <manual check, if any>

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import torch
 from _training_support import N_PER_SPLIT
-from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, TQDMProgressBar
 
 from astro_simclr.augmentations import UnknownAugmentationError
 from astro_simclr.config import ConfigError, Settings
@@ -218,3 +218,18 @@ def test_trainer_batch_limits(tmp_path: Path) -> None:
         )
     )
     assert (limited.limit_train_batches, limited.limit_val_batches) == (2, 0.5)
+
+
+def test_progress_bar_refresh_rate_comes_from_the_settings(tmp_path: Path) -> None:
+    settings = Settings(output_dir=tmp_path, accelerator="cpu")
+    bar = build_trainer(settings, logger=False).progress_bar_callback
+    assert isinstance(bar, TQDMProgressBar)
+    assert bar.refresh_rate == settings.progress_bar_refresh_rate == 50
+    every = build_trainer(settings.replace(progress_bar_refresh_rate=1), logger=False)
+    assert isinstance(every.progress_bar_callback, TQDMProgressBar)
+    assert every.progress_bar_callback.refresh_rate == 1
+    # 0 hides the bar, and so does an explicit enable_progress_bar=False (whatever the rate).
+    hidden = build_trainer(settings.replace(progress_bar_refresh_rate=0), logger=False)
+    assert hidden.progress_bar_callback is None
+    off = build_trainer(settings, logger=False, enable_progress_bar=False)
+    assert off.progress_bar_callback is None

@@ -34,6 +34,8 @@ tb_logs/
 *.pyc
 *.ipynb_checkpoints/*
 dataset/*
+# Prepared arrays and raw-alert layouts never go in git (ADR 0012); none is tracked.
+*.npy
 
 ## Core latex/pdflatex auxiliary files:
 *.aux

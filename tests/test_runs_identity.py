@@ -14,7 +14,10 @@ from _canonical_cases import FIXTURE, case_settings, identity_cases
 
 from astro_simclr.config import Settings
 from astro_simclr.data.files import sha256_file
+from astro_simclr.data.raw_alerts import make_index, write_raw_alerts
 from astro_simclr.data.schema import DataError
+from astro_simclr.data.synthetic import synthetic_raw_alerts
+from astro_simclr.protocol.alerts import RJ23_LABEL_NAMES as RJ23_NAMES
 from astro_simclr.protocol.split_runs import SplitRequest
 from astro_simclr.runs.canonical import config_sha256
 from astro_simclr.runs.identity import (
@@ -224,6 +227,7 @@ def test_data_hash_follows_the_content() -> None:
         {"splits": None},
         {"source": {"sha256": "x"}},
         {"splits": {"Train": {"n": 1}}},
+        {"splits": {"Train": 3}},
         {"splits": {"Train": {"n": 1, "files": {"images.npy": {}}}}},
         {"splits": {"Train": {"n": 1, "files": {"images.npy": "abc"}}}},
     ],
@@ -238,6 +242,21 @@ def test_data_sha256_reads_a_prepared_layout(classifier_dir: Path) -> None:
     assert data_sha256(classifier_dir) == prepared_data_sha256(meta)
     with pytest.raises(DataError):
         data_sha256(classifier_dir.parent / "missing")
+
+
+def test_raw_alerts_layouts_hash_their_pool(tmp_path: Path) -> None:
+    cutouts, columns = synthetic_raw_alerts(RJ23_NAMES, n_per_class=2, seed=0)
+    path = write_raw_alerts(
+        tmp_path / "pool", cutouts, make_index(columns), RJ23_NAMES, {"run": "x"}
+    )
+    meta = json.loads((path / "meta.json").read_text(encoding="utf-8"))
+    base = data_sha256(path)
+    assert base == prepared_data_sha256(meta)
+    assert prepared_data_sha256({**meta, "source": {"run": "y"}, "created_by": "z"}) == base
+    renamed = {**meta, "schema": {**meta["schema"], "label_names": ["a", "b"]}}
+    assert prepared_data_sha256(renamed) != base
+    with pytest.raises(IdentityError, match="pool"):
+        prepared_data_sha256({**meta, "files": None})
 
 
 def test_uv_lock_sha256(tmp_path: Path) -> None:

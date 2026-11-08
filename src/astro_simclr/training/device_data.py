@@ -75,12 +75,11 @@ from astro_simclr.data.float_input import context_split, crop_split
 from astro_simclr.data.prepared import load_prepared
 from astro_simclr.data.schema import (
     DISCARDED_FEATURES,
-    LABEL_NAMES,
     SPLITS,
     DataError,
     SplitData,
 )
-from astro_simclr.models import N_FEATURES
+from astro_simclr.models import N_CLASSES, N_FEATURES, check_n_classes
 from astro_simclr.paper_model import PAPER_CROP
 from astro_simclr.protocol.leakage import train_keep_indices
 from astro_simclr.protocol.split_runs import RunParts
@@ -121,24 +120,28 @@ class TensorSplit:
         images: float32 (N, C, 21, 21) crops, channels first; C is 3, or 6 with the
             context channels (:data:`IMAGE_CHANNELS`).
         features: float32 (N, 23), the kept alert features.
-        labels: int64 (N,), values in ``range(5)``.
+        labels: int64 (N,), values in ``range(n_classes)``.
         fits: float32 (N, 6) ``class_augment.stamp_fits`` of the crops, or (N, 11) with
             ``flux_rescale.fit_central_psf`` after them (C7), or None (the default). Only a
             training split that C5 / C6 / C7 augment carries them; the training batches
             then have a fourth element (:class:`DeviceTensorDataModule`).
+        n_classes: the number of classes, the width of the one-hot labels (default 5,
+            CD21's; an N-class dataset passes its own, task 3.1b).
 
     Raises:
-        ValueError: if a dtype or shape is wrong, the lengths differ, N is 0 or a label is
-            out of range.
+        ValueError: if a dtype or shape is wrong, the lengths differ, N is 0, ``n_classes``
+            is not an integer >= 2 or a label is out of range.
     """
 
     images: npt.NDArray[np.float32]
     features: npt.NDArray[np.float32]
     labels: npt.NDArray[np.int64]
     fits: npt.NDArray[np.float32] | None = None
+    n_classes: int = N_CLASSES
 
     def __post_init__(self) -> None:
         """Check dtypes, shapes, lengths and label values."""
+        check_n_classes(self.n_classes)
         n = len(self.labels)
         channels = self.images.shape[1] if self.images.ndim == 4 else 0
         channels = channels if channels in IMAGE_CHANNELS else IMAGE_CHANNELS[0]
@@ -170,8 +173,8 @@ class TensorSplit:
             raise ValueError(msg)
         if n == 0:
             raise ValueError("TensorSplit is empty")
-        if self.labels.min() < 0 or self.labels.max() >= len(LABEL_NAMES):
-            raise ValueError(f"labels must be in range({len(LABEL_NAMES)})")
+        if self.labels.min() < 0 or self.labels.max() >= self.n_classes:
+            raise ValueError(f"labels must be in range({self.n_classes})")
 
 
 #: The splits of a run (``Train``, ``Validation``, ``Test``), or a callable that builds them.
@@ -192,7 +195,7 @@ class _DeviceSplit:
         return cls(
             images=torch.from_numpy(np.ascontiguousarray(split.images)).to(device),
             features=torch.from_numpy(np.ascontiguousarray(split.features)).to(device),
-            one_hot=torch.nn.functional.one_hot(labels, num_classes=len(LABEL_NAMES)).to(device),
+            one_hot=torch.nn.functional.one_hot(labels, num_classes=split.n_classes).to(device),
             fits=fits,
         )
 
@@ -335,8 +338,9 @@ class DeviceTensorDataModule(L.LightningDataModule):
 
     Raises:
         ValueError: at construction, for a non-positive batch size or a negative seed.
-        DataError: in ``setup``, if a split is missing or not a :class:`TensorSplit`, or the
-            (tiled) Train split is smaller than one batch; when resuming, if the checkpoint's
+        DataError: in ``setup``, if a split is missing or not a :class:`TensorSplit`, the
+            splits have different ``n_classes``, or the (tiled) Train split is smaller than
+            one batch; when resuming, if the checkpoint's
             stream differs (see :class:`_StreamLoader`).
         ConfigError: when resuming, if the checkpoint is from another split run or mode.
     """
@@ -380,6 +384,9 @@ class DeviceTensorDataModule(L.LightningDataModule):
         for name in SPLITS:
             if not isinstance(splits.get(name), TensorSplit):
                 raise DataError(f"DeviceTensorDataModule needs a TensorSplit for {name!r}")
+        counts = {name: splits[name].n_classes for name in SPLITS}
+        if len(set(counts.values())) != 1:
+            raise DataError(f"the splits disagree on n_classes: {counts}")
         return splits
 
     def setup(self, stage: str) -> None:
@@ -545,6 +552,7 @@ def without_train_indices(
         features=np.ascontiguousarray(train.features[keep]),
         labels=np.ascontiguousarray(train.labels[keep]),
         fits=None if train.fits is None else np.ascontiguousarray(train.fits[keep]),
+        n_classes=train.n_classes,
     )
     return {**splits, _TRAIN: reduced}
 
@@ -582,7 +590,12 @@ def protocol_splits(
             second = getattr(validation, attribute)[rows_val]
             return np.ascontiguousarray(np.concatenate([first, second]))
 
-        return TensorSplit(images=take("images"), features=take("features"), labels=take("labels"))
+        return TensorSplit(
+            images=take("images"),
+            features=take("features"),
+            labels=take("labels"),
+            n_classes=train.n_classes,
+        )
 
     return {
         _TRAIN: gather(parts.training),

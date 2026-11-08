@@ -5,25 +5,36 @@ the input by ``g`` transforms each output map spatially by ``g`` and permutes th
 orientation axis by ``h -> g^-1 h``, that is ``layer(T_g x)[:, f, h] = T_g(layer(x)[:, f,
 g^-1 h])``. Biases are randomised first: the layers initialise them to 0, which would hide
 a bias expanded in the wrong order.
+
+The kernel expansion is one precomputed gather (``group_conv`` module docstring). It is
+checked bit for bit, values and gradients, against the transform-by-transform expansion
+it replaced (:func:`_transform_expansion`, kept here verbatim as the reference), for every
+layer type of the p4 and p4m paper models, on the CPU and on MPS or CUDA when present, and
+under ``torch.use_deterministic_algorithms(True)``.
 """
 
 from __future__ import annotations
 
 import itertools
 import math
+from collections.abc import Iterator
 
 import pytest
 import torch
+from _training_support import ACCELERATORS
 
+from astro_simclr.config import CONTEXTS
 from astro_simclr.group_conv import (
     GROUPS,
     Group,
     GroupConv,
     GroupReadout,
     LiftingConv,
+    _gather_indices,
     orientation_mean,
     transform,
 )
+from astro_simclr.paper_variants import build_paper_model
 
 
 def _randomise_biases(layer: LiftingConv | GroupConv) -> None:
@@ -172,3 +183,115 @@ def test_orientation_mean_checks_the_channel_count() -> None:
     torch.testing.assert_close(orientation_mean(x, 4)[0, :, 0, 0], torch.tensor([3.0, 11.0]))
     with pytest.raises(ValueError, match="multiple of the group order 3"):
         orientation_mean(x, 3)
+
+
+def _transform_expansion(layer: LiftingConv | GroupConv) -> torch.Tensor:
+    """The expanded kernel by transforms: ``expanded()`` before the gather (commit 13eda35).
+
+    Kept verbatim as the reference of the bit-equality tests: values and gradients. Its
+    stack of slices is the old way around the advanced index's MPS scatter.
+    """
+    group, order, k = layer.group, layer.group.order, layer.kernel_size
+    if isinstance(layer, LiftingConv):
+        kernel = torch.stack([group.apply(layer.weight, g) for g in range(order)], dim=1)
+        return kernel.reshape(layer.out_fields * order, layer.in_channels, k, k)
+    permutations = tuple([group.mul[group.inv[g]][h] for h in range(order)] for g in range(order))
+    slices = layer.weight.unbind(dim=2)
+    kernel = torch.stack(
+        [
+            group.apply(torch.stack([slices[h] for h in permutations[g]], 2), g)
+            for g in range(order)
+        ],
+        dim=1,
+    )
+    return kernel.reshape(layer.out_fields * order, layer.in_fields * order, k, k)
+
+
+def _layers(name: str) -> Iterator[LiftingConv | GroupConv]:
+    """Every group layer of the paper models of ``name`` (both contexts), then small ones."""
+    for context in CONTEXTS:
+        torch.manual_seed(0)
+        model = build_paper_model(name, context=context)
+        layers = [m for m in model.modules() if isinstance(m, LiftingConv | GroupConv)]
+        assert {type(m) for m in layers} == {LiftingConv, GroupConv, GroupReadout}
+        yield from layers
+    group = Group(name)
+    torch.manual_seed(1)
+    yield from (
+        LiftingConv(group, 3, 2, 5, padding=2),  # odd kernel: a centre pixel
+        GroupConv(group, 2, 3, 3),
+        GroupConv(group, 1, 1, 1),
+    )
+
+
+def _assert_gather_is_transform_expansion(layer: LiftingConv | GroupConv) -> None:
+    kernel, bias = layer.expanded()
+    reference = _transform_expansion(layer)
+    assert kernel.dtype == reference.dtype
+    assert torch.equal(kernel, reference)
+    assert torch.equal(bias, layer.bias.repeat_interleave(layer.group.order))
+    upstream = torch.randn(
+        kernel.shape, generator=torch.Generator().manual_seed(2), dtype=kernel.dtype
+    ).to(kernel.device)
+    (grad,) = torch.autograd.grad(kernel, layer.weight, upstream)
+    (reference_grad,) = torch.autograd.grad(reference, layer.weight, upstream)
+    # Bit-equal, not close: the |G| copies are summed in the transform expansion's order.
+    assert torch.equal(grad, reference_grad)
+
+
+@pytest.mark.parametrize("device", ACCELERATORS)
+@pytest.mark.parametrize("name", GROUPS)
+def test_gathered_kernel_is_the_transform_expansion(name: str, device: str) -> None:
+    for layer in _layers(name):
+        _assert_gather_is_transform_expansion(layer.to(device))
+
+
+@pytest.fixture
+def deterministic() -> Iterator[None]:
+    """``torch.use_deterministic_algorithms(True)`` for one test, then the previous mode."""
+    previous = torch.are_deterministic_algorithms_enabled()
+    torch.use_deterministic_algorithms(True)
+    try:
+        yield
+    finally:
+        torch.use_deterministic_algorithms(previous)
+
+
+@pytest.mark.usefixtures("deterministic")
+@pytest.mark.parametrize("device", ACCELERATORS)
+@pytest.mark.parametrize("name", GROUPS)
+def test_gathered_kernel_backward_is_deterministic(name: str, device: str) -> None:
+    # index_select's own backward (index_add_) raises here on MPS; the gather's does not.
+    for layer in _layers(name):
+        layer.to(device)
+        _assert_gather_is_transform_expansion(layer)
+        kernel = layer.expanded()[0]
+        grads = [
+            torch.autograd.grad(layer.expanded()[0], layer.weight, torch.ones_like(kernel))[0]
+            for _ in range(2)
+        ]
+        assert torch.equal(grads[0], grads[1])
+
+
+def test_gather_buffers_follow_the_module_and_stay_out_of_checkpoints() -> None:
+    layer = GroupConv(Group("p4m"), 2, 3, 5, padding=2)
+    assert set(layer.state_dict()) == {"weight", "bias"}
+    # 2 x 3 x 8 x 25 parameters, each copied 8 times: 64-bit index and its inverse.
+    assert layer._kernel_index.shape == (3 * 8 * 2 * 8 * 25,)
+    assert layer._kernel_inverse.shape == (8, 2 * 3 * 8 * 25)
+    layer.double()
+    assert layer._kernel_index.dtype == layer._kernel_inverse.dtype == torch.int64
+    assert layer.expanded()[0].dtype == torch.float64
+    fresh = GroupConv(Group("p4m"), 2, 3, 5, padding=2)
+    fresh.load_state_dict(layer.float().state_dict())  # strict: no missing buffer keys
+    assert torch.equal(fresh.expanded()[0], layer.expanded()[0])
+
+
+def test_gather_indices_reject_a_layout_that_is_not_a_g_fold_copy() -> None:
+    shape = torch.Size((2, 3))
+    index, inverse = _gather_indices(torch.arange(6).repeat(2), shape, 2)
+    assert torch.equal(index, torch.arange(6).repeat(2))
+    # Each entry's copies, from the last position to the first.
+    assert torch.equal(inverse, torch.stack([torch.arange(6, 12), torch.arange(6)]))
+    with pytest.raises(RuntimeError, match="every entry 2 times"):
+        _gather_indices(torch.tensor([0, 0, 1, 2, 3, 4, 5, 5, 5, 1, 2, 3]), shape, 2)

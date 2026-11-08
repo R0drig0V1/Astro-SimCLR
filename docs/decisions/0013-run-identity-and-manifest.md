@@ -1,6 +1,6 @@
-<!-- ADR 0012: run identity (canonical semantic config, config hash, run id, numerics_epoch),
+<!-- ADR 0013: run identity (canonical semantic config, config hash, run id, numerics_epoch),
      the manifest.json schema, the run-directory layout and the retention policy (task A0). -->
-# 0012: Run identity, the run manifest and retention
+# 0013: Run identity, the run manifest and retention
 
 - **Status:** accepted (2026-11-08, phase 4, task A0)
 - **Implemented by:** `src/astro_simclr/runs/` (`canonical.py`, `identity.py`,
@@ -32,10 +32,9 @@ first (A0) so that A1-A3 and 4.2 can build on them in parallel.
    means different runs under `linear-eval` and `fine-tune`.
 2. **The excluded keys are a coded list with a reason each** (`NON_SEMANTIC_KEYS`):
    `accelerator` (the device used is the machine class), `data_dir` (the content is the
-   data SHA-256), `output_dir`, `num_workers` and `checkpoint_every_n_steps` (writing a
-   checkpoint draws no random numbers). `progress_bar_refresh_rate`, named in the brief, is
-   not a setting: the progress bar is an argument of `run_command`. Every other field is
-   semantic, including the ones a subcommand does not read (`encoder_name` of a supervised
+   data SHA-256), `output_dir`, `num_workers`, `checkpoint_every_n_steps` (writing a
+   checkpoint draws no random numbers) and `progress_bar_refresh_rate` (display only).
+   Every other field is semantic, including the ones a subcommand does not read (`encoder_name` of a supervised
    run): an unclassified or unused key can only make two equal runs look different, never
    two different runs look equal.
 3. **`num_workers` is non-semantic, with a caveat.** On the legacy CPU-worker path,
@@ -58,7 +57,9 @@ first (A0) so that A1-A3 and 4.2 can build on them in parallel.
    not hashed.
 6. **The data SHA-256 is computed from `meta.json`, not from the raw bytes**: the canonical
    JSON of the kind, the source pickle's SHA-256 and each split's size and array-file
-   SHA-256s. It is not the file's own hash because `meta.json` holds `created_by` (the
+   SHA-256s. For a `raw-alerts` pool (ADR 0012), it is the kind, the schema (which holds
+   the label names), the size and the array-file SHA-256s; its `source` is free-form
+   provenance. It is not the file's own hash because `meta.json` holds `created_by` (the
    package version), and a version-1 layout has the same arrays as a uint8-only version-2
    one. A layout that gains `images_f32.npy` hashes differently: it has more content.
 7. **The machine class** is a slug. By default, CUDA devices are classed by GPU model

@@ -1,4 +1,4 @@
-"""The run id, ``NUMERICS_EPOCH`` and the provenance helpers (task A0; ADR 0012).
+"""The run id, ``NUMERICS_EPOCH`` and the provenance helpers (task A0; ADR 0013).
 
 **Run id** = SHA-256 of the canonical JSON of :class:`RunIdentity`:
 
@@ -47,7 +47,7 @@ from typing import Final, Literal, get_args
 
 from astro_simclr.config import Settings
 from astro_simclr.data.files import sha256_file
-from astro_simclr.data.prepared import read_meta
+from astro_simclr.data.prepared import RAW_ALERTS_KIND, read_meta_file
 from astro_simclr.protocol.split_runs import SplitRequest
 from astro_simclr.runs.canonical import canonical_json, config_sha256, sha256_text
 
@@ -259,31 +259,53 @@ def split_part(request: SplitRequest | None) -> SplitPart:
     return SCREEN if request.fold is None else request.fold
 
 
+def _file_hashes(files: object, where: str) -> dict[str, str]:
+    if not isinstance(files, Mapping):
+        raise IdentityError(f"prepared meta: {where} has no 'files' mapping")
+    hashes: dict[str, str] = {}
+    for name, file in files.items():
+        recorded = file.get("sha256") if isinstance(file, Mapping) else None
+        hashes[str(name)] = check_sha256(recorded, f"meta {where}.files.{name}.sha256")
+    return hashes
+
+
 def prepared_data_sha256(meta: Mapping[str, object]) -> str:
     """The data SHA-256 of a prepared layout, from its ``meta.json`` (already read).
 
-    The hash of the canonical JSON of the content the run reads: the ``kind``, the source
-    pickle's SHA-256, and per split its size and every array file's SHA-256 (recorded by
-    ``prepare-data``). Not the raw ``meta.json`` bytes: those hold ``created_by`` (the
-    package version) and the format version, while a version-1 layout and a uint8-only
-    version-2 layout of one pickle have the same arrays byte for byte. A layout with
-    ``images_f32.npy`` hashes differently from its uint8-only form: it has more content.
+    The hash of the canonical JSON of the content the run reads, as ``prepare-data``
+    recorded it:
+
+    - a split layout (``classifier``, ``pretraining``): the ``kind``, the source pickle's
+      SHA-256, and per split its size and every array file's SHA-256;
+    - a ``raw-alerts`` layout (one pool, any label set): the ``kind``, the ``schema``
+      (which holds the label names, the meaning of the labels), the size and every array
+      file's SHA-256. Its ``source`` is free-form provenance, not content.
+
+    Not the raw ``meta.json`` bytes: those hold ``created_by`` (the package version) and
+    the format version, while a version-1 layout and a uint8-only version-2 layout of one
+    pickle have the same arrays byte for byte. A layout with ``images_f32.npy`` hashes
+    differently from its uint8-only form: it has more content.
 
     Raises:
         IdentityError: if the meta lacks the source hash, the splits or a file's hash.
     """
+    if meta.get("kind") == RAW_ALERTS_KIND:
+        pool = {
+            "kind": RAW_ALERTS_KIND,
+            "schema": meta.get("schema"),
+            "n": meta.get("n"),
+            "files": _file_hashes(meta.get("files"), "pool"),
+        }
+        return sha256_text(canonical_json(pool))
     source = meta.get("source")
     splits = meta.get("splits")
     if not isinstance(source, Mapping) or not isinstance(splits, Mapping):
         raise IdentityError("prepared meta: needs 'source' and 'splits' mappings")
     content: dict[str, object] = {}
     for split, info in splits.items():
-        if not isinstance(info, Mapping) or not isinstance(info.get("files"), Mapping):
-            raise IdentityError(f"prepared meta: split {split!r} has no 'files' mapping")
-        hashes: dict[str, str] = {}
-        for name, file in info["files"].items():
-            recorded = file.get("sha256") if isinstance(file, Mapping) else None
-            hashes[str(name)] = check_sha256(recorded, f"meta splits.{split}.files.{name}.sha256")
+        if not isinstance(info, Mapping):
+            raise IdentityError(f"prepared meta: split {split!r} is not a mapping")
+        hashes = _file_hashes(info.get("files"), f"splits.{split}")
         content[str(split)] = {"n": info.get("n"), "files": hashes}
     document = {
         "kind": meta.get("kind"),
@@ -296,14 +318,15 @@ def prepared_data_sha256(meta: Mapping[str, object]) -> str:
 def data_sha256(path: Path) -> str:
     """:func:`prepared_data_sha256` of the prepared layout at ``path``.
 
-    Reads ``meta.json`` only (the array hashes were computed by ``prepare-data``;
-    ``verify_prepared`` checks them against the files).
+    Reads ``meta.json`` only, of any prepared kind (the array hashes were computed when
+    the layout was written; ``verify_prepared`` / ``verify_raw_alerts`` check them against
+    the files).
 
     Raises:
         DataError: if ``path`` is not a readable prepared layout.
         IdentityError: if its meta lacks a hash.
     """
-    return prepared_data_sha256(read_meta(path))
+    return prepared_data_sha256(read_meta_file(path))
 
 
 def uv_lock_sha256(root: Path) -> str | None:

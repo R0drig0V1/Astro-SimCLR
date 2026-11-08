@@ -1,4 +1,4 @@
-"""The canonical semantic config of a run and its SHA-256, the config hash (task A0; ADR 0012).
+"""The canonical semantic config of a run and its SHA-256, the config hash (task A0; ADR 0013).
 
 Two runs whose semantic configs are equal train the same thing; the config hash names that
 thing, independently of where the run writes, which device it picked or which seed it drew.
@@ -100,6 +100,9 @@ NON_SEMANTIC_KEYS: Final[Mapping[str, str]] = {
         "data is device-resident); on the legacy CPU-worker path it changes which worker "
         "draws which augmentation (per-worker seeding), a different draw of the same "
         "distribution, treated like GPU non-determinism: a new attempt, not a new run"
+    ),
+    "progress_bar_refresh_rate": (
+        "how often the terminal progress bar is redrawn: display only, it touches no tensor"
     ),
     "checkpoint_every_n_steps": (
         "how often last.ckpt is written, the resume granularity: saving a checkpoint "
