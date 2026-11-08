@@ -191,10 +191,11 @@ def _check_machines(runs: Sequence[BenchmarkRun], allow_mixed: bool, out: list[s
         detail = "; ".join(sorted(map(str, machines)))
         if not allow_mixed:
             raise ConfigError(
-                f"the runs come from different machines or builds ({detail}); a report "
-                "never mixes them (pass --allow-mixed-machines to override)"
+                "the runs come from different machines, builds, float32 precisions or "
+                f"engines ({detail}); a report never mixes them (pass --allow-mixed-machines "
+                "to override)"
             )
-        out.append(f"  WARN: mixed machines or builds: {detail}")
+        out.append(f"  WARN: mixed machines, builds, precisions or engines: {detail}")
 
 
 def _reference(names: tuple[str, ...], given: Sequence[float] | None) -> tuple[float, ...] | None:

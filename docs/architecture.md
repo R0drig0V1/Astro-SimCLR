@@ -1437,13 +1437,16 @@ preflight alike:
    `last.ckpt` (every epoch); `--resume auto` means `OUT/checkpoints/last.ckpt` if present;
 6. classifiers: `validate` and `test` on `best.ckpt`, then the figures and the metrics.
 
-Outputs, all under `output_dir`: `checkpoints/{best,last}.ckpt`,
-`lightning_logs/version_N/` (TensorBoard), `metrics.json`, and for the classifiers
+Outputs, all under `output_dir`: `manifest.json` (task A1, section `runs`: `queued` and
+`running` before the fit, then `finished`, `failed` or `cancelled`),
+`checkpoints/{best,last}.ckpt`, `lightning_logs/version_N/` (TensorBoard), `metrics.json`
+(with `run`: run id, attempt and config hash), and for the classifiers
 `confusion_matrix_{val,test}.png`. `metrics.json`: command, seed, `best_epoch` (0-based),
 `last_epoch`, monitor and `monitor_best`, versions, accelerator, `machine` (task 2.3:
 `device` from `trainer.strategy.root_device`, `gpu` = the CUDA device name or `null`,
 `torch`, `cuda`, `cudnn`, `platform`, `processor`, `python`; ADR 0010: `fp32_precision`,
-the effective `ieee` or `tf32`, `fp32_backends` and `compute_capability`), the data (prepared path,
+the effective `ieee` or `tf32`, `fp32_backends` and `compute_capability`; task A1:
+`engine`, `lightning`), the data (prepared path,
 source SHA-256, class counts per split from `meta.json`), the resolved `config`; the
 classifiers add `val_acc_best` (micro accuracy on Validation at the best checkpoint: with
 the monitor `accuracy_val`, the best validation accuracy over epochs, the metric of the
@@ -1524,9 +1527,12 @@ checked (command, `supervised_model`, no duplicate seed) and `val_acc_best` aggr
   tier it would reach. The paper's σ is ddof=0; the runs' std is printed with ddof=1 and 0.
   Runs with and without features may share seeds (`Reference.split_by_features`); the
   result line is `CD21: PASS (faithful|acceptable)`. Constants: `CD21_*`.
-- Every gate prints a WARN line when the runs' `machine_signature` (device, GPU, torch,
-  CUDA and the effective float32 precision, ADR 0010; a run without it reads as `ieee`)
-  differ.
+- Every gate prints a WARN line when the runs' `machine_signature` differs. The signature
+  is the device, GPU, torch, CUDA, the effective float32 precision (ADR 0010; a run
+  without it reads as `ieee`) and the engine (task A1; a run without it reads as
+  `lightning`). `compare-variants` and `bench-report` refuse such a mix unless
+  `--allow-mixed-machines` is given, so a new-engine variant is compared only with a
+  baseline rerun on the new engine.
 
 ## `protocol` (task 2.3; split runs and decisions in 2.5-infra; grouped splits; benchmarks in 3.2)
 
@@ -1583,8 +1589,8 @@ phase-3 benchmarks (task 3.2); the rules and the power note are in
 ## `runs` (phase 4, task A0; ADR 0015)
 
 `src/astro_simclr/runs/` defines the interfaces of run identity that the registry (A2), the
-queue (A3) and the new engine build on. Nothing in it imports torch, and nothing calls it
-yet: A1 wires it into `run_command`.
+queue (A3) and the new engine build on. Nothing in it imports torch. `experiments.run_command`
+calls `record.start_run` and `RunRecord.end` around the fit (task A1).
 
 - **`canonical`**: `canonical_json(value)` writes sorted keys with no whitespace, ASCII
   escapes, `repr` floats, `-0.0` as `0.0` and ints distinct from floats, and refuses
@@ -1641,6 +1647,19 @@ yet: A1 wires it into `run_command`.
   - an unfinished attempt keeps everything;
   - a finished one deletes `last`, and keeps `best` only for `pretrain`;
   - records, results, logs, figures and unknown files are kept.
+- **`record`** (task A1): `start_run(command, settings, data=..., machine=..., split=...,
+  pretrained_file=..., resumed=...)` computes the identity, with the machine class from
+  the Trainer's device and `engine: lightning`, and writes `manifest.json` as `queued` then
+  `running`. `RunRecord.end(status)` writes `finished`, `failed` or `cancelled`, once.
+  Attempts, since `--output-dir` keeps only the latest attempt:
+  - none, or a manifest of another run id: attempt 1;
+  - `--resume` of an attempt left `running` (killed): the same attempt, through `queued`
+    (like an expired lease);
+  - the same run id otherwise: the next attempt.
+
+  An unreadable manifest is a `ConfigError`, never overwritten. The git state and the
+  `uv.lock` SHA-256 come from the source checkout (`source_root()`, `None` in an installed
+  wheel). `concurrent_jobs` comes from `ASTRO_SIMCLR_CONCURRENT_JOBS` (default 1).
 
 ## `preflight` (task 1.7)
 
