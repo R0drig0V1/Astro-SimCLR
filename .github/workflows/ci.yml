@@ -20,8 +20,9 @@ concurrency:
 jobs:
   check:
     # The portability rule of the plan: the same code and tests on x86_64 Linux and arm64
-    # macOS, both with the cpu extra. The macOS arm64 runners expose MPS (the macOS cpu
-    # wheel includes it), so the MPS test variants run there; the CUDA ones skip on both.
+    # macOS, both with the cpu extra (the macOS cpu wheel includes MPS). The MPS test
+    # variants run when the runner exposes MPS (it did in PR #9) and skip otherwise; the
+    # CUDA ones skip on both.
     name: Lint, types, tests (${{ matrix.os }})
     strategy:
       fail-fast: false

@@ -158,6 +158,23 @@ def test_classifier_datamodule_rejects_bad_input(
         ClassifierDataModule(classifier_dir, image_size=27, batch_size=11).setup("fit")
 
 
+def test_batch_size_is_checked_only_for_fit(classifier_dir: Path, pretraining_dir: Path) -> None:
+    # Evaluating trains nothing, so a batch_size larger than Train is fine there ...
+    dm = ClassifierDataModule(classifier_dir, image_size=27, batch_size=11, eval_batch_size=4)
+    for stage in ("validate", "test"):
+        dm.setup(stage)
+    assert sum(len(batch[0]) for batch in dm.test_dataloader()) == N_PER_SPLIT
+    # ... but fit still fails, even after the datasets were built for another stage.
+    with pytest.raises(DataError, match="fewer than batch_size"):
+        dm.setup("fit")
+    contrastive = ContrastiveDataModule(
+        pretraining_dir, image_size=27, batch_size=11, augmentation="simclr"
+    )
+    contrastive.setup("predict")
+    with pytest.raises(DataError, match="fewer than batch_size"):
+        contrastive.setup("fit")
+
+
 def test_contrastive_datamodule_yields_view_pairs(pretraining_dir: Path) -> None:
     dm = ContrastiveDataModule(pretraining_dir, image_size=27, batch_size=4, augmentation="astro8")
     with pytest.raises(RuntimeError, match="setup"):

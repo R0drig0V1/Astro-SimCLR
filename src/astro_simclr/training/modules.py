@@ -32,9 +32,9 @@ classifiers log ``accuracy_val`` (the legacy monitor) and ``loss_val``; SimCLR l
 from __future__ import annotations
 
 import copy
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from typing import ClassVar, Final
+from typing import Any, ClassVar, Final
 
 import lightning as L
 import torch
@@ -413,7 +413,48 @@ class SimCLRModule(L.LightningModule):
         }
 
 
-class LinearEvalModule(ClassifierModule):
+def _as_pretrained(pretrained: SimCLRModule | Mapping[str, Any]) -> SimCLRModule:
+    """The SimCLR module itself, or one rebuilt (random weights) from its hyperparameters.
+
+    The mapping form is what ``load_from_checkpoint`` passes back: the downstream modules
+    store ``pretrained.hparams`` (plain values) instead of the module, and the checkpoint's
+    ``state_dict`` then restores the encoder weights.
+    """
+    if isinstance(pretrained, SimCLRModule):
+        return pretrained
+    return SimCLRModule(**pretrained)
+
+
+class _DownstreamModule(ClassifierModule):
+    """A classifier on a pretrained encoder: stores the encoder spec, checks the image size."""
+
+    image_size: int
+
+    def _save_pretrained_spec(self, pretrained: SimCLRModule) -> None:
+        # The module itself cannot go into the hyperparameters (it is not a plain value);
+        # its own hyperparameters are enough to rebuild its architecture on load.
+        self.save_hyperparameters(ignore=["pretrained"])
+        self.hparams["pretrained"] = dict(pretrained.hparams)
+
+    def setup(self, stage: str) -> None:
+        """Fail early if the data module crops stamps to another size than the encoder's.
+
+        Raises:
+            ValueError: if the trainer's data module has an ``image_size`` different from
+                the pretrained encoder's (the stamp encoders would fail later, the ResNets
+                would silently train on another input).
+        """
+        datamodule = getattr(self.trainer, "datamodule", None)
+        size = getattr(datamodule, "image_size", None)
+        if size is not None and size != self.image_size:
+            msg = (
+                f"the data module's image_size is {size}, but the pretrained encoder was "
+                f"trained on {self.image_size} px"
+            )
+            raise ValueError(msg)
+
+
+class LinearEvalModule(_DownstreamModule):
     """Linear evaluation of a pretrained SimCLR encoder (legacy ``Linear_classifier``).
 
     The encoder is a frozen copy of ``pretrained.encoder``: it stays in eval mode (also
@@ -425,15 +466,19 @@ class LinearEvalModule(ClassifierModule):
     ``P_stamps_loss``, which applies its own softmax. :meth:`compute_loss` does the same, so
     results stay comparable; it is a known quirk, not a fix to make in phase 1.
 
+    ``pretrained`` is the SimCLR module, or its hyperparameters (what
+    ``load_from_checkpoint`` passes: the checkpoint stores them as ``hparams["pretrained"]``
+    and its ``state_dict`` restores the weights).
+
     Behaviour changes: the encoder is copied, so training never touches ``pretrained`` (the
     legacy module held the whole SimCLR module); the image size is ``pretrained.image_size``
-    and must match the data module's; the unused legacy ``drop_rate`` and ``batch_size``
-    arguments are gone.
+    and a data module with another ``image_size`` is rejected in ``setup``; the unused legacy
+    ``drop_rate`` and ``batch_size`` arguments are gone.
     """
 
     def __init__(
         self,
-        pretrained: SimCLRModule,
+        pretrained: SimCLRModule | Mapping[str, Any],
         *,
         beta_loss: float,
         lr: float,
@@ -443,11 +488,12 @@ class LinearEvalModule(ClassifierModule):
         super().__init__(
             beta_loss=beta_loss, lr=lr, optimizer=optimizer, with_features=with_features
         )
+        pretrained = _as_pretrained(pretrained)
         self.image_size = pretrained.image_size
         self.encoder = copy.deepcopy(pretrained.encoder).requires_grad_(False).eval()
         n_inputs = _n_inputs(pretrained.n_features_encoder, with_features)
         self.classifier = LinearClassifier(n_inputs, N_CLASSES)
-        self.save_hyperparameters(ignore=["pretrained"])
+        self._save_pretrained_spec(pretrained)
 
     def train(self, mode: bool = True) -> LinearEvalModule:
         """Set the train/eval mode of the head; the frozen encoder always stays in eval."""
@@ -474,7 +520,7 @@ class LinearEvalModule(ClassifierModule):
         return self.classifier.parameters()
 
 
-class FineTuneModule(ClassifierModule):
+class FineTuneModule(_DownstreamModule):
     """Fine-tuning of a pretrained SimCLR encoder with a new head (legacy ``Fine_tuning``).
 
     A copy of ``pretrained.encoder`` (no normalisation of its output) feeds an
@@ -487,11 +533,13 @@ class FineTuneModule(ClassifierModule):
     Behaviour changes: ``stamp<k>`` encoders get the ``pstamps`` head (legacy: no branch,
     so ``self.model`` was never set and the module failed); the encoder is copied, so
     ``pretrained`` is not modified (the legacy module trained the caller's encoder in place).
+    As in :class:`LinearEvalModule`, ``pretrained`` may be the SimCLR hyperparameters (for
+    ``load_from_checkpoint``), and the data module's ``image_size`` must match.
     """
 
     def __init__(
         self,
-        pretrained: SimCLRModule,
+        pretrained: SimCLRModule | Mapping[str, Any],
         *,
         drop_rate: float,
         beta_loss: float,
@@ -502,6 +550,7 @@ class FineTuneModule(ClassifierModule):
         super().__init__(
             beta_loss=beta_loss, lr=lr, optimizer=optimizer, with_features=with_features
         )
+        pretrained = _as_pretrained(pretrained)
         self.image_size = pretrained.image_size
         n_inputs = _n_inputs(pretrained.n_features_encoder, with_features)
         head: nn.Module
@@ -513,7 +562,7 @@ class FineTuneModule(ClassifierModule):
             )
         encoder = copy.deepcopy(pretrained.encoder)
         self.model = EncoderClassifier(encoder, head, with_features=with_features)
-        self.save_hyperparameters(ignore=["pretrained"])
+        self._save_pretrained_spec(pretrained)
 
     def forward(self, x_img: torch.Tensor, x_feat: torch.Tensor) -> torch.Tensor:
         """Images and features -> (B, 5) logits."""

@@ -73,7 +73,7 @@ class ClassifierDataModule(L.LightningDataModule):
         ValueError: at construction, for a non-positive size or batch size, or a negative
             ``num_workers``.
         DataError: in :meth:`setup`, if ``data_path`` is not a valid prepared layout of a
-            classifier file, or its Train split is smaller than one batch.
+            classifier file, or (``stage="fit"``) its Train split is smaller than one batch.
     """
 
     def __init__(
@@ -104,14 +104,21 @@ class ClassifierDataModule(L.LightningDataModule):
         _save_hyperparameters(self)
 
     def setup(self, stage: str) -> None:
-        """Open the prepared layout and build the three datasets (once; later calls no-op)."""
-        if self.datasets:
-            return
+        """Open the prepared layout and build the three datasets (once; later calls reuse them).
+
+        Only ``stage="fit"`` requires the Train split to hold at least one batch: a
+        ``validate`` or ``test`` run trains nothing.
+        """
+        if not self.datasets:
+            self._build()
+        if stage == "fit":
+            _check_batches(len(self.datasets["Train"]), self.batch_size, self.data_path)
+
+    def _build(self) -> None:
         data = load_prepared(self.data_path)
         if data.kind != "classifier":
             msg = f"{self.data_path}: expected a classifier file, got a {data.kind} file"
             raise DataError(msg)
-        _check_batches(len(data.splits["Train"]), self.batch_size, self.data_path)
         evaluation = get_augmentation(EVAL_AUGMENTATION, self.image_size)
         self.datasets = {
             "Train": StampDataset(
@@ -157,8 +164,8 @@ class ContrastiveDataModule(L.LightningDataModule):
         UnknownAugmentationError: at construction, for an unknown augmentation name.
         ValueError: at construction, for a non-positive size or batch size, or a negative
             ``num_workers``.
-        DataError: in :meth:`setup`, if ``data_path`` is not a valid prepared layout or its
-            Train split is smaller than one batch.
+        DataError: in :meth:`setup`, if ``data_path`` is not a valid prepared layout or
+            (``stage="fit"``) its Train split is smaller than one batch.
     """
 
     def __init__(
@@ -185,14 +192,17 @@ class ContrastiveDataModule(L.LightningDataModule):
         _save_hyperparameters(self)
 
     def setup(self, stage: str) -> None:
-        """Open the prepared layout and build the pair dataset (once; later calls no-op)."""
-        if self.train_set is not None:
-            return
-        train = load_prepared(self.data_path).splits["Train"]
-        _check_batches(len(train), self.batch_size, self.data_path)
-        self.train_set = ContrastiveDataset(
-            train, get_augmentation(self.augmentation, self.image_size)
-        )
+        """Open the prepared layout and build the pair dataset (once; later calls reuse it).
+
+        With ``stage="fit"``, the Train split must hold at least one batch.
+        """
+        if self.train_set is None:
+            train = load_prepared(self.data_path).splits["Train"]
+            self.train_set = ContrastiveDataset(
+                train, get_augmentation(self.augmentation, self.image_size)
+            )
+        if stage == "fit":
+            _check_batches(len(self.train_set), self.batch_size, self.data_path)
 
     def train_dataloader(self) -> DataLoader[tuple[object, ...]]:
         """Shuffled batches of view pairs, the last incomplete one dropped.

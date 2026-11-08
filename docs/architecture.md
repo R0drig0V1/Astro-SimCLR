@@ -367,7 +367,13 @@ legacy modules.
   `module.confusion_matrices["val"|"test"]`, for the figures and metrics JSON of 1.7.
 - `MONITORABLE` (class attribute) lists what `Settings.monitor` may select:
   `accuracy_val`, `loss_val` for the classifiers, `loss_train_enc` for SimCLR (which has no
-  validation loop).
+  validation loop). The protocol default `accuracy_val` therefore raises `ConfigError` for
+  SimCLR: `pretrain` (1.7) must set `monitor: loss_train_enc`.
+- `LinearEvalModule` and `FineTuneModule` take the pretrained `SimCLRModule` or its
+  hyperparameters. They store `hparams["pretrained"] = dict(pretrained.hparams)` (plain
+  values), so `load_from_checkpoint(path)` rebuilds the encoder architecture and the
+  checkpoint's `state_dict` restores its weights (tested: same logits after a reload). In
+  `setup` they reject a data module whose `image_size` differs from the encoder's.
 - **Optimizers** (`optimizers.py`): `build_optimizer(name, params, lr)` knows `AdamW` and
   `Adam` (`betas=(0.5, 0.9)`), `SGD` and `LARS` (`weight_decay=0`, momentum 0.9, Nesterov;
   `legacy_trust_ratio` from the module hparam `lars_legacy_trust_ratio`, default `True`).
@@ -399,8 +405,8 @@ memory-mapped:
   `ContrastiveDataset` view pairs of the Train split of any file; no validation loader.
 - Loaders keep the legacy settings: training shuffled, `drop_last=True`,
   `pin_memory=False`; evaluation unshuffled. A Train split smaller than one batch raises
-  `DataError` (with `drop_last` it would train on nothing). Invalid names and sizes fail at
-  construction.
+  `DataError` in `setup("fit")` (with `drop_last` it would train on nothing); `validate`
+  and `test` do not check it. Invalid names and sizes fail at construction.
 - Hyperparameters are saved into checkpoints with the path as a string, so checkpoints load
   with `torch.load(weights_only=True)` (tested).
 - With `num_workers > 0` and the `spawn` start method (macOS), each worker gets a pickled
@@ -425,7 +431,11 @@ memory-mapped:
 (with/without features; stamp, `pstamps` and ResNet encoders) on the synthetic data
 (`make_synthetic`, then `prepare`; `tests/conftest.py`), followed by a test pass; a seeded
 2-epoch SimCLR run gives the same step losses and epoch loss twice (and a different seed
-does not); the scheduler steps once per epoch; selection on `loss_train_enc` and `loss_val`.
+does not); the scheduler steps once per epoch; selection on `loss_train_enc` and `loss_val`;
+EarlyStopping stops a flat run; every epoch and every validation pass starts from an empty
+buffer (a module whose predictions flip between passes); downstream checkpoints reload.
+Worker seeding (`num_workers=2`) is covered by the augmentation tests, not repeated here
+because spawned workers cost about 25 s on macOS.
 
 **Behaviour changes against the legacy code** (no result of a valid legacy run changes):
 

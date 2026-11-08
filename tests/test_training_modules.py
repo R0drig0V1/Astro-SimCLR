@@ -186,14 +186,73 @@ def test_lr_scheduler_steps_once_per_epoch(tmp_path: Path, pretraining_dir: Path
 
 
 class _FixedLogits(ClassifierModule):
-    """A classifier whose logits are its input features, to test the epoch-end metrics."""
+    """A classifier whose logits are its input features, to test the epoch-end metrics.
+
+    With ``wrong`` set, the logits are rolled by one class, so every prediction that was
+    right becomes wrong. ``lr=0``: training never changes anything.
+    """
 
     def __init__(self) -> None:
-        super().__init__(beta_loss=0.0, lr=0.1, optimizer="SGD", with_features=True)
+        super().__init__(beta_loss=0.0, lr=0.0, optimizer="SGD", with_features=True)
         self.unused = torch.nn.Linear(1, 1)
+        self.wrong = False
 
     def forward(self, x_img: torch.Tensor, x_feat: torch.Tensor) -> torch.Tensor:
-        return x_feat
+        logits = x_feat.roll(1, dims=1) if self.wrong else x_feat
+        # A zero term through a parameter, so the training loss has a gradient.
+        return logits + 0 * self.unused.weight.sum()
+
+
+def _fixed_loader(n: int = 10, batch_size: int = 4) -> DataLoader[tuple[torch.Tensor, ...]]:
+    """Batches whose features are the one-hot true labels: ``_FixedLogits`` gets them right."""
+    labels = torch.arange(n) % 5
+    one_hot = torch.nn.functional.one_hot(labels, 5)
+    return DataLoader(TensorDataset(torch.zeros(n, 1), one_hot.float(), one_hot), batch_size)
+
+
+def test_each_validation_pass_starts_from_an_empty_buffer(tmp_path: Path) -> None:
+    module = _FixedLogits()
+    trainer = _quiet_trainer(_settings(tmp_path))
+    trainer.validate(module, dataloaders=_fixed_loader(), verbose=False)
+    assert trainer.callback_metrics["accuracy_val"].item() == 1.0
+    module.wrong = True
+    trainer.validate(module, dataloaders=_fixed_loader(), verbose=False)
+    # 0, not 0.5: the first pass's predictions are gone.
+    assert trainer.callback_metrics["accuracy_val"].item() == 0.0
+    assert module.confusion_matrices["val"].diagonal().sum().item() == 0.0
+
+
+def test_each_training_epoch_starts_from_an_empty_buffer(tmp_path: Path) -> None:
+    accuracies: list[float] = []
+
+    class Flip(L.Callback):
+        def on_train_epoch_start(self, trainer: L.Trainer, pl_module: Any) -> None:
+            if trainer.current_epoch == 1:
+                accuracies.append(float(trainer.callback_metrics["Accuracy/Train"]))
+            pl_module.wrong = trainer.current_epoch == 1
+
+        def on_train_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+            accuracies.append(float(trainer.callback_metrics["Accuracy/Train"]))
+
+    trainer = _quiet_trainer(
+        _settings(tmp_path, max_epochs=2), callbacks=[Flip()], limit_val_batches=0
+    )
+    trainer.fit(_FixedLogits(), train_dataloaders=_fixed_loader())
+    assert accuracies == [1.0, 0.0]
+
+
+def test_early_stopping_stops_a_flat_run(tmp_path: Path) -> None:
+    # accuracy_val is constant, so with patience 1 the run stops after its second epoch.
+    settings = _settings(tmp_path, max_epochs=10, patience=1)
+    early, checkpoint = build_callbacks(
+        settings, _FixedLogits.MONITORABLE, dirpath=tmp_path / "ckpt"
+    )
+    trainer = _quiet_trainer(settings, callbacks=[early, checkpoint], enable_checkpointing=True)
+    trainer.fit(_FixedLogits(), train_dataloaders=_fixed_loader(), val_dataloaders=_fixed_loader())
+    assert trainer.current_epoch == 2
+    assert early.stopped_epoch == 1
+    assert checkpoint.best_model_score is not None
+    assert checkpoint.best_model_score.item() == 1.0
 
 
 def test_logged_accuracy_is_the_legacy_micro_value(tmp_path: Path) -> None:
@@ -269,7 +328,8 @@ def test_linear_eval_trains_only_the_head(tmp_path: Path, classifier_dir: Path) 
         torch.testing.assert_close(value, pretrained_state[key])
     assert module.classifier.model.in_features == 128 + 23
     assert module.hparams["with_features"] is True
-    assert "pretrained" not in module.hparams
+    # The encoder spec (plain values), not the module, is what the hyperparameters keep.
+    assert module.hparams["pretrained"] == dict(pretrained.hparams)
 
 
 def test_linear_eval_keeps_the_legacy_softmax_loss() -> None:
@@ -372,3 +432,47 @@ def test_simclr_takes_the_nt_xent_setting() -> None:
     module = _simclr(nt_xent_legacy_denominator=settings.nt_xent_legacy_denominator)
     assert module.criterion_encoder.legacy_denominator is False
     assert _simclr().criterion_encoder.legacy_denominator is True
+
+
+def _fixed_batch() -> tuple[torch.Tensor, torch.Tensor]:
+    generator = torch.Generator().manual_seed(0)
+    return torch.rand(4, 3, 27, 27, generator=generator), torch.rand(4, 23, generator=generator)
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda pretrained: LinearEvalModule(pretrained, with_features=True, **CLASSIFIER_HPARAMS),
+        lambda pretrained: FineTuneModule(pretrained, drop_rate=0.5, **CLASSIFIER_HPARAMS),
+    ],
+    ids=["linear_eval", "fine_tune"],
+)
+def test_downstream_modules_restore_from_checkpoint(
+    build: Callable[[SimCLRModule], ClassifierModule], tmp_path: Path, classifier_dir: Path
+) -> None:
+    settings = _settings(tmp_path, max_epochs=1)
+    seed_run(settings)
+    module = build(_simclr("pstamps"))
+    trainer = _quiet_trainer(settings)
+    trainer.fit(module, datamodule=_classifier_data(classifier_dir))
+    path = tmp_path / "module.ckpt"
+    trainer.save_checkpoint(path)
+    # The hyperparameters hold the encoder spec, not the module, and stay plain values.
+    assert torch.load(path, weights_only=True)["hyper_parameters"]["pretrained"][
+        "encoder_name"
+    ] == ("pstamps")
+    L.seed_everything(123)  # the rebuilt encoder starts from other random weights...
+    restored = type(module).load_from_checkpoint(path)
+    module.eval()
+    restored.eval()
+    x_img, x_feat = _fixed_batch()
+    with torch.no_grad():  # ... and the checkpoint's state_dict restores the trained ones
+        torch.testing.assert_close(restored(x_img, x_feat), module(x_img, x_feat))
+    assert restored.image_size == 27
+
+
+def test_downstream_modules_reject_another_image_size(tmp_path: Path, classifier_dir: Path) -> None:
+    module = LinearEvalModule(_simclr("resnet18"), with_features=False, **CLASSIFIER_HPARAMS)
+    datamodule = ClassifierDataModule(classifier_dir, image_size=63, batch_size=5)
+    with pytest.raises(ValueError, match="image_size is 63, but the pretrained encoder"):
+        _quiet_trainer(_settings(tmp_path), fast_dev_run=True).fit(module, datamodule=datamodule)
