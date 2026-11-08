@@ -2,15 +2,13 @@
 # only. publish_results restricts this file (scorecard-action README, "Workflow
 # Restrictions"): no top-level env/defaults, no workflow-level write permissions, Ubuntu
 # hosted runner, and only checkout, upload-artifact, upload-sarif, scorecard-action and
-# harden-runner as steps.
+# harden-runner as steps. Weekly and on demand only (ADR 0021).
 name: Scorecard
 
 on:
-  push:
-    branches: [main]
   schedule:
     - cron: "41 6 * * 1" # weekly
-  branch_protection_rule:
+  workflow_dispatch:
 
 permissions: {}
 

@@ -284,7 +284,8 @@ automatic fallback** (plan finding F6: the uint8 path quantises the stamps).
 
 ### 6. The 4.7 equivalence gate
 
-- **(a) CPU differential test, a CI gate on Linux and macOS until 4.8.** Both engines run in
+- **(a) CPU differential test, a CI gate on Linux and macOS until 4.8** (macOS CI weekly
+  since ADR 0021). Both engines run in
   one process on synthetic data, on a schedule with a horizon extension; bit-exact:
   `torch.equal` on the parameters after each validation, identical `loss_val` sequences,
   the same `best_step`, horizon and `last_step`, identical final metrics. Parametrised over

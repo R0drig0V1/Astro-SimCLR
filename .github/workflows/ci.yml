@@ -1,6 +1,9 @@
-# Continuous integration, on ubuntu-latest (x86_64) and macos-latest (arm64): the
-# torch-wheel assertions of ADR 0001 (scripts/check-torch-wheels.sh), then the same checks
-# as scripts/check.sh (ruff, mypy, pytest with coverage), on every pull request and on main.
+# Continuous integration: the torch-wheel assertions of ADR 0001
+# (scripts/check-torch-wheels.sh), then the same checks as scripts/check.sh (ruff, mypy,
+# pytest with coverage). ADR 0021: pull requests are gated locally by the integrator's
+# verify-merge.sh (scripts/check.sh on the merged tree), so CI runs only on pushes to main
+# (ubuntu-latest, x86_64; docs-only pushes skipped), weekly on macos-latest (arm64), and on
+# demand (workflow_dispatch: any OS, never filtered by paths).
 # CI installs the CPU torch build (`--extra cpu`) on both: the default Linux build is CUDA 13
 # and would download ~3 GB of nvidia-* wheels that no test uses.
 name: CI
@@ -8,13 +11,29 @@ name: CI
 on:
   push:
     branches: [main]
-  pull_request:
+    # A push whose files all match is skipped; a push that touches any other file runs.
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "results/**"
+  schedule:
+    - cron: "29 4 * * 1" # weekly, macOS only (ubuntu ran on the last code push)
+  workflow_dispatch:
+    inputs:
+      os:
+        description: Runners to check on
+        type: choice
+        options: [all, ubuntu-latest, macos-latest]
+        default: all
 
 permissions:
   contents: read
 
+# The event is part of the group, so a push to main cancels an older push run (the
+# integrator pushes in batches: only the newest tip needs checking) but never the weekly
+# macOS run or a manual one.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -22,12 +41,20 @@ jobs:
     # The portability rule of the plan: the same code and tests on x86_64 Linux and arm64
     # macOS, both with the cpu extra (the macOS cpu wheel includes MPS). The MPS test
     # variants run when the runner exposes MPS (it did in PR #9) and skip otherwise; the
-    # CUDA ones skip on both.
+    # CUDA ones skip on both. The matrix depends on the event (ADR 0021): push -> ubuntu,
+    # schedule -> macOS, workflow_dispatch -> the `os` input (both by default).
     name: Lint, types, tests (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: >-
+          ${{ fromJSON(
+            github.event_name == 'push' && '["ubuntu-latest"]'
+            || github.event_name == 'schedule' && '["macos-latest"]'
+            || inputs.os == 'ubuntu-latest' && '["ubuntu-latest"]'
+            || inputs.os == 'macos-latest' && '["macos-latest"]'
+            || '["ubuntu-latest", "macos-latest"]'
+          ) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:

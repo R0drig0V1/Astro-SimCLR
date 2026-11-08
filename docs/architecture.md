@@ -60,7 +60,9 @@ matplotlib, tensorboard. torch and torchvision come from PyPI by default (MPS on
 CUDA 13 on Linux), or from the PyTorch indexes through the conflicting extras `cpu` and
 `cu126`. After `uv sync --locked --extra X`, run everything with `UV_NO_SYNC=1` or
 `uv run --no-sync`. Design and rationale: [ADR 0001](decisions/0001-torch-wheels-and-accelerators.md);
-`scripts/check-torch-wheels.sh` asserts it in CI.
+`scripts/check-torch-wheels.sh` asserts it in CI. CI runs on pushes to `main` (ubuntu),
+weekly on macOS and on demand, never on pull requests: the integrator's `verify-merge.sh` is
+the PR gate ([ADR 0021](decisions/0021-ci-on-main-pushes-only.md)).
 
 ## `config` (task 1.1)
 
