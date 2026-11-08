@@ -167,6 +167,20 @@ def test_r3_baseline_and_nan(tmp_path: Path) -> None:
     assert compare_reference("R3", [pretrain, *fractions]).result == "FAIL"
 
 
+def test_missing_config_keys_read_as_their_defaults(tmp_path: Path) -> None:
+    # A run written before the 2.5 flags existed (task 2.4) has no paper_arch, context,
+    # rot90_augment or C5 / C6 keys: they read as the defaults, the faithful model.
+    run = _cd21(tmp_path, [0.941])[0]
+    text = "\n".join(compare_reference("CD21", [run]).lines)
+    assert "WARN" in text  # the stub config misses real keys (schedule, ...)
+    for key in ("paper_arch", "context", "rot90_augment", "aug_noise", "synthetic_bogus"):
+        assert f"{key}=" not in text
+    metrics = json.loads((run / "metrics.json").read_text())
+    metrics["config"]["aug_noise"] = 1.0
+    (run / "metrics.json").write_text(json.dumps(metrics))
+    assert "aug_noise=1.0 (expected 0.0)" in "\n".join(compare_reference("CD21", [run]).lines)
+
+
 def test_config_differences_warn(tmp_path: Path) -> None:
     # An R4-like run (no features, 1 % labels) given as R1 is judged, but flagged.
     run = _run(tmp_path, "r4", val=0.95, dataset=LABEL_FRACTION_DATASETS[1])
@@ -304,7 +318,8 @@ def test_cd21_needs_the_paper_model(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="paper_stamp_classifier"):
         compare_reference("CD21", [legacy])
     lines = compare_reference("CD21", _cd21(tmp_path, [0.941] * 5)).lines
-    assert any("schedule=None (expected 'carrasco2021')" in line for line in lines)
+    # A missing schedule reads as the default, the legacy 'epochs'.
+    assert any("schedule='epochs' (expected 'carrasco2021')" in line for line in lines)
 
 
 def test_cd21_is_defined_on_five_seeds(tmp_path: Path) -> None:

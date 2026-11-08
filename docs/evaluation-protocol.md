@@ -102,9 +102,10 @@ The task 2.4 replication runs (5 seeds with features, 5 without) are archived in
 `results/phase2/replication/`: each run's `metrics.json`, confusion matrices and per-stamp
 predictions (the baseline for later paired comparisons), and the gate's output. Its
 `README.md` has the provenance, the per-seed table and the commands. Runs made before task
-2.5-models lack `paper_arch`, `context` and `rot90_augment` in their config, so the gate
-prints a WARN line for each; their defaults are the expected values, and the verdict is
-unchanged.
+2.5-models lack `paper_arch`, `context` and `rot90_augment` (and the C5 / C6 flags) in their
+config. The archived gate output printed a WARN line for each; since task 2.5 C5/C6 a
+missing key reads as its `Settings` default (the faithful value), so the gate no longer
+warns about them, and the verdict is unchanged (PASS, faithful).
 
 ## Comparing two variants: `compare-variants` (report)
 
