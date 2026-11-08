@@ -1,7 +1,8 @@
 <!-- Data files of the project: schemas, provenance and workflow. Code: src/astro_simclr/data/
      (docs/architecture.md, section `data`). Checked against the real files on 2026-11-07;
      the float input and feature sections on 2026-11-08 (task 2.1); RJ23 inputs written
-     2026-11-08 (task 3.3); the raw alerts on 2026-11-08 (task 3.1). -->
+     2026-11-08 (task 3.3); the raw alerts on 2026-11-08 (task 3.1); the raw-alert layout
+     added in task 3.1b (2026-11-08). -->
 # Data
 
 The ZTF stamp datasets are pickles, kept untracked in `dataset/` (`.gitignore`:
@@ -165,6 +166,91 @@ read again and the stamps are paged in on demand: `red` takes 596 MB prepared, a
 2.49 GB as a pickle. `prepare-data` needs about the pickle's size in RAM (the
 pretraining set: 14–29 GB). The preflight (task 1.7) warns about pickles in the data
 directory that do not fit in RAM, and checks the RAM for the prepared arrays.
+
+## Raw-alert layout (task 3.1b)
+
+Phase 3 works from **raw** alert cutouts (task 3.1 downloads them) with its own label sets
+(R5's five classes, RJ23's six, any later one), and draws object-grouped splits (task 3.2).
+The `raw-alerts` kind holds such a dataset as **one pool of rows, without splits**:
+
+```
+DIR/<name>/
+    meta.json      format astro-simclr-prepared, version 3, kind raw-alerts
+    cutouts.npy    float32 (N, 63, 63, 3)  science, reference, difference; raw, NaN and inf kept
+    index.npy      structured (N,)         one row per cutout (fields below)
+    features.npy   float64 (N, 23)         optional: CD21's 23 features, not standardised
+```
+
+| Field | dtype | Rule (checked by the writer and the loader) |
+|---|---|---|
+| `oid` | `<U16` | ZTF object id; letters, digits, `_`, `-`, `.` (task 3.2's alert-table rule) |
+| `candid` | `<i8` | alert candidate id; > 0, **unique** |
+| `jd` | `<f8` | Julian date of the alert; finite and > 0 |
+| `fid` | `<i8` | filter: 1 (g), 2 (r), 3 (i) |
+| `ra`, `dec` | `<f8` | degrees; ra in [0, 360), dec in [−90, 90] |
+| `label` | `<i8` | class index into `meta.json["schema"]["label_names"]`, in `0..N−1` |
+| `label_source` | `<U64` | where the label comes from (`cd21`, `zenodo-4279623`, `tns`, `visual`, ...); never an ALeRCE classifier output |
+| `source_dataset`, `source_row` | `<U64`, `<i8` | the table the row was built from and its row there (≥ 0) |
+
+Row `i` of `index.npy` (and of `features.npy`) describes cutout `i`. The phase-3 protocol
+(task 3.2, ADR 0008) names alerts by `candid` and groups them by `oid`:
+`protocol.alerts.alert_table_from_raw(data)` gives its alert table straight from the
+index (no CSV round trip; the `oid`, `candid` and `jd` rules above are its rules), and
+`RawAlerts.rows_of(candids)` maps the alerts of a split back to rows. `meta.json` records
+the label names (any N ≥ 2, unique), the schema (stamp shape, channel names, the index
+fields, the feature names or `null`), the source (provenance: the fetch run, the label
+table and their hashes), the row and class counts, and each file's dtype, shape and
+SHA-256.
+
+**Features** (plan 3.1b: the phase-2 models are evaluated on R5). `features.npy` holds the
+23 alert features M1 reads (`raw_alerts.CD21_FEATURES`: the 26 of
+[the classifier files](#classifier-files) minus `rb`, `distnr`, `magnr`, in the order of
+`M1_FEATURE_NORM_STATS`), in CD21's definitions (its Table A1, with ALeRCE's −999
+sentinels clipped) but **not standardised**: `(x − mean) / std` with
+`M1_FEATURE_NORM_STATS` gives a phase-2 model's input ([below](#features-and-m1s-normalisation)).
+NaN marks a field the alert lacks, and the evaluation decides how to fill it; ±inf is
+refused. The file is optional (`features=None`), and its presence is recorded in the
+schema, so a layout either has it on every row or not at all.
+
+- **Where its rows come from:** task 3.1's store ([Raw alerts](#raw-alerts), `fetch-alerts`)
+  keeps the downloaded cutouts of each prepared split as append-only shards with their
+  candidate records and raw responses. A `raw-alerts` layout is a frozen, labelled view
+  built from that store and the other label sources (task 3.5), through the builder below;
+  it is the format training and evaluation read, never the store itself.
+- **Building it:** `astro_simclr.data.raw_alerts.write_raw_alerts(dest, cutouts, index,
+  label_names, source, *, features=None)` (Python only, no CLI yet). `index` is a structured array or one
+  array per field (`{c: df[c].to_numpy() for c in df}` for a `pandas` frame); integers are
+  never cast from floats, and a string longer than its field is refused instead of
+  truncated. The writer keeps the row order, builds `.<name>.partial` and renames it, and
+  writes no timestamp, so the same input gives the same bytes. Non-63×63 cutouts cannot be
+  stored: task 3.5 drops them first.
+- **Reading it:** `load_raw_alerts(path)` memory-maps the cutouts, reads the index and
+  refuses a malformed layout (wrong dtype or shape, a label out of range, a duplicated
+  `candid`, any rule of the table above, an infinite feature, counts that disagree with
+  `meta.json`). The cutout values are not checked: NaN and inf are what raw alerts hold.
+  `verify_raw_alerts(path)` re-hashes every file; `astro-simclr inspect-data DIR` does both and prints the counts per
+  class and per `label_source`. `label_names_of(path)` reads only the label names, which
+  is how a run builds an N-class classifier before it loads the data
+  (`docs/architecture.md`, section `models`, "N classes").
+- **The phase-2 readers refuse it** by name (`read_meta`, `load_prepared`: "open it with
+  `load_raw_alerts`"), and the preflight leaves it out of its data manifest.
+
+**Why a structured `.npy` for the index**, rather than CSV or Parquet: numpy reads it with
+`allow_pickle=False` (a dtype of fixed-width strings and numbers has no object field, so the
+file cannot carry a pickle); the dtype and shape sit in the header and are checked before
+any value is used; floats round-trip bit for bit (`jd` needs 15+ significant digits, which
+a CSV writer must be told to keep); it memory-maps and hashes like the cutouts; and it adds
+no dependency. The cost is fixed-width strings, which the writer checks. A CSV export is
+the human-readable view for review or for a committed frozen index (ADR 0012).
+
+**No invalid-pixel mask is stored.** RJ23's mask is 1 where a raw pixel is NaN or ±inf, a
+pure function of the cutouts; a stored copy could only disagree with them. RJ23's input
+path (task 3.3) derives it, together with the |x|-min-p99 normalisation.
+
+**What is in git (ADR 0012):** no cutouts, arrays or raw responses, ever (`.gitignore`
+ignores `*.npy`); the per-row index, its alert-table CSV and the object-splits files (they
+list the label set's `oid`s) only after a governance decision by the user; until then the
+SHA-256 of each frozen version, of its alert table and of its splits, and the rebuild code.
 
 ## Float input path
 

@@ -50,13 +50,17 @@ __all__ = [
     "StampEncoder",
     "ThreeLayerClassifier",
     "build_encoder",
+    "check_n_classes",
 ]
 
 #: Side of the only crop the stamp networks accept (their ``fc1`` is sized for it).
 STAMP_SIZE: Final = 27
 #: Number of tabular features the classifiers concatenate (26 in the pickles, 3 dropped).
 N_FEATURES: Final = 23
-#: Number of classes (AGN, SN, VS, Asteroid, Bogus).
+#: The default number of classes: CD21's five (AGN, SN, VS, Asteroid, Bogus), the phase-2
+#: label set. Every classifier takes ``n_classes`` (default this value, so the phase-2
+#: networks and their seeded draws are unchanged); an N-class dataset gives its own count
+#: (``data.raw_alerts.label_names_of``, task 3.1b).
 N_CLASSES: Final = 5
 
 #: The legacy ``Identity`` returned its input unchanged; ``torch.nn.Identity`` does the same
@@ -72,6 +76,17 @@ _RESNETS: Final = {
 #: The names :func:`build_encoder` accepts (``stamp<k>`` stands for any positive ``k``).
 ENCODER_NAMES: Final = ("stamp<k>", "pstamps", *_RESNETS)
 _STAMP_NAME: Final = re.compile(r"stamp(\d+(?:\.\d*)?|\.\d+)")
+
+
+def check_n_classes(n_classes: int) -> int:
+    """Return ``n_classes`` after checking that it is an integer >= 2.
+
+    Raises:
+        ValueError: if it is not an ``int`` (``bool`` excluded) or is smaller than 2.
+    """
+    if isinstance(n_classes, bool) or not isinstance(n_classes, int) or n_classes < 2:
+        raise ValueError(f"n_classes must be an integer >= 2, got {n_classes!r}")
+    return n_classes
 
 
 def _conv_output_shape(size: int, kernel: int, pad: int = 0, stride: int = 1) -> int:
@@ -222,14 +237,17 @@ class StampClassifier(_StampConvNet):
 
     The trunk (32/64 channels, 5x5 kernels, ``fc1`` to 64) is averaged over the four
     rotations; with ``with_features`` the 23 tabular features go through ``bn1`` and are
-    concatenated. Then ``fc2`` (ReLU, dropout), ``fc3`` (ReLU) and ``fc4`` give 5 logits.
+    concatenated. Then ``fc2`` (ReLU, dropout), ``fc3`` (ReLU) and ``fc4`` give
+    ``n_classes`` logits (default 5).
 
     Raises:
-        ValueError: in ``forward``, if the images are not (N, 3, 27, 27), or if
-            ``with_features`` is set and ``x_feat`` is missing or not (N, 23).
+        ValueError: at construction, if ``n_classes`` is not an integer >= 2; in
+            ``forward``, if the images are not (N, 3, 27, 27), or if ``with_features`` is
+            set and ``x_feat`` is missing or not (N, 23).
     """
 
-    def __init__(self, drop_rate: float, with_features: bool) -> None:
+    def __init__(self, drop_rate: float, with_features: bool, n_classes: int = N_CLASSES) -> None:
+        check_n_classes(n_classes)
         super().__init__(32, 64, 64, kernel=5)
         self.with_features = with_features
         if with_features:
@@ -239,10 +257,10 @@ class StampClassifier(_StampConvNet):
             self.fc2 = nn.Linear(64, 64)
         self.drop = nn.Dropout(p=drop_rate)
         self.fc3 = nn.Linear(64, 64)
-        self.fc4 = nn.Linear(64, N_CLASSES)
+        self.fc4 = nn.Linear(64, n_classes)
 
     def forward(self, x_img: torch.Tensor, x_feat: torch.Tensor | None = None) -> torch.Tensor:
-        """Images (N, 3, 27, 27) and, with features, ``x_feat`` (N, 23) -> (N, 5) logits.
+        """Images (N, 3, 27, 27) and, with features, ``x_feat`` (N, 23) -> (N, n_classes) logits.
 
         Without ``with_features``, ``x_feat`` is ignored (the legacy signature required it).
         """
