@@ -96,3 +96,10 @@ future readers will ask why they were made. The rules themselves are in
 13. **Exit codes of a decision** follow `compare-reference`: 0 for ADOPT or KEEP, 1 for NOT
     ADOPTED or DROP (and unusable data), 2 for invalid arguments or runs that cannot be
     compared (another splits file, a missing fold or seed, mixed modes or machines).
+14. **A resume continues only the same split run** (found in the review of PR #17). The
+    stream check (item count, batch size, seed) cannot tell two folds apart, because their
+    tiled sizes can be equal. So the run's identity (splits SHA-256, mode, fold) goes into
+    the training loader's checkpoint state, and a resume from another fold, the screen or a
+    normal run, or a normal run resumed from a split run's checkpoint, is refused before
+    any step. Normal runs store no identity, so their checkpoints are unchanged, and
+    checkpoints from before this change read as normal runs.

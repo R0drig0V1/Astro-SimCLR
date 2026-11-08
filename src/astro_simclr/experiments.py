@@ -79,7 +79,9 @@ file and its SHA-256, part sizes), ``selection_acc_best``, ``evaluation_accuracy
 ``evaluation_balanced_accuracy``, ``evaluation.{selection,evaluation}`` and
 ``predictions.evaluation``, instead of ``val_acc_best``, ``test_acc_at_best`` and the
 ``val``/``test`` entries. The Lightning logs still call the evaluation part ``test`` (it is
-the data module's ``Test`` role).
+the data module's ``Test`` role). The run's identity (splits SHA-256, mode, fold) is in
+every checkpoint, and ``--resume`` refuses, before any step, a checkpoint of another split
+run or of a normal run (and a normal run refuses a split run's checkpoint).
 
 **Timing.** Every run's metrics hold ``timing``: the wall-clock seconds of the fit loop, the
 optimizer steps it ran (fewer than ``last_step`` after a resume) and ``seconds_per_step``
@@ -114,8 +116,10 @@ from astro_simclr.protocol.predictions import Predictions, predictions_file, sav
 from astro_simclr.protocol.split_runs import SplitRequest, SplitRun, open_split_run
 from astro_simclr.training.datamodules import ClassifierDataModule, ContrastiveDataModule
 from astro_simclr.training.device_data import (
+    SPLIT_RUN_STATE,
     DeviceTensorDataModule,
     TensorSplit,
+    check_split_identity,
     float_crops,
     interim_uint8_crops,
     protocol_splits,
@@ -428,6 +432,7 @@ def _build_paper(
         batch_size=settings.batch_size,
         eval_batch_size=settings.eval_batch_size,
         seed=settings.seed,
+        run_identity=None if split_run is None else split_run.identity(),
     )
     return module, datamodule, info
 
@@ -451,6 +456,22 @@ def _check_split(command: str, settings: Settings) -> None:
             "exclude_leaked_train must be true"
         )
         raise ConfigError(msg)
+
+
+def _resume_identity(ckpt_path: Path) -> object:
+    """The split-run identity stored in a ``carrasco2021`` checkpoint (``None``: a normal run).
+
+    It is in the training loader's state (``device_data.SPLIT_RUN_STATE``), which Lightning
+    keeps under ``loops.fit_loop.state_dict.combined_loader``. A checkpoint without it is
+    from a normal run (or from before task 2.5-infra, when every run was a normal run).
+    """
+    checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    loops = checkpoint.get("loops", {}) if isinstance(checkpoint, dict) else {}
+    states = loops.get("fit_loop", {}).get("state_dict", {}).get("combined_loader", [])
+    for state in states if isinstance(states, list) else []:
+        if isinstance(state, dict) and SPLIT_RUN_STATE in state:
+            return state[SPLIT_RUN_STATE]
+    return None
 
 
 def _build(
@@ -864,7 +885,9 @@ def run_command(
         ConfigError: on an invalid name (augmentation, model, monitor), a missing or wrong
             pretrained checkpoint, a missing ``--resume`` checkpoint, or a ``carrasco2021``
             schedule with another command or model (and the paper model without it); with
-            ``split``, another command or schedule, or a fold the file does not have.
+            ``split``, another command or schedule, or a fold the file does not have; a
+            ``carrasco2021`` resume from a checkpoint of another split run (splits file,
+            mode or fold), or across a split run and a normal run.
         DataError: if the dataset is missing, invalid or smaller than one batch, or (the
             paper model's ``paper_input: float32``) has no float32 stamps; with ``split``,
             a splits file that is malformed or does not belong to the prepared data
@@ -879,6 +902,12 @@ def run_command(
         _check_split(command, settings)
         # Verify before anything is built or trained: other data must fail fast.
         split_run = open_split_run(split, data)
+    if ckpt_path is not None and settings.schedule == CARRASCO2021:
+        # Before any step: a resume across folds or modes would leak evaluation stamps
+        # into training (the loader repeats this check when Lightning restores it).
+        check_split_identity(
+            _resume_identity(ckpt_path), None if split_run is None else split_run.identity()
+        )
     try:
         module, datamodule, monitorable, paper_data = _build(command, settings, data, split_run)
     except ValueError as err:

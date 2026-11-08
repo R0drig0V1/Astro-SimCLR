@@ -240,6 +240,11 @@ def test_sides_must_cover_the_same_folds_and_seeds(
         compare_decision([*base, base[0]], variant, path)
     assert main(_argv(base, missing_fold, path)) == 2
     assert "miss fold(s) [4]" in capsys.readouterr().err
+    # Every fold needs the same seeds: fold 0 with one seed, the others with two.
+    fewer = [run for run in base if run.name != "fold0-seed1"]
+    fewer_var = [run for run in variant if run.name != "fold0-seed1"]
+    with pytest.raises(ConfigError, match="different numbers of seeds"):
+        compare_decision(fewer, fewer_var, path)
     # One seed per fold on both sides is allowed, with a warning (the plan uses 2).
     single = _cv_side(tmp_path, "single", stored, lambda f, s: 4, seeds=(0,))
     result = compare_decision(single, one_seed, path, n_boot=50)

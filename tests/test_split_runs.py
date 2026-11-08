@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import pickle
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -389,3 +390,169 @@ def test_uint8_diagnostic_split_run(
     assert metrics["protocol"]["fold"] == 4
     predictions = load_predictions(tmp_path / "predictions_evaluation.npz")
     assert np.array_equal(predictions.index, splits.folds[4].evaluation)
+
+
+def test_screen_run_roles(cv_data: tuple[Path, Path, ProtocolSplits], tmp_path: Path) -> None:
+    prepared, path, splits = cv_data
+    spy = _Spy()
+    experiments.run_command(
+        "train-supervised",
+        _settings(prepared, tmp_path),
+        split=SplitRequest(path, None),
+        callbacks=[spy],
+    )
+    table = _pool_features(prepared)
+    trained = _rows(spy.features["Train"], table).tolist()
+    assert trained == [i for i in range(splits.n_train) if i != LEAKED_TRAIN]
+    selection = _rows(spy.features["Validation"], table)
+    assert selection.tolist() == (splits.n_train + splits.screen.selection).tolist()
+    decision = _rows(spy.features["Test"], table)
+    assert decision.tolist() == (splits.n_train + splits.screen.decision).tolist()
+
+
+class _CopyLast(Callback):
+    """At step ``step``, copy ``last.ckpt`` (written at an earlier step) to ``dst``."""
+
+    def __init__(self, step: int, src: Path, dst: Path) -> None:
+        self.step, self.src, self.dst = step, src, dst
+
+    def on_train_batch_end(
+        self, trainer: L.Trainer, pl_module: L.LightningModule, *args: Any
+    ) -> None:
+        if trainer.global_step == self.step:
+            self.dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(self.src, self.dst)
+
+
+class _Steps(Callback):
+    """Count the training batches that start."""
+
+    def __init__(self) -> None:
+        self.batches = 0
+
+    def on_train_batch_start(
+        self, trainer: L.Trainer, pl_module: L.LightningModule, *args: Any
+    ) -> None:
+        self.batches += 1
+
+
+@pytest.fixture(scope="module")
+def interrupted(
+    cv_data: tuple[Path, Path, ProtocolSplits], tmp_path_factory: pytest.TempPathFactory
+) -> tuple[Path, dict[str, Any], Path]:
+    """Fold 2 run for 6 steps, with a copy of its ``last.ckpt`` from step 2 (mid-run).
+
+    Returns (the mid-run checkpoint, the uninterrupted run's metrics, its output dir).
+    """
+    prepared, path, _ = cv_data
+    root = tmp_path_factory.mktemp("interrupted")
+    whole, mid = root / "whole", root / "mid.ckpt"
+    copy = _CopyLast(3, whole / "checkpoints" / "last.ckpt", mid)
+    metrics = experiments.run_command(
+        "train-supervised",
+        _settings(prepared, whole, max_steps=6),
+        split=SplitRequest(path, 2),
+        callbacks=[copy],
+        progress_bar=False,
+    )
+    return mid, metrics, whole
+
+
+@pytest.mark.parametrize(
+    ("fold", "screen"),
+    [pytest.param(3, False, id="other-fold"), pytest.param(None, True, id="screen")],
+)
+def test_resume_from_another_split_run_is_refused(
+    cv_data: tuple[Path, Path, ProtocolSplits],
+    interrupted: tuple[Path, dict[str, Any], Path],
+    tmp_path: Path,
+    fold: int | None,
+    screen: bool,
+) -> None:
+    prepared, path, _ = cv_data
+    mid, _, _ = interrupted
+    steps = _Steps()
+    expected = "the screen" if screen else "fold 3"
+    with pytest.raises(ConfigError, match=f"from fold 2 of .* but this run is {expected}"):
+        experiments.run_command(
+            "train-supervised",
+            _settings(prepared, tmp_path, max_steps=6),
+            resume=str(mid),
+            split=SplitRequest(path, fold),
+            callbacks=[steps],
+        )
+    assert steps.batches == 0  # refused before any step
+    assert not (tmp_path / "metrics.json").exists()
+
+
+def test_resume_across_split_and_normal_runs_is_refused(
+    cv_data: tuple[Path, Path, ProtocolSplits],
+    interrupted: tuple[Path, dict[str, Any], Path],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    prepared, path, _ = cv_data
+    mid, _, _ = interrupted
+    steps = _Steps()
+    # A split run's checkpoint resumed as a normal run ...
+    with pytest.raises(ConfigError, match=r"from fold 2 of .* but this run is a normal run"):
+        experiments.run_command(
+            "train-supervised",
+            _settings(prepared, tmp_path / "normal", max_steps=6),
+            resume=str(mid),
+            callbacks=[steps],
+        )
+    assert steps.batches == 0
+    # ... and a normal run's checkpoint resumed as a split run (through the CLI: exit 2).
+    normal = tmp_path / "plain"
+    experiments.run_command(
+        "train-supervised", _settings(prepared, normal, max_steps=2), progress_bar=False
+    )
+    argv = [
+        "train-supervised",
+        "--preset",
+        "carrasco2021",
+        "--data-dir",
+        str(prepared.parent),
+        "--output-dir",
+        str(tmp_path / "split"),
+        "--accelerator",
+        "cpu",
+        "--splits",
+        str(path),
+        "--fold",
+        "2",
+        "--resume",
+        str(normal / "checkpoints" / "last.ckpt"),
+        "--set",
+        f"dataset={prepared.name}",
+        *[f"{key}={value}" for key, value in _SCHEDULE.items()],
+    ]
+    assert main(argv) == 2
+    assert "from a normal run (no --splits), but this run is fold 2" in capsys.readouterr().err
+
+
+def test_resume_of_the_same_fold_continues(
+    cv_data: tuple[Path, Path, ProtocolSplits],
+    interrupted: tuple[Path, dict[str, Any], Path],
+    tmp_path: Path,
+) -> None:
+    prepared, path, splits = cv_data
+    mid, whole_metrics, whole = interrupted
+    steps = _Steps()
+    metrics = experiments.run_command(
+        "train-supervised",
+        _settings(prepared, tmp_path, max_steps=6),
+        resume=str(mid),
+        split=SplitRequest(path, 2),
+        callbacks=[steps],
+        progress_bar=False,
+    )
+    assert steps.batches == 4  # steps 3-6 after the checkpoint of step 2
+    assert metrics["last_step"] == whole_metrics["last_step"] == 6
+    assert metrics["resumed_from"] == str(mid)
+    resumed = load_predictions(tmp_path / "predictions_evaluation.npz")
+    uninterrupted = load_predictions(whole / "predictions_evaluation.npz")
+    assert np.array_equal(resumed.index, splits.folds[2].evaluation)
+    # The resume is exact (the stream is a function of the step).
+    np.testing.assert_allclose(resumed.probabilities, uninterrupted.probabilities, atol=1e-6)

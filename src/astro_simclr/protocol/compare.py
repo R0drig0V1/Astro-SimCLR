@@ -465,8 +465,8 @@ def _check_cells(
     Returns the seeds of each fold (the screen's "fold" is ``None``).
 
     Raises:
-        ConfigError: on a repeated cell, a fold of the file missing (CV), or a cell present
-            on one side only.
+        ConfigError: on a repeated cell, a fold of the file missing (CV), a cell present
+            on one side only, or folds with different numbers of seeds.
     """
     cells: dict[str, set[tuple[int | None, str]]] = {}
     for name, runs in (("baseline", base), ("variant", variant)):
@@ -494,6 +494,14 @@ def _check_cells(
     seeds: dict[int | None, list[str]] = {}
     for fold, seed in sorted(cells["baseline"], key=lambda cell: (cell[0] or 0, cell[1])):
         seeds.setdefault(fold, []).append(seed)
+    counts = {fold: len(fold_seeds) for fold, fold_seeds in seeds.items()}
+    if len(set(counts.values())) > 1:
+        # The pooled bootstrap would mix stamps scored over 1 and over 2 seeds.
+        msg = (
+            f"the folds have different numbers of seeds ({counts}); every fold needs the "
+            "same seeds, so that every pool stamp is scored the same way"
+        )
+        raise ConfigError(msg)
     return seeds
 
 

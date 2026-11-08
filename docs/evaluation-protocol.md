@@ -205,6 +205,18 @@ are one part of the stored splits:
   stratification, a fresh leakage check). A file made for other data fails with exit 1 and
   says to regenerate it with `make-splits`. A fold that the file does not have, another
   schedule than `carrasco2021`, or `exclude_leaked_train: false` fail with exit 2.
+- **Resume** (`--resume PATH|auto`) continues only the same run. The run's identity (the
+  splits SHA-256, the mode and the fold) is in every checkpoint. A checkpoint of another
+  fold, of the screen, or of a normal run is refused with exit 2 before any step, and a
+  normal run refuses a split run's checkpoint. This matters because two folds can have the
+  same tiled size, so the stream check alone would accept the checkpoint, and fold K's
+  weights were trained on fold K′'s evaluation part.
+- **Feature statistics.** The 23 features were standardised once, with the statistics of
+  the whole of Train, before any split (`prepare-data`). So the evaluation stamps of a fold
+  that come from Train contributed to the means and standard deviations its training part
+  uses. This is unsupervised (no label is used) and the same for every variant, so it does
+  not bias a comparison. Still, "no evaluation stamp influences training" holds for the
+  labels and the gradient updates, not literally for the feature scaling.
 - The outputs: `metrics.json` with `protocol` (`mode`, `fold`, `splits_file`,
   `splits_sha256`, the part sizes, `excluded_train`), `selection_acc_best`,
   `evaluation_accuracy`, `evaluation_balanced_accuracy` (the decision metric of the fold),

@@ -25,7 +25,8 @@ made for other data. :meth:`SplitRun.parts` gives every part as sorted pool indi
 checks that they are disjoint (no stamp is both trained on and evaluated). The data module
 gathers the stamps (``training.device_data.protocol_splits``) and ``experiments`` records
 :meth:`SplitRun.describe` as ``metrics.json["protocol"]``, with the SHA-256 of the splits
-file, which ``compare-variants --splits`` checks.
+file, which ``compare-variants --splits`` checks. :meth:`SplitRun.identity` goes into every
+checkpoint, so ``--resume`` refuses a checkpoint of another fold, mode or splits file.
 
 Nothing here imports torch.
 """
@@ -158,6 +159,16 @@ class SplitRun:
             if np.intersect1d(named[first], named[second]).size:
                 raise ValueError(f"the {first} and {second} parts share stamps")
         return parts
+
+    def identity(self) -> dict[str, Any]:
+        """What makes two split runs the same run: the splits SHA-256, the mode, the fold.
+
+        Stored in every checkpoint of the run (the training loader's state,
+        ``training.device_data``) and compared on ``--resume``: a resume from another fold
+        would continue from weights trained on this fold's evaluation part. The file path
+        is left out, so a moved splits file still resumes.
+        """
+        return {"splits_sha256": self.sha256, "mode": self.mode, "fold": self.fold}
 
     def describe(self) -> dict[str, Any]:
         """The ``metrics.json["protocol"]`` entry of the run (part sizes included)."""

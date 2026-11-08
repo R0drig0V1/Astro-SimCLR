@@ -734,7 +734,10 @@ The splits come from a prepared layout (task 2.2c):
   "Validation")` so that Test is never read, and `protocol_splits(splits, parts, n_train)`
   gathers a run's parts by pool index into the module's three roles (`Train` = the part
   trained on and tiled, `Validation` = the selection part, `Test` = the evaluation part).
-  The data module is unchanged.
+  The data module is unchanged except for `run_identity` (`SplitRun.identity()`), which
+  the training loader adds to its checkpoint state as `split_run` (absent for a normal
+  run, so normal checkpoints are unchanged). `check_split_identity(stored, current)` refuses
+  a resume across split runs or between a split run and a normal run (`ConfigError`).
 
 **Horizon** (`schedule.py`). `HorizonCallback(dirpath, filename="best", monitor="loss_val",
 mode="min", initial_horizon=30000, increment=10000)` on a Trainer with
@@ -965,7 +968,7 @@ import, so `make-splits` and `compare-variants` start fast.
 | `splits` | `make_splits(prepared_dir, seed=0)`: the 250/250 screen of Validation (50 per class per half) and the stratified 5-fold CV on the pool Train + Validation (pool index: Train `i`, Validation `n_train + j`), each fold with its own 100-per-class selection set drawn from outside the fold; leaked Train stamps are in no fold. At most 10 folds (`fold_of` is one digit per stamp). `write_splits` / `read_splits` (structure checks: sizes, disjointness, ranges, positive integers) / `verify_splits(splits, prepared_dir)` (dataset identity by source and label SHA-256 and sizes, not the directory name; class balance; fold stratification within 1 per class; `excluded_train` equal to a fresh leakage check). `ProtocolSplits.locate` maps pool indices to Train and Validation indices |
 | `predictions` | `Predictions(probabilities, labels, index)`, `save_predictions` / `load_predictions` (`.npz`, `allow_pickle=False`), `check_paired`, `ensemble` (mean probabilities per stamp), `seed_mean_correct` |
 | `stats` | `mcnemar` (exact, integer arithmetic), `paired_bootstrap` (percentile CI of variant − baseline, stratified by class, metric `accuracy` or `balanced_accuracy`, own `default_rng(seed)`, memory-bounded blocks), `balanced_accuracy`, `adoption_decision` (superiority: `adopt` only if the CI is above 0), `non_inferiority_decision(interval, margin=0.005)` (`adopt` if the CI lower bound is above −margin, `worse` if the CI is below it; `check_margin` refuses margins outside (0, 0.05], a likely points-for-fraction mistake), `screen_decision` (`drop` at 4 points or more, never adopt) |
-| `split_runs` | Task 2.5-infra. `SplitRequest(file, fold)` (`fold=None`: the screen); `open_split_run(request, prepared_dir)` reads the file, refuses a fold it does not have (`ConfigError`) and runs `verify_splits` on the prepared data (a wrong fingerprint is a `SplitsError`); `SplitRun.parts()` gives `RunParts` (training, selection, evaluation as sorted pool indices, and `evaluation_index`: pool indices for a fold, Validation indices for the screen) and checks that they are pairwise disjoint and hold no excluded stamp; `SplitRun.describe()` is `metrics.json["protocol"]` (mode, fold, splits file and SHA-256, part sizes). `file_sha256` |
+| `split_runs` | Task 2.5-infra. `SplitRequest(file, fold)` (`fold=None`: the screen); `open_split_run(request, prepared_dir)` reads the file, refuses a fold it does not have (`ConfigError`) and runs `verify_splits` on the prepared data (a wrong fingerprint is a `SplitsError`); `SplitRun.parts()` gives `RunParts` (training, selection, evaluation as sorted pool indices, and `evaluation_index`: pool indices for a fold, Validation indices for the screen) and checks that they are pairwise disjoint and hold no excluded stamp; `SplitRun.describe()` is `metrics.json["protocol"]` (mode, fold, splits file and SHA-256, part sizes); `SplitRun.identity()` (splits SHA-256, mode, fold) is stored in every checkpoint and checked on resume. `file_sha256` |
 | `compare` | `compare_variants(baseline_dirs, variant_dirs, stage)`: loads each run's `metrics.json` and predictions file, refuses repeated seeds, runs on different data (`data.source.sha256`: a normal run's `index` is `arange(N)`, so the data identity and the labels are what show two runs saw the same stamps), unpaired runs and mixed machines (unless allowed), reports McNemar on the seed ensembles and the bootstrap, always as REPORT; it points split runs to `--splits`. `screen_comparison` / `cv_comparison(..., rule="superiority"\|"non-inferiority", margin)`: the decision helpers, which check that the predictions cover exactly the screen's decision half or each fold's evaluation part (so the CV bootstrap is paired by pool index); `CVResult` holds the per-fold and pooled balanced accuracies, the CI, McNemar on the seed ensembles and the decision. `compare_decision(baseline_dirs, variant_dirs, splits_file, rule, margin)` (CLI `compare-variants --splits`): loads split runs (`load_split_run`), checks the splits file's SHA-256, one mode, one data source and machine, the same (fold, seed) cells on both sides and every fold, then applies `cv_comparison` (verdict `ADOPT` / `NOT ADOPTED`) or `screen_comparison` (`KEEP` / `DROP`; `--rule` refused) |
 
 - **Stored splits:** `configs/splits/td_ztf_stamp_17_06_20_red-002.json` (seed 0, made with
@@ -982,7 +985,10 @@ import, so `make-splits` and `compare-variants` start fast.
   (`device_data.protocol_splits`), trains on the training part, selects on the selection
   part, predicts the evaluation part as `predictions_evaluation.npz` and records
   `protocol`, `selection_acc_best`, `evaluation_accuracy` and
-  `evaluation_balanced_accuracy` (no `val`/`test` entries). The default path, and so the
+  `evaluation_balanced_accuracy` (no `val`/`test` entries). Before any step, a
+  `carrasco2021` resume compares the identity stored in the checkpoint
+  (`experiments._resume_identity`) with the run's own, so a fold never continues from
+  another fold's weights. The default path, and so the
   faithful preset, is unchanged. The end-to-end commands are in
   `docs/evaluation-protocol.md`.
 
