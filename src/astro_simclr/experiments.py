@@ -24,14 +24,20 @@ Everything a run writes is under ``settings.output_dir``::
     OUT/lightning_logs/version_N  TensorBoard logs and the Lightning hparams.yaml
     OUT/metrics.json              see below
     OUT/confusion_matrix_{val,test}.png   classifiers only
+    OUT/predictions_{val,test}.npz        classifiers only: per-stamp probabilities
 
 ``metrics.json`` holds the command, the seed, the selected (``best_epoch``, 0-based) and
 last epoch, the monitored value at the best epoch, the package/torch/Lightning versions,
-the data (prepared directory, source SHA-256 and the class counts of ``meta.json``) and the
-resolved settings. Classifiers add ``val_acc_best`` (micro accuracy on Validation at the
-best checkpoint: with the default monitor ``accuracy_val`` this is the best validation
-accuracy over epochs, the metric of the legacy tables), ``test_acc_at_best``, the macro-F1
-and the confusion matrices (normalised and counts) of both splits. Non-finite numbers are
+the machine (``machine``: device type, GPU name, torch, CUDA and cuDNN versions, platform;
+task 2.3: runs of one comparison must share it), the data (prepared directory, source
+SHA-256 and the class counts of ``meta.json``) and the resolved settings. Classifiers add
+``val_acc_best`` (micro accuracy on Validation at the best checkpoint: with the default
+monitor ``accuracy_val`` this is the best validation accuracy over epochs, the metric of
+the legacy tables), ``test_acc_at_best``, the macro-F1 and, per split, the balanced
+accuracy, the per-class recall and the confusion matrices (normalised and counts). They also
+write the per-stamp softmax probabilities of the selected checkpoint on each split
+(``predictions_{val,test}.npz``, :mod:`astro_simclr.protocol.predictions`), listed under
+``predictions``: what ``compare-variants`` pairs stamp by stamp. Non-finite numbers are
 written as ``null`` so the file stays strict JSON.
 
 **Resume** restores the epoch counter, the optimizer and LR-scheduler state and the
@@ -44,12 +50,14 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Sequence
+import platform
+from collections.abc import Callable, Sequence
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any, Final, cast
 
 import lightning as L
+import numpy as np
 import torch
 from lightning.pytorch.callbacks import Callback, ModelCheckpoint
 
@@ -57,6 +65,7 @@ from astro_simclr.augmentations import resolve_augmentation_name
 from astro_simclr.config import ConfigError, Settings, settings_to_plain
 from astro_simclr.data.prepared import is_prepared, read_meta
 from astro_simclr.data.schema import LABEL_NAMES, DataError
+from astro_simclr.protocol.predictions import Predictions, predictions_file, save_predictions
 from astro_simclr.training.datamodules import ClassifierDataModule, ContrastiveDataModule
 from astro_simclr.training.metrics import confusion_counts, macro_f1
 from astro_simclr.training.modules import (
@@ -312,6 +321,31 @@ def _data_info(path: Path) -> dict[str, Any]:
     }
 
 
+def _machine(trainer: L.Trainer) -> dict[str, Any]:
+    """The machine and build a run used (task 2.3: one comparison never mixes them).
+
+    The device is the one Lightning chose (``trainer.strategy.root_device``); no device is
+    named here. ``gpu`` is the CUDA device name, ``None`` on other devices (MPS has no name
+    API; ``platform`` and ``processor`` identify the Mac).
+    """
+    device = trainer.strategy.root_device
+    gpu = torch.cuda.get_device_name(device) if device.type == "cuda" else None
+    # torch.backends.cudnn is untyped; the casts state the documented signatures.
+    cudnn_available = cast(Callable[[], bool], torch.backends.cudnn.is_available)
+    cudnn_version = cast(Callable[[], int | None], torch.backends.cudnn.version)
+    cudnn = cudnn_version() if cudnn_available() else None
+    return {
+        "device": device.type,
+        "gpu": gpu,
+        "torch": torch.__version__,
+        "cuda": torch.version.cuda,
+        "cudnn": cudnn,
+        "platform": platform.platform(),
+        "processor": platform.machine(),
+        "python": platform.python_version(),
+    }
+
+
 def _base_metrics(
     command: str,
     settings: Settings,
@@ -340,19 +374,52 @@ def _base_metrics(
             "lightning": L.__version__,
         },
         "accelerator": type(trainer.accelerator).__name__,
+        "machine": _machine(trainer),
         "data": _data_info(data),
         "config": settings_to_plain(settings),
     }
 
 
+def _recalls(counts: list[list[int]]) -> dict[str, float | None]:
+    """Per class (by name), the recall: diagonal over row sum; ``None`` for an absent class."""
+    return {
+        name: (row[i] / sum(row) if sum(row) else None)
+        for i, (name, row) in enumerate(zip(LABEL_NAMES, counts, strict=True))
+    }
+
+
 def _evaluation(module: ClassifierModule, stage: str) -> dict[str, Any]:
     y_pred, y_true = module.predictions[stage]
+    counts = confusion_counts(y_pred, y_true).tolist()
+    recalls = _recalls(counts)
+    present = [value for value in recalls.values() if value is not None]
     return {
         "accuracy": float((y_pred == y_true).double().mean()),
+        "balanced_accuracy": sum(present) / len(present),
         "macro_f1": macro_f1(y_pred, y_true),
+        "recall_per_class": recalls,
         "confusion_matrix": module.confusion_matrices[stage].tolist(),
-        "confusion_counts": confusion_counts(y_pred, y_true).tolist(),
+        "confusion_counts": counts,
     }
+
+
+def _write_predictions(
+    module: ClassifierModule, stage: str, split: str, out: Path
+) -> dict[str, Any]:
+    """Write the stage's per-stamp probabilities; return its ``metrics["predictions"]`` entry.
+
+    The evaluation loaders are unshuffled, so the loader order is the split's file order
+    and ``index`` is ``arange(N)``.
+    """
+    labels = module.predictions[stage][1].numpy().astype(np.int64)
+    predictions = Predictions(
+        module.probabilities[stage].float().numpy(),
+        labels,
+        np.arange(labels.size, dtype=np.int64),
+    )
+    name = predictions_file(stage)
+    save_predictions(predictions, out / name)
+    return {"file": name, "split": split, "n": int(labels.size)}
 
 
 def _plot_confusion_matrix(matrix: list[list[float]], title: str, path: Path) -> None:
@@ -397,8 +464,10 @@ def _classifier_results(
         raise DataError("no best checkpoint was written (did any validation run?)")
     trainer.validate(module, datamodule=datamodule, ckpt_path=best, verbose=False)
     val = _evaluation(module, "val")
+    predictions = {"val": _write_predictions(module, "val", "Validation", out)}
     trainer.test(module, datamodule=datamodule, ckpt_path=best, verbose=False)
     test = _evaluation(module, "test")
+    predictions["test"] = _write_predictions(module, "test", "Test", out)
     for stage, result in (("val", val), ("test", test)):
         title = f"{command}: {stage} accuracy {100 * result['accuracy']:.1f} %"
         _plot_confusion_matrix(
@@ -411,6 +480,7 @@ def _classifier_results(
         "test_macro_f1": test["macro_f1"],
         "labels": list(LABEL_NAMES),
         "evaluation": {"val": val, "test": test},
+        "predictions": predictions,
         "figures": ["confusion_matrix_val.png", "confusion_matrix_test.png"],
     }
 
