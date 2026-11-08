@@ -195,7 +195,7 @@ the config hash is defined on, ADR 0015 rule 10), so it changes no numbers.
   |---|---|---|
   | `model` | `stamp_classifier` | `drop_rate`, `beta_loss` |
   | | `resnet` | `name` (`supervised_model`: `resnet18/34/50/152`), `beta_loss` |
-  | | `paper_stamp_classifier` | `arch` (`paper_arch`), `backbone_weights`, `group_fields`, `context`, `feature_set`, `input` (`paper_input`), `nan_approximation`, `exclude_leaked_train`, `dropout_active`, `drop_rate`, `beta_loss` |
+  | | `paper_stamp_classifier` | `arch` (`paper_arch`), `backbone_weights`, `group_fields`, `hybrid_dim`, `hybrid_depth`, `hybrid_heads`, `hybrid_readout`, `context`, `feature_set`, `input` (`paper_input`), `nan_approximation`, `exclude_leaked_train`, `dropout_active`, `drop_rate`, `beta_loss` |
   | | `simclr` | `encoder` (`encoder_name`), `projection_dim`, `temperature`, `legacy_denominator` (`nt_xent_legacy_denominator`) |
   | | `linear_eval` | `pretrained`, `beta_loss` |
   | | `fine_tune` | `pretrained`, `beta_loss`, `drop_rate`, `lr_factor` (`fine_tune_lr_factor`) |
