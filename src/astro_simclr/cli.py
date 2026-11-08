@@ -98,6 +98,10 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   per-night counts and the objects (with ``--verify``, every night is loaded and hashed: a
   bad one exits 1); ``plan-archive-nights`` prints the seeded night sampling plan's size
   estimate and writes the plan with ``--out FILE``. None of them downloads anything.
+  ``build-corpus-index DIR --out FILE --cd21 LAYOUT`` (task 5.1,
+  :mod:`astro_simclr.archive.commands`) applies the exclusion union (listed candids and
+  oids, 1.5" of any CD21 alert, near-duplicate stamps) and one alert per oid, and writes
+  the index that ``simclr-pilot`` reads (exit 0).
 
 The heavy modules (torch, Lightning) are imported inside the handlers, so ``show-config``
 and ``--help`` stay fast. A :class:`~astro_simclr.data.DataError` (bad, truncated or missing
@@ -123,6 +127,7 @@ from typing import TYPE_CHECKING, Final
 
 import yaml
 
+from astro_simclr.archive.commands import add_corpus_index_command
 from astro_simclr.config import (
     ACCELERATORS,
     RJ23,
@@ -1830,6 +1835,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_oracle_commands(commands)
     _add_alert_commands(commands)
     _add_archive_commands(commands)
+    add_corpus_index_command(commands)
     add_runs_command(commands)
     add_simclr_commands(commands)
     add_budget_commands(commands)

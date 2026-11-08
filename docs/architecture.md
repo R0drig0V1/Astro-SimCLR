@@ -1282,12 +1282,12 @@ in its shards, and a fake service for the by-oid fetch). They cover:
 - `--expect`;
 - the CLI commands.
 
-## `archive` (phase 5, task 5.1a; ADR 0019)
+## `archive` (phase 5, tasks 5.1a and 5.1; ADR 0019)
 
 `src/astro_simclr/archive/`: the unlabelled pretraining corpus from the ZTF public alert
-archive. The rules, layout, commands and budget are in [`docs/data.md`](data.md),
-"Archive corpus"; the decisions in ADR 0019. Nothing in the package imports torch or opens
-a network connection.
+archive, and its index. The rules, layout, commands and budget are in
+[`docs/data.md`](data.md), "Archive corpus" and "Corpus index"; the decisions in ADR 0019
+and its amendment. Nothing in the package imports torch or opens a network connection.
 
 ```
 tarball file or stdin ──► TarballStream ──Member──► parse_alert(repair=False) ──Alert──► _decide
@@ -1354,6 +1354,40 @@ tarball file or stdin ──► TarballStream ──Member──► parse_alert(
   - `estimate(plan, stamps_per_night, tarball_gb, download_hours, measured)` gives the
     stamps, GB and hours per year, per use and in total. The basis is assumed or measured
     on a corpus. `format_estimate` prints it.
+- `corpus_index` (task 5.1):
+  - `build_corpus_index(archive, layout=, oid_files=, candid_files=, radius_arcsec=1.5,
+    duplicates="first", seed=0, near=DEFAULT_NEAR, chunk_rows=4096, progress=)` lists the
+    complete nights once, reads every row's identity and position, and applies `RULES` in
+    order: `candid_list`, `oid_list`, `position` (`protocol.groups.match_any_within`
+    against every CD21 alert, positions from `split_positions`; a match drops its whole
+    `oid`), `near_duplicate` (on
+    the rows left; a match drops its whole `oid`), then `duplicate_oid` (`_one_per_oid`:
+    the earliest, or a draw from `host_generator(seed, 0, corpus_duplicates)`). It returns
+    `CorpusIndex(rows, meta)`.
+  - `_reference_layout` re-hashes each `features.npy` and `images_f32.npy` it reads
+    against the layout's `meta.json`, and refuses a layout without float32 stamps when the
+    near-duplicate check runs.
+  - `load_candid_exclusions` is the candid counterpart of `selection.load_exclusions`.
+  - `write_corpus_index` / `read_corpus_index` handle the `.npz` (`rows` and `meta` as a
+    JSON string; atomic write; format, version, dtype, `n` and sort order checked).
+    `check_archive(index, archive)` compares `corpus.json`'s SHA-256 and the `meta.json`
+    SHA-256 of every night the index uses.
+- `near_duplicates`: `descriptors(stamps)` (mean-pool 7 to 9×9×3, centred per channel,
+  unit norm, float32; zeros for a stamp with no structure), `NearDuplicateRules(cosine=0.99,
+  max_abs_diff=1e-3, candidates=4)`, `ReferenceStamps(names, images)` (the CD21 splits,
+  memory-mapped; `locate`, `stamp`, `descriptors`), and `find_near_duplicates(chunks,
+  reference, rules)` → `NearDuplicates(matched, matches, candidates, checked)`. Stage 1
+  thresholds float32 cosines (numpy) in blocks of 1024 query rows and keeps the best
+  `candidates` per row (ties by the lower reference row); stage 2 checks the full-resolution
+  pixel difference.
+- `reader`: `normalise_stamps(raw)` (`alerce_normalise`, then float32) and
+  `CorpusStamps(archive, rows)`, which memory-maps the indexed nights (`load_night`),
+  checks the index's `oid`/`candid` against them, and maps each index position to a
+  cutout file and offset. `read(positions, out=)` reads sorted by `(file, offset)` and
+  scatters to the requested order; `normalised(positions)`; `chunks(positions, n)` yields
+  `(positions, normalised)` blocks; `nbytes`.
+- `commands`: the `build-corpus-index` subcommand (`add_corpus_index_command`, registered by
+  `cli.build_parser`).
 - `alerts.parse` changes for the archive:
   - `oid` and `candid` are optional (the alert's own are taken).
   - `repair=False` raises `CutoutShapeError` for non-63×63 cutouts.
@@ -1372,6 +1406,22 @@ hostile members. They cover:
 - another file for a complete night, and a corpus refusing other rules;
 - a deterministic writer, `corpus_index`, the loader's checks and the CLI;
 - the plan's strata, seeds, spares, pilot and uses, and the assumed and measured estimates.
+
+`tests/test_corpus_index.py` (offline: a CD21-like layout with float32 stamps and set
+positions, and an archive written with `NightWriter`) covers:
+- the cross-match inside and outside 1.5″, across the RA wrap and at the pole, and its
+  ties;
+- every rule and its count, with an object on two nights, and `first` and seeded `random`;
+- a renormalised copy of a CD21 stamp dropped with its `oid`, and a noisy look-alike only
+  counted;
+- the SHA-256 of every input, the index file's round trip and refusals, and
+  `check_archive`;
+- the reader across cutout files and in any order, and its refusals of another archive;
+- the pilot from an index: the same model on `memmap` and `host`, the CD21 evaluation and
+  record, the refusals (`device`, the host cap, noise, another evaluation layout, a weak
+  index, a resume on a rebuilt index), the one-batch prefetch, and a resume from a
+  checkpoint written before the corpus fields;
+- the CLI.
 
 ## `optim` (task 1.5)
 
@@ -2282,7 +2332,7 @@ and `make-label-budgets` start fast.
 | Module | What it does |
 |---|---|
 | `leakage` | `find_duplicates(StampData)`: byte-identical uint8 stamps across every pair of splits (BLAKE2b-128), with both labels and whether the features match; `train_exclusions` (the Train indices to drop, from Train only), `train_keep_indices(n_train, excluded)` |
-| `groups` | Phase 2: builds object groups from the prepared data (unlike task 3.2's `grouping`, which assigns given ids): `neighbour_pairs(ra, dec, radius_arcsec)` (every pair within the radius, inclusive; an exact dec-sorted window search with the haversine separation, numpy only, correct at the poles and across the RA wrap; refuses non-finite coordinates and `|dec| > 90`), `union_groups` (union-find, canonical ids: groups numbered by their smallest row), `position_groups` / `external_groups` (equal ids, e.g. `oid`) → `Grouping(method, radius_arcsec, group_of)` (`n_groups`, `multi()`), `split_positions(data, names)` (ra/dec de-standardised with M1's statistics), `grouping_for(data, names, radius_arcsec=1.5, group_ids=None)`, `load_group_ids(npz)` (one array per split, integers or strings, no pickles; returns the file's name and SHA-256) |
+| `groups` | Phase 2: builds object groups from the prepared data (unlike task 3.2's `grouping`, which assigns given ids): `neighbour_pairs(ra, dec, radius_arcsec)` (every pair within the radius, inclusive; an exact dec-sorted window search with the haversine separation, numpy only, correct at the poles and across the RA wrap; refuses non-finite coordinates and `|dec| > 90`), `union_groups` (union-find, canonical ids: groups numbered by their smallest row), `position_groups` / `external_groups` (equal ids, e.g. `oid`) → `Grouping(method, radius_arcsec, group_of)` (`n_groups`, `multi()`), `split_positions(data, names)` (ra/dec de-standardised with M1's statistics), `grouping_for(data, names, radius_arcsec=1.5, group_ids=None)`, `load_group_ids(npz)` (one array per split, integers or strings, no pickles; returns the file's name and SHA-256); `match_any_within(ra, dec, ref_ra, ref_dec, radius_arcsec)` (task 5.1: which rows lie within the radius of any reference row, and the nearest one; the same dec-window search over the sorted reference, `O(N w)`) |
 | `splits` | Format version 2 (grouped; version 1 still read). `make_splits(prepared_dir, seed=0, radius_arcsec=1.5, group_ids_file=None)`: groups the pool (Train ∪ Validation), then the grouped 250/250 screen of Validation (groups placed largest first into the half with room; a documented fallback trims both halves to a common per-class count), `screen_excluded_train` (the Train alerts grouped with Validation, out of the screen's training), and the class-stratified group 5-fold CV (greedy placement, largest group first, per-class spread at most the largest group's stamps of the class), each fold with an exact 100-per-class selection set drawn from whole groups outside the fold (the other stamps of a selection group are the fold's `unused`); leaked Train stamps are in no fold. At most 10 folds (`fold_of` is one digit per stamp). `write_splits` / `read_splits` (structure checks: sizes, disjointness, ranges, positive integers, the grouping block, and `check_group_integrity`: no group in two folds, in a fold's selection and training, or in both screen halves; `screen_excluded_train` consistent) / `verify_splits(splits, prepared_dir, group_ids_file=None)` (dataset identity by source and label SHA-256 and sizes, not the directory name; group integrity; the stored groups equal a fresh grouping; class balance; fold stratification within the grouped tolerance; `excluded_train` equal to a fresh leakage check). `ProtocolSplits.locate` maps pool indices to Train and Validation indices; `ProtocolSplits.screen_training_excluded()` |
 | `audit` | `leakage_audit(prepared_dir, radius_arcsec=1.5, group_ids_file=None)` (CLI `leakage-audit`): groups all three splits together and reports the groups within each split and per split pair by class, the Validation and Test rows with a Train alert within the radius (or the same id), and the byte duplicates, as a JSON-ready dict; `format_audit` prints it |
 | `predictions` | `Predictions(probabilities, labels, index, n_classes=5)` (task 3.2: `n_classes` generalises the column count; 5 by default, so phase 2 is unchanged; the benchmarks pass 6 and index by `candid`), `save_predictions` / `load_predictions` (`.npz`, `allow_pickle=False`), `check_paired`, `ensemble` (mean probabilities per stamp), `seed_mean_correct` |
@@ -2566,7 +2616,7 @@ draw is keyed by `step`, so 5.3 can run the same functions on the plain engine.
 | `optim` | `lars_param_groups(model)`: convolution/linear weights (weight decay 1e-6, trust ratio) and an excluded group (normalisation parameters and biases: no decay, no trust ratio, `optim.EXCLUDE_KEY`); `build_lars(model, lr=...)`: fixed trust ratio, no Nesterov, momentum 0.9; `base_learning_rate(B) = 0.3 * B / 256`; `warmup_cosine_lr(step, base_lr, total_steps, warmup_steps, lr_min=0)`: linear warmup to `base_lr` at step `W - 1`, then a cosine that is exactly `lr_min` at `total_steps - 1`; `set_learning_rate`. |
 | `diagnostics` | `effective_rank(h)` (exp of the entropy of the normalised eigenvalues of `cov(h)`), `dimension_std(z)`, `alignment(z_i, z_j)`, `uniformity(z, t=2)`, `knn_predict` / `knn_balanced_accuracy` (cosine, `k = 20`, vote weights `exp(sim / 0.07)`). |
 | `probe` | `draw_label_subsets(labels, candidates, per_class, n_subsets, seed)` (nested across budgets: subset `r` is the head of a per-class permutation keyed `[seed, r, class]`), `write_label_subsets` / `read_label_subsets` (format `astro-simclr-label-subsets` v1, with the SHA-256 of the candidates and the labels); `fit_probe(h, labels, weight_decay)`: logistic regression, standardised `h`, plain cross-entropy on logits, L2 on the weights, full-batch L-BFGS in float64 on the CPU; `probe_screen(...)`: the penalty chosen on the screen's selection half from `WEIGHT_DECAY_GRID`, the score on the decision half, per subset. |
-| `pilot` | `PilotConfig` (the run's whole definition; `epochs` or `steps`), `load_pilot_data` (Train and Validation as float32 (N, 3, 63, 63); with a splits file, verified, pretraining leaves out `screen_training_excluded`), `BatchOrder` (a permutation per pass keyed `[seed, pass, simclr_batch_order]`, last partial batch dropped), `PilotRun` (model built on the CPU from the seed, LARS, the step: views, one forward of both views concatenated, loss, rate, backward, step), `diagnose`, `embed`, `dump_embeddings`, `train_pilot(config, out_dir, resume=, stop_at=)`. |
+| `pilot` | `PilotConfig` (the run's whole definition; `epochs` or `steps`; task 5.1 added `tier="memmap"`, `archive`, `eval_data` and `host_cap_gb`, and a checkpoint written before them resumes with them at their defaults), `load_pilot_data` (a layout: Train and Validation as float32 (N, 3, 63, 63); with a splits file, verified, pretraining leaves out `screen_training_excluded`. A corpus index file: the CD21 layout it excluded, the same way, for the evaluation, plus `CorpusPretrain(CorpusStamps, record)` after `check_archive`), the pretraining stamps (`TensorStamps(images, rows)` for `device`/`host`, `MemmapStamps` for `memmap`: a sorted read, the normalisation and a pinned tensor per batch; `_pretraining_stamps` picks them and refuses `device` for a corpus and a corpus above `host_cap_gb` on `host`; `_weak_rules` refuses an index below the plan's exclusion unless `allow_weak_index`; `restore` also compares the checkpoint's index SHA-256, exclusion SHA-256 and `n`), `BatchOrder` (a permutation per pass keyed `[seed, pass, simclr_batch_order]`, last partial batch dropped), `PilotRun` (model built on the CPU from the seed, LARS, the step: views, one forward of both views concatenated, loss, rate, backward, step), `diagnose`, `embed`, `dump_embeddings`, `train_pilot(config, out_dir, resume=, stop_at=)`. |
 | `commands` | The `simclr-pilot`, `simclr-embed`, `make-label-subsets` and `simclr-probe` subcommands (see `cli`). |
 
 A pilot run directory holds `pilot.json` (config, data record with the source and splits
