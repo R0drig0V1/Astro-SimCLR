@@ -36,6 +36,12 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   ``bench-report RUN... --splits FILE --alerts ALERTS.csv [--baseline RUN...]`` prints
   macro-F1 (± std over seeds), per class and on the first-stamp view, and with a baseline
   the paired bootstrap CI of the macro-F1 difference and McNemar (always exit 0: a report);
+- phase-5 label budgets (task 5.4, :mod:`astro_simclr.protocol.label_budgets`):
+  ``make-label-budgets --out FILE (--splits FILE --data DIR | --object-splits FILE --alerts
+  CSV)`` writes the nested label-budget subsets and selection sets of every training part;
+  ``verify-label-budgets FILE`` with the same parent options exits 0 if the file belongs to
+  the verified parent, else 1. Registered by
+  :func:`astro_simclr.protocol.budget_parser.add_budget_commands`.
 - ``preflight`` (:mod:`astro_simclr.preflight`): exit 0 if no step failed, else 1.
 - the run registry (task A2, :mod:`astro_simclr.registry`): ``runs reindex [ROOT ...]``,
   ``runs ls``, ``runs show KEY`` and ``runs compare SPEC`` (by experiment spec); exit 1
@@ -89,6 +95,7 @@ from astro_simclr.config import (
     settings_to_plain,
 )
 from astro_simclr.hparams import COMMAND_DEFAULTS, COMMANDS, load_legacy_hparams
+from astro_simclr.protocol.budget_parser import add_budget_commands
 from astro_simclr.registry.parser import add_runs_command
 
 if TYPE_CHECKING:
@@ -1213,6 +1220,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_oracle_commands(commands)
     _add_alert_commands(commands)
     add_runs_command(commands)
+    add_budget_commands(commands)
     return parser
 
 
