@@ -22,7 +22,11 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   defaults, the subcommand's legacy protocol (``hparams.COMMAND_DEFAULTS``), ``--preset``
   (``train-supervised`` only: ``carrasco2021`` or ``carrasco2021-no-features``, the paper
   replication of task 2.2c; :mod:`astro_simclr.presets`; and ``--splits FILE --fold K |
-  --screen``, a split run of task 2.5-infra: :mod:`astro_simclr.protocol.split_runs`),
+  --screen``, a split run of task 2.5-infra: :mod:`astro_simclr.protocol.split_runs`; or
+  ``rj23-full``, ``rj23-cropped``, ``rj23-lowres``, ``rj23-multiscale``, RJ23's regime of
+  task 3.4b on a ``raw-alerts`` layout, which needs ``--splits OBJECT_SPLITS`` (the paper
+  protocol; with ``--screen``, a decision run on the selection half) and optionally
+  ``--alerts ALERTS.csv``: :mod:`astro_simclr.training.rj23`),
   ``--hparams``
   (a legacy ``results/hparams_best_*.yaml``, through the mapping of
   :mod:`astro_simclr.hparams`), ``--config``, ``--set``, then the explicit flags
@@ -50,6 +54,12 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   phase-2 results report (``docs/results-phase2.md``) as markdown from run directories:
   the replication and its CD21 gate, the screen and CV decisions, per-class recall,
   confusion matrices, throughput and provenance (always exit 0: a report);
+- phase-5 label budgets (task 5.4, :mod:`astro_simclr.protocol.label_budgets`):
+  ``make-label-budgets --out FILE (--splits FILE --data DIR | --object-splits FILE --alerts
+  CSV)`` writes the nested label-budget subsets and selection sets of every training part;
+  ``verify-label-budgets FILE`` with the same parent options exits 0 if the file belongs to
+  the verified parent, else 1. Registered by
+  :func:`astro_simclr.protocol.budget_parser.add_budget_commands`.
 - ``preflight`` (:mod:`astro_simclr.preflight`): exit 0 if no step failed, else 1.
 - the run registry (task A2, :mod:`astro_simclr.registry`): ``runs reindex [ROOT ...]``,
   ``runs ls``, ``runs show KEY`` and ``runs compare SPEC`` (by experiment spec); exit 1
@@ -115,6 +125,7 @@ import yaml
 from astro_simclr.archive.commands import add_corpus_index_command
 from astro_simclr.config import (
     ACCELERATORS,
+    RJ23,
     ConfigError,
     Settings,
     load_settings,
@@ -124,12 +135,14 @@ from astro_simclr.config import (
     settings_to_plain,
 )
 from astro_simclr.hparams import COMMAND_DEFAULTS, COMMANDS, load_legacy_hparams
+from astro_simclr.protocol.budget_parser import add_budget_commands
 from astro_simclr.registry.parser import add_runs_command
 from astro_simclr.simclr.commands import add_simclr_commands
 
 if TYPE_CHECKING:
     from astro_simclr.oracle.m1 import M1Files
     from astro_simclr.protocol.split_runs import SplitRequest
+    from astro_simclr.training.rj23 import RJ23Request
 
 __all__ = [
     "add_settings_arguments",
@@ -390,6 +403,23 @@ def _split_request(args: argparse.Namespace) -> SplitRequest | None:
     return SplitRequest(file, fold)
 
 
+def _rj23_request(args: argparse.Namespace) -> RJ23Request:
+    """The object splits, protocol and alert table of an ``rj23`` run.
+
+    Raises:
+        ConfigError: without ``--splits``, or with ``--fold`` (object splits have no folds).
+    """
+    from astro_simclr.training.rj23 import RJ23Request
+
+    file: Path | None = getattr(args, "splits", None)
+    if file is None:
+        raise ConfigError("schedule rj23 needs --splits OBJECT_SPLITS (make-object-splits)")
+    if getattr(args, "fold", None) is not None:
+        raise ConfigError("schedule rj23 has no CV folds: drop --fold (--screen: a decision run)")
+    screen = bool(getattr(args, "screen", False))
+    return RJ23Request(file, "decision" if screen else "replication", getattr(args, "alerts", None))
+
+
 def _train(args: argparse.Namespace) -> int:
     command: str = args.command
     return _execute(command, training_settings(command, args), args)
@@ -401,10 +431,38 @@ def _execute(
     """Run ``command`` with ``settings`` on ``engine`` and print its summary.
 
     ``lightning``: ``experiments.run_command``; ``plain``: ``tasks.plain.run_plain`` (task
-    4.6, ADR 0014), which never imports Lightning.
+    4.6, ADR 0014), which never imports Lightning. ``schedule: rj23`` goes to
+    ``training.rj23.run_rj23`` (its ``--splits`` is the object splits), on Lightning only
+    for now: its policy objects are engine-free (``rj23_regime``), its plain adapter is a
+    follow-up (``tasks.plain``).
+
+    Raises:
+        ConfigError: for ``schedule: rj23`` on the plain engine, or ``--alerts`` outside it.
     """
     from astro_simclr.runs.layout import METRICS_FILE
 
+    if settings.schedule == RJ23:
+        if engine != "lightning":
+            msg = (
+                f"schedule {RJ23} trains on runtime.engine lightning only (the plain "
+                "adapter of rj23_regime is a follow-up)"
+            )
+            raise ConfigError(msg)
+        from astro_simclr.training.rj23 import run_rj23
+
+        metrics = run_rj23(settings, _rj23_request(args), resume=args.resume)
+        evaluation = metrics["evaluation"]
+        scores = ", ".join(
+            f"{stage} macro-F1 {e['macro_f1']:.4f}" for stage, e in evaluation.items()
+        )
+        sys.stdout.write(
+            f"{command} ({settings.rj23_keep} weights, step {metrics['stop_step']} stop / "
+            f"{metrics['best_step']} best, {metrics['schedule']['stopped_by']}): {scores}; "
+            f"wrote {settings.output_dir / METRICS_FILE}\n"
+        )
+        return 0
+    if getattr(args, "alerts", None) is not None:
+        raise ConfigError("--alerts belongs to the rj23 schedule (--preset rj23-<scenario>)")
     split = _split_request(args)
     if engine == "plain":
         from astro_simclr.tasks.plain import run_plain
@@ -492,7 +550,14 @@ def _add_run_command(commands: argparse._SubParsersAction[argparse.ArgumentParse
 
 #: ``train-supervised --preset`` choices (``presets.PRESETS``; spelled out here so that
 #: ``--help`` does not import the training stack).
-_TRAINING_PRESETS: Final = ("carrasco2021", "carrasco2021-no-features")
+_TRAINING_PRESETS: Final = (
+    "carrasco2021",
+    "carrasco2021-no-features",
+    "rj23-full",
+    "rj23-cropped",
+    "rj23-lowres",
+    "rj23-multiscale",
+)
 
 _TRAINING_HELP = {
     "pretrain": "SimCLR pretraining of an encoder (legacy iter_clr.py)",
@@ -511,7 +576,15 @@ def _add_split_arguments(sub: argparse.ArgumentParser) -> None:
         help="a stored decision splits file (make-splits; configs/splits/): train on one of "
         "its parts instead of Train, select on its selection part and predict its "
         "evaluation part; test is not loaded (carrasco2021 schedule; "
-        "docs/evaluation-protocol.md)",
+        "docs/evaluation-protocol.md). With --preset rj23-*: the object splits "
+        "(make-object-splits) of the raw-alerts layout, required",
+    )
+    sub.add_argument(
+        "--alerts",
+        type=Path,
+        metavar="CSV",
+        help="rj23 only: the alert table the object splits were drawn from (default: the "
+        "layout's own, grouped by oid)",
     )
     part = sub.add_mutually_exclusive_group()
     part.add_argument(
@@ -525,7 +598,8 @@ def _add_split_arguments(sub: argparse.ArgumentParser) -> None:
         "--screen",
         action="store_true",
         help="with --splits: the 250/250 screen: train on Train, select on the selection "
-        "half of Validation, predict the decision half (Validation indices)",
+        "half of Validation, predict the decision half (Validation indices); rj23: a "
+        "decision run (stop on the selection half, predict both halves; Test unread)",
     )
 
 
@@ -568,7 +642,10 @@ def _add_training_commands(
                 help="named settings applied after the legacy protocol and before --hparams, "
                 "--config and --set: carrasco2021 is the paper replication of Carrasco-Davis "
                 "et al. 2021 (float input, Adam (0.9, 0.999), the iteration schedule; ADR "
-                "0003), carrasco2021-no-features its without-features variant",
+                "0003), carrasco2021-no-features its without-features variant; rj23-<scenario> "
+                "trains RJ23's classifier of that input on a raw-alerts layout with their "
+                "regime (Keras Adam, class-uniform batches, macro-F1 patience; ADR 0023) and "
+                "needs --splits",
             )
             _add_split_arguments(sub)
         if command in ("linear-eval", "fine-tune"):
@@ -1687,6 +1764,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_corpus_index_command(commands)
     add_runs_command(commands)
     add_simclr_commands(commands)
+    add_budget_commands(commands)
     return parser
 
 

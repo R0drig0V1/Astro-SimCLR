@@ -42,6 +42,7 @@ from astro_simclr.config import ConfigError, Settings
 from astro_simclr.data.files import sha256_file
 from astro_simclr.protocol.split_runs import SplitRequest
 from astro_simclr.runs.identity import (
+    WHOLE,
     Engine,
     GitState,
     data_sha256,
@@ -161,6 +162,7 @@ def start_run(
     data: Path,
     machine: Mapping[str, object],
     split: SplitRequest | None = None,
+    object_splits: Path | None = None,
     pretrained_file: Path | None = None,
     resumed: bool = False,
     engine: Engine = "lightning",
@@ -171,19 +173,25 @@ def start_run(
     """Write the ``running`` manifest of a run about to train; return its record.
 
     ``data`` is the prepared layout, ``machine`` the run's machine record
-    (``experiments._machine``: ``device``, ``gpu``, ``processor``, ...), ``split`` the split
-    request, ``pretrained_file`` the resolved pretrained checkpoint (its content is hashed),
-    ``resumed`` whether the fit resumes from a checkpoint. ``root`` is the source checkout
-    for the git state and ``uv.lock`` (default :func:`source_root`); ``concurrent_jobs``
-    defaults to :func:`concurrent_jobs_from_env`. The attempt follows the module
-    docstring.
+    (``experiments.machine_record``: ``device``, ``gpu``, ``processor``, ...), ``split`` the
+    split request, ``object_splits`` the object-splits file of an ``rj23`` replication run
+    (trained on its whole Train: hashed as the splits, split part :data:`WHOLE`; task 3.4b; an
+    ``rj23`` decision run passes ``split`` as a screen instead), ``pretrained_file`` the
+    resolved pretrained checkpoint (its content is hashed), ``resumed`` whether the fit
+    resumes from a checkpoint. ``root`` is the source checkout for the git state and
+    ``uv.lock`` (default :func:`source_root`); ``concurrent_jobs`` defaults to
+    :func:`concurrent_jobs_from_env`. The attempt follows the module docstring.
 
     Raises:
-        ConfigError: if the manifest already in ``settings.output_dir`` cannot be read, or
-            ``ASTRO_SIMCLR_CONCURRENT_JOBS`` is invalid.
+        ConfigError: if the manifest already in ``settings.output_dir`` cannot be read,
+            ``ASTRO_SIMCLR_CONCURRENT_JOBS`` is invalid, or both ``split`` and
+            ``object_splits`` are given.
         DataError: if ``data`` is not a readable prepared layout.
         OSError: if a hashed file or the manifest cannot be read or written.
     """
+    if split is not None and object_splits is not None:
+        raise ConfigError("a run has one splits file: pass split or object_splits, not both")
+    splits_file = object_splits if split is None else split.file
     run_dir = settings.output_dir
     processor = machine.get("processor")
     gpu = machine.get("gpu")
@@ -197,8 +205,8 @@ def start_run(
             processor if isinstance(processor, str) else "",
         ),
         engine=engine,
-        split=split_part(split),
-        splits_sha256=None if split is None else sha256_file(split.file),
+        split=WHOLE if object_splits is not None else split_part(split),
+        splits_sha256=None if splits_file is None else sha256_file(splits_file),
         pretrained_sha256=_pretrained_sha256(settings, pretrained_file),
     )
     jobs = concurrent_jobs_from_env() if concurrent_jobs is None else concurrent_jobs

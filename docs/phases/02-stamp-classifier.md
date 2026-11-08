@@ -464,6 +464,48 @@ A ViT-Ti with patch 7, pretrained on 1–5M unlabelled stamps, belongs to phase 
 not to 2.5. timm is a new dependency, so B8 and B9 need an ADR and a licence check of the
 Zoobot weights first.
 
+**Phase 2.5 architecture and augmentation CV: results (2026-11-08, RTX 5090, Lightning engine).**
+- Protocol: grouped 5-fold CV (`configs/splits/td_ztf_stamp_17_06_20_red-002-grouped.json`), 2 seeds per fold, 51,081 pool stamps.
+- Statistics: balanced accuracy, a paired class-stratified bootstrap with 10,000 resamples, seed 0. Margin 0.005 for non-inferiority.
+- Baseline: rot4 (CD21 replication) at 0.9345.
+
+| Row | Arm | Pooled | Δ (95 % CI) | Superiority | Non-inferiority | Decision |
+|---|---|---|---|---|---|---|
+| C5 | aug_noise 1.0 + feature jitter 0.05 | 0.9365 | +0.21 [−0.01, +0.43] pts | inconclusive | adopt | **not adopted** (pre-registered superiority rule; the CI touches 0). The user decided on 2026-11-08 to keep the original standard and run no confirmatory replication. Its noise stays an input to the phase-5 views and the C5+position diagnostic |
+| B7 | p4 | 0.9358 | +0.13 [−0.10, +0.35] | inconclusive | **adopt** | **adopted as the efficiency arm** (non-inferior at about half the compute) |
+| B1′ | p4 + avgpool63 context | 0.9325 | −0.20 [−0.45, +0.05] | inconclusive | adopt | dropped (its hypothesis was a gain; more compute) |
+| B2′ | p4m | 0.9313 | −0.32 [−0.56, −0.08] | **worse** | inconclusive | dropped |
+| C6 | synthetic hot-pixel Bogus 0.05 | 0.9349 | +0.04 [−0.17, +0.26] | inconclusive | adopt | dropped (no gain, about 2x slower) |
+
+Raw logs: `~/runs/p25/cv/` on the 5090. The test set was not used.
+
+**Improvement rows from the literature (research, 2026-11-08).** The full ranked report
+(18 ideas, every claim marked verified or inferred) is in the scratchpad `improvements.md`.
+
+Facts that constrain the choice:
+- **Leakage:** CD21's Asteroid labels require the `ssdistnr` field, so any `ss*` field as a
+  feature leaks the label. `rb` and `drb` are a likely shortcut for Bogus.
+- **Validation noise:** about 1.1 points of standard error on 500 stamps, so checkpoint
+  selection on it adds variance.
+- **Imbalance:** balanced tiling already makes the training prior uniform. Logit adjustment,
+  focal loss and class-balanced loss are largely redundant.
+- **SN repetition:** each of the 1.4k SNe is seen about 270 times. SN needs more distinct
+  stamps, not more weight.
+- **Normalisation:** per-channel min-max makes brightness and contrast augmentations no-ops.
+
+Pre-registered rows (5 grouped folds × seeds, paired, hierarchical bootstrap):
+
+| Id | Change | Pre-registered hypothesis | Needs |
+|---|---|---|---|
+| D1 | **Non-detection history** from the first alert's `prv_candidates` (time since the last upper limit, rise above it, number of limits) | SN→Asteroid confusions −25 %, balanced accuracy +0.3 pts (CI > 0) | raw alerts for all CD21 rows (fetch-alerts) |
+| D2 | **More candidate fields:** `fid`, PS1 colours, `magpsf − PS1 mag`, `scorr`, `chipsf`, `elong`, `sumrat`, `magdiff`, `nbad`, `jd − jdstarthist` (never `ss*`, `rb` or `drb`) | AGN↔VS + SN→Bogus confusions −15 %, balanced accuracy +0.3 pts | raw alerts |
+| D3 | **Weight EMA with a fixed cosine schedule**, scoring the final weights (no checkpoint selection on the noisy validation set) | mean ≥ baseline − 0.1 pts, fold-to-fold std −20 %, lower ECE | none |
+| D4 | **5-seed ensemble plus extended test-time augmentation** (flips, ±1 px shifts) | ensemble beats its members' mean by ≥ 0.4 pts; TTA alone ≥ +0.1 | none |
+| D5 | **Training on later alerts of training objects** (evaluation stays on first alerts) | SN recall +2 pts, no class −0.3, balanced accuracy +0.3 | raw alerts plus detection lists |
+
+D3 and D4 are dispatched now. D1, D2 and D5 wait for the raw alerts of CD21 Train: the
+GTX 1050 machine's fetch has done Validation and Test, and Train is about 7 % done.
+
 **Efficiency rows (B7, B2′, B1′) need a non-inferiority rule**, because the superiority rule
 of 2.3 cannot adopt a change that is only "as good". Adopt when the lower bound of the
 paired-bootstrap 95 % CI of the CV balanced-accuracy difference is above −0.5 points, and

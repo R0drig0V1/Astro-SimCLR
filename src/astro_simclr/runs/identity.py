@@ -5,8 +5,9 @@
 - ``config_sha256``: the config hash (:mod:`astro_simclr.runs.canonical`), which already
   holds the training subcommand;
 - ``seed``;
-- ``split``: the fold (an int), ``"screen"``, or ``None`` for a run on the file's own
-  Train / Validation / Test;
+- ``split``: the fold (an int), ``"screen"``, ``"whole"`` (an ``rj23`` replication run on
+  an object-splits file's own Train / Validation / Test; task 3.4b), or ``None`` for a run
+  on the prepared layout's own Train / Validation / Test;
 - ``data_sha256``: :func:`prepared_data_sha256` of the prepared layout;
 - ``splits_sha256``: the SHA-256 of the stored splits file, ``None`` without a split;
 - ``pretrained_sha256``: the SHA-256 of the pretrained checkpoint (``linear-eval``,
@@ -56,6 +57,7 @@ __all__ = [
     "NUMERICS_EPOCH",
     "RUN_ID_VERSION",
     "SCREEN",
+    "WHOLE",
     "Engine",
     "GitState",
     "IdentityError",
@@ -81,9 +83,12 @@ RUN_ID_VERSION: Final = 1
 
 #: :attr:`RunIdentity.split` of a screen run (the 2.5 screen of ``--splits FILE --screen``).
 SCREEN: Final = "screen"
+#: :attr:`RunIdentity.split` of a run on a splits file's own Train / Validation / Test
+#: (``train-supervised --preset rj23-* --splits FILE`` without ``--screen``; task 3.4b).
+WHOLE: Final = "whole"
 
-#: A fold number, :data:`SCREEN`, or ``None`` (no split run).
-type SplitPart = int | Literal["screen"] | None
+#: A fold number, :data:`SCREEN`, :data:`WHOLE`, or ``None`` (no splits file).
+type SplitPart = int | Literal["screen", "whole"] | None
 
 #: The training engine of a run: today's Lightning loop, or the plain loop of phase 4.
 type Engine = Literal["lightning", "plain"]
@@ -139,7 +144,7 @@ class RunIdentity:
         check_sha256(self.data_sha256, "data_sha256")
         _check_int(self.seed, "seed", 0)
         _check_int(self.numerics_epoch, "numerics_epoch", 1)
-        if self.split is not None and self.split != SCREEN:
+        if self.split not in (None, SCREEN, WHOLE):
             _check_int(self.split, "split (a fold)", 0)
         if (self.split is None) != (self.splits_sha256 is None):
             msg = (
@@ -180,12 +185,12 @@ class RunIdentity:
             msg = f"identity: missing keys {missing or 'none'}, unknown {unknown or 'none'}"
             raise IdentityError(msg)
         split = data["split"]
-        if split is not None and split != SCREEN:
+        if split not in (None, SCREEN, WHOLE):
             split = _check_int(split, "split (a fold)", 0)
         return cls(
             config_sha256=_as_str(data["config_sha256"], "config_sha256"),
             seed=_check_int(data["seed"], "seed", 0),
-            split=split,  # None, SCREEN or an int, checked above
+            split=split,  # None, SCREEN, WHOLE or an int, checked above
             data_sha256=_as_str(data["data_sha256"], "data_sha256"),
             splits_sha256=_as_optional_str(data["splits_sha256"], "splits_sha256"),
             pretrained_sha256=_as_optional_str(data["pretrained_sha256"], "pretrained_sha256"),

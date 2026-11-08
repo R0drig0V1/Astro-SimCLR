@@ -162,7 +162,7 @@ Decisions and their reasons:
 - **One alert per `oid` keeps the earliest by default.** The earliest (`jd`, then
   `candid`) is CD21's first alert (point 2). The seeded choice that the task brief asked
   for is available as `--duplicates random --seed N`, drawn from a new reserved stream,
-  `corpus_duplicates` (10). It is an ablation, not the default.
+  `corpus_duplicates` (11). It is an ablation, not the default.
 - **The near-duplicate check has two stages, and drops only confirmed pixel copies.**
   - Stage 1 takes, for each corpus row, the CD21 stamps whose 9×9×3 pooled descriptor
     reaches a cosine of 0.99.

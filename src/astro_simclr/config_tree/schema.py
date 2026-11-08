@@ -13,13 +13,14 @@ run       ``seed``, ``output_dir``
 runtime   ``engine``, ``accelerator``, ``devices``, ``num_workers``, ``deterministic``,
           ``fp32_precision``, ``progress_bar_refresh_rate``
 data      ``dir``, ``dataset``, ``image_size``, ``batch_size``, ``with_features``
-model     ``stamp_classifier``, ``resnet``, ``paper_stamp_classifier``
+model     ``stamp_classifier``, ``resnet``, ``paper_stamp_classifier``, ``rj23``
           (``train-supervised``); ``simclr`` (``pretrain``); ``linear_eval``;
           ``fine_tune``. The model decides the training subcommand (:attr:`Config.command`)
 optim     ``Adam`` / ``AdamW``, ``SGD``, ``LARS``
-schedule  ``epochs`` (the legacy protocol), ``carrasco2021`` (ALeRCE's iterations)
+schedule  ``epochs`` (the legacy protocol), ``carrasco2021`` (ALeRCE's iterations),
+          ``rj23`` (RJ23's regime, task 3.4b)
 augment   ``transforms`` (a registry augmentation), ``paper`` (the paper model's
-          training augmentation: rot90, C5, C6, C7)
+          training augmentation: rot90, C5, C6, C7), ``none`` (no augmentation: RJ23)
 eval      ``batch_size``, ``limit_batches``
 ========  ===========================================================================
 
@@ -43,7 +44,8 @@ run does not read. The old subcommands still accept such files.
 
 **Validation.** Every :class:`Config` is valid by construction: its ``__post_init__``
 checks the tags, the cross-section rules (the paper model goes with the ``carrasco2021``
-schedule and the ``paper`` augmentation, and only with them) and then builds the lowered
+schedule and the ``paper`` augmentation, and only with them; the ``rj23`` model with the
+``rj23`` schedule and the ``none`` augmentation, and only with them) and then builds the lowered
 ``Settings``, whose checks (ranges, names) run with their messages translated to the
 nested paths.
 """
@@ -60,6 +62,8 @@ from typing import Any, ClassVar, Final, get_type_hints
 from astro_simclr.config import (
     CARRASCO2021,
     EPOCHS,
+    RJ23,
+    RJ23_MODEL,
     ConfigError,
     Settings,
     coerce_value,
@@ -85,8 +89,11 @@ __all__ = [
     "FineTuneModel",
     "LARSOptim",
     "LinearEvalModel",
+    "NoAugment",
     "PaperAugment",
     "PaperStampClassifier",
+    "RJ23Classifier",
+    "RJ23RegimeSchedule",
     "ResNetClassifier",
     "Run",
     "Runtime",
@@ -326,10 +333,34 @@ class FineTuneModel:
         _check_kind(self)
 
 
+@dataclass(frozen=True, kw_only=True)
+class RJ23Classifier:
+    """RJ23's classifier of one input scenario (task 3.4b; ``rj23_model``, ADRs 0013, 0023).
+
+    It reads a ``raw-alerts`` layout and no alert features (``data.with_features: false``),
+    and trains with the ``rj23`` schedule.
+    """
+
+    KINDS: ClassVar = (RJ23_MODEL,)
+    COMMAND: ClassVar = "train-supervised"
+    kind: str = _flat("supervised_model", RJ23_MODEL)
+    #: ``full``, ``cropped``, ``lowres`` or ``multiscale`` (``config.RJ23_SCENARIOS``).
+    scenario: str = _flat("rj23_scenario")
+    #: The BN after the position concat (ADR 0013) or before it (the sensitivity arm).
+    bn_position: str = _flat("rj23_bn_position")
+    #: ``data.rj23_input.normalise(large_values=...)``: ``paper`` or ``code`` (ADR 0009).
+    large_values: str = _flat("rj23_large_values")
+
+    def __post_init__(self) -> None:
+        """Raises: ConfigError: on another ``kind``."""
+        _check_kind(self)
+
+
 Model = (
     StampClassifier
     | ResNetClassifier
     | PaperStampClassifier
+    | RJ23Classifier
     | SimCLRModel
     | LinearEvalModel
     | FineTuneModel
@@ -432,7 +463,36 @@ class Carrasco2021Schedule:
         _check_kind(self)
 
 
-Schedule = EpochsSchedule | Carrasco2021Schedule
+@dataclass(frozen=True, kw_only=True)
+class RJ23RegimeSchedule:
+    """RJ23's regime (task 3.4b; ``rj23_regime.RJ23Schedule``, ADR 0023).
+
+    The selection macro-F1 every ``val_every_n_steps`` steps from step 0, ``patience``
+    validations on a strict improvement, the ``max_steps`` cap, and the primary ``keep``.
+    It has no EarlyStopping of its own kind, so it lowers ``early_stopping: false``.
+    """
+
+    KINDS: ClassVar = (RJ23,)
+    FLAT_FIXED: ClassVar[Mapping[str, object]] = {"early_stopping": False}
+    kind: str = _flat("schedule", RJ23)
+    #: The hard cap, a multiple of ``val_every_n_steps``.
+    max_steps: int = _flat("max_steps")
+    val_every_n_steps: int = _flat("val_every_n_steps")
+    #: Validations without a strict improvement before the stop.
+    patience: int = _flat("patience")
+    #: ``last.ckpt`` interval: a multiple of ``val_every_n_steps`` (not semantic, ADR 0015).
+    checkpoint_every_n_steps: int = _flat("checkpoint_every_n_steps")
+    #: ``macro_f1_val`` (the selection part's macro-F1).
+    monitor: str = _flat("monitor")
+    #: The primary weights, ``stop`` (RJ23's) or ``best``; both are evaluated.
+    keep: str = _flat("rj23_keep")
+
+    def __post_init__(self) -> None:
+        """Raises: ConfigError: on another ``kind``."""
+        _check_kind(self)
+
+
+Schedule = EpochsSchedule | Carrasco2021Schedule | RJ23RegimeSchedule
 
 
 # --- augment: tagged union -----------------------------------------------------------------
@@ -480,7 +540,19 @@ class PaperAugment:
         _check_kind(self)
 
 
-Augment = TransformsAugment | PaperAugment
+@dataclass(frozen=True, kw_only=True)
+class NoAugment:
+    """No training augmentation: RJ23's model sees each stamp's 8 rotation/flip views itself."""
+
+    KINDS: ClassVar = ("none",)
+    kind: str = _tag("none")
+
+    def __post_init__(self) -> None:
+        """Raises: ConfigError: on another ``kind``."""
+        _check_kind(self)
+
+
+Augment = TransformsAugment | PaperAugment | NoAugment
 
 #: Section name -> its classes; a section with more than one is a tagged union, and its
 #: first class is the default variant.
@@ -492,13 +564,14 @@ SECTIONS: Final[Mapping[str, tuple[type, ...]]] = {
         StampClassifier,
         ResNetClassifier,
         PaperStampClassifier,
+        RJ23Classifier,
         SimCLRModel,
         LinearEvalModel,
         FineTuneModel,
     ),
     "optim": (AdamOptim, SGDOptim, LARSOptim),
-    "schedule": (EpochsSchedule, Carrasco2021Schedule),
-    "augment": (TransformsAugment, PaperAugment),
+    "schedule": (EpochsSchedule, Carrasco2021Schedule, RJ23RegimeSchedule),
+    "augment": (TransformsAugment, PaperAugment, NoAugment),
     "eval": (Eval,),
 }
 
@@ -523,8 +596,9 @@ class Config:
         """Check the section types, the cross-section rules and the lowered settings.
 
         Raises:
-            ConfigError: if a section holds another class than its own, the paper model is
-                combined with another schedule or augmentation (or the reverse), or the
+            ConfigError: if a section holds another class than its own, the paper model or
+                the rj23 model is combined with another schedule or augmentation (or the
+                reverse), or the
                 lowered ``Settings`` is invalid (the message names the nested paths).
         """
         for name, classes in SECTIONS.items():
@@ -545,7 +619,24 @@ class Config:
                 f"model.kind {self.model.kind} with augment.kind {self.augment.kind}"
             )
             raise ConfigError(msg)
+        self._check_rj23()
         self.to_settings()
+
+    def _check_rj23(self) -> None:
+        rj23 = isinstance(self.model, RJ23Classifier)
+        if rj23 != isinstance(self.schedule, RJ23RegimeSchedule):
+            msg = (
+                f"model.kind {RJ23_MODEL} and schedule.kind {RJ23} go together (start from a "
+                f"preset rj23-<scenario>); got model.kind {self.model.kind} with "
+                f"schedule.kind {self.schedule.kind}"
+            )
+            raise ConfigError(msg)
+        if rj23 != isinstance(self.augment, NoAugment):
+            msg = (
+                f"model.kind {RJ23_MODEL} and augment.kind none go together; got model.kind "
+                f"{self.model.kind} with augment.kind {self.augment.kind}"
+            )
+            raise ConfigError(msg)
 
     @property
     def command(self) -> str:
@@ -721,9 +812,11 @@ def _model_class(command: str, view: Mapping[str, object]) -> type:
         return StampClassifier
     if name == "paper_stamp_classifier":
         return PaperStampClassifier
+    if name == RJ23_MODEL:
+        return RJ23Classifier
     if name in RESNETS:
         return ResNetClassifier
-    valid = ", ".join(("stamp_classifier", "paper_stamp_classifier", *RESNETS))
+    valid = ", ".join(("stamp_classifier", "paper_stamp_classifier", RJ23_MODEL, *RESNETS))
     raise ConfigError(f"supervised_model {name!r} is not one of: {valid}")
 
 
@@ -741,7 +834,8 @@ def config_from_settings(command: str, settings: Settings, *, engine: str = "lig
     """The nested config of a flat run (``command`` with ``settings``): the shim.
 
     The variants are chosen from the flat values (``supervised_model`` and the command,
-    ``optimizer``, ``schedule``; the paper model takes the ``paper`` augmentation). The
+    ``optimizer``, ``schedule``; the paper model takes the ``paper`` augmentation, the
+    ``rj23`` model ``none``). The
     result lowers back to ``settings`` exactly, or the conversion is refused.
 
     Raises:
@@ -753,7 +847,11 @@ def config_from_settings(command: str, settings: Settings, *, engine: str = "lig
     model_cls = _model_class(command, view)
     optim_cls = _variant("optim", view["optimizer"])
     schedule_cls = _variant("schedule", view["schedule"])
-    augment_cls = PaperAugment if model_cls is PaperStampClassifier else TransformsAugment
+    augment_cls: type = TransformsAugment
+    if model_cls is PaperStampClassifier:
+        augment_cls = PaperAugment
+    elif model_cls is RJ23Classifier:
+        augment_cls = NoAugment
     config = Config(
         run=_raise_section(Run, view, "run"),
         runtime=dataclasses.replace(_raise_section(Runtime, view, "runtime"), engine=engine),

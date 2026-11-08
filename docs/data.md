@@ -809,7 +809,7 @@ one matches on its own.
 | `oid_list` | the `oid` is in an `--exclude-oids` file (the `ingest-archive --exclude` format): R5 Validation/Test, the CD21 objects `fetch-alerts` resolved |
 | `position` | an `oid` with an alert within 1.5″ (inclusive, `--radius-arcsec`) of **any** CD21 alert (every alert of that `oid` goes; `counts.matched` counts the rows within the radius), Train included (CD21 CV evaluates it), Validation and Test: the layout's `ra`/`dec` de-standardised with M1's statistics, matched on the sphere (haversine, RA wrap, poles; `protocol.groups.match_any_within`). This catches the ghosts: another `oid` of one object (another field or readout channel) and artefacts at a fixed position |
 | `near_duplicate` | the row's stamp is a pixel copy of a CD21 stamp (below); **every** row of its `oid` goes |
-| `duplicate_oid` | one alert per `oid` over the nights: `first` (default) keeps the earliest by `jd`, then `candid` (CD21's first alert); `random` keeps a draw from `default_rng([seed, 0, 10])` (`corpus_duplicates`) |
+| `duplicate_oid` | one alert per `oid` over the nights: `first` (default) keeps the earliest by `jd`, then `candid` (CD21's first alert); `random` keeps a draw from `default_rng([seed, 0, 11])` (`corpus_duplicates`) |
 
 **The near-duplicate check** (`archive/near_duplicates.py`) compares pixels, so it catches
 what the keys miss (a wrong or missing position, a renamed object). Both sides use the

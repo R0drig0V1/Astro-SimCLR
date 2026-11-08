@@ -143,10 +143,18 @@ def test_semantic_config_holds_every_other_field() -> None:
     assert semantic["command"] == "train-supervised"
     settings = semantic["settings"]
     assert isinstance(settings, dict)
-    # num_workers, feature_set and backbone_weights are semantic, but left out at their
-    # hash-neutral values (num_workers 0; feature_set all and backbone_weights none, the
-    # behaviour before the field: ADR 0016, ADR 0022).
-    neutral = {"num_workers", "feature_set", "backbone_weights"}
+    # The hash-neutral fields are semantic, but left out at their neutral values: num_workers
+    # 0, feature_set all and backbone_weights none (the behaviour before the field: ADR
+    # 0016, ADR 0022), and the rj23_* defaults (task 3.4b; ADR 0023).
+    neutral = {
+        "num_workers",
+        "feature_set",
+        "backbone_weights",
+        "rj23_scenario",
+        "rj23_bn_position",
+        "rj23_large_values",
+        "rj23_keep",
+    }
     assert set(HASH_NEUTRAL_DEFAULTS) == neutral
     assert set(settings) == FIELDS - set(NON_SEMANTIC_KEYS) - set(IDENTITY_KEYS) - neutral
     with_workers = semantic_config("train-supervised", Settings(num_workers=2))["settings"]
@@ -333,3 +341,21 @@ def test_semantic_diff_names_the_keys_that_differ() -> None:
     partial = semantic_config_from_plain("pretrain", {"lr": 0.5}, complete=False)
     assert semantic_diff(partial, b)["batch_size"] == (MISSING, Settings().batch_size)
     assert repr(MISSING) == "MISSING"
+
+
+def test_rj23_fields_hash_only_when_they_differ() -> None:
+    # Task 3.4b: the rj23_* fields at their defaults leave every older hash unchanged; an
+    # rj23 run's scenario, arm and primary keep are hashed when they are not the defaults
+    # (rj23_keep is hash-neutral, not non-semantic: ADR 0015 rule 9).
+    from astro_simclr.presets import PRESETS
+
+    full = Settings().replace(**PRESETS["rj23-full"])
+    lowres = Settings().replace(**PRESETS["rj23-lowres"])
+    semantic = semantic_config("train-supervised", lowres)["settings"]
+    assert isinstance(semantic, dict) and semantic["rj23_scenario"] == "lowres"
+    full_semantic = semantic_config("train-supervised", full)["settings"]
+    assert isinstance(full_semantic, dict) and "rj23_scenario" not in full_semantic
+    arm = full.replace(rj23_bn_position="before_concat")
+    assert config_sha256("train-supervised", arm) != config_sha256("train-supervised", full)
+    best = full.replace(rj23_keep="best")
+    assert config_sha256("train-supervised", best) != config_sha256("train-supervised", full)
