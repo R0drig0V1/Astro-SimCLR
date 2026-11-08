@@ -249,8 +249,12 @@ class PaperStampClassifier:
     KINDS: ClassVar = ("paper_stamp_classifier",)
     COMMAND: ClassVar = "train-supervised"
     kind: str = _flat("supervised_model", "paper_stamp_classifier")
-    #: ``rot4`` (faithful), ``single``, ``p4``, ``p4m`` (``config.PAPER_ARCHS``).
+    #: ``rot4`` (faithful), ``single``, ``p4``, ``p4m``, ``convnext_atto``, ``convnext_pico``
+    #: (``config.PAPER_ARCHS``; the ConvNeXt ones take ``data.image_size: 63``, ADR 0022).
     arch: str = _flat("paper_arch")
+    #: ``convnext_*`` only: the backbone's initial weights, ``none`` (from scratch) or
+    #: ``zoobot`` (``convnext_pico`` only; ``config.BACKBONE_WEIGHTS_CHOICES``; ADR 0022).
+    backbone_weights: str = _flat("backbone_weights")
     #: ``p4`` / ``p4m`` only: fields of conv1-conv2; null is ``32 // |G|``.
     group_fields: int | None = _flat("group_fields")
     #: ``none`` or ``avgpool63`` (``config.CONTEXTS``).

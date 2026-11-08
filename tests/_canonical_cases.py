@@ -55,6 +55,15 @@ CONFIG_CASES: Final[Mapping[str, tuple[str, Mapping[str, object]]]] = {
     # The feature_set diagnostic (ADR 0016): all is hash-neutral, position and none are not.
     "carrasco2021+position": ("train-supervised", {**_CD21, "feature_set": "position"}),
     "carrasco2021+feature-set-none": ("train-supervised", {**_CD21, "feature_set": "none"}),
+    # Plan row B8 (ADR 0022): backbone_weights none is hash-neutral, zoobot is not.
+    "carrasco2021+convnext-pico": (
+        "train-supervised",
+        {**_CD21, "paper_arch": "convnext_pico", "image_size": 63},
+    ),
+    "carrasco2021+convnext-pico-zoobot": (
+        "train-supervised",
+        {**_CD21, "paper_arch": "convnext_pico", "image_size": 63, "backbone_weights": "zoobot"},
+    ),
     # The legacy protocols (phase 1).
     "pretrain-legacy": ("pretrain", {}),
     "train-supervised-legacy": ("train-supervised", {}),

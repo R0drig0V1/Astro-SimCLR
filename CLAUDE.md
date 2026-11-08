@@ -19,7 +19,11 @@ tests/             pytest suite for src/ (branch coverage >= 80%)
 jupyter_examples/  2021 exploratory notebooks (they import the legacy code: run them from a
                    checkout of legacy-final); results/ saved metrics and figures
 .github/           CI (check.sh), quality (zizmor, actionlint, gitleaks, pip-audit), CodeQL,
-                   Scorecard, Dependabot; from python-template (.copier-answers.yml)
+                   Scorecard, Dependabot; from python-template (.copier-answers.yml).
+                   Triggers (ADR 0021): no PR runs (the integrator's verify-merge.sh is the
+                   PR gate); on main pushes CI on ubuntu (not docs-only), gitleaks, zizmor +
+                   actionlint if .github/ changed, pip-audit if pyproject/uv.lock changed;
+                   weekly macOS CI, CodeQL, Scorecard, pip-audit; workflow_dispatch on all
 configs/reference/  R1-R4 reference-run configs (plan "Reference runs"), with provenance
 configs/splits/     stored phase-2 decision splits (make-splits; docs/evaluation-protocol.md)
 configs/runs/       nested configs for `astro-simclr run` (task 4.2; ADR 0017)
@@ -48,6 +52,7 @@ uv sync --locked                   # .venv with the package and dev tools (Pytho
 uv sync --locked --extra cpu       # CPU torch (CI); then UV_NO_SYNC=1 for every uv run (ADR 0001)
 uv run astro-simclr --help         # the CLI (src/astro_simclr/cli.py)
 uv run astro-simclr run configs/runs/carrasco2021.yaml --show   # a nested config, resolved
+uv run astro-simclr runs reindex results/phase2   # the run registry (~/.astro-simclr; ADR 0024)
 scripts/gpu-preflight.sh --synthetic   # GPU machine check (astro-simclr preflight; ADR 0001)
 uv run ruff format . && uv run ruff check --fix .   # fix formatting and most lint findings
 uvx copier@9.19.1 update           # pull python-template improvements (clean tree only)
@@ -63,6 +68,9 @@ uvx copier@9.19.1 update           # pull python-template improvements (clean tr
   is in it).
 - **Decisions** that are hard to reverse or that future readers would question get an ADR in
   `docs/decisions/NNNN-title.md`.
+- **ADR numbers are assigned by the integrator.** A development agent asks for its number in
+  its announcement (or uses the number given in its brief) and never picks the "next free"
+  one itself: parallel PRs kept colliding on the same number.
 - `scripts/check.sh` is the single definition of "green": `/multi-agent-herdr:commit`,
   `/multi-agent-herdr:pr` and the integrator's `verify-merge.sh` all run it.
 - **Code rules:** new code goes in `src/astro_simclr/` with tests, passing ruff, mypy strict

@@ -26,6 +26,7 @@ import pytest
 import torch
 
 from astro_simclr.config import FEATURE_SETS, ConfigError, Settings, settings_from_mapping
+from astro_simclr.convnext_model import ConvNeXtStampClassifier
 from astro_simclr.data.schema import DISCARDED_FEATURES, FEATURE_NAMES
 from astro_simclr.experiments import paper_module, run_command
 from astro_simclr.feature_sets import (
@@ -42,6 +43,7 @@ from astro_simclr.paper_variants import (
     PaperHead,
     build_paper_model,
     count_parameters,
+    paper_input_side,
 )
 from astro_simclr.presets import CARRASCO2021_PRESET, PRESETS, preset_report
 from astro_simclr.reference import compare_reference
@@ -56,9 +58,9 @@ def _preset(**changes: object) -> Settings:
     return settings_from_mapping({**PRESETS[CARRASCO2021_PRESET], **changes})
 
 
-def _inputs(n: int = 6, seed: int = 0) -> tuple[torch.Tensor, torch.Tensor]:
+def _inputs(n: int = 6, seed: int = 0, side: int = 21) -> tuple[torch.Tensor, torch.Tensor]:
     generator = torch.Generator().manual_seed(seed)
-    images = torch.rand(n, 3, 21, 21, generator=generator, dtype=torch.float64)
+    images = torch.rand(n, 3, side, side, generator=generator, dtype=torch.float64)
     features = torch.randn(n, N_FEATURES, generator=generator, dtype=torch.float64)
     return images, features
 
@@ -129,7 +131,7 @@ def test_none_is_the_without_features_model(arch: str) -> None:
     none = build_paper_model(arch, feature_set="none").double().eval()
     assert type(none) is type(without)
     _assert_same_state(none, without)
-    images, features = _inputs()
+    images, features = _inputs(side=paper_input_side(arch))
     with torch.no_grad():
         assert torch.equal(none(images, features), without(images, None))
 
@@ -196,7 +198,8 @@ def test_none_trains_bit_identically(classifier_f32_dir: Path, tmp_path: Path) -
 def test_position_reads_only_the_coordinates(arch: str) -> None:
     torch.manual_seed(0)
     model = build_paper_model(arch, feature_set="position").double().eval()
-    head = model.head if isinstance(model, GroupStampClassifier) else model
+    grouped = isinstance(model, GroupStampClassifier | ConvNeXtStampClassifier)
+    head = model.head if grouped else model
     assert isinstance(head, PaperStampClassifier | PaperHead)
     assert head.bn_features is not None and head.bn_features.num_features == 6
     assert head.fc2.in_features == 64 + 6
@@ -204,7 +207,7 @@ def test_position_reads_only_the_coordinates(arch: str) -> None:
     torch.manual_seed(0)
     faithful = build_paper_model(arch)
     assert list(model.state_dict()) == list(faithful.state_dict())
-    images, features = _inputs()
+    images, features = _inputs(side=paper_input_side(arch))
     other = [i for i in range(N_FEATURES) if i not in feature_columns("position")]
     changed = features.clone()
     changed[:, other] = torch.randn(len(features), len(other), dtype=torch.float64)

@@ -31,8 +31,8 @@ view, and a nested config proves hash equality by lowering to it.
    - `augment`: `transforms` (a registry name), `paper` (rot90, C5, C6, C7).
 
    A variant holds only the fields that choice reads: the paper model's input flags are in
-   its variant, not in `data`, because no other model reads them (so is `feature_set`,
-   ADR 0016), and `pretrained` is in
+   its variant, not in `data`, because no other model reads them (so are `feature_set`,
+   ADR 0016, and `backbone_weights`, ADR 0022), and `pretrained` is in
    `linear_eval` and `fine_tune`. Loss terms sit with the model that has them
    (`beta_loss` in the classifiers, the temperature in `simclr`); a ninth `loss` section
    would hold one field per model.

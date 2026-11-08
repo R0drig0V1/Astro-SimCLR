@@ -56,6 +56,7 @@ _CARRASCO2021: Final = Config(
     # The paper's 4-rotation model on the float input (tasks 2.1, 2.2a; ADR 0005).
     model=PaperStampClassifier(
         arch="rot4",
+        backbone_weights="none",
         group_fields=None,
         context="none",
         feature_set="all",
