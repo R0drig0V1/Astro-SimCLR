@@ -247,7 +247,13 @@ only on this protocol, never on a concrete transform.
   them with `lightning.seed_everything(seed, workers=True)`; DataLoader workers are seeded
   by Lightning's `pl_worker_init_function`, which the Trainer injects (a DataLoader built
   outside a Trainer must pass it as `worker_init_fn`). Same seed → identical batches, with
-  0 or more workers (tested with 0 and 2).
+  0 or more workers, and a different seed → different batches (tested with 0 workers
+  everywhere and with 2 workers where they fork). The 2-worker case forks its workers
+  explicitly and is skipped, with its reason, on macOS: a spawned worker re-imports torch,
+  torchvision and Lightning (about 5 s of CPU each; 26 s of the suite), and fork is unsafe
+  there once Metal has started. The start method does not change what is checked: torch's
+  worker loop seeds torch, numpy and `random` from the base seed in every worker under any
+  start method, then the init function reseeds them. The Linux CI job runs it.
 - **Naming change:** registry names are descriptive; the legacy names keep working as
   aliases, so no config needs to change.
 - **Characterization:** `tests/fixtures/augmentations/legacy_views.npz`, from
@@ -839,8 +845,8 @@ memory-mapped:
 does not); the scheduler steps once per epoch; selection on `loss_train_enc` and `loss_val`;
 EarlyStopping stops a flat run; every epoch and every validation pass starts from an empty
 buffer (a module whose predictions flip between passes); downstream checkpoints reload.
-Worker seeding (`num_workers=2`) is covered by the augmentation tests, not repeated here
-because spawned workers cost about 25 s on macOS.
+Worker seeding (`num_workers=2`) is covered by the augmentation tests (on Linux, where the
+workers fork), not repeated here because spawned workers cost about 25 s on macOS.
 
 **Behaviour changes against the legacy code** (no result of a valid legacy run changes):
 
