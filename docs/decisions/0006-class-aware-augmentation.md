@@ -69,16 +69,36 @@ result, and the user asked whether the difference would be computed or augmented
    the integrator's review of PR #20). Putting the spike in the template for `a < 0` was
    rejected: a hot pixel surviving a co-added template is rarer, and real negative Bogus are
    mostly bad subtractions. Now the synthetic differences have a median centre z of +30.7
-   (minimum +8.6 over 1,000 rows). **SN rows are never replaced**: SN is the weakest class
-   (1,396 Train stamps), and C6 would otherwise remove its rows in proportion to the
-   fraction. The label is Bogus and the features are those of a real positive-alert Bogus
-   row (stored `isdiffpos` 0) **of the same batch**, instead of a separate device-resident
-   bank: the batch is a shuffled stream of the run's own training part (also for split
-   runs), it needs no extra state, and a batch has about 20 % Bogus after the tiling (a
-   batch without such a donor replaces nothing). **A real stamp is never relabelled**: the
-   row's stamp is only raw material, and its own label is replaced together with its image.
-   A replaced row is not noised again by C5. On `red` Train the share of stamps usable as a
-   source is AGN 44 %, VS 36 %, Asteroid 92 %, Bogus 57 %.
+   (minimum +8.6 over 1,000 rows; +29.1 and +8.3 with the source classes below).
+
+   **Only Asteroid and Bogus rows are sources.** A synthetic Bogus keeps its source's
+   template, so the source class decides what lies under the spike. With
+   `class_augment.template_centre_z` (the template's central 3x3 mean as z against its
+   border; a source at the centre when z > 5), on `red` Train a source sits at the template
+   centre in 99 % of the AGN, 98 % of the VS, 61 % of the SN, 2 % of the Asteroids, 33 % of
+   the Bogus and 30 % of the positive-alert Bogus. A second version (after the fix above)
+   still took AGN and VS sources, so 49 % of its synthetic templates had a source at the
+   centre (the integrator's measure on 6,000 stamps, 2026-11-08), with two failures: a
+   galaxy nucleus or a star under the spike while the donor Bogus' features say there is
+   no PS1 source nearby (`distpsnr1 < 1"` for 100 % of the AGN, 92 % of the VS, 5 % of the
+   positive Bogus), and a hot pixel on a galaxy nucleus looks like a faint nuclear SN, a
+   case the model already confuses with Bogus (SN -> Bogus 25 of 2,500 on validation).
+   Now 6.1 % of the synthetic templates have a source at the centre, against 29.5 % of the
+   real positive-alert Bogus; `scripts/inspect_class_augment.py` checks that the synthetic
+   share is at most the real one + 0.05 (and exits with 1 otherwise), and a unit test
+   checks it on a synthetic batch. **SN rows are never replaced** either: SN is the weakest
+   class (1,396 Train stamps).
+
+   **Features: a Bogus source keeps its own; an Asteroid source takes a donor's**, those of
+   a real positive-alert Bogus row (stored `isdiffpos` 0) **of the same batch**, instead of
+   a separate device-resident bank: the batch is a shuffled stream of the run's own
+   training part (also for split runs), it needs no extra state, and a batch has about
+   20 % Bogus after the tiling (an Asteroid source without a donor is skipped). **A real
+   stamp of another class is never relabelled**: an Asteroid row's stamp is only raw
+   material, and its own label is replaced together with its image; a Bogus row stays a
+   Bogus. A replaced row is not noised again by C5. On `red` Train the share of stamps
+   usable as a source is Asteroid 92 % and Bogus 57 %, and the synthetic rows come 62 %
+   from Asteroids and 38 % from Bogus.
 6. **The spike is narrower than any PSF in the data, by an explicit, tested measure.**
    `moment_fwhm` is the circular-Gaussian FWHM from the pixel second moments less a pixel's
    own 1/12; for a pixel-integrated Gaussian it equals the Gaussian's FWHM, which is what
@@ -116,7 +136,7 @@ result, and the user asked whether the difference would be computed or augmented
 - An augmented step costs a host-device round trip (the selection of rows and the draws are
   on the CPU) and C6's construction on the CPU for the few replaced rows.
 - C6 shifts the class balance of each batch towards Bogus by up to `synthetic_bogus`, taken
-  from AGN, VS, Asteroid and Bogus rows (never SN); the tiling is unchanged.
+  from Asteroid and Bogus rows only; the tiling is unchanged.
 - Old checkpoints of `PaperClassifierModule` load unchanged (the new hyperparameters have
   defaults); old runs' metrics no longer warn about the 2.5 flags in `compare-reference`.
 - Later ideas, not built: fake SN injected on real host galaxies (aimed at SN -> Asteroid);

@@ -43,11 +43,18 @@ template's, which the relation already carries.
   the min-max. **Only positive alerts (``a > 0``) are sources**: an alert is a peak at the
   centre of its stored difference, negative alerts included (their difference is stored
   flipped), and a hot pixel in the science can only trigger a positive alert, so a source
-  with ``a < 0`` would give a central dip that no real stamp has. SN rows are never
-  replaced (the weakest class keeps all its rows). The label is Bogus, and the features are
-  those of a real positive-alert Bogus row of the same batch (a donor from the batch rather
-  than a separate bank: always the run's own training part, also for split runs). A real
-  stamp is never relabelled: the replaced row's stamp is only the raw material.
+  with ``a < 0`` would give a central dip that no real stamp has. **Only Asteroid and Bogus
+  rows are sources**: their templates are mostly empty at the centre, like the real
+  positive-alert Bogus (:func:`template_centre_z`: on ``red`` Train a source at the
+  template's centre in 2 % of the Asteroids, 25 % of the Bogus and 30 % of the positive
+  Bogus, against 100 % of the AGN and 98 % of the VS). An AGN or VS template would put a
+  galaxy nucleus or a star under the spike, which contradicts a Bogus donor's features (no
+  PS1 source nearby) and looks like a faint nuclear SN, a case the model already confuses
+  with Bogus. SN rows are never replaced either. The label is Bogus; a Bogus source keeps
+  its own features, and an Asteroid source takes those of a real positive-alert Bogus row
+  of the same batch (a donor from the batch rather than a separate bank: always the run's
+  own training part, also for split runs). A real stamp of another class is never
+  relabelled: the replaced row's stamp is only the raw material.
 
 **The spike is sharper than any PSF** (:func:`moment_fwhm`, :data:`MIN_PSF_FWHM_PX`). The
 smallest PSF FWHM measured on ``red`` Train is 1.19 px: a pixel-integrated circular Gaussian
@@ -93,6 +100,7 @@ from astro_simclr.paper_model import PAPER_CROP
 
 __all__ = [
     "BORDER_WIDTH",
+    "CENTRE_SOURCE_Z",
     "DEFAULT_MIN_R2",
     "DISCRETE_FEATURES",
     "FIT_COLUMNS",
@@ -116,6 +124,7 @@ __all__ = [
     "spike_patterns",
     "stamp_fits",
     "synthetic_bogus",
+    "template_centre_z",
 ]
 
 #: The columns of :func:`stamp_fits`: ``diff ~ a*sci + b*tmpl + c``, its R^2, and the
@@ -139,7 +148,10 @@ _ISDIFFPOS: Final = KEPT_FEATURE_NAMES.index("isdiffpos")
 #: Stored ``isdiffpos`` is 0 (a positive alert, ``a > 0``) or 2.12 (negative).
 _ISDIFFPOS_SPLIT: Final = 1.0
 _BOGUS: Final = LABEL_NAMES.index("Bogus")
-_SN: Final = LABEL_NAMES.index("SN")
+#: The classes whose rows C6 may build a synthetic Bogus from (module docstring).
+_C6_SOURCE_CLASSES: Final = (LABEL_NAMES.index("Asteroid"), _BOGUS)
+#: :func:`template_centre_z` above this: a source at the template's centre.
+CENTRE_SOURCE_Z: Final = 5.0
 
 #: The smallest PSF FWHM in the data, in pixels (measured on the differences; module
 #: docstring).
@@ -242,6 +254,25 @@ def fit_exclusions(
         count[name] = int(rows.sum())
         excluded[name] = float((fits[rows, 3] < min_r2).mean()) if rows.any() else 0.0
     return {"min_r2": min_r2, "excluded": excluded, "count": count}
+
+
+def template_centre_z(images: npt.NDArray[np.floating[Any]]) -> npt.NDArray[np.float64]:
+    """(N,) the template's central 3x3 mean as z against its border, of (N, C, S, S) crops.
+
+    ``(mean(centre 3x3) - median(border)) / (1.4826 MAD(border))`` on channel 1, the border
+    of :data:`BORDER_WIDTH`; above :data:`CENTRE_SOURCE_Z` the template has a source at the
+    centre (a galaxy nucleus, a star). A border with MAD 0 gives 0.
+    """
+    tmpl = np.asarray(images[:, 1], dtype=np.float64)
+    side = tmpl.shape[-1]
+    values = tmpl[:, _border(side)]
+    median = np.median(values, axis=1)
+    mad = _MAD_TO_SIGMA * np.median(np.abs(values - median[:, None]), axis=1)
+    mid = side // 2
+    centre = tmpl[:, mid - 1 : mid + 2, mid - 1 : mid + 2].mean(axis=(1, 2))
+    safe = np.where(mad > 0, mad, 1.0)
+    z: npt.NDArray[np.float64] = np.where(mad > 0, (centre - median) / safe, 0.0)
+    return z
 
 
 def masked_pixels(images: torch.Tensor) -> torch.Tensor:
@@ -397,14 +428,15 @@ def synthetic_bogus(
     ``images`` (B, 3, S, S) crops (no context channels), ``features`` (B, 23), ``targets`` (B,
     5) one-hot, ``fits`` (B, 6) of :func:`stamp_fits`. Returns the new images, features and
     targets, and which rows were replaced. The construction is in the module docstring. A row
-    can be a source when it is not an SN (the weakest class keeps all its rows), ``R^2 >=
-    min_r2``, ``a > 0`` and ``b < 0`` (a positive alert, whose difference is not stored
-    flipped: a hot pixel in the science can only trigger a positive alert; the template
-    enters the static science with a positive scale), its science sigma is positive and no
-    pixel is masked. The feature donor is a real positive-alert Bogus row of the batch
-    (stored ``isdiffpos`` 0), chosen uniformly among the original rows, before any
-    replacement; without one nothing is replaced. The rows are taken in a random order, so
-    fewer than ``round(fraction * B)`` are replaced when sources run out. Draws, always: a
+    can be a source when it is an Asteroid or a Bogus (templates mostly empty at the centre),
+    ``R^2 >= min_r2``, ``a > 0`` and ``b < 0`` (a positive alert, whose difference is not
+    stored flipped: a hot pixel in the science can only trigger a positive alert; the
+    template enters the static science with a positive scale), its science sigma is positive
+    and no pixel is masked. A Bogus source keeps its features; an Asteroid source takes those
+    of a donor, a real positive-alert Bogus row of the batch (stored ``isdiffpos`` 0) chosen
+    uniformly among the original rows, before any replacement, and is skipped when there is
+    none. The rows are taken in a random order, so fewer than ``round(fraction * B)`` are
+    replaced when sources run out. Draws, always: a
     permutation of B, B uniforms (donors), (B, S, S) normals (noise), B uniforms (spike S/N)
     and :func:`spike_patterns` of B. The inputs are not modified.
 
@@ -428,15 +460,23 @@ def synthetic_bogus(
     a, b, c, r2, sigma = (fits_cpu[:, k] for k in (0, 1, 2, 3, 4))
     unmasked = ~masked_pixels(images[:, :3]).flatten(1).any(dim=1).cpu().numpy()
     labels = targets.argmax(dim=1).cpu().numpy()
-    source = (labels != _SN) & (r2 >= min_r2) & (a > 0) & (b < 0) & (sigma > 0) & unmasked
+    source = (
+        np.isin(labels, _C6_SOURCE_CLASSES)
+        & (r2 >= min_r2)
+        & (a > 0)
+        & (b < 0)
+        & (sigma > 0)
+        & unmasked
+    )
     positive = features[:, _ISDIFFPOS].cpu().numpy() < _ISDIFFPOS_SPLIT
     donors = np.flatnonzero((labels == _BOGUS) & positive)
     if donors.size == 0:
-        return images, features, targets, replaced
+        source &= labels == _BOGUS  # an Asteroid source needs a donor
     donor_of = np.full(n, -1)
     for row in order[source[order]][:wanted]:
         replaced[row] = True
-        donor_of[row] = donors[int(donor_u[row] * donors.size)]
+        bogus = labels[row] == _BOGUS
+        donor_of[row] = row if bogus else donors[int(donor_u[row] * donors.size)]
     if not replaced.any():
         return images, features, targets, replaced
 

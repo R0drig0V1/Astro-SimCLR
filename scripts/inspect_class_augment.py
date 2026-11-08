@@ -11,10 +11,13 @@ per-channel min-max, NaN -> 0), this writes to ``OUT``:
   synthetic_bogus``, each from a random Train stamp of its batch), next to a real
   positive-alert Bogus and a real Asteroid;
 - ``report.json`` (also printed): per class, the share of stamps excluded by
-  ``R^2 < --min-r2`` and the share usable as a C6 source; the centre z of the difference
-  (against the border median and MAD) of 1,000 synthetic rows and of real stamps per class
-  and sign of ``a`` (every real alert is a central peak); the PSF FWHM measurement that
-  sets ``class_augment.MIN_PSF_FWHM_PX``; the widest spike's FWHM.
+  ``R^2 < --min-r2`` and the share usable as a C6 source; the source classes of 1,000
+  synthetic rows; the share of templates with a source at the centre
+  (``class_augment.template_centre_z``), synthetic against the real positive-alert Bogus
+  (``passed``: at most 0.05 above it; the script exits with 1 otherwise); the centre z of
+  the difference (against the border median and MAD) of 1,000 synthetic rows and of real
+  stamps per class and sign of ``a`` (every real alert is a central peak); the PSF FWHM
+  measurement that sets ``class_augment.MIN_PSF_FWHM_PX``; the widest spike's FWHM.
 
 **PSF measurement.** A pixel-integrated circular Gaussian plus a constant is fitted
 (Levenberg-Marquardt per stamp, float64) to the central 11x11 pixels of the stored 63x63
@@ -50,6 +53,7 @@ import matplotlib.pyplot as plt
 from astro_simclr.data.prepared import load_prepared
 from astro_simclr.data.schema import LABEL_NAMES
 from astro_simclr.training.class_augment import (
+    CENTRE_SOURCE_Z,
     DEFAULT_MIN_R2,
     MIN_PSF_FWHM_PX,
     NOISE_STREAM,
@@ -62,6 +66,7 @@ from astro_simclr.training.class_augment import (
     noise_augment,
     stamp_fits,
     synthetic_bogus,
+    template_centre_z,
 )
 from astro_simclr.training.device_data import float_crops
 
@@ -142,8 +147,12 @@ def _c6_grid(
     labels: np.ndarray,
     fits: np.ndarray,
     args: argparse.Namespace,
-) -> dict[str, float]:
-    """Write ``C6_synthetic.png``; return the median centre z of 1,000 synthetic differences."""
+) -> tuple[dict[str, float], np.ndarray, np.ndarray]:
+    """Write ``C6_synthetic.png``; measure 1,000 synthetic rows.
+
+    Returns the median and minimum centre z of their differences, their crops and their
+    source classes.
+    """
     rng = np.random.default_rng(args.seed + 1)
     bogus, asteroid = (
         np.flatnonzero(labels == LABEL_NAMES.index(c)) for c in ("Bogus", "Asteroid")
@@ -151,6 +160,7 @@ def _c6_grid(
     # Real positive-alert Bogus (the kind C6 makes) with a well-explained difference.
     eligible = (fits[:, 3] >= args.min_r2) & (fits[:, 0] > 0)
     synthetic: list[tuple[np.ndarray, str]] = []
+    sources: list[int] = []
     step = 0
     while len(synthetic) < max(args.rows, _Z_SAMPLES):
         rows = rng.choice(len(labels), 64, replace=False)
@@ -168,6 +178,7 @@ def _c6_grid(
             source = rows[j]
             text = f"from {LABEL_NAMES[labels[source]]} #{source} a={fits[source, 0]:+.2f}"
             synthetic.append((built[j].numpy(), text))
+            sources.append(int(labels[source]))
         step += 1
     z = np.array([_centre_z(crop[2]) for crop, _ in synthetic[:_Z_SAMPLES]])
     real_bogus = rng.choice(bogus[eligible[bogus]], args.rows, replace=False)
@@ -178,7 +189,34 @@ def _c6_grid(
     ]
     title = "C6: synthetic hot-pixel Bogus | real Bogus | real Asteroid (Train); sqrt p1-max"
     _grid(out / "C6_synthetic.png", title, grid[: args.rows], ["synthetic", "real", "real"])
-    return {"median": round(float(np.median(z)), 1), "min": round(float(z.min()), 1)}
+    crops = np.stack([crop for crop, _ in synthetic[:_Z_SAMPLES]])
+    summary = {"median": round(float(np.median(z)), 1), "min": round(float(z.min()), 1)}
+    return summary, crops, np.array(sources[:_Z_SAMPLES])
+
+
+def _centre_source_report(
+    images: np.ndarray, labels: np.ndarray, fits: np.ndarray, synthetic: np.ndarray
+) -> dict[str, Any]:
+    """The share of templates with a source at the centre: real per class, and synthetic.
+
+    ``class_augment.template_centre_z`` above ``CENTRE_SOURCE_Z``. The check of the
+    integrator's review (2026-11-08): the synthetic share must not exceed the real
+    positive-alert Bogus share by more than 0.05.
+    """
+    has_source = template_centre_z(images) > CENTRE_SOURCE_Z
+    positive_bogus = (labels == LABEL_NAMES.index("Bogus")) & (fits[:, 0] > 0)
+    real = float(has_source[positive_bogus].mean())
+    made = float((template_centre_z(synthetic) > CENTRE_SOURCE_Z).mean())
+    return {
+        "z_threshold": CENTRE_SOURCE_Z,
+        "real_positive_bogus": round(real, 3),
+        "synthetic": round(made, 3),
+        "passed": made <= real + 0.05,
+        "real_per_class": {
+            name: round(float(has_source[labels == k].mean()), 3)
+            for k, name in enumerate(LABEL_NAMES)
+        },
+    }
 
 
 def _centre_z(image: np.ndarray) -> float:
@@ -326,12 +364,14 @@ def main() -> None:
     images, features, labels = train.images, train.features, train.labels
     fits = stamp_fits(images)
     _c5_grids(args.out, images, labels, fits, args)
-    synthetic_z = _c6_grid(args.out, images, features, labels, fits, args)
+    synthetic_z, synthetic_crops, synthetic_sources = _c6_grid(
+        args.out, images, features, labels, fits, args
+    )
 
     a, b = fits[:, 0], fits[:, 1]
     unmasked = ~masked_pixels(torch.from_numpy(images)).flatten(1).any(dim=1).numpy()
     source = (
-        (labels != LABEL_NAMES.index("SN"))
+        np.isin(labels, [LABEL_NAMES.index("Asteroid"), LABEL_NAMES.index("Bogus")])
         & (fits[:, 3] >= args.min_r2)
         & (a > 0)
         & (b < 0)
@@ -346,6 +386,11 @@ def main() -> None:
         "c6_source_share": {
             name: round(float(source[labels == k].mean()), 3) for k, name in enumerate(LABEL_NAMES)
         },
+        "c6_synthetic_sources": {
+            name: round(float((synthetic_sources == k).mean()), 3)
+            for k, name in enumerate(LABEL_NAMES)
+        },
+        "template_centre_source": _centre_source_report(images, labels, fits, synthetic_crops),
         "difference_centre_z": {
             "synthetic": synthetic_z,
             "real_median": _real_centre_z(images, labels, fits),
@@ -361,6 +406,8 @@ def main() -> None:
     text = json.dumps(report, indent=2)
     (args.out / "report.json").write_text(text + "\n", encoding="utf-8")
     print(text)
+    if not report["template_centre_source"]["passed"]:
+        raise SystemExit("the synthetic templates have a source at the centre too often")
 
 
 if __name__ == "__main__":
