@@ -9,7 +9,7 @@ Ports of the legacy ``utils/training.py`` (PyTorch Lightning 1.4):
 | :class:`FineTuneModule` | ``Fine_tuning`` | the pretrained encoder and a new head |
 | :class:`SupervisedCEModule` | ``Supervised_Cross_Entropy`` | ``StampClassifier`` from scratch |
 | :class:`SupervisedCEResNetModule` | ``Supervised_Cross_Entropy_Resnet`` | a ResNet + linear head |
-| :class:`PaperClassifierModule` | (new, task 2.2a) | ``PaperStampClassifier`` from scratch |
+| :class:`PaperClassifierModule` | (new, task 2.2a) | the paper model or a 2.5 variant |
 
 What changed for Lightning 2 (the arithmetic of every step is the legacy one):
 
@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Final
 
 import lightning as L
+import numpy as np
 import torch
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch import nn
@@ -53,7 +54,8 @@ from astro_simclr.models import (
     build_encoder,
 )
 from astro_simclr.optim import cosine_warmup_scheduler
-from astro_simclr.paper_model import PAPER_DROP_RATE, PaperStampClassifier
+from astro_simclr.paper_model import PAPER_DROP_RATE
+from astro_simclr.paper_variants import build_paper_model
 from astro_simclr.training.metrics import METRIC_NAMES, classification_metrics, confusion_matrix
 from astro_simclr.training.optimizers import (
     PAPER_ADAM_BETAS,
@@ -287,9 +289,19 @@ class PaperClassifierModule(ClassifierModule):
     ``adam_betas`` names the betas of ``Adam`` / ``AdamW`` (``optimizers.PAPER_ADAM_BETAS``):
     ``code`` (0.9, 0.999) is ALeRCE's training (task 2.2c), ``paper`` (0.5, 0.9) a diagnostic.
 
+    The variants of task 2.5-models (``paper_variants.build_paper_model``): ``paper_arch``
+    (``rot4``, faithful; ``single``; ``p4``; ``p4m``), ``group_fields`` and ``context``
+    (``none`` or ``avgpool63``: the batches then have 6 channels). The defaults build the
+    faithful model with the same draws from the global generator. ``rot90_augment`` rotates
+    every training stamp by ``k * 90`` degrees, ``k`` uniform in 0..3, drawn from a CPU
+    generator seeded with ``[augment_seed, global_step]``: independent of the device and of
+    the other random draws, and the same after a ``--resume``. Validation and test are
+    never augmented.
+
     Raises:
         UnknownOptimizerError: if ``optimizer`` is not a known name.
-        ValueError: if ``adam_betas`` is not a key of ``PAPER_ADAM_BETAS``.
+        ValueError: if ``adam_betas`` is not a key of ``PAPER_ADAM_BETAS``, ``augment_seed``
+            is negative, or the variant is invalid (``build_paper_model``).
     """
 
     def __init__(
@@ -302,6 +314,11 @@ class PaperClassifierModule(ClassifierModule):
         dropout_active: bool = False,
         drop_rate: float = PAPER_DROP_RATE,
         adam_betas: str = "code",
+        paper_arch: str = "rot4",
+        group_fields: int | None = None,
+        context: str = "none",
+        rot90_augment: bool = False,
+        augment_seed: int = 0,
     ) -> None:
         super().__init__(
             beta_loss=beta_loss, lr=lr, optimizer=optimizer, with_features=with_features
@@ -309,16 +326,48 @@ class PaperClassifierModule(ClassifierModule):
         if adam_betas not in PAPER_ADAM_BETAS:
             valid = ", ".join(PAPER_ADAM_BETAS)
             raise ValueError(f"adam_betas must be one of {valid}, got {adam_betas!r}")
+        if augment_seed < 0:
+            raise ValueError(f"augment_seed must be >= 0, got {augment_seed}")
         self.adam_betas = adam_betas
-        self.model = PaperStampClassifier(
-            with_features=with_features, dropout_active=dropout_active, drop_rate=drop_rate
+        self.rot90_augment = rot90_augment
+        self.augment_seed = augment_seed
+        self.model = build_paper_model(
+            paper_arch,
+            group_fields=group_fields,
+            context=context,
+            with_features=with_features,
+            dropout_active=dropout_active,
+            drop_rate=drop_rate,
         )
         self.save_hyperparameters()
 
     def forward(self, x_img: torch.Tensor, x_feat: torch.Tensor) -> torch.Tensor:
-        """Crops (B, 3, 21, 21) and features -> (B, 5) logits."""
+        """Crops (B, C, 21, 21) and features -> (B, 5) logits (C: 3, or 6 with context)."""
         out: torch.Tensor = self.model(x_img, x_feat if self.with_features else None)
         return out
+
+    def rotation_steps(self, n: int, step: int) -> torch.Tensor:
+        """The ``k`` (int64, CPU, values 0..3) of ``n`` training stamps at global step ``step``.
+
+        Drawn from a NumPy generator seeded with ``[augment_seed, step]`` only (its
+        ``SeedSequence`` mixes both into the whole state, unlike a 32-bit torch seed), so the
+        same run on another device, or resumed, rotates the same stamps the same way.
+        """
+        rng = np.random.default_rng([self.augment_seed, step])
+        return torch.from_numpy(rng.integers(0, 4, size=n, dtype=np.int64))
+
+    def training_step(self, batch: ClassifierBatch, batch_idx: int) -> torch.Tensor:
+        """One optimisation step, on rotated stamps when ``rot90_augment``."""
+        if self.rot90_augment:
+            x_img, x_feat, targets = batch
+            k = self.rotation_steps(x_img.shape[0], self.global_step).to(x_img.device)
+            rotations = torch.stack([torch.rot90(x_img, j, dims=(2, 3)) for j in range(4)])
+            batch = (
+                rotations[k, torch.arange(x_img.shape[0], device=x_img.device)],
+                x_feat,
+                targets,
+            )
+        return self._step(batch, "train")
 
     def configure_optimizers(self) -> OptimizerLRScheduler:
         """The optimizer with the betas ``adam_betas`` names, no LR schedule."""

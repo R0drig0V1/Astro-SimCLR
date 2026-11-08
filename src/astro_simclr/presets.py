@@ -80,6 +80,12 @@ _CARRASCO2021: Final[Mapping[str, object]] = {
     "val_every_n_steps": 10,
     "horizon_increment": 10_000,
     "early_stopping": False,
+    # Architecture (task 2.5-models; ADR 0005): the paper's 4-rotation model, no context.
+    # Listed so that a variant run (another value) is recorded as a deviation.
+    "paper_arch": "rot4",
+    "group_fields": None,
+    "context": "none",
+    "rot90_augment": False,
 }
 
 #: Preset name -> the settings it sets (``train-supervised`` only).

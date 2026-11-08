@@ -48,8 +48,10 @@ from astro_simclr.models import N_CLASSES, N_FEATURES
 __all__ = [
     "PAPER_CROP",
     "PAPER_DROP_RATE",
+    "PAPER_IN_CHANNELS",
     "PAPER_PAD",
     "PaperStampClassifier",
+    "check_paper_images",
 ]
 
 #: Side of the centre crop the paper model takes (ALeRCE ``CROP_SIZE`` 21).
@@ -58,6 +60,8 @@ PAPER_CROP: Final = 21
 PAPER_PAD: Final = 3
 #: The dropout rate of M1's dropout layers (``droprate0.5000``), used only when they are active.
 PAPER_DROP_RATE: Final = 0.5
+#: Input channels of the paper model: science, template, difference.
+PAPER_IN_CHANNELS: Final = 3
 #: Keras ``BatchNormalization`` epsilon (the default, which M1's feature BN kept).
 _BN_EPS: Final = 1e-3
 #: Width of fc1-fc3 (ALeRCE ``units=64``).
@@ -79,6 +83,20 @@ def _glorot_bias_(bias: torch.Tensor) -> None:
     """
     limit = math.sqrt(3.0 / bias.shape[0])
     nn.init.uniform_(bias, -limit, limit)
+
+
+def check_paper_images(x_img: torch.Tensor, channels: int, model: str) -> None:
+    """Check that ``x_img`` is a batch of 21x21 crops with ``channels`` channels.
+
+    Raises:
+        ValueError: if ``x_img`` is not (N, ``channels``, 21, 21).
+    """
+    if x_img.ndim != 4 or tuple(x_img.shape[1:]) != (channels, PAPER_CROP, PAPER_CROP):
+        msg = (
+            f"{model} needs images of shape (N, {channels}, {PAPER_CROP}, {PAPER_CROP}), "
+            f"got {tuple(x_img.shape)}"
+        )
+        raise ValueError(msg)
 
 
 class PaperStampClassifier(nn.Module):
@@ -119,10 +137,20 @@ class PaperStampClassifier(nn.Module):
 
     Trainable parameters: 441,075 with features, 439,557 without (M1's counts).
 
+    Two variants of task 2.5-models (``paper_variants``; the defaults are the faithful model,
+    whose initialisation draws and outputs they leave unchanged):
+
+    - ``in_channels=6`` takes the 63x63 context (``data.float_input.context_split``) as 3
+      more channels after the crop's: only conv1 widens (+1,536 parameters).
+    - ``rotation_mean=False`` is the single-pass model: the trunk runs once on the
+      unrotated batch, with no mean (a quarter of the MACs, not invariant; the control arm
+      trained with rot90 augmentation).
+
     Raises:
-        ValueError: at construction, if ``drop_rate`` is not in [0, 1); in ``forward``, if
-            the images are not (N, 3, 21, 21), or with features if ``x_feat`` is missing or
-            not (N, 23).
+        ValueError: at construction, if ``drop_rate`` is not in [0, 1) or ``in_channels``
+            is not positive; in ``forward``, if the images are not
+            (N, ``in_channels``, 21, 21), or with features if ``x_feat`` is missing or not
+            (N, 23).
     """
 
     def __init__(
@@ -131,14 +159,22 @@ class PaperStampClassifier(nn.Module):
         with_features: bool = True,
         dropout_active: bool = False,
         drop_rate: float = PAPER_DROP_RATE,
+        in_channels: int = PAPER_IN_CHANNELS,
+        rotation_mean: bool = True,
     ) -> None:
         super().__init__()
         if not 0 <= drop_rate < 1:
             raise ValueError(f"drop_rate must be in [0, 1), got {drop_rate}")
+        if in_channels < 1:
+            raise ValueError(f"in_channels must be >= 1, got {in_channels}")
         self.with_features = with_features
         self.dropout_active = dropout_active
+        self.in_channels = in_channels
+        self.rotation_mean = rotation_mean
+        # The layers are built (and reset_parameters draws them) in M1's order: the
+        # faithful model's seeded initialisation must not change.
         self.pad = nn.ZeroPad2d(PAPER_PAD)
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=4)
+        self.conv1 = nn.Conv2d(in_channels, 32, kernel_size=4)
         self.conv2 = nn.Conv2d(32, 32, kernel_size=5, padding="same")
         self.pool1 = nn.MaxPool2d(2)
         self.conv3 = nn.Conv2d(32, 64, kernel_size=5, padding="same")
@@ -189,19 +225,22 @@ class PaperStampClassifier(nn.Module):
         return self._dropout(self.drop1, x)
 
     def forward(self, x_img: torch.Tensor, x_feat: torch.Tensor | None = None) -> torch.Tensor:
-        """Crops (N, 3, 21, 21) and, with features, ``x_feat`` (N, 23) -> (N, 5) logits.
+        """Crops (N, ``in_channels``, 21, 21) and, with features, ``x_feat`` (N, 23) -> (N, 5).
 
         Without features, ``x_feat`` is ignored.
         """
-        if x_img.ndim != 4 or tuple(x_img.shape[1:]) != (3, PAPER_CROP, PAPER_CROP):
-            msg = (
-                f"PaperStampClassifier needs images of shape (N, 3, {PAPER_CROP}, {PAPER_CROP}), "
-                f"got {tuple(x_img.shape)}"
-            )
-            raise ValueError(msg)
+        check_paper_images(x_img, self.in_channels, type(self).__name__)
         n = x_img.shape[0]
-        rotations = torch.cat([torch.rot90(x_img, k, dims=(2, 3)) for k in range(_N_ROTATIONS)])
-        h = self._trunk(rotations).view(_N_ROTATIONS, n, _HIDDEN).mean(dim=0)
+        if self.rotation_mean:
+            rotations = torch.cat([torch.rot90(x_img, k, dims=(2, 3)) for k in range(_N_ROTATIONS)])
+            h = self._trunk(rotations).view(_N_ROTATIONS, n, _HIDDEN).mean(dim=0)
+        else:
+            h = self._trunk(x_img)
+        return self._head(h, x_feat)
+
+    def _head(self, h: torch.Tensor, x_feat: torch.Tensor | None) -> torch.Tensor:
+        """The 64-d image representation and the features -> (N, 5) logits."""
+        n = h.shape[0]
         if self.bn_features is not None:
             if x_feat is None or tuple(x_feat.shape) != (n, N_FEATURES):
                 got = None if x_feat is None else tuple(x_feat.shape)

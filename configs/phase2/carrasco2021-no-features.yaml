@@ -35,3 +35,10 @@ max_steps: 30000
 val_every_n_steps: 10
 horizon_increment: 10000
 early_stopping: false
+
+# Architecture (task 2.5-models; ADR 0005): the paper's 4-rotation trunk, no 63x63 context.
+# The 2.5 variants change these (src/astro_simclr/paper_variants.py, VARIANTS).
+paper_arch: rot4
+group_fields: null
+context: none
+rot90_augment: false

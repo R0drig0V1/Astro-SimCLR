@@ -556,3 +556,52 @@ def test_resume_of_the_same_fold_continues(
     assert np.array_equal(resumed.index, splits.folds[2].evaluation)
     # The resume is exact (the stream is a function of the step).
     np.testing.assert_allclose(resumed.probabilities, uninterrupted.probabilities, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("changes", "split"),
+    [
+        ({"paper_arch": "p4", "context": "avgpool63"}, {"fold": 1}),
+        ({"paper_arch": "p4m", "group_fields": 2, "rot90_augment": True}, {}),
+    ],
+    ids=["p4-context-fold", "p4m-screen"],
+)
+def test_variant_split_runs(
+    cv_data: tuple[Path, Path, ProtocolSplits],
+    tmp_path: Path,
+    changes: dict[str, Any],
+    split: dict[str, Any],
+) -> None:
+    # The 2.5-models variants (task 2.5-models) on the 2.5-infra split runs: the roles
+    # carry the 6-channel context through protocol_splits, gathered by pool index.
+    prepared, path, _ = cv_data
+    images: dict[str, np.ndarray] = {}
+
+    class _Images(Callback):
+        def on_train_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+            datamodule = getattr(trainer, "datamodule", None)
+            assert isinstance(datamodule, DeviceTensorDataModule)
+            for name in ("Train", "Validation", "Test"):
+                images[name] = datamodule._split(name).images.cpu().numpy()
+
+    request = SplitRequest(path, split.get("fold"))  # fold None: the screen
+    settings = _settings(prepared, tmp_path, **changes)
+    metrics = experiments.run_command(
+        "train-supervised", settings, split=request, callbacks=[_Images()]
+    )
+    for key, value in changes.items():
+        assert metrics["config"][key] == value
+    assert set(metrics["preset"]["deviations"]) >= set(changes)
+    channels = 6 if changes.get("context") == "avgpool63" else 3
+    pool = float_crops(prepared, names=("Train", "Validation"), context=channels == 6)
+    table = np.concatenate([pool["Train"].images, pool["Validation"].images])
+    parts = open_split_run(request, prepared).parts()
+    for name, part in (
+        ("Train", parts.training),
+        ("Validation", parts.selection),
+        ("Test", parts.evaluation),
+    ):
+        assert images[name].shape[1:] == (channels, PAPER_CROP, PAPER_CROP)
+        np.testing.assert_array_equal(images[name], table[part])
+    predictions = load_predictions(tmp_path / metrics["predictions"]["evaluation"]["file"])
+    assert np.array_equal(predictions.index, parts.evaluation_index)

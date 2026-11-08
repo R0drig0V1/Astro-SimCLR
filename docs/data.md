@@ -209,6 +209,36 @@ The 21×21 crop is concentric with the phase-1 uint8 crop of 27 (torchvision's
 zero-pads back to 27 (task 2.2a). `tests/test_data_float_input.py` checks the pixel
 alignment.
 
+### The 63×63 context (task 2.5-models, plan row B1')
+
+`Settings.context: avgpool63` gives the paper model the whole stamp at the crop's size:
+`float_input.context_then_normalise` average-pools the 63×63 stamp by 3 (each 21×21 pixel
+is the mean of a 3×3 block; 63 = 3 × 21, so the blocks tile the stamp symmetrically and
+the context rotates and flips with it), and the 3 resulting channels follow the crop's 3.
+It is ours, not ALeRCE's. The decisions (ADR 0005):
+
+- **Normalised like the crop, on its own pixels:** per channel, `x -= nanmin`,
+  `x /= nanmax` without epsilon, NaN → 0, after the pooling. All 6 channels then lie in
+  [0, 1] with minimum 0 and maximum 1 (0 if constant). Pooling is linear and min-max
+  affine-invariant, so on the stored stamps this equals the same pipeline on the raw
+  stamps, as for the crop.
+- **NaN handling, the crop's:** with `nan_approximation` (one flag for both), the pixels of
+  `former_nan_mask` become NaN before the pooling, and the block means ignore NaNs: a block
+  with some former NaNs is the mean of its valid pixels; a block of only former NaNs stays
+  NaN and becomes 0 (the minimum) after the normalisation, as a NaN pixel of the crop. One
+  more pixel differs from the raw stamp in a channel that had NaNs: its minimum is 0 in the
+  stored stamp, like the NaNs, and is left out of its block's mean with them (for the crop
+  this happens only when the minimum is inside the crop; here it always is). Without the
+  approximation, every stored zero is a real pixel.
+- The block means are accumulated in float64 and cast back to float32, so the context does
+  not depend on the order of the pixels and commutes exactly with the rotations (tested;
+  in float32 the order changes the last bit, which would break exact invariance).
+
+`context_split(images_f32)` applies it to a split in chunks; `training.device_data.
+float_crops(..., context=True)` concatenates it to the crops (6 channels, about 270 MB more
+for `red`). Only the float input path has it: `context` with `paper_input: uint8` is an
+error.
+
 ## Features and M1's normalisation
 
 The stored features are standardised. `astro-simclr check-features DIR [--json]` checks

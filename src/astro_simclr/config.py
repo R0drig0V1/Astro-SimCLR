@@ -37,7 +37,10 @@ __all__ = [
     "ADAM_BETAS_CHOICES",
     "CARRASCO2021",
     "CARRASCO2021_EVAL_BATCH_SIZE",
+    "CONTEXTS",
     "EPOCHS",
+    "GROUP_ARCHS",
+    "PAPER_ARCHS",
     "PAPER_INPUTS",
     "SCHEDULES",
     "ConfigError",
@@ -64,6 +67,14 @@ PAPER_INPUTS: Final = ("float32", "uint8")
 #: ``Settings.adam_betas``: ``code`` is ALeRCE's code (0.9, 0.999), ``paper`` the paper text's
 #: unused (0.5, 0.9) (a diagnostic; ADR 0003).
 ADAM_BETAS_CHOICES: Final = ("code", "paper")
+
+#: ``Settings.paper_arch`` (task 2.5-models): the faithful 4-rotation model, its single pass,
+#: and the single-pass p4 / p4m group-equivariant CNNs (``paper_variants.PAPER_ARCHS``).
+PAPER_ARCHS: Final = ("rot4", "single", "p4", "p4m")
+#: The ``paper_arch`` values that are G-CNNs (the only ones ``group_fields`` applies to).
+GROUP_ARCHS: Final = ("p4", "p4m")
+#: ``Settings.context`` (task 2.5-models; ``paper_variants.CONTEXTS``).
+CONTEXTS: Final = ("none", "avgpool63")
 
 #: Accelerator names accepted by ``Settings.accelerator`` (the Lightning names this project
 #: supports). ``auto`` picks CUDA, then MPS, then CPU.
@@ -201,6 +212,26 @@ class Settings:
     #: The phase-1 modules ignore it and keep the legacy (0.5, 0.9).
     adam_betas: str = "code"
 
+    # --- Paper-model architecture variants (task 2.5-models; ADR 0005) ----------------------
+
+    #: ``paper_stamp_classifier`` trunk; see :data:`PAPER_ARCHS`. ``rot4`` (faithful) runs
+    #: the paper's trunk on the 4 rotations and averages after fc1; ``single`` runs it once
+    #: (not invariant); ``p4`` / ``p4m`` are single-pass group-equivariant CNNs
+    #: (``paper_variants``; plan rows B7 and B2').
+    paper_arch: str = "rot4"
+    #: ``paper_arch: p4 | p4m``: fields of conv1-conv2 (conv3-conv5 have twice as many).
+    #: None: ``32 // |G|``, the paper's 32/64 maps (p4 8/16, p4m 4/8 fields). Only the
+    #: G-CNNs accept it.
+    group_fields: int | None = None
+    #: ``paper_stamp_classifier`` context input; see :data:`CONTEXTS`. ``avgpool63`` adds
+    #: the 63x63 stamp average-pooled to 21x21 as 3 more channels (plan row B1';
+    #: ``data.float_input.context_split``). Needs ``paper_input: float32``.
+    context: str = "none"
+    #: ``paper_stamp_classifier``: rotate each training stamp by a random multiple of 90
+    #: degrees (drawn from ``seed`` and the step, so a resumed run repeats it). The control
+    #: arm of the single-pass model; a no-op in exact arithmetic for the invariant archs.
+    rot90_augment: bool = False
+
     def __post_init__(self) -> None:
         """Check the values that a type alone cannot (ranges and names).
 
@@ -225,6 +256,7 @@ class Settings:
                 raise ConfigError(f"{name} must not be empty")
         self._check_hyperparameters()
         self._check_paper_model()
+        self._check_paper_variants()
         self._check_schedule()
 
     def _check_paper_model(self) -> None:
@@ -232,6 +264,27 @@ class Settings:
             value = getattr(self, name)
             if value not in valid:
                 raise ConfigError(f"{name} {value!r} is not one of: {', '.join(valid)}")
+
+    def _check_paper_variants(self) -> None:
+        for name, valid in (("paper_arch", PAPER_ARCHS), ("context", CONTEXTS)):
+            value = getattr(self, name)
+            if value not in valid:
+                raise ConfigError(f"{name} {value!r} is not one of: {', '.join(valid)}")
+        if self.group_fields is not None:
+            if self.paper_arch not in GROUP_ARCHS:
+                msg = (
+                    f"group_fields applies to paper_arch {' or '.join(GROUP_ARCHS)} only, "
+                    f"not {self.paper_arch!r}"
+                )
+                raise ConfigError(msg)
+            if self.group_fields < 1:
+                raise ConfigError(f"group_fields must be >= 1, got {self.group_fields}")
+        if self.context != "none" and self.paper_input != "float32":
+            msg = (
+                f"context {self.context!r} is part of the float input path: it needs "
+                f"paper_input=float32, got {self.paper_input!r}"
+            )
+            raise ConfigError(msg)
 
     def _check_hyperparameters(self) -> None:
         for name in ("image_size", "batch_size", "projection_dim"):
