@@ -1,6 +1,6 @@
 """The configs and identities pinned by ``tests/fixtures/runs/canonical_configs.json``.
 
-The fixture freezes the canonical form (task A0; ADR 0013): the canonical JSON and the
+The fixture freezes the canonical form (task A0; ADR 0015): the canonical JSON and the
 config hash of the ``carrasco2021`` presets and of several 2.5 variants, and the run id of
 a few identities. ``tests/test_runs_canonical.py`` recomputes them. A change that moves a
 hash on purpose (module docstring of ``astro_simclr.runs.canonical``, "Changing the

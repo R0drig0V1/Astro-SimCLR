@@ -1,4 +1,4 @@
-"""The canonical semantic config of a run and its SHA-256, the config hash (task A0; ADR 0013).
+"""The canonical semantic config of a run and its SHA-256, the config hash (task A0; ADR 0015).
 
 Two runs whose semantic configs are equal train the same thing; the config hash names that
 thing, independently of where the run writes, which device it picked or which seed it drew.

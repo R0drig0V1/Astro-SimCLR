@@ -1,4 +1,4 @@
-"""Run identity, manifest and run-directory layout (phase 4, task A0; ADR 0013).
+"""Run identity, manifest and run-directory layout (phase 4, task A0; ADR 0015).
 
 The frozen interfaces that the registry (A2), the queue (A3) and the new engine build on:
 

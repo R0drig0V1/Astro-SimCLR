@@ -1,4 +1,4 @@
-"""The run-directory layout and the retention policy (task A0; ADR 0013).
+"""The run-directory layout and the retention policy (task A0; ADR 0015).
 
 One attempt of one run is one directory, named :func:`run_dir_name` (the run id's first
 16 hex digits and the attempt: ``3f2a9c0d1e4b5a67-a1``) under a root the caller chooses

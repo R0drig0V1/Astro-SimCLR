@@ -1,4 +1,4 @@
-"""The run id, ``NUMERICS_EPOCH`` and the provenance helpers (task A0; ADR 0013).
+"""The run id, ``NUMERICS_EPOCH`` and the provenance helpers (task A0; ADR 0015).
 
 **Run id** = SHA-256 of the canonical JSON of :class:`RunIdentity`:
 

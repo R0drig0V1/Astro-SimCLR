@@ -1,6 +1,6 @@
 """The versioned ``manifest.json`` of a run directory: schema, writer, validating reader.
 
-Task A0 (ADR 0013) freezes the schema; A1 makes every run write it. Format
+Task A0 (ADR 0015) freezes the schema; A1 makes every run write it. Format
 ``astro-simclr-run-manifest``, version 1 (:data:`FORMAT`, :data:`FORMAT_VERSION`)::
 
     format, format_version     this schema

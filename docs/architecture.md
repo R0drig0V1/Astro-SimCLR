@@ -1523,7 +1523,7 @@ phase-3 benchmarks (task 3.2); the rules and the power note are in
   faithful preset, is unchanged. The end-to-end commands are in
   `docs/evaluation-protocol.md`.
 
-## `runs` (phase 4, task A0; ADR 0013)
+## `runs` (phase 4, task A0; ADR 0015)
 
 `src/astro_simclr/runs/` defines the interfaces of run identity that the registry (A2), the
 queue (A3) and the new engine build on. Nothing in it imports torch, and nothing calls it

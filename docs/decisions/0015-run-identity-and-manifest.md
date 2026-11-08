@@ -1,6 +1,6 @@
-<!-- ADR 0013: run identity (canonical semantic config, config hash, run id, numerics_epoch),
+<!-- ADR 0015: run identity (canonical semantic config, config hash, run id, numerics_epoch),
      the manifest.json schema, the run-directory layout and the retention policy (task A0). -->
-# 0013: Run identity, the run manifest and retention
+# 0015: Run identity, the run manifest and retention
 
 - **Status:** accepted (2026-11-08, phase 4, task A0)
 - **Implemented by:** `src/astro_simclr/runs/` (`canonical.py`, `identity.py`,
