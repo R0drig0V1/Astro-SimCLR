@@ -68,8 +68,9 @@ experiment-spec format, in parallel.
    makes the run unreadable (skipped, with the reason), never hashed. So an archived run
    gets the config hash today's code gives the same experiment: the five archived
    with-features runs hash as `train-supervised --preset carrasco2021`, and the five
-   without as `carrasco2021-no-features` (tested). Fields added after A0 need no entry
-   (ADR 0015 rule 9). The nested config of task 4.2 will be `nested-1`, with a reader that
+   without as `carrasco2021-no-features` (tested). Fields added after A0 need no entry:
+   by ADR 0015 rule 9 each is in `HASH_NEUTRAL_DEFAULTS` at its pre-field value
+   (`feature_set: all`), which the reader fills in. The nested config of task 4.2 will be `nested-1`, with a reader that
    lowers to the same view.
 6. **One attempt, one key; copies are one attempt.** A record's key is
    `<run id[:16]>-a<attempt>`, or `legacy-<metrics.json SHA-256[:16]>` for a legacy run.

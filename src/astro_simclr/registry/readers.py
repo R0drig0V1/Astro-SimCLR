@@ -24,11 +24,12 @@ machine). :func:`read_run_dir` reads either into the same record:
 today's flat view before hashing it, so an archived run gets the config hash today's code
 gives the same experiment: a field added to ``Settings`` after the run was recorded is
 filled with the value that reproduces the code before the field existed
-(:data:`FLAT_1_FILLS`, with the reason for each). A field that the table does not fill, or
-a key that today's ``Settings`` does not have, makes the config unreadable, and the run is
-skipped with that reason rather than given a hash that could match the wrong runs. The
-fields added after task A0 need no entry: they follow ADR 0015 rule 9
-(``canonical.HASH_NEUTRAL_DEFAULTS``). The nested config of task 4.2 will be a new format
+(:data:`FLAT_1_FILLS`, with the reason for each). The fields added after task A0 need no
+entry there: by ADR 0015 rule 9 each has its pre-field value in
+``canonical.HASH_NEUTRAL_DEFAULTS`` (``feature_set: all``, ...), which fills it. A field
+that neither table fills, or a key that today's ``Settings`` does not have, makes the config
+unreadable, and the run is skipped with that reason rather than given a hash that could
+match the wrong runs. The nested config of task 4.2 will be a new format
 with its own reader, lowering to the same flat view.
 
 A manifest run is ``flat-1`` too (manifest format 1 records the flat view); its config
@@ -53,7 +54,12 @@ from types import MappingProxyType
 from typing import Any, Final, Literal
 
 from astro_simclr.config import ConfigError, Settings
-from astro_simclr.runs.canonical import CanonicalError, config_sha256_of, semantic_config_from_plain
+from astro_simclr.runs.canonical import (
+    HASH_NEUTRAL_DEFAULTS,
+    CanonicalError,
+    config_sha256_of,
+    semantic_config_from_plain,
+)
 from astro_simclr.runs.identity import SCREEN, SplitPart, default_machine_class
 from astro_simclr.runs.layout import METRICS_FILE
 from astro_simclr.runs.manifest import MANIFEST_FILE, ManifestError, read_manifest
@@ -117,14 +123,20 @@ def _settings_fields() -> frozenset[str]:
 def lower_flat_1(config: Mapping[str, object]) -> dict[str, object]:
     """A ``flat-1`` config lowered to today's flat view (module docstring).
 
+    A missing field is filled from :data:`FLAT_1_FILLS` (added before task A0) or from
+    ``canonical.HASH_NEUTRAL_DEFAULTS`` (added since, ADR 0015 rule 9: its default
+    reproduces the behaviour before it, and is left out of the hash anyway).
+
     Raises:
         RecordError: if a key is unknown to today's ``Settings``, or a missing field has
-            no entry in :data:`FLAT_1_FILLS`.
+            no entry in either table.
     """
     fields = _settings_fields()
     unknown = sorted(set(config) - fields)
     missing = sorted(fields - set(config))
-    unfilled = [key for key in missing if key not in FLAT_1_FILLS]
+    fills = {key: value for key, (value, _) in FLAT_1_FILLS.items()}
+    fills.update({k: v for k, v in HASH_NEUTRAL_DEFAULTS.items() if k not in fills})
+    unfilled = [key for key in missing if key not in fills]
     if unknown or unfilled:
         msg = (
             f"config_format flat-1: keys unknown to today's Settings {unknown or 'none'}, "
@@ -133,7 +145,7 @@ def lower_flat_1(config: Mapping[str, object]) -> dict[str, object]:
         raise RecordError(msg)
     lowered = dict(config)
     for key in missing:
-        lowered[key] = FLAT_1_FILLS[key][0]
+        lowered[key] = fills[key]
     return lowered
 
 

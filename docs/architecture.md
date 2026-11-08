@@ -1770,7 +1770,8 @@ fast and the handlers (`commands.py`) load on use.
 
   The config is read by the reader of its `config_format` (`CONFIG_FORMATS`; `flat-1` when
   the file names none): `lower_flat_1` fills the fields added since with `FLAT_1_FILLS`
-  (each the pre-field behaviour, with its reason) and refuses unknown or unfillable keys, so
+  (each the pre-field behaviour, with its reason; fields added after A0 from
+  `canonical.HASH_NEUTRAL_DEFAULTS`) and refuses unknown or unfillable keys, so
   the archived runs hash like today's presets. `metrics_summary` keeps
   `<stage>.{accuracy,balanced_accuracy,macro_f1}`, `monitor_best`, `best_step`,
   `last_step` and `seconds_per_step`. `IndexedRun.key` is `<run id[:16]>-a<attempt>` or

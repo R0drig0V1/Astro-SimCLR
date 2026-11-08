@@ -31,6 +31,7 @@ from astro_simclr.registry.readers import (
     metrics_summary,
     read_run_dir,
 )
+from astro_simclr.runs.canonical import HASH_NEUTRAL_DEFAULTS
 
 ARCHIVED = sorted(REPLICATION.glob("*/seed-*"))
 
@@ -85,7 +86,12 @@ def test_archived_config_hash_is_todays_preset_hash() -> None:
 def test_flat_1_fills_are_the_defaults_and_the_archive_lacks_them() -> None:
     defaults = Settings()
     archived = json.loads((ARCHIVED[0] / "metrics.json").read_text(encoding="utf-8"))["config"]
-    assert set(FLAT_1_FILLS) == {f.name for f in dataclasses.fields(Settings)} - set(archived)
+    lacking = {f.name for f in dataclasses.fields(Settings)} - set(archived)
+    # Fields added after A0 are filled from HASH_NEUTRAL_DEFAULTS (ADR 0015 rule 9).
+    assert set(FLAT_1_FILLS) == lacking - set(HASH_NEUTRAL_DEFAULTS)
+    assert not set(FLAT_1_FILLS) & set(HASH_NEUTRAL_DEFAULTS)
+    for key in lacking & set(HASH_NEUTRAL_DEFAULTS):
+        assert lower_flat_1(archived)[key] == HASH_NEUTRAL_DEFAULTS[key] == getattr(defaults, key)
     for key, (value, reason) in FLAT_1_FILLS.items():
         assert getattr(defaults, key) == value, key
         assert reason
