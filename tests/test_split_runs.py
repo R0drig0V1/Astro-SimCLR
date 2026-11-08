@@ -41,6 +41,7 @@ from astro_simclr.protocol.splits import (
     write_splits,
 )
 from astro_simclr.protocol.stats import balanced_accuracy
+from astro_simclr.tasks import paper as paper_tasks
 from astro_simclr.training.class_augment import stamp_fits
 from astro_simclr.training.device_data import (
     DeviceTensorDataModule,
@@ -197,7 +198,8 @@ def test_fold_run_trains_selects_and_predicts_its_parts(
         loaded.append(tuple(names))
         return float_crops(path, names=names, **kw)
 
-    monkeypatch.setattr(experiments, "float_crops", recording)
+    # The crop builder of both engines' data (tasks.paper.paper_inputs).
+    monkeypatch.setattr(paper_tasks, "float_crops", recording)
     spy = _Spy()
     settings = _settings(prepared, tmp_path, accelerator=accelerator)
     metrics = experiments.run_command(

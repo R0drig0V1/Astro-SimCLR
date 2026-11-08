@@ -101,52 +101,41 @@ optimizer steps it ran (fewer than ``last_step`` after a resume) and ``seconds_p
 
 from __future__ import annotations
 
-import dataclasses
 import json
-import math
 import platform
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any, Final, Protocol, cast
 
 import lightning as L
-import numpy as np
-import numpy.typing as npt
 import torch
 from lightning.pytorch.callbacks import Callback
 
-from astro_simclr.augmentations import resolve_augmentation_name
-from astro_simclr.config import (
-    CARRASCO2021,
-    HYBRID_FLAGS,
-    ConfigError,
-    Settings,
-    settings_to_plain,
-)
-from astro_simclr.data.prepared import is_prepared, load_prepared, read_meta
-from astro_simclr.data.schema import LABEL_NAMES, SPLITS, DataError
-from astro_simclr.paper_variants import paper_input_side
+from astro_simclr.config import CARRASCO2021, ConfigError, Settings, settings_to_plain
+from astro_simclr.data.schema import DataError
 from astro_simclr.presets import preset_report
-from astro_simclr.protocol.leakage import find_duplicates, train_exclusions
-from astro_simclr.protocol.predictions import Predictions, predictions_file, save_predictions
 from astro_simclr.protocol.split_runs import SplitRequest, SplitRun, open_split_run
 from astro_simclr.runs.record import start_run
-from astro_simclr.training.class_augment import DEFAULT_MIN_R2, fit_exclusions, stamp_fits
+from astro_simclr.tasks.common import (
+    PAPER_STAMP_CLASSIFIER,
+    AcceleratorError,
+    check_accelerator,
+    dataset_path,
+)
+from astro_simclr.tasks.common import check_names as _check_names
+from astro_simclr.tasks.common import check_schedule as _check_schedule
+from astro_simclr.tasks.common import check_split as _check_split
+from astro_simclr.tasks.paper import load_backbone, paper_inputs
+from astro_simclr.tasks.results import StageOutput, classifier_results, data_info
+from astro_simclr.tasks.results import finite as _finite
 from astro_simclr.training.datamodules import ClassifierDataModule, ContrastiveDataModule
 from astro_simclr.training.device_data import (
     SPLIT_RUN_STATE,
     DeviceTensorDataModule,
-    TensorSplit,
     check_split_identity,
-    float_crops,
-    interim_uint8_crops,
-    protocol_splits,
-    without_train_indices,
 )
-from astro_simclr.training.flux_rescale import fit_central_psf, psf_exclusions
-from astro_simclr.training.metrics import confusion_counts, macro_f1
 from astro_simclr.training.modules import (
     ClassifierModule,
     FineTuneModule,
@@ -197,8 +186,6 @@ METRICS_FILE: Final = "metrics.json"
 ENGINE: Final = "lightning"
 #: ``train-supervised`` model names that are not ResNets.
 _STAMP_CLASSIFIER: Final = "stamp_classifier"
-#: ``train-supervised`` model of the ``carrasco2021`` schedule (task 2.2a).
-PAPER_STAMP_CLASSIFIER: Final = "paper_stamp_classifier"
 
 
 class _BestCheckpoint(Protocol):
@@ -209,54 +196,6 @@ class _BestCheckpoint(Protocol):
 
     @property
     def best_model_score(self) -> torch.Tensor | None: ...
-
-
-class AcceleratorError(ConfigError):
-    """The requested accelerator is not available on this machine or in this torch build."""
-
-
-def check_accelerator(accelerator: str) -> None:
-    """Fail clearly if ``accelerator`` (a ``Settings.accelerator`` value) cannot be used.
-
-    ``cuda`` needs ``torch.cuda.is_available()``, ``mps`` needs MPS, ``gpu`` either of them;
-    ``cpu`` and ``auto`` always work.
-
-    Raises:
-        AcceleratorError: naming the torch build and pointing to the preflight and ADR 0001
-            (a CPU build where a CUDA one was wanted is the usual cause).
-    """
-    cuda = torch.cuda.is_available()
-    mps = torch.backends.mps.is_available()
-    missing = (
-        (accelerator == "cuda" and not cuda)
-        or (accelerator == "mps" and not mps)
-        or (accelerator == "gpu" and not (cuda or mps))
-    )
-    if missing:
-        build = f"torch {torch.__version__}, CUDA {torch.version.cuda or 'none'}"
-        msg = (
-            f"accelerator {accelerator!r} was requested, but it is not available ({build}). "
-            "Use --accelerator cpu|auto, or install the torch build this machine needs "
-            "(astro-simclr preflight; ADR 0001)."
-        )
-        raise AcceleratorError(msg)
-
-
-def dataset_path(settings: Settings) -> Path:
-    """The prepared layout of the run: ``settings.data_dir / settings.dataset``.
-
-    Raises:
-        DataError: if it is not a prepared layout (the message says how to make one).
-    """
-    path = settings.data_dir / settings.dataset
-    if not is_prepared(path):
-        msg = (
-            f"{path} is not a prepared dataset; run `astro-simclr prepare-data "
-            f"{settings.dataset}.pkl --out {settings.data_dir}` first (or set data_dir / "
-            "dataset)"
-        )
-        raise DataError(msg)
-    return path
 
 
 def resolve_resume(resume: str | None, output_dir: Path) -> Path | None:
@@ -310,13 +249,6 @@ def load_pretrained(path: Path | None) -> SimCLRModule:
     return SimCLRModule.load_from_checkpoint(path, map_location="cpu", weights_only=True)
 
 
-def _check_names(settings: Settings) -> None:
-    try:
-        resolve_augmentation_name(settings.augmentation)
-    except ValueError as err:
-        raise ConfigError(str(err)) from None
-
-
 def _build_supervised(settings: Settings) -> ClassifierModule:
     common: dict[str, Any] = {
         "beta_loss": settings.beta_loss,
@@ -362,91 +294,6 @@ def _build_downstream(command: str, settings: Settings) -> ClassifierModule:
         optimizer=settings.optimizer,
         with_features=settings.with_features,
     )
-
-
-def _check_schedule(command: str, settings: Settings) -> None:
-    """The ``carrasco2021`` schedule and the paper model go together, on 21x21 crops.
-
-    ``image_size`` must be the side ``paper_arch`` takes: 21, or 63 (the whole stamp) for
-    the ConvNeXt rows (plan row B8), so the recorded config says what the model saw.
-
-    Raises:
-        ConfigError: if only one of them is chosen, the command is not ``train-supervised``,
-            or ``image_size`` is not the side of ``paper_arch``.
-    """
-    paper_model = command == "train-supervised" and (
-        settings.supervised_model == PAPER_STAMP_CLASSIFIER
-    )
-    if settings.schedule == CARRASCO2021 and not paper_model:
-        msg = (
-            f"schedule {CARRASCO2021} trains only train-supervised with "
-            f"supervised_model={PAPER_STAMP_CLASSIFIER}"
-        )
-        raise ConfigError(msg)
-    if paper_model and settings.schedule != CARRASCO2021:
-        raise ConfigError(f"{PAPER_STAMP_CLASSIFIER} needs schedule={CARRASCO2021}")
-    side = paper_input_side(settings.paper_arch)
-    if paper_model and settings.image_size != side:
-        msg = (
-            f"{PAPER_STAMP_CLASSIFIER} with paper_arch {settings.paper_arch} takes "
-            f"{side}x{side} images: set image_size={side}"
-        )
-        raise ConfigError(msg)
-    _check_paper_variant(paper_model, settings)
-
-
-#: The flags of task 2.5-models (architecture) and of C5 / C6 (augmentation), and their
-#: defaults (the faithful model).
-_PAPER_VARIANT_DEFAULTS: Final[Mapping[str, object]] = {
-    "paper_arch": "rot4",
-    "group_fields": None,
-    "context": "none",
-    "rot90_augment": False,
-    # The features the head reads (a 2.5 diagnostic; ADR 0016).
-    "feature_set": "all",
-    # The ConvNeXt backbone's initial weights (plan row B8; ADR 0022).
-    "backbone_weights": "none",
-    # The conv-attention hybrids' shape (plan row B9).
-    **HYBRID_FLAGS,
-    # Class-aware augmentation (plan rows C5 and C6; ADR 0006).
-    "aug_noise": 0.0,
-    "aug_feature_jitter": 0.0,
-    "synthetic_bogus": 0.0,
-    "aug_min_r2": DEFAULT_MIN_R2,
-    # Transient flux rescaling (plan row C7; ADR 0007).
-    "flux_rescale": 0.0,
-    "flux_k_min": 0.5,
-    "flux_k_max": 1.5,
-}
-
-
-def _check_paper_variant(paper_model: bool, settings: Settings) -> None:
-    """The 2.5 flags apply to the paper model only: elsewhere they would be ignored.
-
-    Raises:
-        ConfigError: if a flag of :data:`_PAPER_VARIANT_DEFAULTS` is changed for another
-            model.
-    """
-    if paper_model:
-        return
-    changed = [
-        key for key, default in _PAPER_VARIANT_DEFAULTS.items() if getattr(settings, key) != default
-    ]
-    if changed:
-        msg = f"{', '.join(changed)} apply only to supervised_model={PAPER_STAMP_CLASSIFIER}"
-        raise ConfigError(msg)
-
-
-def _leaked_train(settings: Settings, data: Path) -> list[int]:
-    """The Train indices to drop: the stamps that duplicate a Validation or Test stamp.
-
-    Found by ``protocol.leakage`` on the prepared uint8 stamps (``red``: ``[2995]``), the
-    same check that ``make-splits`` stores and ``verify_splits`` repeats; ``[]`` when
-    ``exclude_leaked_train`` is false.
-    """
-    if not settings.exclude_leaked_train:
-        return []
-    return train_exclusions(find_duplicates(load_prepared(data)))
 
 
 def paper_module(settings: Settings) -> PaperClassifierModule:
@@ -496,64 +343,11 @@ def _build_paper(
 ) -> tuple[ClassifierModule, DeviceTensorDataModule, dict[str, Any]]:
     """The paper model, its device-resident data and the ``paper_data`` metrics entry.
 
-    The input is the float path (``paper_input: float32``, the paper's) or the interim uint8
-    crops (``uint8``, a diagnostic); the leaked Train stamps are removed before the tiling.
-    The splits are built once, at the data module's first ``setup``. With ``split_run``
-    only Train and Validation are read, and the data module's roles are the run's parts
-    (``device_data.protocol_splits``); the excluded Train stamps are the splits file's,
-    which ``open_split_run`` has checked against a fresh leakage check.
+    The splits come from ``tasks.paper.paper_inputs`` (shared with the plain engine: the
+    float path or the uint8 diagnostic, the leaked Train stamps removed, a split run's
+    roles, the C5-C7 fits); they are built once, at the data module's first ``setup``.
     """
-    if settings.paper_input == "float32" and "float32" not in read_meta(data)["images"]:
-        # Fail before the leakage scan and the Trainer; float_crops says the same in setup.
-        msg = (
-            f"{data} has no float32 stamps (images_f32.npy), which the paper's input needs: "
-            "run `astro-simclr prepare-data PKL --images float32 --overwrite` (or set "
-            "paper_input=uint8, a diagnostic)"
-        )
-        raise DataError(msg)
-    if split_run is None:
-        excluded = _leaked_train(settings, data)
-    else:
-        excluded = list(split_run.splits.excluded_train)
-    side = paper_input_side(settings.paper_arch)
-    info: dict[str, Any] = {
-        "input": settings.paper_input,
-        "crop": side,
-        "nan_approximation": (
-            settings.nan_approximation if settings.paper_input == "float32" else None
-        ),
-        "excluded_train": excluded,
-    }
-
-    def crops(names: Sequence[str]) -> dict[str, TensorSplit]:
-        # One reader for both paths, so a split run gets the same input (and context
-        # channels, task 2.5-models) as a paper-protocol run.
-        if settings.paper_input == "float32":
-            return float_crops(
-                data,
-                nan_approximation=settings.nan_approximation,
-                names=names,
-                context=settings.context != "none",
-                side=side,
-            )
-        return interim_uint8_crops(data, names=names, side=side)
-
-    def split_source(run: SplitRun) -> dict[str, TensorSplit]:
-        pool = crops(("Train", "Validation"))  # never Test
-        splits = protocol_splits(pool, run.parts(), run.splits.n_train)
-        info["n_train"] = len(splits["Train"].labels)
-        return splits
-
-    def with_fits(splits: dict[str, TensorSplit]) -> dict[str, TensorSplit]:
-        return _with_train_fits(settings, splits, info)
-
-    def source() -> dict[str, TensorSplit]:
-        if split_run is not None:
-            return with_fits(split_source(split_run))
-        splits = without_train_indices(crops(SPLITS), excluded)
-        info["n_train"] = len(splits["Train"].labels)
-        return with_fits(splits)
-
+    source, info = paper_inputs(settings, data, split_run)
     seed_run(settings)
     module = paper_module(settings)
     _load_backbone_weights(settings, module, info)
@@ -572,33 +366,12 @@ def _build_paper(
 def _load_backbone_weights(
     settings: Settings, module: PaperClassifierModule, info: dict[str, Any]
 ) -> None:
-    """Start the ConvNeXt backbone from ``backbone_weights`` (plan row B8; ADR 0022).
-
-    Nothing happens for ``none`` (from scratch: no network access). Otherwise the pinned
-    file is downloaded (or read from the Hugging Face cache), verified and loaded into the
-    backbone, after the seeded initialisation, and recorded in ``info["backbone_weights"]``.
-    A resumed run loads it too, then the checkpoint replaces every weight.
+    """``tasks.paper.load_backbone`` on ``module.model``, with this module's :data:`_DOWNLOAD`.
 
     Raises:
-        WeightsError: as ``convnext_model.fetch_backbone_weights`` and
-            ``load_backbone_weights`` (a ``DataError``: the CLI prints it on one line).
+        ConfigError, WeightsError: as ``tasks.paper.load_backbone``.
     """
-    if settings.backbone_weights == "none":
-        return
-    from astro_simclr.convnext_model import (
-        ConvNeXtStampClassifier,
-        backbone_weights_for,
-        fetch_backbone_weights,
-        load_backbone_weights,
-    )
-
-    weights = backbone_weights_for(settings.backbone_weights, settings.paper_arch)
-    model = module.model
-    if weights is None or not isinstance(model, ConvNeXtStampClassifier):
-        # Settings refuses it already (zoobot needs convnext_pico); kept for direct callers.
-        raise ConfigError(f"backbone_weights need a ConvNeXt paper_arch, not {settings.paper_arch}")
-    load_backbone_weights(model, weights, fetch_backbone_weights(weights, download=_DOWNLOAD))
-    info["backbone_weights"] = weights.record()
+    load_backbone(settings, module.model, info, download=_DOWNLOAD)
 
 
 #: The weights downloader of ``_load_backbone_weights`` (None: the Hugging Face Hub); the
@@ -609,48 +382,6 @@ _DOWNLOAD: Callable[[Any], Path] | None = None
 #: Plan the training augmentation in the loader (True) or in the step (False: the in-step
 #: path, with host round trips; the same bits; kept for the equivalence test).
 _PREFETCH = True
-
-
-def _with_train_fits(
-    settings: Settings, splits: dict[str, TensorSplit], info: dict[str, Any]
-) -> dict[str, TensorSplit]:
-    """``splits`` with the Train role's augmentation table, when C5 / C6 / C7 need it.
-
-    C5 / C6 need each Train stamp's cross-channel fit (``class_augment.stamp_fits``), C7 its
-    central PSF fit too (``flux_rescale.fit_central_psf``, appended). Computed once, on the
-    run's own Train role (the fold's training part in a split run); the excluded shares go
-    to ``info`` (``class_augment``, ``flux_rescale``).
-    """
-    if not (settings.aug_noise or settings.synthetic_bogus or settings.flux_rescale):
-        return splits
-    train = splits["Train"]
-    fits = stamp_fits(train.images)
-    info["class_augment"] = fit_exclusions(fits, train.labels, settings.aug_min_r2)
-    if settings.flux_rescale:
-        fits = np.concatenate([fits, fit_central_psf(train.images)], axis=1)
-        info["flux_rescale"] = psf_exclusions(fits, train.labels)
-    return {**splits, "Train": dataclasses.replace(train, fits=fits)}
-
-
-def _check_split(command: str, settings: Settings) -> None:
-    """A split run needs ``train-supervised`` on the ``carrasco2021`` schedule.
-
-    Raises:
-        ConfigError: on another command or schedule, or ``exclude_leaked_train: false``
-            (the splits exclude the leaked stamps by construction).
-    """
-    if command != "train-supervised" or settings.schedule != CARRASCO2021:
-        msg = (
-            f"--splits trains only train-supervised on the {CARRASCO2021} schedule (e.g. "
-            f"--preset {CARRASCO2021}), got {command} with schedule {settings.schedule}"
-        )
-        raise ConfigError(msg)
-    if not settings.exclude_leaked_train:
-        msg = (
-            "--splits always leaves the leaked Train stamps out (they are in no fold): "
-            "exclude_leaked_train must be true"
-        )
-        raise ConfigError(msg)
 
 
 def _resume_identity(ckpt_path: Path) -> object:
@@ -717,31 +448,10 @@ def _build(
     return module, datamodule, ClassifierModule.MONITORABLE, None
 
 
-def _finite(value: object) -> object:
-    """Recursively replace non-finite floats with None (strict JSON has no NaN)."""
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, dict):
-        return {key: _finite(item) for key, item in value.items()}
-    if isinstance(value, list | tuple):
-        return [_finite(item) for item in value]
-    return value
-
-
 def _scalar(value: torch.Tensor | float | None) -> float | None:
     if value is None:
         return None
     return float(value)
-
-
-def _data_info(path: Path) -> dict[str, Any]:
-    meta = read_meta(path)
-    return {
-        "path": str(path),
-        "kind": meta["kind"],
-        "source": meta["source"],
-        "class_counts": {split: info["class_counts"] for split, info in meta["splits"].items()},
-    }
 
 
 def _machine(trainer: L.Trainer) -> dict[str, Any]:
@@ -805,141 +515,17 @@ def _base_metrics(
         },
         "accelerator": type(trainer.accelerator).__name__,
         "machine": _machine(trainer),
-        "data": _data_info(data),
+        "data": data_info(data),
         "config": settings_to_plain(settings),
     }
 
 
-def _recalls(counts: list[list[int]]) -> dict[str, float | None]:
-    """Per class (by name), the recall: diagonal over row sum; ``None`` for an absent class."""
-    return {
-        name: (row[i] / sum(row) if sum(row) else None)
-        for i, (name, row) in enumerate(zip(LABEL_NAMES, counts, strict=True))
-    }
-
-
-def _evaluation(module: ClassifierModule, stage: str) -> dict[str, Any]:
+def _stage(module: ClassifierModule, stage: str) -> StageOutput:
+    """What ``validate`` / ``test`` left in ``module`` for ``stage`` (``val`` or ``test``)."""
     y_pred, y_true = module.predictions[stage]
-    counts = confusion_counts(y_pred, y_true).tolist()
-    recalls = _recalls(counts)
-    present = [value for value in recalls.values() if value is not None]
-    return {
-        "accuracy": float((y_pred == y_true).double().mean()),
-        "balanced_accuracy": sum(present) / len(present),
-        "macro_f1": macro_f1(y_pred, y_true),
-        "recall_per_class": recalls,
-        "confusion_matrix": module.confusion_matrices[stage].tolist(),
-        "confusion_counts": counts,
-    }
-
-
-def _write_predictions(
-    module: ClassifierModule,
-    stage: str,
-    split: str,
-    out: Path,
-    *,
-    index: npt.NDArray[np.int64] | None = None,
-    name: str | None = None,
-) -> dict[str, Any]:
-    """Write the stage's per-stamp probabilities; return its ``metrics["predictions"]`` entry.
-
-    The evaluation loaders are unshuffled, so the loader order is the split's file order
-    and ``index`` is ``arange(N)`` by default; a split run passes its evaluation part's
-    pool (or Validation) indices, in the same order. ``name`` is the file's stage name
-    (default ``stage``).
-
-    Raises:
-        DataError: if ``index`` does not have one entry per predicted stamp.
-    """
-    labels = module.predictions[stage][1].numpy().astype(np.int64)
-    if index is None:
-        index = np.arange(labels.size, dtype=np.int64)
-    if index.shape != labels.shape:
-        raise DataError(f"{index.size} indices for {labels.size} predicted stamps")
-    predictions = Predictions(module.probabilities[stage].float().numpy(), labels, index)
-    file = predictions_file(name or stage)
-    save_predictions(predictions, out / file)
-    return {"file": file, "split": split, "n": int(labels.size)}
-
-
-def _plot_confusion_matrix(matrix: list[list[float]], title: str, path: Path) -> None:
-    import matplotlib as mpl
-
-    mpl.use("Agg")  # no display on servers; only files are written
-    import matplotlib.pyplot as plt
-
-    fig, ax = plt.subplots(figsize=(5, 4.5))
-    image = ax.imshow([[100 * v for v in row] for row in matrix], vmin=0, vmax=100, cmap="Blues")
-    for i, row in enumerate(matrix):
-        for j, value in enumerate(row):
-            ax.text(
-                j,
-                i,
-                f"{100 * value:.1f}",
-                ha="center",
-                va="center",
-                color="white" if value > 0.5 else "black",
-                fontsize=8,
-            )
-    ax.set_xticks(range(len(LABEL_NAMES)), LABEL_NAMES, rotation=45)
-    ax.set_yticks(range(len(LABEL_NAMES)), LABEL_NAMES)
-    ax.set_xlabel("Predicted label")
-    ax.set_ylabel("True label")
-    ax.set_title(title, fontsize=9)
-    fig.colorbar(image, ax=ax, label="% of the true class")
-    fig.tight_layout()
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-
-
-def _split_results(
-    command: str,
-    trainer: L.Trainer,
-    module: ClassifierModule,
-    datamodule: L.LightningDataModule,
-    best: str,
-    out: Path,
-    split_run: SplitRun,
-) -> dict[str, Any]:
-    """A split run's results: the selection part (validate) and the evaluation part (test).
-
-    The data module's ``Test`` role is the evaluation part (``device_data.protocol_splits``),
-    so ``trainer.test`` predicts it and never touches the real Test split.
-    """
-    parts = split_run.parts()
-    trainer.validate(module, datamodule=datamodule, ckpt_path=best, verbose=False)
-    selection = _evaluation(module, "val")
-    trainer.test(module, datamodule=datamodule, ckpt_path=best, verbose=False)
-    evaluation = _evaluation(module, "test")
-    predictions = {
-        "evaluation": _write_predictions(
-            module,
-            "test",
-            parts.evaluation_name,
-            out,
-            index=parts.evaluation_index,
-            name="evaluation",
-        )
-    }
-    figures = []
-    for part, result in (("selection", selection), ("evaluation", evaluation)):
-        title = (
-            f"{command}: {split_run.mode} {part}: balanced accuracy "
-            f"{100 * result['balanced_accuracy']:.1f} %"
-        )
-        figure = f"confusion_matrix_{part}.png"
-        _plot_confusion_matrix(result["confusion_matrix"], title, out / figure)
-        figures.append(figure)
-    return {
-        "selection_acc_best": selection["accuracy"],
-        "evaluation_accuracy": evaluation["accuracy"],
-        "evaluation_balanced_accuracy": evaluation["balanced_accuracy"],
-        "labels": list(LABEL_NAMES),
-        "evaluation": {"selection": selection, "evaluation": evaluation},
-        "predictions": predictions,
-        "figures": figures,
-    }
+    return StageOutput(
+        module.probabilities[stage], y_pred, y_true, module.confusion_matrices[stage]
+    )
 
 
 def _classifier_results(
@@ -951,31 +537,21 @@ def _classifier_results(
     out: Path,
     split_run: SplitRun | None = None,
 ) -> dict[str, Any]:
+    """Validate and test the best weights, then ``tasks.results.classifier_results``.
+
+    A split run's ``Test`` role is its evaluation part (``device_data.protocol_splits``),
+    so ``trainer.test`` predicts it and never touches the real Test split.
+
+    Raises:
+        DataError: if no best checkpoint was written.
+    """
     if not best or not Path(best).is_file():
         raise DataError("no best checkpoint was written (did any validation run?)")
-    if split_run is not None:
-        return _split_results(command, trainer, module, datamodule, best, out, split_run)
     trainer.validate(module, datamodule=datamodule, ckpt_path=best, verbose=False)
-    val = _evaluation(module, "val")
-    predictions = {"val": _write_predictions(module, "val", "Validation", out)}
+    val = _stage(module, "val")
     trainer.test(module, datamodule=datamodule, ckpt_path=best, verbose=False)
-    test = _evaluation(module, "test")
-    predictions["test"] = _write_predictions(module, "test", "Test", out)
-    for stage, result in (("val", val), ("test", test)):
-        title = f"{command}: {stage} accuracy {100 * result['accuracy']:.1f} %"
-        _plot_confusion_matrix(
-            result["confusion_matrix"], title, out / f"confusion_matrix_{stage}.png"
-        )
-    return {
-        "val_acc_best": val["accuracy"],
-        "test_acc_at_best": test["accuracy"],
-        "val_macro_f1": val["macro_f1"],
-        "test_macro_f1": test["macro_f1"],
-        "labels": list(LABEL_NAMES),
-        "evaluation": {"val": val, "test": test},
-        "predictions": predictions,
-        "figures": ["confusion_matrix_val.png", "confusion_matrix_test.png"],
-    }
+    test = _stage(module, "test")
+    return classifier_results(command, val, test, out, split_run)
 
 
 def _epochs_trainer(

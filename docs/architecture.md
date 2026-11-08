@@ -34,10 +34,15 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  │    (training ──► paper_variants: rot4 / single / p4 / p4m ──► paper_model, group_conv;
  │     paper_variants ──► convnext_model (B8), hybrid_model (B9) ──► paper_variants.PaperHead;
  │     paper_model ──► feature_sets: all / position / none)
- ├──► preflight ──► experiments, data (inspection, manifest)
+ ├──► preflight ──► experiments (R1-R4), tasks.plain (CD21), data (inspection, manifest)
+ ├──► tasks (phase 4, 4.6: the paper classifier on the plain engine; no Lightning) ──► engine,
+ │      training (Lightning-free submodules: paper_augment, tensor_splits, class_augment, ...)
+ │    (experiments ──► tasks.common, tasks.paper, tasks.results: shared with Lightning)
  └──► engine (phase 4: the contracts, the loop, the data tiers; imports no Lightning) ──► config, data, runs
  └──► runs (phase 4, A0: run identity, manifest.json, layout, retention) ──► config, data
  └──► registry (phase 4, A2: runs reindex | ls | show | compare; SQLite) ──► runs, reference
+ └──► simclr (phase 5, 5.0b: the SimCLR pilot; imports no Lightning) ──► engine.randomness,
+      optim (LARS), losses (NT_Xent), stamp_relation, protocol (splits, stats), data
 
 rj23_model (engine-free nn.Modules, not wired yet: task 3.4b) ──► data.rj23_input
 ```
@@ -208,8 +213,10 @@ the config hash is defined on, ADR 0015 rule 10), so it changes no numbers.
   | | `paper` | `rot90` (`rot90_augment`), `noise` (`aug_noise`), `feature_jitter`, `synthetic_bogus`, `min_r2` (`aug_min_r2`), `flux_rescale`, `flux_k_min`, `flux_k_max` |
 
   - The model decides the command (`Config.command`). Every default is the default of the
-    flat field (`Config()` lowers to `Settings()`). `runtime.engine` is `lightning` only
-    (the plain engine joins with 4.1 and 4.6); it is the run id's engine, not hashed.
+    flat field (`Config()` lowers to `Settings()`). `runtime.engine` is `lightning` (the
+    default until 4.7/4.8) or `plain` (task 4.6: `astro-simclr run` then trains with
+    `tasks.plain.run_plain`, the paper classifier on `carrasco2021` only); it is the run
+    id's engine, not hashed.
   - A `Config` is valid by construction: the tags, `paper_stamp_classifier` ⇔
     `carrasco2021` schedule ⇔ `paper` augmentation, then the lowered `Settings`' checks,
     with the flat names in their message mapped to nested paths
@@ -289,6 +296,14 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   [--n-boot N] [--seed S] [--allow-mixed-machines]` (task 3.2, see `protocol`):
   `bench-report` always exits 0 (a report); runs of another splits file, of other alerts or
   of mixed machines exit 2, an unusable table, splits file or predictions file exits 1.
+- `report-phase2 [--replication DIR [--oracle-report FILE]] [--screen DIR --screen-splits
+  FILE] [--cv DIR --cv-splits FILE] [--baseline-arm rot4] [--non-inferiority ARM...]
+  [--margin F] [--registry [FILE]] [--n-boot N] [--seed S] [--allow-mixed-machines]
+  [--out FILE]` (task 2.6, see `protocol`, module `phase2_report`): writes the phase-2
+  results report (`docs/results-phase2.md`) as markdown, to stdout or atomically to
+  `--out`; always exit 0 (a report). Inconsistent inputs or runs that `compare-reference`
+  or `compare-variants --splits` would refuse exit 2, an unreadable predictions or splits
+  file exits 1.
 - `fetch-m1` and `m1-oracle --data-dir DIR [--out DIR]` (task 2.2b, see `oracle`): exit
   0 if the oracle passed, else 1.
 - `fetch-alerts --dataset NAME --split S [--data-dir DIR] [--out DIR] [--rate 1.5]
@@ -315,6 +330,16 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   (task A2, see `registry`): the local run registry. Exit 0 on success (`reindex` also when
   it skipped directories), 1 when the registry cannot be used or a comparison does not
   resolve.
+- **SimCLR pilot (task 5.0b, see `simclr`):** `simclr-pilot DATA --output-dir OUT
+  [--splits FILE] [--epochs N | --steps N] [--batch-size B] [--temperature T] [--lr-per-256
+  X] [--warmup-epochs E] [--noise-scale S] [--seed N] [--device auto|cpu|cuda|mps]
+  [--fp32-precision ieee|tf32] [--deterministic] [--tier device|host] [--resume]
+  [--stop-at N]`; `simclr-embed DATA --output-dir OUT (--checkpoint FILE | --random-init)
+  [--seed N]`; `make-label-subsets DATA --splits FILE --per-class K [--n-subsets R]
+  [--seed S] --out FILE [--overwrite]`; `simclr-probe EMBEDDINGS --subsets FILE --splits
+  FILE --out FILE [--weight-decay X...]`. Registered by `simclr.commands.add_simclr_commands`;
+  each exits 0 when it ends (an existing run without `--resume`, an existing subsets file
+  or a budget larger than a class: 2).
 - Exit codes: 0 success; 1 unusable data (`DataError`) or a failed gate/preflight; 2 invalid
   settings or arguments, including an unavailable accelerator (`AcceleratorError`).
 
@@ -1246,6 +1271,11 @@ in its shards, and a fake service for the by-oid fetch). They cover:
   - dropped: the unused `epoch` argument/counter of `step`, the unimplemented
     `classic_momentum=False` and the never-consulted `exclude_from_*` lists; the closure
     runs under `torch.enable_grad()` and the step under `torch.no_grad()`.
+- **Per-group exclusion (task 5.0b, ADR 0025):** a param group with
+  `exclude_from_adaptation: True` (`EXCLUDE_KEY`) gets neither the weight decay nor the trust
+  ratio (plain SGD with momentum): SimCLR's treatment of BatchNorm parameters and biases,
+  used by `simclr.optim`. The key is read with `group.get`, so groups without it (every
+  existing run) and optimizer states saved before it are unchanged.
 - **Performance note (kept for equivalence):** the trust ratio is moved to the host with
   `.item()` once per parameter per step, as in the legacy code. On CUDA (and MPS) that is a
   device-to-host synchronisation per parameter tensor, about 60 per step for a ResNet-18,
@@ -1454,7 +1484,10 @@ stream positions `[64b, 64b + 64)`, pass `j` the permutation of
 documented exception to "randomness comes from `seed_everything`", and what makes a
 mid-epoch resume exact. TF's random numbers are not reproduced.
 
-**Device data** (`device_data.py`). `TensorSplit(images, features, labels, fits=None)`:
+**Device data** (`device_data.py`; since task 4.6 the Lightning-free half, `TensorSplit`,
+the crop builders and `check_split_identity`, lives in `tensor_splits.py` and is
+re-exported, so the plain engine builds the same arrays without Lightning).
+`TensorSplit(images, features, labels, fits=None)`:
 float32 (N, 3, 21, 21) (or (N, 6, 21, 21) with the 63×63 context of task 2.5-models, or
 the whole stamps (N, 3, 63, 63) of the ConvNeXt rows, plan row B8; `IMAGE_SIDES`),
 float32 (N, 23), int64 (N,), and optionally the float32 (N, 6) `class_augment.stamp_fits`
@@ -1560,6 +1593,11 @@ C7 (below), then C5's noise on the rows C6 did not replace, **then** the rotatio
 of `rot90_augment`, then the feature jitter on every row. The class augmentation runs before
 the rotation because the stamp fits describe the unrotated crop (C7's PSF centroid in
 particular; C5 / C6 are rotation-agnostic). Validation and test are never augmented.
+
+The cross-channel relation (`stamp_fits`, `FIT_COLUMNS`, `masked_pixels`, `renormalise`,
+`perturb` and their constants) lives in `src/astro_simclr/stamp_relation.py`, outside the
+`training` package (whose `__init__` imports Lightning), so that the SimCLR views can use it
+engine-free; `class_augment` re-exports it unchanged (ADR 0025).
 
 - **The difference is computed, not augmented.** `stamp_fits(images)` fits, per crop and in
   float64, `diff ~ a·sci + b·tmpl + c` (least squares over the 441 pixels, a
@@ -1703,7 +1741,7 @@ Lightning behaviour the loop reproduces (C1-C11) and the test that pins each.
 | `checkpoint` | `Checkpoint` (a `TypedDict` of plain values, read with `weights_only=True`) and its frozen key set `CHECKPOINT_KEYS`: format, engine, identity (A0's run id and attempt, the split run), `steps_done` (also the stream position), model, optimizer, task, policy, stream definition, every RNG stream, numerics (ADR 0010) and versions. `check_resumable` refuses Lightning checkpoints, other engines, formats and incomplete ones. |
 | `device` | `DevicePolicy`: one device (`world_size != 1` refused), `cudnn.benchmark = not deterministic`, `use_deterministic_algorithms(deterministic)`, `CUBLAS_WORKSPACE_CONFIG=":4096:8"` only when deterministic (`torch_flags()`, checked equal to Lightning's `_set_torch_flags`), ADR 0010's precision. |
 | `data` | `Batch` / `TrainBatch` (equal to `device_data`'s); `DataTier` (`device`, `pinned`, `memmap`, all exact); `TierChoice` (non-float32 storage is a recorded deviation); the `BatchSource` (`batch(step)`, a pure function of the stream and the step) and `EvalSource` protocols. |
-| `randomness` | `host_generator(seed, step, stream)` (= `class_augment.augment_rng`: per-sample parameters, device-independent); `device_generator(seed, step, stream, device)` (per-pixel fields: the seed is device-independent, the values are not, so runs record the device); `RESERVED_STREAMS`, the stream numbers in use. |
+| `randomness` | `host_generator(seed, step, stream)` (= `class_augment.augment_rng`: per-sample parameters, device-independent); `device_generator(seed, step, stream, device)` (per-pixel fields: the seed is device-independent, the values are not, so runs record the device); `RESERVED_STREAMS`, the stream numbers in use (1-4 the paper model's augmentations, 5 the `block` stream's passes (4.3, ADR 0018), 6-9 the SimCLR pilot's views, noise fields, batch order and diagnostics; ADR 0025). |
 
 `tests/test_engine_contracts.py` also pins the Lightning 2.6.6 facts the checklist relies on
 (the validation grid across 7-step epochs, `global_step` inside `training_step`, the
@@ -1742,16 +1780,18 @@ inference contexts, `keep`, early stopping against Lightning's `EarlyStopping` o
 sequences, the checkpoint contents, exact resume through the global RNG streams (and its
 control: without `restore_rng` it is not exact), every resume refusal, atomic writes, the
 seeding and flags, the scalars, and the `engine: plain` manifest.
-`tests/test_engine_differential.py` is **the 4.7(a) CPU differential test**, a CI gate:
-`run_command`'s `carrasco2021` path and the plain engine (`tests/_plain_paper.py`, a test
-adapter of `PaperClassifierModule` to `Task` on the `device` tier) run in one process on
-the synthetic data, with a horizon extension, and agree bit for bit (initial weights; the
-steps, `loss_val` and every `state_dict` tensor after each validation; `best_step`,
-horizon, `last_step`, `monitor_best`, the epochs; the final probabilities and accuracies),
-over the 2.5 flags (`single`, `p4`, `p4m`, `context`, `rot90`, C5, C6, C7, both
-`feature_set` diagnostics, all of C5-C7 with `p4`), a fold and the screen, a mid-run plain
-resume, and each accelerator present (deterministic). It also ports the three
-Lightning-bound resume tests to the plain engine.
+`tests/test_engine_differential.py` is **the 4.7(a) CPU differential test**, a CI gate.
+Since task 4.6 it runs `run_command`'s `carrasco2021` path and the real plain runner
+(`tasks.plain.run_plain`, section `tasks`) in one process on the synthetic data, with a
+horizon extension, and they agree bit for bit: the initial weights; the steps, `loss_val`
+and every `state_dict` tensor after each validation; the whole `metrics.json` but for the
+entries that name the engine or the run (`machine.engine`, `checkpoints`, `versions`,
+`accelerator`, `run`, `timing`, `config.output_dir`); the `predictions_*.npz` arrays; both
+manifests `finished`. Cases: the 2.5 flags (`single`, `p4`, `p4m`, `convnext_atto`,
+`context`, `rot90`, C5, C6, C7, both `feature_set` diagnostics, `fp32_precision: tf32`,
+all of C5-C7 with `p4`), a fold and the screen, a mid-run plain resume, and each
+accelerator present (deterministic). It also ports the three Lightning-bound resume tests
+to the plain runner.
 
 ### The data layer (task 4.3; ADR 0018)
 
@@ -1817,6 +1857,29 @@ fraction of a SimCLR step). On MPS the host tiers cost about 0.7 ms per batch ag
 0.13 ms for `device`: with unified memory there is nothing to gain from them, so `device` is
 the choice whenever the data fit; `pinned` and `memmap` exist for CUDA machines and the
 phase-5 corpus. Their CUDA and cold-disk numbers are measured on the GPU machine.
+
+## `tasks` (phase 4, task 4.6; ADR 0014, amendment of task 4.6)
+
+`src/astro_simclr/tasks/`: the paper classifier on the plain engine, and what both engines'
+runners share. **Nothing in it imports Lightning** (tested in a fresh interpreter, with
+the CLI and the preflight). `astro-simclr run CONFIG` with `runtime.engine: plain` trains
+through it; Lightning stays the default until 4.7/4.8.
+
+| Module | What it does |
+|---|---|
+| `common` | The run checks of `run_command`, moved from `experiments` (which re-exports them): `check_accelerator` (`AcceleratorError`), `dataset_path`, `check_names`, `check_schedule` / `check_paper_variant`, `check_split`. |
+| `paper` | `paper_inputs(settings, data, split_run)`: the splits as `TensorSplit`s (float path or uint8 diagnostic, leaked Train stamps removed, a split run's roles, the C5-C7 fits) and the `paper_data` entry; `experiments._build_paper` calls it too. `load_backbone` (ConvNeXt weights, ADR 0022). `PaperNet` (the model under `model`, the loss as `criterion`: `PaperClassifierModule`'s `state_dict` keys). `PaperTask`, the engine `Task`: a step plans the augmentation of step `step` on a host copy (`training.paper_augment.PaperAugment`, the object the Lightning module delegates to), uploads and applies it, then the loss; `build_optimizer` with the configured betas. `build_paper_task(settings, info)` builds it on the CPU (after the seed); `check_paper_task` runs its checks before the manifest. |
+| `results` | `StageOutput` and `classifier_results`: the Validation / Test (or selection / evaluation) entries of `metrics.json`, `predictions_*.npz` and the confusion-matrix figures, moved from `experiments` and used by both engines. |
+| `plain` | `run_plain(command, settings, resume=, split=, on_step=, on_validation=, progress=)`: `run_command` for `train-supervised` of the paper classifier on `carrasco2021` (every 2.5 flag, split runs, `fp32_precision`). The same checks, the data on the `device` tier, `start_run(..., engine="plain")`, `engine.fit`, the final evaluation of the restored best, `metrics.json` (the Lightning keys, with `machine.engine: plain`, `checkpoints` `ckpt/{best,last}.pt`, no Lightning version, `accelerator` the device type), the manifest `finished`. `resume="auto"`: `OUTPUT_DIR/ckpt/last.pt`. Refuses other commands, models and schedules (use `lightning`), `devices != 1`, and `limit_train_batches` / `limit_val_batches`. |
+
+`training/__init__` loads its names lazily (PEP 562), so its Lightning-free submodules
+(`paper_augment`, `tensor_splits`, `class_augment`, `flux_rescale`, `metrics`,
+`optimizers`, `tiling`) import without Lightning.
+
+**Tested.** `tests/test_engine_differential.py` (the 4.7(a) gate, section `engine`) and
+`tests/test_tasks_plain.py`: a plain run's outputs, every refusal (before the manifest, or
+a failed attempt after it), the accelerator and resume resolution, `astro-simclr run` with
+`runtime.engine: plain`, the Lightning-free imports, the timer and the preflight's CD21 run.
 
 ## `presets` (task 2.2c)
 
@@ -2012,7 +2075,7 @@ checked (command, `supervised_model`, no duplicate seed) and `val_acc_best` aggr
 phase-3 benchmarks (task 3.2); the rules and the power note are in
 `docs/evaluation-protocol.md`, the design choices in ADR 0004 (phase 2) and ADR 0008
 (phase 3). No torch import, so `make-splits`, `leakage-audit`, `compare-variants`,
-`make-object-splits` and `bench-report` start fast.
+`make-object-splits`, `bench-report` and `report-phase2` start fast.
 
 | Module | What it does |
 |---|---|
@@ -2023,7 +2086,8 @@ phase-3 benchmarks (task 3.2); the rules and the power note are in
 | `predictions` | `Predictions(probabilities, labels, index, n_classes=5)` (task 3.2: `n_classes` generalises the column count; 5 by default, so phase 2 is unchanged; the benchmarks pass 6 and index by `candid`), `save_predictions` / `load_predictions` (`.npz`, `allow_pickle=False`), `check_paired`, `ensemble` (mean probabilities per stamp), `seed_mean_correct` |
 | `stats` | `mcnemar` (exact, integer arithmetic), `paired_bootstrap` (percentile CI of variant − baseline, stratified by class, metric `accuracy` or `balanced_accuracy`, own `default_rng(seed)`, memory-bounded blocks), `paired_bootstrap_macro_f1(pred_baseline, pred_variant, labels, n_classes)` (task 3.2: the same paired, class-stratified resampling for macro-F1; each resample recounts every run's confusion matrix as one matrix product of item multiplicities with (run, true, predicted) indicator columns; observed = mean-over-runs macro-F1 difference, the report passes one row per side, the seed-ensemble argmax; identical sides give exactly [0, 0]; `BootstrapCI.metric` is now `IntervalMetric`), `minimum_detectable_effect(n, discordant= \| rate=)` (2.80·SE, paired or unpaired), `balanced_accuracy`, `adoption_decision` (superiority: `adopt` only if the CI is above 0), `non_inferiority_decision(interval, margin=0.005)` (`adopt` if the CI lower bound is above −margin, `worse` if the CI is below it; `check_margin` refuses margins outside (0, 0.05], a likely points-for-fraction mistake), `screen_decision` (`drop` at 4 points or more, never adopt) |
 | `split_runs` | Task 2.5-infra. `SplitRequest(file, fold)` (`fold=None`: the screen); `open_split_run(request, prepared_dir)` reads the file, refuses a fold it does not have (`ConfigError`) and runs `verify_splits` on the prepared data (a wrong fingerprint is a `SplitsError`); `SplitRun.parts()` gives `RunParts` (training, selection, evaluation as sorted pool indices, and `evaluation_index`: pool indices for a fold, Validation indices for the screen) and checks that they are pairwise disjoint and hold no excluded stamp; `SplitRun.describe()` is `metrics.json["protocol"]` (mode, fold, splits file and SHA-256, part sizes, `grouping`); the screen trains on Train minus `ProtocolSplits.screen_training_excluded()`; `SplitRun.identity()` (splits SHA-256, mode, fold) is stored in every checkpoint and checked on resume. `file_sha256` |
-| `compare` | `compare_variants(baseline_dirs, variant_dirs, stage)`: loads each run's `metrics.json` and predictions file, refuses repeated seeds, runs on different data (`data.source.sha256`: a normal run's `index` is `arange(N)`, so the data identity and the labels are what show two runs saw the same stamps), unpaired runs and mixed machines or float32 precisions (unless allowed), reports McNemar on the seed ensembles and the bootstrap, always as REPORT; it points split runs to `--splits`. `screen_comparison` / `cv_comparison(..., rule="superiority"\|"non-inferiority", margin)`: the decision helpers, which check that the predictions cover exactly the screen's decision half or each fold's evaluation part (so the CV bootstrap is paired by pool index); `CVResult` holds the per-fold and pooled balanced accuracies, the CI, McNemar on the seed ensembles and the decision. `compare_decision(baseline_dirs, variant_dirs, splits_file, rule, margin)` (CLI `compare-variants --splits`): loads split runs (`load_split_run`), checks the splits file's SHA-256, one mode, one data source and machine, the same (fold, seed) cells on both sides and every fold, then applies `cv_comparison` (verdict `ADOPT` / `NOT ADOPTED`) or `screen_comparison` (`KEEP` / `DROP`; `--rule` refused) |
+| `compare` | `compare_variants(baseline_dirs, variant_dirs, stage)`: loads each run's `metrics.json` and predictions file, refuses repeated seeds, runs on different data (`data.source.sha256`: a normal run's `index` is `arange(N)`, so the data identity and the labels are what show two runs saw the same stamps), unpaired runs and mixed machines or float32 precisions (unless allowed), reports McNemar on the seed ensembles and the bootstrap, always as REPORT; it points split runs to `--splits`. `screen_comparison` / `cv_comparison(..., rule="superiority"\|"non-inferiority", margin)`: the decision helpers, which check that the predictions cover exactly the screen's decision half or each fold's evaluation part (so the CV bootstrap is paired by pool index); `CVResult` holds the per-fold and pooled balanced accuracies, the CI, McNemar on the seed ensembles and the decision. `compare_decision(baseline_dirs, variant_dirs, splits_file, rule, margin)` (CLI `compare-variants --splits`): loads split runs (`load_split_run`), checks the splits file's SHA-256, one mode, one data source and machine, the same (fold, seed) cells on both sides and every fold, then applies `cv_comparison` (verdict `ADOPT` / `NOT ADOPTED`) or `screen_comparison` (`KEEP` / `DROP`; `--rule` refused); `DecisionComparison.mcnemar` is the screen's McNemar on the seed ensembles (the CV's is `cv.mcnemar`) |
+| `phase2_report` | Task 2.6. `build_report(ReportInputs)` → the markdown of `docs/results-phase2.md` (CLI `report-phase2`). `find_arms(dir)`: one arm per subdirectory, its runs at any depth (`DIR/<arm>/.../metrics.json`; a run directly under `DIR` is refused). Sections: the replication (per-seed table, mean ± std with ddof = 1, and `reference.compare_reference("CD21", ...)` verbatim with the M1 oracle report, default `DIR/m1_oracle.json`); the screen (`compare_decision` per arm against `--baseline-arm`, rot4 by default: accuracies, McNemar, KEEP/DROP and the verbatim output); the CV (`compare_decision` with each arm's pre-registered rule, superiority or `--non-inferiority`; balanced accuracy per run, per fold and pooled from `CVResult`, the CI, McNemar, both verdicts from `stats.adoption_decision` / `stats.non_inferiority_decision` on the same interval, the verbatim output; `pooled_class_scores` gives the per-class recall and confusion matrix of every arm from the per-stamp seed-mean scores, so the mean recall is the pooled balanced accuracy); then throughput (`read_run_facts`: s/step, GPU, the manifest's `concurrent_jobs`, flagged when > 1, "not recorded" without a manifest) and provenance (git commits and config hashes of manifest runs; with `--registry`, indexed and stale runs by `metrics.json` SHA-256). Deterministic: sorted arms and runs, a seeded bootstrap, paths as given, no timestamps. No statistics of its own |
 | `alerts` | Task 3.2. `AlertTable` (sorted by `candid`: `oid`, `candid`, `jd`, `label`, `label_names`, `group`, `group_key` `"oid"` or `"group"`), `AlertTable.from_rows` (checks: valid ids, unique positive `candid`, finite positive `jd`, labels in range), `sha256` (canonical rows by `candid`, the group only with a `group` column), `rows_of(candids)`; `read_alert_table(csv, label_names=BENCHMARK_LABEL_NAMES)` (untrusted input: `csv` module and a schema, errors name the line; extra columns ignored), `write_alert_table`; `label_conflicts` (groups with two labels); `first_stamps(table, rows)` (earliest `jd`, then smaller `candid`, per `oid`). `BENCHMARK_LABEL_NAMES` = R5's classes (the phase-2 five), `RJ23_LABEL_NAMES` = the five + `Satellite` |
 | `grouping` | Task 3.2, on per-row arrays of any group ids (never builds groups): `group_rows` (ids, label, size, conflicts), `assign_groups` (per class, `default_rng([seed, stream, class])` shuffle, then largest-deficit assignment; refuses a class that cannot give every part a group; task 3.5: an optional `allowed` mask, the most constrained groups placed first, each to the allowed part furthest below target), `grouped_split` (refuse or drop conflicting groups), `grouped_halves` (50/50 selection/decision, own stream), `check_stratified` (no group in two parts; per class and part, within `+g` / `−(k−1)g` of the target), `stratification_bound`, `shared_groups` / `assert_no_shared_groups(..., allowed=CROSS_BENCHMARK_ALLOWED)` (the cross-benchmark rule: by default the plan's matrix, Train/Train and Validation/Test pairs allowed, Train with the other's Validation or Test refused; `allowed=()` refuses all nine; returns the shared-count matrix) |
 | `object_splits` | Task 3.2. `make_object_splits(table, seed, fractions=(0.6, 0.2, 0.2), on_conflict="refuse"\|"drop", allowed=None)`: `grouped_split` by `table.group` (task 3.5: `allowed` maps groups to the splits they may be in, stored as `constraints`, format version 2; version 1 still read; the bound is verified only for classes without constraints), then `grouped_halves` of Validation; `ObjectSplits` (table identity, group key, label names, seed, fractions, conflicts, sorted group ids per split and half, class counts per part), `split_of` / `half_of` / `rows(table, part)`; `write_object_splits` / `read_object_splits` (structure: valid sorted ids, disjoint splits and halves, halves inside Validation) / `verify_object_splits(splits, table)` (fingerprint, group key, label names, conflicts, coverage, the bound, the counts). CLI `make-object-splits` |
@@ -2185,6 +2249,44 @@ fast and the handlers (`commands.py`) load on use.
   [--use KEY] [--attempts latest] [--allow-mixed KIND] [--json]`; `--registry FILE` on
   each.
 
+## `simclr` (phase 5, task 5.0b; ADR 0025)
+
+`src/astro_simclr/simclr/`: SimCLR for the pilot that gates the corpus download (plan
+5.0b). **Engine-free**: nothing imports Lightning (checked in a fresh interpreter), every
+draw is keyed by `step`, so 5.3 can run the same functions on the plain engine.
+
+| Module | Contents |
+|---|---|
+| `views` | `make_views(images, params, config, *, fits, generator)`: two training views (B, C, 57, 57) of (B, C, 63, 63) stamps: optional C5 noise on the 63-pixel stamp (`background_noise`: science and template noised, the difference through the fit, the min-max again), then `dihedral(images, k)` (8 exact elements: `rot90` by `k % 4`, flip if `k >= 4`), then `crop(images, offsets)` (an integer 57-pixel window, offsets 0-6, the same for every channel, no fill). `centre_crop` is the evaluation view (offset 3). `draw_view_params(seed, step, B)`: `k`, offsets and noise strengths of both views from `default_rng([seed, step, simclr_views])`, always drawn in full; `noise_generator(seed, step, device)`: the noise fields' device generator. |
+| `network` | `resnet18_cifar()`: torchvision ResNet-18, 3x3 stride-1 stem, no max-pool, `fc = Identity`, `zero_init_residual=True` (57 -> 57 -> 29 -> 15 -> 8, `h` 512-d); `ProjectionHead`: Linear(512, 512, no bias)-BN-ReLU-Linear(512, 128); `SimCLRNetwork(x) -> (h, z)`. |
+| `objective` | `SimCLRLoss(T)(z_i, z_j)`: `losses.NT_Xent` in paper mode (ADR 0002), in float32 with autocast off; returns `(loss, pos, neg)`. |
+| `optim` | `lars_param_groups(model)`: convolution/linear weights (weight decay 1e-6, trust ratio) and an excluded group (normalisation parameters and biases: no decay, no trust ratio, `optim.EXCLUDE_KEY`); `build_lars(model, lr=...)`: fixed trust ratio, no Nesterov, momentum 0.9; `base_learning_rate(B) = 0.3 * B / 256`; `warmup_cosine_lr(step, base_lr, total_steps, warmup_steps, lr_min=0)`: linear warmup to `base_lr` at step `W - 1`, then a cosine that is exactly `lr_min` at `total_steps - 1`; `set_learning_rate`. |
+| `diagnostics` | `effective_rank(h)` (exp of the entropy of the normalised eigenvalues of `cov(h)`), `dimension_std(z)`, `alignment(z_i, z_j)`, `uniformity(z, t=2)`, `knn_predict` / `knn_balanced_accuracy` (cosine, `k = 20`, vote weights `exp(sim / 0.07)`). |
+| `probe` | `draw_label_subsets(labels, candidates, per_class, n_subsets, seed)` (nested across budgets: subset `r` is the head of a per-class permutation keyed `[seed, r, class]`), `write_label_subsets` / `read_label_subsets` (format `astro-simclr-label-subsets` v1, with the SHA-256 of the candidates and the labels); `fit_probe(h, labels, weight_decay)`: logistic regression, standardised `h`, plain cross-entropy on logits, L2 on the weights, full-batch L-BFGS in float64 on the CPU; `probe_screen(...)`: the penalty chosen on the screen's selection half from `WEIGHT_DECAY_GRID`, the score on the decision half, per subset. |
+| `pilot` | `PilotConfig` (the run's whole definition; `epochs` or `steps`), `load_pilot_data` (Train and Validation as float32 (N, 3, 63, 63); with a splits file, verified, pretraining leaves out `screen_training_excluded`), `BatchOrder` (a permutation per pass keyed `[seed, pass, simclr_batch_order]`, last partial batch dropped), `PilotRun` (model built on the CPU from the seed, LARS, the step: views, one forward of both views concatenated, loss, rate, backward, step), `diagnose`, `embed`, `dump_embeddings`, `train_pilot(config, out_dir, resume=, stop_at=)`. |
+| `commands` | The `simclr-pilot`, `simclr-embed`, `make-label-subsets` and `simclr-probe` subcommands (see `cli`). |
+
+A pilot run directory holds `pilot.json` (config, data record with the source and splits
+SHA-256, schedule, device, precision and determinism flags, versions), `metrics.jsonl`
+(loss, mean positive and negative cosine, rate), `diagnostics.jsonl`, `ckpt/last.pt`,
+`ckpt/step-NNNNNNN.pt` every `keep_every_epochs` passes, `ckpt/final.pt` (format
+`astro-simclr-pilot-checkpoint` v1, `weights_only=True`) and `embeddings/` (`train_h.npy`,
+`validation_h.npy`, the labels and `meta.json`). `--resume` restores the weights, the
+optimizer and the steps done from `last.pt` (same config only) and drops the log lines past
+it; the continued run takes the same batches and views (exact on CPU, and on CUDA with
+`--deterministic`).
+
+The pilot's protocol, end to end:
+
+```bash
+D=dataset/prepared/td_ztf_stamp_17_06_20_red-002; S=configs/splits/td_ztf_stamp_17_06_20_red-002-grouped.json
+astro-simclr simclr-pilot $D --splits $S --output-dir runs/pilot/ssl --epochs 100 --device cuda
+astro-simclr simclr-embed $D --random-init --seed 0 --output-dir runs/pilot/random-init
+astro-simclr make-label-subsets $D --splits $S --per-class 10 --n-subsets 20 --out runs/pilot/subsets-10.json
+astro-simclr simclr-probe runs/pilot/ssl/embeddings --subsets runs/pilot/subsets-10.json --splits $S --out runs/pilot/probe-ssl-10.json
+astro-simclr simclr-probe runs/pilot/random-init --subsets runs/pilot/subsets-10.json --splits $S --out runs/pilot/probe-random-10.json
+```
+
 ## `preflight` (task 1.7)
 
 `src/astro_simclr/preflight.py`, behind `astro-simclr preflight` and
@@ -2223,12 +2325,20 @@ a failed step 2-4, stops it.
    fine-tune on that checkpoint → R1, R2, R4; `--runs` selects) through `run_command`, with
    `max_epochs=1`, `limit_train_batches=steps+1`, `limit_val_batches=2`, at the reference
    batch sizes (capped to the Train size), on the chosen accelerator, so a batch that does
-   not fit the GPU fails here. Without `--runs`, a run whose dataset is not prepared is a
-   SKIP (WARN); a run named in `--runs` must run, or the step FAILs.
-6. **Throughput:** `ThroughputTimer` measures steps/s between consecutive batches of an
-   epoch (first batch untimed; the device is synchronised so the clock measures work), with
-   the real DataLoader. The estimate per run is `(n_train // batch) * max_epochs / rate`,
-   times 5 seeds (R1, R2) for the full set, with R3's linear evaluation summed over the 1,
+   not fit the GPU fails here. Then **CD21** (task 4.6): the `carrasco2021` preset on the
+   **plain engine** (`tasks.plain.run_plain`), `steps+1` steps with one validation after the
+   last and no horizon extension, on `red-002` with float32 stamps (`--synthetic` prepares
+   that file with them). R1-R4 stay on Lightning (their modules are frozen at
+   `lightning-final`); `--runs CD21` alone never imports Lightning (tested in a fresh
+   interpreter). Without `--runs`, a run whose dataset is not prepared is a SKIP (WARN); a
+   run named in `--runs` must run, or the step FAILs.
+6. **Throughput:** `ThroughputTimer` (engine-free: `tick(device)` after each step,
+   `reset()`; `lightning_timer(timer)` adapts it to a Lightning callback that resets it at
+   each epoch start, the plain engine ticks it through `fit(on_step=...)`) measures steps/s
+   between consecutive steps (the first untimed; the device is synchronised so the clock
+   measures work), with the real data path. The estimate per run is
+   `(n_train // batch) * max_epochs / rate` (CD21: the initial horizon, 30,000 steps, a
+   lower bound), times 5 seeds (R1, R2, CD21) for the full set, with R3's linear evaluation summed over the 1,
    10 and 100 % files; an upper bound, without validation time. With `--synthetic` (the
    four synthetic files, named as the received ones, `--n-per-split` 2400 by default,
    under the output directory) it

@@ -1,41 +1,48 @@
-"""The 4.7(a) CPU differential test: Lightning's ``carrasco2021`` path and the plain engine.
+"""The 4.7(a) CPU differential test: Lightning's ``run_command`` and the plain ``run_plain``.
 
-ADR 0014, section 6, and plan task 4.7(a), a CI gate until Lightning is removed (4.8): both
-engines run in one process on the synthetic prepared data, on a schedule with a horizon
-extension (validation every 3 steps, an initial horizon of 10 and an increment of 10, so
-the first validation's best always extends the run; ``lr`` 3e-2 so that the extensions
-end within a few dozen steps), and must agree **bit for bit**:
+ADR 0014, section 6, and plan task 4.7(a), a CI gate until Lightning is removed (4.8). Since
+task 4.6 it runs the real plain path, ``tasks.plain.run_plain`` (the paper classifier task,
+its data, the final evaluation and ``metrics.json``), against today's Lightning
+``experiments.run_command``, in one process on the synthetic prepared data, on a schedule
+with a horizon extension (validation every 3 steps, an initial horizon of 10 and an
+increment of 10, so the first validation's best always extends the run; ``lr`` 3e-2 so that
+the extensions end within a few dozen steps). The two runs must agree **bit for bit**:
 
-- the initial weights (C1);
+- the initial weights (``build_paper_task`` after the seed, against the Lightning module's);
 - after every fit validation: the steps done, the monitored ``loss_val`` (the same Python
-  float) and every tensor of the ``state_dict`` (``torch.equal``: parameters and the batch
-  norms' running statistics);
-- ``best_step``, the horizon, ``last_step``, ``monitor_best`` and the derived epochs;
-- the final evaluation on the restored best weights: the per-stamp probabilities of both
-  roles (``torch.equal``) and the accuracies ``metrics.json`` reports.
+  float) and every tensor of the ``state_dict`` (``torch.equal``);
+- the whole ``metrics.json``, except what names the engine or the run (the machine's
+  ``engine``, the checkpoint paths, the Lightning version, the accelerator's class name,
+  the run id, the output directory and the timing): the steps, horizon, epochs and
+  ``monitor_best``, ``paper_data``, ``preset``, ``protocol``, every evaluation entry
+  (accuracies, macro-F1, recalls, both confusion matrices);
+- the per-stamp predictions files (``predictions_*.npz``), array by array;
+- the manifests: ``engine: plain`` and ``lightning``, both ``finished``.
 
-It is parametrised over the 2.5 flags that exist (``paper_arch`` ``p4`` / ``p4m`` /
-``single``, ``context``, ``rot90_augment``, C5's noise and jitter, C6, C7, ``feature_set``),
-split runs (a fold and the screen) and a mid-run resume of the plain engine. A flag added
-to one engine only therefore fails CI (CLAUDE.md, "New training flags are engine-free").
+It is parametrised over the 2.5 flags on main (``paper_arch`` ``single`` / ``p4`` / ``p4m`` /
+``convnext_atto``, ``context``, ``rot90_augment``, C5's noise and jitter, C6, C7,
+``feature_set``, ``fp32_precision``), split runs (a fold and the screen), a mid-run resume of
+the plain engine and each accelerator present. A flag added to one engine only therefore
+fails CI (CLAUDE.md, "New training flags are engine-free").
 
 The second half ports the semantics of the three Lightning-bound resume tests (ADR 0014,
-C10) to the plain engine: ``test_resume_from_mid_epoch_last_checkpoint``,
+C10) to the plain runner: ``test_resume_from_mid_epoch_last_checkpoint``,
 ``test_resume_at_the_horizon_still_writes_best`` and ``test_augmented_resume_is_exact``
 (here bit-exact, where the Lightning test allows ``atol=1e-6``).
 """
 
 from __future__ import annotations
 
+import json
 import pickle
 import shutil
 from pathlib import Path
 from typing import Any
 
 import lightning as L
+import numpy as np
 import pytest
 import torch
-from _plain_paper import PlainRun, plain_paper_run
 from _training_support import ACCELERATORS
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.trainer.states import TrainerFn
@@ -43,10 +50,19 @@ from lightning.pytorch.trainer.states import TrainerFn
 from astro_simclr.config import Settings
 from astro_simclr.data import prepare
 from astro_simclr.data.synthetic import CLASSIFIER_FILES, make_synthetic
-from astro_simclr.engine import Task, Validation, load_best, load_checkpoint, read_scalars
+from astro_simclr.engine import (
+    Task,
+    Validation,
+    load_best,
+    load_checkpoint,
+    read_scalars,
+    seed_everything,
+)
 from astro_simclr.experiments import run_command
 from astro_simclr.protocol.split_runs import SplitRequest
 from astro_simclr.protocol.splits import make_splits, write_splits
+from astro_simclr.tasks.paper import build_paper_task
+from astro_simclr.tasks.plain import run_plain
 
 _SCHEDULE: dict[str, Any] = {
     "schedule": "carrasco2021",
@@ -83,6 +99,7 @@ _FLAGS: list[Any] = [
     pytest.param({"paper_arch": "single"}, id="single"),
     pytest.param({"paper_arch": "p4"}, id="p4"),
     pytest.param({"paper_arch": "p4m", "group_fields": 4}, id="p4m"),
+    pytest.param({"paper_arch": "convnext_atto", "image_size": 63}, id="convnext_atto"),
     pytest.param({"context": "avgpool63"}, id="context"),
     pytest.param({"rot90_augment": True}, id="rot90"),
     pytest.param({"aug_noise": 1.0, "aug_feature_jitter": 0.1, "aug_min_r2": 0.0}, id="C5"),
@@ -90,6 +107,7 @@ _FLAGS: list[Any] = [
     pytest.param({"flux_rescale": 0.5}, id="C7"),
     pytest.param({"feature_set": "position"}, id="feature_set-position"),
     pytest.param({"feature_set": "none", "rot90_augment": True}, id="feature_set-none"),
+    pytest.param({"fp32_precision": "tf32"}, id="fp32-tf32"),
     pytest.param(_AUGMENT, id="C5-C7-p4"),
     # Plan row B9: the conv-attention hybrids (both trunks, both readouts).
     pytest.param({"paper_arch": "hybrid", "hybrid_readout": "cls"}, id="hybrid-cls"),
@@ -104,6 +122,11 @@ _SPLIT_RUNS: list[Any] = [
     pytest.param(_AUGMENT, 2, id="fold-augmented"),
     pytest.param({"rot90_augment": True}, None, id="screen"),
 ]
+
+#: ``metrics.json`` entries that name the engine or the run, not what it computed.
+_ENGINE_ENTRIES = ("accelerator", "checkpoints", "versions", "run", "timing")
+
+Validations = list[tuple[int, float, dict[str, torch.Tensor]]]
 
 
 def _settings(data: Path, out: Path, **changes: Any) -> Settings:
@@ -142,12 +165,11 @@ def _cpu_state(module: torch.nn.Module) -> dict[str, torch.Tensor]:
 
 
 class _LightningProbe(Callback):
-    """What the Lightning run did: initial weights, every fit validation, final outputs."""
+    """What the Lightning run did: its initial weights and every fit validation."""
 
     def __init__(self) -> None:
         self.initial: dict[str, torch.Tensor] | None = None
-        self.validations: list[tuple[int, float, dict[str, torch.Tensor]]] = []
-        self.final: dict[str, torch.Tensor] = {}
+        self.validations: Validations = []
 
     def on_fit_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
         self.initial = _cpu_state(pl_module)
@@ -156,21 +178,30 @@ class _LightningProbe(Callback):
         if trainer.state.fn == TrainerFn.FITTING:
             value = float(trainer.callback_metrics["loss_val"])
             self.validations.append((trainer.global_step, value, _cpu_state(pl_module)))
-        else:
-            self.final["Validation"] = pl_module.probabilities["val"].clone()  # type: ignore[index]
-
-    def on_test_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
-        self.final["Test"] = pl_module.probabilities["test"].clone()  # type: ignore[index]
 
 
 class _PlainProbe:
     """The plain run's fit validations (an ``on_validation`` hook)."""
 
     def __init__(self) -> None:
-        self.validations: list[tuple[int, float, dict[str, torch.Tensor]]] = []
+        self.validations: Validations = []
 
     def __call__(self, record: Validation, task: Task) -> None:
         self.validations.append((record.steps_done, record.value, _cpu_state(task.module)))
+
+
+class _CopyLast(_PlainProbe):
+    """Also copy ``ckpt/last.pt`` (written just before) to ``dst`` at the step-``step`` one."""
+
+    def __init__(self, step: int, src: Path, dst: Path) -> None:
+        super().__init__()
+        self.step, self.src, self.dst = step, src, dst
+
+    def __call__(self, record: Validation, task: Task) -> None:
+        super().__call__(record, task)
+        if record.steps_done == self.step:
+            self.dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(self.src, self.dst)
 
 
 def _lightning(
@@ -189,10 +220,7 @@ def _assert_same_states(left: dict[str, torch.Tensor], right: dict[str, torch.Te
         assert torch.equal(tensor, right[key]), key
 
 
-def _assert_same_validations(
-    lightning: list[tuple[int, float, dict[str, torch.Tensor]]],
-    plain: list[tuple[int, float, dict[str, torch.Tensor]]],
-) -> None:
+def _assert_same_validations(lightning: Validations, plain: Validations) -> None:
     assert [(s, v) for s, v, _ in plain] == [(s, v) for s, v, _ in lightning]
     for (step, _, expected), (_, _, actual) in zip(lightning, plain, strict=True):
         try:
@@ -201,42 +229,47 @@ def _assert_same_validations(
             raise AssertionError(f"weights differ after the validation of step {step}") from err
 
 
-def _accuracy(probabilities: torch.Tensor, targets: torch.Tensor) -> float:
-    return float((probabilities.argmax(dim=1) == targets).double().mean())
+def _computed(metrics: dict[str, Any]) -> dict[str, Any]:
+    """``metrics`` without what names the engine or the run (module docstring)."""
+    kept = {k: v for k, v in metrics.items() if k not in _ENGINE_ENTRIES}
+    kept["machine"] = {k: v for k, v in metrics["machine"].items() if k != "engine"}
+    kept["config"] = {k: v for k, v in metrics["config"].items() if k != "output_dir"}
+    kept["resumed_from"] = metrics["resumed_from"] is not None
+    return kept
 
 
-def _assert_same_outcome(metrics: dict[str, Any], run: PlainRun, *, split: bool) -> None:
-    result = run.result
-    assert result.best_step == metrics["best_step"]
-    assert result.last_step == metrics["last_step"]
-    assert result.horizon == metrics["horizon"]
-    assert result.horizon > _SCHEDULE["max_steps"]  # the schedule did extend
-    assert result.best_score == metrics["monitor_best"]
-    assert result.best_epoch == metrics["best_epoch"]
-    assert result.last_epoch == metrics["last_epoch"]
-    validation, test = run.evaluation["Validation"], run.evaluation["Test"]
-    keys = (
-        ("selection_acc_best", "evaluation_accuracy")
-        if split
-        else ("val_acc_best", "test_acc_at_best")
-    )
-    assert _accuracy(validation.probabilities, validation.targets) == metrics[keys[0]]
-    assert _accuracy(test.probabilities, test.targets) == metrics[keys[1]]
+def _assert_same_outputs(lightning_dir: Path, plain_dir: Path) -> None:
+    """The predictions files, array by array, and the two manifests."""
+    names = sorted(p.name for p in lightning_dir.glob("predictions_*.npz"))
+    assert names and names == sorted(p.name for p in plain_dir.glob("predictions_*.npz"))
+    for name in names:
+        with np.load(lightning_dir / name) as left, np.load(plain_dir / name) as right:
+            assert sorted(left.files) == sorted(right.files)
+            for key in left.files:
+                assert left[key].dtype == right[key].dtype
+                assert np.array_equal(left[key], right[key]), (name, key)
+    for path, engine in ((lightning_dir, "lightning"), (plain_dir, "plain")):
+        manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+        assert (manifest["engine"], manifest["status"]) == (engine, "finished")
 
 
 def _assert_engines_agree(
     settings: Settings, plain_out: Path, split: SplitRequest | None = None
-) -> PlainRun:
-    metrics, lightning = _lightning(settings, split)
+) -> dict[str, Any]:
+    expected, lightning = _lightning(settings, split)
     probe = _PlainProbe()
-    run = plain_paper_run(settings.replace(output_dir=plain_out), split=split, on_validation=probe)
+    plain = settings.replace(output_dir=plain_out)
+    metrics = run_plain("train-supervised", plain, split=split, on_validation=probe)
+    seed_everything(settings.seed)
+    initial = _cpu_state(build_paper_task(settings, {}).module)
     assert lightning.initial is not None
-    _assert_same_states(lightning.initial, run.initial)
+    _assert_same_states(lightning.initial, initial)
     _assert_same_validations(lightning.validations, probe.validations)
-    _assert_same_outcome(metrics, run, split=split is not None)
-    assert torch.equal(run.evaluation["Validation"].probabilities, lightning.final["Validation"])
-    assert torch.equal(run.evaluation["Test"].probabilities, lightning.final["Test"])
-    return run
+    assert _computed(metrics) == _computed(expected)
+    assert metrics["horizon"] > _SCHEDULE["max_steps"]  # the schedule did extend
+    assert metrics["machine"]["engine"] == "plain"
+    _assert_same_outputs(settings.output_dir, plain_out)
+    return metrics
 
 
 # --- the differential test ------------------------------------------------------------
@@ -256,7 +289,8 @@ def test_engines_agree_on_split_runs(
 ) -> None:
     prepared, path = split_data
     settings = _settings(prepared, tmp_path / "lightning", **flags)
-    _assert_engines_agree(settings, tmp_path / "plain", SplitRequest(path, fold))
+    metrics = _assert_engines_agree(settings, tmp_path / "plain", SplitRequest(path, fold))
+    assert "protocol" in metrics and "evaluation_accuracy" in metrics
 
 
 @pytest.mark.parametrize("accelerator", ACCELERATORS)
@@ -264,45 +298,36 @@ def test_engines_agree_on_each_accelerator(
     accelerator: str, classifier_f32_dir: Path, tmp_path: Path
 ) -> None:
     # Deterministic kernels on the same device: the same ops in the same order (4.7(b)'s
-    # check in small; on CPU it repeats the faithful case).
+    # check in small; on CPU it repeats the C5-C7 case).
     settings = _settings(
         classifier_f32_dir, tmp_path / "lightning", accelerator=accelerator, **_AUGMENT
     )
     _assert_engines_agree(settings, tmp_path / "plain")
 
 
-class _CopyLast:
-    """At the validation of step ``step``, copy ``last.pt`` (written just before) to ``dst``."""
-
-    def __init__(self, step: int, src: Path, dst: Path) -> None:
-        self.step, self.src, self.dst = step, src, dst
-        self.inner = _PlainProbe()
-
-    def __call__(self, record: Validation, task: Task) -> None:
-        self.inner(record, task)
-        if record.steps_done == self.step:
-            self.dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(self.src, self.dst)
-
-
 def test_mid_run_resume_agrees_with_an_uninterrupted_lightning_run(
     classifier_f32_dir: Path, tmp_path: Path
 ) -> None:
     settings = _settings(classifier_f32_dir, tmp_path / "lightning", **_AUGMENT)
-    metrics, lightning = _lightning(settings)
-    whole = tmp_path / "whole"
+    expected, lightning = _lightning(settings)
+    whole, resumed = tmp_path / "whole", tmp_path / "resumed"
     saved = tmp_path / "mid" / "last.pt"
-    plain_paper_run(
+    run_plain(
+        "train-supervised",
         settings.replace(output_dir=whole),
         on_validation=_CopyLast(9, whole / "ckpt" / "last.pt", saved),
     )
     probe = _PlainProbe()
-    resumed = plain_paper_run(
-        settings.replace(output_dir=tmp_path / "resumed"), resume=saved, on_validation=probe
+    metrics = run_plain(
+        "train-supervised",
+        settings.replace(output_dir=resumed),
+        resume=str(saved),
+        on_validation=probe,
     )
     _assert_same_validations([v for v in lightning.validations if v[0] > 9], probe.validations)
-    _assert_same_outcome(metrics, resumed, split=False)
-    assert torch.equal(resumed.evaluation["Test"].probabilities, lightning.final["Test"])
+    assert metrics["resumed_from"] == str(saved)
+    assert {**_computed(metrics), "resumed_from": False} == _computed(expected)
+    _assert_same_outputs(settings.output_dir, resumed)
 
 
 # --- the resume tests of the Lightning path, ported (ADR 0014, C10) -------------------
@@ -315,55 +340,54 @@ def test_resume_from_mid_epoch_last_checkpoint(classifier_f32_dir: Path, tmp_pat
     whole, resumed = tmp_path / "whole", tmp_path / "resumed"
     saved = resumed / "ckpt" / "last.pt"
     copy = _CopyLast(9, whole / "ckpt" / "last.pt", saved)
-    expected = plain_paper_run(_settings(classifier_f32_dir, whole), on_validation=copy)
+    expected = run_plain(
+        "train-supervised", _settings(classifier_f32_dir, whole), on_validation=copy
+    )
     checkpoint = load_checkpoint(saved)
     assert checkpoint["steps_done"] == 9
-    assert expected.result.batches_per_pass == 2
     assert checkpoint["policy"]["horizon"] > 10  # extended before the checkpoint
     assert checkpoint["policy"]["best_step"] is not None
 
     probe = _PlainProbe()
-    run = plain_paper_run(_settings(classifier_f32_dir, resumed), resume=saved, on_validation=probe)
-    assert [v.steps_done for v in expected.result.validations][:3] == [3, 6, 9]
-    assert [s for s, _, _ in probe.validations] == [
-        v.steps_done for v in expected.result.validations if v.steps_done > 9
-    ]
-    _assert_same_validations([v for v in copy.inner.validations if v[0] > 9], probe.validations)
-    for key in ("best_step", "last_step", "horizon", "best_score"):
-        assert getattr(run.result, key) == getattr(expected.result, key), key
-    assert run.result.resumed_from == saved
-    assert run.result.steps == expected.result.last_step - 9
+    metrics = run_plain(
+        "train-supervised",
+        _settings(classifier_f32_dir, resumed),
+        resume="auto",
+        on_validation=probe,
+    )
+    assert [s for s, _, _ in copy.validations][:3] == [3, 6, 9]
+    _assert_same_validations([v for v in copy.validations if v[0] > 9], probe.validations)
+    for key in ("best_step", "last_step", "horizon", "monitor_best", "val_acc_best"):
+        assert metrics[key] == expected[key], key
+    assert metrics["resumed_from"] == str(saved)
+    assert metrics["timing"]["steps"] == expected["last_step"] - 9
     _assert_same_states(
         load_best(whole / "ckpt" / "best.pt")["model"],
         load_best(resumed / "ckpt" / "best.pt")["model"],
     )
-    # The scalars of the resumed directory: the step-9 checkpoint's run had none there, so
-    # only the resumed validations; a resume in the same directory keeps steps <= 9.
+    # The resumed directory's scalars: only its own validations (none was logged there).
     steps = [record["step"] for record in read_scalars(resumed / "scalars.jsonl")]
     assert steps == [s for s, _, _ in probe.validations]
 
 
 def test_resume_at_the_horizon_still_writes_best(classifier_f32_dir: Path, tmp_path: Path) -> None:
     out = tmp_path / "run"
-    expected = plain_paper_run(_settings(classifier_f32_dir, out))
+    settings = _settings(classifier_f32_dir, out)
+    expected = run_plain("train-supervised", settings)
     best = load_best(out / "ckpt" / "best.pt")
     (out / "ckpt" / "best.pt").unlink()
-    last = out / "ckpt" / "last.pt"
-    assert load_checkpoint(last)["steps_done"] == expected.result.horizon
+    assert load_checkpoint(out / "ckpt" / "last.pt")["steps_done"] == expected["horizon"]
     # The final last.pt is at the horizon: no step runs, and best.pt is written again.
-    run = plain_paper_run(_settings(classifier_f32_dir, out), resume=last)
-    assert run.result.steps == 0
-    assert run.result.validations == ()
-    assert run.result.best_step == expected.result.best_step == best["steps_done"]
-    assert run.result.best_score == expected.result.best_score == best["score"]
-    rewritten = load_best(out / "ckpt" / "best.pt")
-    _assert_same_states(best["model"], rewritten["model"])
-    for role in ("Validation", "Test"):
-        assert torch.equal(
-            run.evaluation[role].probabilities, expected.evaluation[role].probabilities
-        )
-    # The scalars of the first fit are kept (all of them are at steps <= the horizon).
-    assert len(read_scalars(out / "scalars.jsonl")) == len(expected.result.validations)
+    metrics = run_plain("train-supervised", settings, resume="auto")
+    assert metrics["timing"]["steps"] == 0
+    for key in ("best_step", "monitor_best", "val_acc_best", "test_acc_at_best", "evaluation"):
+        assert metrics[key] == expected[key], key
+    assert metrics["best_step"] == best["steps_done"]
+    assert metrics["monitor_best"] == best["score"]
+    _assert_same_states(best["model"], load_best(out / "ckpt" / "best.pt")["model"])
+    # A resume after "finished" is the next attempt of the same run (ADR 0015, amendment A1).
+    assert metrics["run"]["attempt"] == expected["run"]["attempt"] + 1
+    assert metrics["run"]["run_id"] == expected["run"]["run_id"]
 
 
 def test_augmented_resume_is_exact(split_data: tuple[Path, Path], tmp_path: Path) -> None:
@@ -379,16 +403,20 @@ def test_augmented_resume_is_exact(split_data: tuple[Path, Path], tmp_path: Path
     }
     whole, mid = tmp_path / "whole", tmp_path / "mid.pt"
     split = SplitRequest(path, 2)
-    expected = plain_paper_run(
+    expected = run_plain(
+        "train-supervised",
         _settings(prepared, whole, **changes),
         split=split,
         on_validation=_CopyLast(2, whole / "ckpt" / "last.pt", mid),
     )
-    run = plain_paper_run(
-        _settings(prepared, tmp_path / "resumed", **changes), split=split, resume=mid
+    resumed = tmp_path / "resumed"
+    metrics = run_plain(
+        "train-supervised", _settings(prepared, resumed, **changes), split=split, resume=str(mid)
     )
-    assert run.result.last_step == expected.result.last_step == 6
-    for role in ("Validation", "Test"):
-        assert torch.equal(
-            run.evaluation[role].probabilities, expected.evaluation[role].probabilities
-        )
+    assert metrics["last_step"] == expected["last_step"] == 6
+    assert metrics["evaluation"] == expected["evaluation"]
+    with (
+        np.load(whole / "predictions_evaluation.npz") as left,
+        np.load(resumed / "predictions_evaluation.npz") as right,
+    ):
+        assert np.array_equal(left["probabilities"], right["probabilities"])

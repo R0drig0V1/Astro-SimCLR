@@ -11,10 +11,12 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
 - ``run CONFIG [--set section.key=value | key=value ...]`` (task 4.2,
   :mod:`astro_simclr.config_tree`, ADR 0017): resolve a nested config (its preset or its
   command's legacy one, the file, the dotted overrides, then the flat ones on the flat
-  view), lower it to the flat settings and train it with ``run_command`` (the Lightning
-  engine). A flat file needs ``--command``; ``--show`` prints the resolved config and its
-  config hash without training; ``--resume`` and ``--splits FILE --fold K | --screen`` as
-  below. The four training subcommands are its aliases until task 4.8;
+  view), lower it to the flat settings and train it on ``runtime.engine``: ``lightning``
+  (``run_command``, the default) or ``plain`` (``tasks.plain.run_plain``, task 4.6: the paper
+  classifier on ``carrasco2021``, without Lightning). A flat file needs ``--command``;
+  ``--show`` prints the resolved config and its config hash without training; ``--resume``
+  and ``--splits FILE --fold K | --screen`` as below. The four training subcommands are its
+  aliases until task 4.8;
 - training (task 1.7, :mod:`astro_simclr.experiments`): ``pretrain``, ``linear-eval``,
   ``fine-tune``, ``train-supervised``. Their settings resolve as: the ``Settings``
   defaults, the subcommand's legacy protocol (``hparams.COMMAND_DEFAULTS``), ``--preset``
@@ -43,11 +45,20 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   ``bench-report RUN... --splits FILE --alerts ALERTS.csv [--baseline RUN...]`` prints
   macro-F1 (± std over seeds), per class and on the first-stamp view, and with a baseline
   the paired bootstrap CI of the macro-F1 difference and McNemar (always exit 0: a report);
+- ``report-phase2 [--replication DIR] [--screen DIR --screen-splits FILE] [--cv DIR
+  --cv-splits FILE]`` (task 2.6, :mod:`astro_simclr.protocol.phase2_report`) writes the
+  phase-2 results report (``docs/results-phase2.md``) as markdown from run directories:
+  the replication and its CD21 gate, the screen and CV decisions, per-class recall,
+  confusion matrices, throughput and provenance (always exit 0: a report);
 - ``preflight`` (:mod:`astro_simclr.preflight`): exit 0 if no step failed, else 1.
 - the run registry (task A2, :mod:`astro_simclr.registry`): ``runs reindex [ROOT ...]``,
   ``runs ls``, ``runs show KEY`` and ``runs compare SPEC`` (by experiment spec); exit 1
   when the registry cannot be used or a comparison does not resolve. Registered by
   :func:`astro_simclr.registry.parser.add_runs_command`, whose handlers load on use.
+- SimCLR pilot (task 5.0b, :mod:`astro_simclr.simclr.commands`): ``simclr-pilot``
+  pretrains, ``simclr-embed`` dumps ``h`` of a checkpoint or of the random init,
+  ``make-label-subsets`` stores the probe's label subsets and ``simclr-probe`` scores the
+  probe on the screen halves (exit 0 when they finish).
 - M1 oracle (task 2.2b, :mod:`astro_simclr.oracle`): ``fetch-m1`` downloads M1 at the
   pinned commit (SHA-256 checked) into a local cache and converts it to ``.npz``;
   ``m1-oracle --data-dir DIR --out DIR`` runs the port-equivalence and data-path checks
@@ -102,6 +113,7 @@ from astro_simclr.config import (
 )
 from astro_simclr.hparams import COMMAND_DEFAULTS, COMMANDS, load_legacy_hparams
 from astro_simclr.registry.parser import add_runs_command
+from astro_simclr.simclr.commands import add_simclr_commands
 
 if TYPE_CHECKING:
     from astro_simclr.oracle.m1 import M1Files
@@ -371,12 +383,25 @@ def _train(args: argparse.Namespace) -> int:
     return _execute(command, training_settings(command, args), args)
 
 
-def _execute(command: str, settings: Settings, args: argparse.Namespace) -> int:
-    """Run ``command`` with ``settings`` on the Lightning engine and print its summary."""
-    from astro_simclr.experiments import METRICS_FILE, run_command
+def _execute(
+    command: str, settings: Settings, args: argparse.Namespace, *, engine: str = "lightning"
+) -> int:
+    """Run ``command`` with ``settings`` on ``engine`` and print its summary.
+
+    ``lightning``: ``experiments.run_command``; ``plain``: ``tasks.plain.run_plain`` (task
+    4.6, ADR 0014), which never imports Lightning.
+    """
+    from astro_simclr.runs.layout import METRICS_FILE
 
     split = _split_request(args)
-    metrics = run_command(command, settings, resume=args.resume, split=split)
+    if engine == "plain":
+        from astro_simclr.tasks.plain import run_plain
+
+        metrics = run_plain(command, settings, resume=args.resume, split=split)
+    else:
+        from astro_simclr import experiments
+
+        metrics = experiments.run_command(command, settings, resume=args.resume, split=split)
     shown = {**metrics, "seconds_per_step": metrics.get("timing", {}).get("seconds_per_step")}
     summary = ", ".join(
         f"{key} {shown[key]}"
@@ -405,9 +430,9 @@ def _run(args: argparse.Namespace) -> int:
         sys.stdout.write(f"# command: {config.command}\n# config hash: {config_sha256(config)}\n")
         sys.stdout.write(yaml.safe_dump(config_to_plain(config), sort_keys=False))
         return 0
-    # runtime.engine is "lightning" until the plain engine lands (tasks 4.1, 4.6; ADR 0014):
-    # the config lowers to the flat settings that today's run_command takes.
-    return _execute(config.command, config.to_settings(), args)
+    # Both engines take the flat view (the config hash's definition, ADR 0015); the engine
+    # is a run-id component, not a setting (ADR 0017).
+    return _execute(config.command, config.to_settings(), args, engine=config.runtime.engine)
 
 
 def _add_run_command(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -418,7 +443,8 @@ def _add_run_command(commands: argparse._SubParsersAction[argparse.ArgumentParse
         "schedule, augment, eval; ADR 0017) and train it. Order: its preset (or its "
         "command's legacy one), the file, --set section.key=value, then --set key=value on "
         "the flat view. A flat settings file needs --command. The model decides the "
-        "training command; runtime.engine is lightning.",
+        "training command; runtime.engine picks the loop: lightning (the default) or plain "
+        "(the paper classifier on carrasco2021 only; task 4.6).",
     )
     run.add_argument("config_file", type=Path, metavar="CONFIG", help="nested or flat YAML")
     run.add_argument(
@@ -445,7 +471,8 @@ def _add_run_command(commands: argparse._SubParsersAction[argparse.ArgumentParse
     run.add_argument(
         "--resume",
         metavar="PATH|auto",
-        help="continue from a checkpoint; auto: OUTPUT_DIR/checkpoints/last.ckpt if any",
+        help="continue from a checkpoint; auto: OUTPUT_DIR/checkpoints/last.ckpt if any "
+        "(runtime.engine plain: OUTPUT_DIR/ckpt/last.pt)",
     )
     _add_split_arguments(run)
     run.set_defaults(handler=_run)
@@ -724,6 +751,42 @@ def _bench_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _report_phase2(args: argparse.Namespace) -> int:
+    from astro_simclr.data.files import atomic_write_bytes
+    from astro_simclr.protocol.phase2_report import ReportInputs, build_report
+    from astro_simclr.protocol.stats import NON_INFERIORITY_MARGIN
+    from astro_simclr.registry.home import RegistryError, registry_path
+
+    registry = args.registry
+    if registry == Path():  # --registry without a file: the default registry
+        try:
+            registry = registry_path()
+        except RegistryError as err:
+            raise ConfigError(str(err)) from None
+    inputs = ReportInputs(
+        replication=args.replication,
+        oracle_report=args.oracle_report,
+        screen=args.screen,
+        screen_splits=args.screen_splits,
+        cv=args.cv,
+        cv_splits=args.cv_splits,
+        baseline_arm=args.baseline_arm,
+        non_inferiority=frozenset(args.non_inferiority),
+        margin=NON_INFERIORITY_MARGIN if args.margin is None else args.margin,
+        registry=registry,
+        n_boot=args.n_boot,
+        seed=args.seed,
+        allow_mixed_machines=args.allow_mixed_machines,
+    )
+    text = build_report(inputs)
+    if args.out is None:
+        sys.stdout.write(text)
+    else:
+        atomic_write_bytes(args.out, text.encode("utf-8"))
+        sys.stderr.write(f"wrote {args.out}\n")
+    return 0
+
+
 def _preflight(args: argparse.Namespace) -> int:
     from astro_simclr.preflight import run_preflight
 
@@ -790,8 +853,8 @@ def _add_check_commands(commands: argparse._SubParsersAction[argparse.ArgumentPa
         "--runs",
         default=None,
         metavar="LIST",
-        help="comma-separated, e.g. R1,R2,R4; each must run (default: every run whose data "
-        "is present)",
+        help="comma-separated, e.g. R1,R2,R4 or CD21 (the carrasco2021 preset on the plain "
+        "engine); each must run (default: every run whose data is present)",
     )
     preflight.add_argument(
         "--n-per-split", type=int, default=2400, metavar="N", help="synthetic stamps per split"
@@ -808,6 +871,74 @@ def _add_check_commands(commands: argparse._SubParsersAction[argparse.ArgumentPa
         help="settings applied to every dry run (e.g. num_workers=0)",
     )
     preflight.set_defaults(handler=_preflight)
+
+
+def _add_report_phase2(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    report = commands.add_parser(
+        "report-phase2",
+        help="write the phase-2 results report (docs/results-phase2.md) from run directories",
+        description="Build the phase-2 results report as deterministic markdown from run "
+        "directories. Each input directory holds one subdirectory per arm with its runs "
+        "(DIR/<arm>/.../metrics.json). --replication: per-seed tables and the CD21 gate "
+        "(compare-reference). --screen with --screen-splits: every arm against the baseline "
+        "arm by the screen rule (compare-variants --splits). --cv with --cv-splits: balanced "
+        "accuracy per run, per fold and pooled, the paired bootstrap CI, the superiority and "
+        "non-inferiority verdicts, McNemar, the per-class recall and the confusion matrices. "
+        "Then the s/step of every arm (flagged when measured under concurrency) and the "
+        "provenance. Always a report (exit 0).",
+    )
+    report.add_argument("--replication", type=Path, metavar="DIR")
+    report.add_argument(
+        "--oracle-report",
+        type=Path,
+        metavar="FILE",
+        help="the M1 oracle report of the CD21 gate (default: DIR/m1_oracle.json, if present)",
+    )
+    report.add_argument("--screen", type=Path, metavar="DIR")
+    report.add_argument("--screen-splits", type=Path, metavar="FILE")
+    report.add_argument("--cv", type=Path, metavar="DIR")
+    report.add_argument("--cv-splits", type=Path, metavar="FILE")
+    report.add_argument(
+        "--baseline-arm",
+        default="rot4",
+        metavar="NAME",
+        help="the arm the screen and CV arms are compared with (default rot4)",
+    )
+    report.add_argument(
+        "--non-inferiority",
+        nargs="+",
+        default=[],
+        metavar="ARM",
+        help="CV arms whose pre-registered rule is non-inferiority (the efficiency rows)",
+    )
+    report.add_argument(
+        "--margin",
+        type=float,
+        default=None,
+        metavar="FRACTION",
+        help="the non-inferiority margin, a fraction of balanced accuracy (default 0.005)",
+    )
+    report.add_argument(
+        "--registry",
+        type=Path,
+        nargs="?",
+        const=Path(),
+        default=None,
+        metavar="FILE",
+        help="check the runs against a run registry (default file: "
+        "$ASTRO_SIMCLR_HOME/registry.sqlite)",
+    )
+    report.add_argument("--n-boot", type=int, default=10_000, metavar="N")
+    report.add_argument("--seed", type=int, default=0, metavar="N", help="bootstrap seed")
+    report.add_argument(
+        "--allow-mixed-machines",
+        action="store_true",
+        help="compare runs from different machines, builds, precisions or engines",
+    )
+    report.add_argument(
+        "--out", type=Path, default=None, metavar="FILE", help="write here (default: stdout)"
+    )
+    report.set_defaults(handler=_report_phase2)
 
 
 def _add_protocol_commands(
@@ -957,6 +1088,7 @@ def _add_benchmark_commands(
         help="report runs from different machines, builds, precisions or engines together",
     )
     report.set_defaults(handler=_bench_report)
+    _add_report_phase2(commands)
 
     audit = commands.add_parser(
         "leakage-audit",
@@ -1301,6 +1433,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_oracle_commands(commands)
     _add_alert_commands(commands)
     add_runs_command(commands)
+    add_simclr_commands(commands)
     return parser
 
 

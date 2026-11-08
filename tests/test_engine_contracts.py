@@ -340,6 +340,11 @@ def test_reserved_streams_are_the_augmentations_numbers() -> None:
         "synthetic_bogus": class_augment.SYNTHETIC_STREAM,
         "flux_rescale": flux_rescale.FLUX_STREAM,
         "block_shuffle": engine_stream.BLOCK_STREAM_WORD,
+        # Phase 5's SimCLR pilot (astro_simclr.simclr).
+        "simclr_views": 6,
+        "simclr_view_noise": 7,
+        "simclr_batch_order": 8,
+        "simclr_diagnostics": 9,
     }
     assert len(set(RESERVED_STREAMS.values())) == len(RESERVED_STREAMS)
 
