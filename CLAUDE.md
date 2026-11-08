@@ -4,30 +4,28 @@
 
 Astro-SimCLR: contrastive learning (SimCLR, Chen et al. 2020, and supervised SimCLR, Khosla
 et al. 2020) on ZTF astronomical event stamps, evaluated with a linear classifier and
-fine-tuning; built on PyTorch, PyTorch Lightning and Ray Tune. The original research code
-(2021 course project) lives at the repository root and is being refactored into the typed,
-tested package `src/astro_simclr/`. Until a module is migrated it is excluded from ruff
-(`extend-exclude` in `pyproject.toml`) and from mypy/coverage (they only cover `src/` and
-`tests/`). The dataset (`dataset/`) is not versioned.
+fine-tuning; built on PyTorch and PyTorch Lightning. The code is the typed, tested package
+`src/astro_simclr/`. The original research code (2021 course project: root scripts,
+`utils/`, `models/`, `losses/`, `env.yml`) was retired in task 1.8 and stays readable at the
+git tag `legacy-final` (`git show legacy-final:utils/training.py`); the characterization
+generators read it from there (`scripts/characterize/legacy_tree.py`). The dataset
+(`dataset/`) is not versioned.
 
 ## Layout
 
 ```
 src/astro_simclr/  the refactored, typed package (the target of every migration)
 tests/             pytest suite for src/ (branch coverage >= 80%)
-*.py (root)        legacy entry points: hyperparams_*.py (Ray Tune searches), iter_*.py,
-                   linear_classifier.py, fine_tuning.py, visualization_embedded.py
-utils/ models/ losses/  legacy library code: datasets, augmentations, training, LARS, plots,
-                   encoders, contrastive losses; utils/*.csv are label/feature tables
-jupyter_examples/  exploratory notebooks; results/ saved metrics and figures
-env.yml            legacy conda environment (Python 3.8, CUDA); uv + pyproject.toml replace it
+jupyter_examples/  2021 exploratory notebooks (they import the legacy code: run them from a
+                   checkout of legacy-final); results/ saved metrics and figures
 .github/           CI (check.sh), quality (zizmor, actionlint, gitleaks, pip-audit), CodeQL,
                    Scorecard, Dependabot; from python-template (.copier-answers.yml)
 configs/reference/  R1-R4 reference-run configs (plan "Reference runs"), with provenance
 configs/splits/     stored phase-2 decision splits (make-splits; docs/evaluation-protocol.md)
 docs/        architecture.md (one section per module), phases/ (the plan), decisions/
              (ADRs), plan-reviews/, evaluation-protocol.md (phase-2 rules), data.md
-scripts/     check.sh (all checks), check-torch-wheels.sh (ADR 0001 lock assertions),
+scripts/     characterize/ (fixture generators; legacy code via the legacy-final tag),
+             check.sh (all checks), check-torch-wheels.sh (ADR 0001 lock assertions),
              gpu-preflight.sh (wraps `astro-simclr preflight`), integrator.sh; optional
              worktree-setup.sh, verify-reset.sh
 .claude/     settings.json (enables the multi-agent-herdr plugin), multi-agent-herdr.json
@@ -65,11 +63,12 @@ uvx copier@9.19.1 update           # pull python-template improvements (clean tr
   `docs/decisions/NNNN-title.md`.
 - `scripts/check.sh` is the single definition of "green": `/multi-agent-herdr:commit`,
   `/multi-agent-herdr:pr` and the integrator's `verify-merge.sh` all run it.
-- **Refactor rules:** new or migrated code goes in `src/astro_simclr/` with tests, passing
-  ruff, mypy strict and coverage. When a legacy module is migrated, remove it from
-  `extend-exclude` (or delete it) in the same PR; never widen the exclusions or lower the
-  thresholds without a reason in the PR. Runtime dependencies go in `pyproject.toml`
-  (`uv add`), never in `env.yml`. torch/torchvision pins and extras follow ADR 0001.
+- **Code rules:** new code goes in `src/astro_simclr/` with tests, passing ruff, mypy strict
+  and coverage. `extend-exclude` holds only `jupyter_examples/`, `results/` and
+  `scripts/characterize/`; never widen the exclusions or lower the thresholds without a
+  reason in the PR. Runtime dependencies go in `pyproject.toml` (`uv add`). torch/torchvision
+  pins and extras follow ADR 0001. To compare with the legacy implementation, read it at the
+  tag (`git show legacy-final:<path>`); never restore it to the tree.
 - **Typing:** mypy strict; `# type: ignore[override]` only on Lightning hook overrides.
 - **Python changes semantics, not only style:** keep training results reproducible (seeds,
   splits, augmentations) unless the PR says otherwise.
