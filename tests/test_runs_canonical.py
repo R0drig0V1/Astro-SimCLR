@@ -127,7 +127,6 @@ def test_excluded_keys_are_settings_fields_with_a_reason() -> None:
         "output_dir",
         "progress_bar_refresh_rate",
         "checkpoint_every_n_steps",
-        "rj23_keep",
     }
     assert set(IDENTITY_KEYS) == {"seed", "pretrained"}
 
@@ -152,6 +151,7 @@ def test_semantic_config_holds_every_other_field() -> None:
         "rj23_scenario",
         "rj23_bn_position",
         "rj23_large_values",
+        "rj23_keep",
     }
     assert set(HASH_NEUTRAL_DEFAULTS) == neutral
     assert set(settings) == FIELDS - set(NON_SEMANTIC_KEYS) - set(IDENTITY_KEYS) - neutral
@@ -339,8 +339,8 @@ def test_semantic_diff_names_the_keys_that_differ() -> None:
 
 def test_rj23_fields_hash_only_when_they_differ() -> None:
     # Task 3.4b: the rj23_* fields at their defaults leave every older hash unchanged; an
-    # rj23 run's scenario and arm are hashed when they are not the defaults, its primary
-    # keep never (both keeps are computed).
+    # rj23 run's scenario, arm and primary keep are hashed when they are not the defaults
+    # (rj23_keep is hash-neutral, not non-semantic: ADR 0015 rule 9).
     from astro_simclr.presets import PRESETS
 
     full = Settings().replace(**PRESETS["rj23-full"])
@@ -352,4 +352,4 @@ def test_rj23_fields_hash_only_when_they_differ() -> None:
     arm = full.replace(rj23_bn_position="before_concat")
     assert config_sha256("train-supervised", arm) != config_sha256("train-supervised", full)
     best = full.replace(rj23_keep="best")
-    assert config_sha256("train-supervised", best) == config_sha256("train-supervised", full)
+    assert config_sha256("train-supervised", best) != config_sha256("train-supervised", full)

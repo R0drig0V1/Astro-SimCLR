@@ -30,17 +30,21 @@ import torch
 __all__ = ["RESERVED_STREAMS", "device_generator", "host_generator"]
 
 #: Stream numbers in use (the third ``SeedSequence`` word), by augmentation. ``rot90``
-#: keeps the two-word ``[seed, step]`` of task 2.5-models and has no number. Phase 5's
-#: SimCLR views take new numbers here.
+#: keeps the two-word ``[seed, step]`` of task 2.5-models and has no number (the same two
+#: words as the ``row`` training stream's passes, ``engine.stream``; ADR 0018).
+#: ``block_shuffle`` is the ``block`` training stream's pass word (``[seed, pass, 5]``),
+#: task 4.3. ``rj23_class_uniform`` is the batch draw of ``rj23_regime.ClassUniformStream``
+#: (``[seed, step, 10]``, task 3.4b). Phase 5's SimCLR views take new numbers here.
 RESERVED_STREAMS: Final = MappingProxyType(
     {
         "aug_noise": 1,
         "aug_feature_jitter": 2,
         "synthetic_bogus": 3,
         "flux_rescale": 4,
+        "block_shuffle": 5,
         # rj23_regime.ClassUniformStream (task 3.4b): the classes and items of each batch.
-        # 5 (block_shuffle, PR #42) and 6-9 (simclr-pilot, PR #47) are assigned to other
-        # branches by the integrator: two streams on one number draw correlated numbers.
+        # 6-9 are simclr-pilot's (PR #47), assigned by the integrator: two streams on one
+        # number draw correlated numbers.
         "rj23_class_uniform": 10,
     }
 )

@@ -214,6 +214,14 @@ decision half.
 - **Load:** about 50–60k requests beyond 3.1 (about 8 h at 2 req/s), resumable, with the
   same snapshot format.
 
+**R5 size finding (r5-builder, PR #44, 2026-11-08).** Under the 3.2 cross-benchmark
+matrix, R5's Asteroid and Bogus Validation/Test can only hold CD21 Validation/Test objects,
+about 100 per class per split. R5 Test is therefore **about 4.5k objects, not 8–9k**. The
+high-power claim holds for AGN, SN and VS only; Asteroid and Bogus keep CD21's power.
+
+The builder's expected real load is about 52–54k requests: about 10 h at 1.5 req/s, or
+about 19 h at fetch-alerts' measured latency.
+
 ### 3.6 RJ23's four scenarios on R5 (after 3.2–3.5; the 5090, or on a stated share with 2.5)
 About 20 runs: 4 scenarios × 5 seeds, with the 3.4b regime. The pre-registered gate runs on
 R5's test set, seed-ensembled, with 3.2's paired bootstrap:

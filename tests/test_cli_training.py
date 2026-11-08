@@ -254,6 +254,30 @@ def test_outputs_stay_under_the_output_dir(runs: dict[str, Path]) -> None:
     assert sum(map(sum, counts)) == 10  # every validation stamp, counted once
 
 
+def test_the_registry_reads_what_runs_write(runs: dict[str, Path], tmp_path: Path) -> None:
+    """Task A2 on task A1's output: the run directories index as manifest runs."""
+    from astro_simclr.registry.index import reindex
+    from astro_simclr.registry.store import load_records, open_registry
+
+    conn = open_registry(tmp_path / "registry.sqlite")
+    try:
+        report = reindex(conn, [runs["pretrain"].parent], specs=tmp_path / "specs")
+        assert report.skipped == []
+        records = {record.command: record for record in load_records(conn)}
+        kinds = dict(
+            conn.execute("SELECT path, kind FROM artefacts WHERE path LIKE 'checkpoints/%'")
+        )
+    finally:
+        conn.close()
+    assert set(records) == {"pretrain", "train-supervised"}
+    for record in records.values():
+        assert not record.legacy and record.status == "finished" and record.engine == "lightning"
+        assert record.run_id is not None and record.numerics_epoch is not None
+    assert records["train-supervised"].metrics["val.balanced_accuracy"] >= 0
+    assert kinds["checkpoints/best.ckpt"] == "best_checkpoint"
+    assert kinds["checkpoints/last.ckpt"] == "last_checkpoint"
+
+
 def test_metrics_record_the_protocol_fields(runs: dict[str, Path]) -> None:
     """Task 2.3: machine, per-class recall, balanced accuracy and per-stamp predictions."""
     out = runs["supervised"]

@@ -117,6 +117,8 @@ from `engine.randomness.host_generator` with a reserved stream.
   needed by 3.6).
 - The numbers of no existing config change (`numerics_epoch` unchanged): the regime adds new
   settings, a new schedule and a new reserved stream. No existing config hash changes
-  either: `rj23_scenario`, `rj23_bn_position` and `rj23_large_values` are hash-neutral at
-  their defaults (`runs.canonical.HASH_NEUTRAL_DEFAULTS`), and `rj23_keep` is non-semantic
-  (both keeps are computed; it only names the primary).
+  either: the four `rj23_*` fields are hash-neutral at their defaults
+  (`runs.canonical.HASH_NEUTRAL_DEFAULTS`, ADR 0015 rule 9, which the run registry's
+  `flat-1` reader also fills). `rj23_keep` only names the primary of two computed keeps, so
+  `rj23_keep: best` gets another config hash for the same training; that costs at most a
+  rerun, never a false match.

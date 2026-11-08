@@ -51,6 +51,7 @@ from astro_simclr.engine import (
     mean_of_batch_losses,
 )
 from astro_simclr.engine import data as engine_data
+from astro_simclr.engine import stream as engine_stream
 from astro_simclr.training import class_augment, device_data, flux_rescale
 from astro_simclr.training.schedule import HorizonCallback
 
@@ -339,6 +340,7 @@ def test_reserved_streams_are_the_augmentations_numbers() -> None:
         "aug_feature_jitter": class_augment.JITTER_STREAM,
         "synthetic_bogus": class_augment.SYNTHETIC_STREAM,
         "flux_rescale": flux_rescale.FLUX_STREAM,
+        "block_shuffle": engine_stream.BLOCK_STREAM_WORD,
         "rj23_class_uniform": rj23_regime.STREAM,
     }
     assert len(set(RESERVED_STREAMS.values())) == len(RESERVED_STREAMS)
