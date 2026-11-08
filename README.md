@@ -37,7 +37,7 @@ The [roadmap](docs/phases/README.md) is the authority on what is done and what r
 
 ## Install
 
-Requires [uv](https://docs.astral.sh/uv/); it installs Python 3.12 and the exact versions of
+Requires [uv](https://docs.astral.sh/uv/); it installs Python 3.13 and the exact versions of
 `uv.lock`.
 
 ```bash

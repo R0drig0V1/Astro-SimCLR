@@ -43,7 +43,7 @@ inside herdr (https://herdr.dev).
 scripts/check.sh                   # lint + types + tests; must stay green (edit it per project)
 scripts/integrator.sh              # launch the integrator agent (inside herdr, main worktree)
 /multi-agent-herdr:dispatch <type>/<name> <task>   # integrator: start a development agent
-uv sync --locked                   # .venv with the package and dev tools (Python 3.12)
+uv sync --locked                   # .venv with the package and dev tools (Python 3.13)
 uv sync --locked --extra cpu       # CPU torch (CI); then UV_NO_SYNC=1 for every uv run (ADR 0001)
 uv run astro-simclr --help         # the CLI (src/astro_simclr/cli.py)
 scripts/gpu-preflight.sh --synthetic   # GPU machine check (astro-simclr preflight; ADR 0001)
