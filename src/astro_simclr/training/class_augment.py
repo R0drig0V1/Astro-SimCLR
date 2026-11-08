@@ -88,7 +88,6 @@ whichever rows end up augmented.
 
 from __future__ import annotations
 
-import warnings
 from typing import Any, Final
 
 import numpy as np
@@ -97,6 +96,21 @@ import torch
 
 from astro_simclr.data.schema import DISCARDED_FEATURES, FEATURE_NAMES, LABEL_NAMES
 from astro_simclr.paper_model import PAPER_CROP
+
+# The cross-channel relation, re-exported so that every caller keeps importing it from here;
+# it lives in stamp_relation so that phase 5's SimCLR views can use it without importing
+# this package's Lightning modules (ADR 0018).
+from astro_simclr.stamp_relation import (
+    BORDER_WIDTH,
+    DEFAULT_MIN_R2,
+    FIT_COLUMNS,
+    MAD_TO_SIGMA,
+    border_mask,
+    masked_pixels,
+    perturb,
+    renormalise,
+    stamp_fits,
+)
 
 __all__ = [
     "BORDER_WIDTH",
@@ -133,15 +147,6 @@ __all__ = [
     "upload_plan",
 ]
 
-#: The columns of :func:`stamp_fits`: ``diff ~ a*sci + b*tmpl + c``, its R^2, and the
-#: background sigmas of the science and template crops.
-FIT_COLUMNS: Final = ("a", "b", "c", "r2", "sigma_science", "sigma_template")
-#: ``aug_min_r2`` default: below it a stamp is not noised (C5) nor used as a source (C6).
-DEFAULT_MIN_R2: Final = 0.5
-#: Width in pixels of the crop border whose MAD gives the background sigma (152 pixels).
-BORDER_WIDTH: Final = 2
-#: The MAD of a Gaussian times this is its standard deviation.
-_MAD_TO_SIGMA: Final = 1.4826
 
 #: The 23 features the paper model reads, in order (columns 13-15 dropped).
 KEPT_FEATURE_NAMES: Final = tuple(
@@ -178,7 +183,6 @@ JITTER_STREAM: Final = 2
 SYNTHETIC_STREAM: Final = 3
 
 _FWHM_PER_SIGMA: Final = 2.0 * float(np.sqrt(2.0 * np.log(2.0)))
-_CHUNK: Final = 4096
 
 
 def _to_device(plan: dict[str, Any], device: torch.device) -> dict[str, Any]:
@@ -218,60 +222,6 @@ def augment_rng(seed: int, step: int, stream: int) -> np.random.Generator:
     return np.random.default_rng([seed, step, stream])
 
 
-def _border(side: int) -> npt.NDArray[np.bool_]:
-    inner = np.zeros((side, side), dtype=bool)
-    inner[BORDER_WIDTH:-BORDER_WIDTH, BORDER_WIDTH:-BORDER_WIDTH] = True
-    return ~inner
-
-
-def _background_sigma(
-    channel: npt.NDArray[np.float64], masked: npt.NDArray[np.bool_]
-) -> npt.NDArray[np.float64]:
-    """1.4826 x the MAD of the unmasked border pixels of (N, S, S) crops; 0 if none."""
-    border = _border(channel.shape[-1])
-    values = np.where(masked, np.nan, channel)[:, border]
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN rows: "All-NaN slice"
-        median = np.nanmedian(values, axis=1, keepdims=True)
-        mad = np.nanmedian(np.abs(values - median), axis=1)
-    return np.nan_to_num(_MAD_TO_SIGMA * mad, nan=0.0)
-
-
-def stamp_fits(images: npt.NDArray[np.floating[Any]]) -> npt.NDArray[np.float32]:
-    """``(a, b, c, R^2, sigma_sci, sigma_tmpl)`` of each crop, float32 (N, 6) (:data:`FIT_COLUMNS`).
-
-    ``images`` is (N, C, S, S), channels science, template, difference first (a context
-    after them is ignored), normally the [0, 1] crops of a ``TensorSplit``. The fit is the
-    least-squares ``diff ~ a*sci + b*tmpl + c`` over the S x S pixels, in float64 (a
-    pseudo-inverse, so a constant channel gives finite coefficients); R^2 is
-    ``1 - SS_res / SS_tot``, 0 for a constant difference. The sigmas are 1.4826 x the MAD of
-    the border pixels (:data:`BORDER_WIDTH`) that are not masked (:func:`masked_pixels`),
-    0 when all are. Runs in chunks of 4096 crops.
-
-    Raises:
-        ValueError: if ``images`` is not (N, C, S, S) with C >= 3.
-    """
-    if images.ndim != 4 or images.shape[1] < 3 or images.shape[2] != images.shape[3]:
-        raise ValueError(f"images must be (N, C >= 3, S, S), got {images.shape}")
-    out = np.empty((images.shape[0], len(FIT_COLUMNS)), dtype=np.float32)
-    for start in range(0, images.shape[0], _CHUNK):
-        crops = np.asarray(images[start : start + _CHUNK, :3], dtype=np.float64)
-        n = crops.shape[0]
-        sci, tmpl, diff = (crops[:, k].reshape(n, -1) for k in range(3))
-        design = np.stack([sci, tmpl, np.ones_like(sci)], axis=-1)
-        gram = design.transpose(0, 2, 1) @ design
-        coef = (np.linalg.pinv(gram) @ (design.transpose(0, 2, 1) @ diff[..., None]))[..., 0]
-        residual = diff - (design @ coef[..., None])[..., 0]
-        total = ((diff - diff.mean(axis=1, keepdims=True)) ** 2).sum(axis=1)
-        safe = np.where(total > 0, total, 1.0)
-        r2 = np.where(total > 0, 1.0 - (residual**2).sum(axis=1) / safe, 0.0)
-        zeros = crops == 0
-        masked = zeros & (zeros.sum(axis=(-2, -1), keepdims=True) > 1)
-        sigmas = [_background_sigma(crops[:, k], masked[:, k]) for k in (0, 1)]
-        out[start : start + n] = np.column_stack([coef, r2, *sigmas])
-    return out
-
-
 def fit_exclusions(
     fits: npt.NDArray[np.float32], labels: npt.NDArray[np.int64], min_r2: float
 ) -> dict[str, Any]:
@@ -299,53 +249,14 @@ def template_centre_z(images: npt.NDArray[np.floating[Any]]) -> npt.NDArray[np.f
     """
     tmpl = np.asarray(images[:, 1], dtype=np.float64)
     side = tmpl.shape[-1]
-    values = tmpl[:, _border(side)]
+    values = tmpl[:, border_mask(side)]
     median = np.median(values, axis=1)
-    mad = _MAD_TO_SIGMA * np.median(np.abs(values - median[:, None]), axis=1)
+    mad = MAD_TO_SIGMA * np.median(np.abs(values - median[:, None]), axis=1)
     mid = side // 2
     centre = tmpl[:, mid - 1 : mid + 2, mid - 1 : mid + 2].mean(axis=(1, 2))
     safe = np.where(mad > 0, mad, 1.0)
     z: npt.NDArray[np.float64] = np.where(mad > 0, (centre - median) / safe, 0.0)
     return z
-
-
-def masked_pixels(images: torch.Tensor) -> torch.Tensor:
-    """The former-NaN pixels of (B, C, S, S) crops: exact zeros of a channel with several.
-
-    A min-max normalised channel has one exact zero, its minimum; more mean NaN pixels set
-    to 0 (``data.float_input``'s NaN approximation and NaN -> 0), or a tied minimum.
-    """
-    zeros = images == 0
-    return zeros & (zeros.sum(dim=(-2, -1), keepdim=True) > 1)
-
-
-def renormalise(images: torch.Tensor, masked: torch.Tensor) -> torch.Tensor:
-    """Per-channel min-max of (B, C, S, S) without epsilon, ``masked`` excluded, NaN -> 0.
-
-    ALeRCE's ``x -= min; x /= max`` (``data.float_input``) over the unmasked pixels; masked
-    pixels, constant channels (0 / 0) and all-masked channels become 0.
-    """
-    inf = torch.tensor(float("inf"), dtype=images.dtype, device=images.device)
-    low = torch.where(masked, inf, images).amin(dim=(-2, -1), keepdim=True)
-    shifted = images - low
-    high = torch.where(masked, -inf, shifted).amax(dim=(-2, -1), keepdim=True)
-    out = shifted / high
-    return torch.where(masked | ~torch.isfinite(out), torch.zeros_like(out), out)
-
-
-def perturb(
-    images: torch.Tensor, fits: torch.Tensor, delta_sci: torch.Tensor, delta_tmpl: torch.Tensor
-) -> torch.Tensor:
-    """The crops (B, 3, S, S) after ``delta_sci`` and ``delta_tmpl`` (B, S, S), before the min-max.
-
-    Science and template move by their deltas; the difference by ``a*delta_sci +
-    b*delta_tmpl`` (``fits`` (B, 6), :data:`FIT_COLUMNS`), so a stamp whose difference is
-    exactly ``a*sci + b*tmpl + c`` keeps that relation. Only the first 3 channels are read.
-    """
-    a = fits[:, 0, None, None]
-    b = fits[:, 1, None, None]
-    delta_diff = a * delta_sci + b * delta_tmpl
-    return images[:, :3] + torch.stack([delta_sci, delta_tmpl, delta_diff], dim=1)
 
 
 def noise_augment(

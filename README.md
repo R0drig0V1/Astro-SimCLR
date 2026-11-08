@@ -149,11 +149,27 @@ The method, the timings and the store layout are in [docs/data.md](docs/data.md)
 alerts") and [ADR 0011](docs/decisions/0011-raw-alert-store.md). The other phase-3 tools are
 `make-object-splits`, `bench-report` and `leakage-audit`.
 
+### 5. The SimCLR pilot (phase 5, task 5.0b)
+
+`simclr-pilot` pretrains SimCLR (ResNet-18 with a CIFAR stem, NT-Xent in paper mode, LARS)
+on the CD21 Train stamps, with checkpoints, diagnostics and a final embedding dump;
+`simclr-embed --random-init` dumps the untrained network's embeddings, `make-label-subsets`
+stores the probe's label subsets and `simclr-probe` scores a linear probe on the screen
+halves. The whole sequence is in [docs/architecture.md](docs/architecture.md) (`simclr`)
+and the decisions in [ADR 0018](docs/decisions/0018-simclr-pilot.md).
+
+```bash
+uv run --no-sync astro-simclr simclr-pilot dataset/prepared/td_ztf_stamp_17_06_20_red-002 \
+    --splits configs/splits/td_ztf_stamp_17_06_20_red-002-grouped.json \
+    --output-dir runs/pilot/ssl --epochs 100 --device cuda
+```
+
 ## Repository map
 
 ```
 src/astro_simclr/   the package: data, models (paper model, p4/p4m variants), losses,
-                    augmentations, training, protocol (splits, gates, comparisons), oracle, CLI
+                    augmentations, training, protocol (splits, gates, comparisons), oracle,
+                    simclr (the phase-5 pilot), CLI
 tests/              pytest suite (branch coverage >= 80 %)
 configs/reference/  R1-R4 legacy reference-run configs, with provenance
 configs/splits/     stored phase-2 decision splits (make-splits)

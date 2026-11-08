@@ -34,6 +34,8 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  ├──► preflight ──► experiments, data (inspection, manifest)
  └──► engine (phase 4: the plain-PyTorch loop's contracts; imports no Lightning) ──► config
  └──► runs (phase 4, A0: run identity, manifest.json, layout, retention) ──► config, data
+ └──► simclr (phase 5, 5.0b: the SimCLR pilot; imports no Lightning) ──► engine.randomness,
+      optim (LARS), losses (NT_Xent), stamp_relation, protocol (splits, stats), data
 
 rj23_model (engine-free nn.Modules, not wired yet: task 3.4b) ──► data.rj23_input
 ```
@@ -224,6 +226,16 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
 - `preflight (--synthetic | --data-dir DIR) [--accelerator cuda] [--runs R1,R2,R3,R4]
   [--set ...]` (see `preflight`): exit 0 if no step failed, else 1.
   `scripts/gpu-preflight.sh` is a thin `uv run --no-sync` wrapper.
+- **SimCLR pilot (task 5.0b, see `simclr`):** `simclr-pilot DATA --output-dir OUT
+  [--splits FILE] [--epochs N | --steps N] [--batch-size B] [--temperature T] [--lr-per-256
+  X] [--warmup-epochs E] [--noise-scale S] [--seed N] [--device auto|cpu|cuda|mps]
+  [--fp32-precision ieee|tf32] [--deterministic] [--tier device|host] [--resume]
+  [--stop-at N]`; `simclr-embed DATA --output-dir OUT (--checkpoint FILE | --random-init)
+  [--seed N]`; `make-label-subsets DATA --splits FILE --per-class K [--n-subsets R]
+  [--seed S] --out FILE [--overwrite]`; `simclr-probe EMBEDDINGS --subsets FILE --splits
+  FILE --out FILE [--weight-decay X...]`. Registered by `simclr.commands.add_simclr_commands`;
+  each exits 0 when it ends (an existing run without `--resume`, an existing subsets file
+  or a budget larger than a class: 2).
 - Exit codes: 0 success; 1 unusable data (`DataError`) or a failed gate/preflight; 2 invalid
   settings or arguments, including an unavailable accelerator (`AcceleratorError`).
 
@@ -934,6 +946,11 @@ row per status. They cover:
   - dropped: the unused `epoch` argument/counter of `step`, the unimplemented
     `classic_momentum=False` and the never-consulted `exclude_from_*` lists; the closure
     runs under `torch.enable_grad()` and the step under `torch.no_grad()`.
+- **Per-group exclusion (task 5.0b, ADR 0018):** a param group with
+  `exclude_from_adaptation: True` (`EXCLUDE_KEY`) gets neither the weight decay nor the trust
+  ratio (plain SGD with momentum): SimCLR's treatment of BatchNorm parameters and biases,
+  used by `simclr.optim`. The key is read with `group.get`, so groups without it (every
+  existing run) and optimizer states saved before it are unchanged.
 - **Performance note (kept for equivalence):** the trust ratio is moved to the host with
   `.item()` once per parameter per step, as in the legacy code. On CUDA (and MPS) that is a
   device-to-host synchronisation per parameter tensor, about 60 per step for a ResNet-18,
@@ -1241,6 +1258,11 @@ of `rot90_augment`, then the feature jitter on every row. The class augmentation
 the rotation because the stamp fits describe the unrotated crop (C7's PSF centroid in
 particular; C5 / C6 are rotation-agnostic). Validation and test are never augmented.
 
+The cross-channel relation (`stamp_fits`, `FIT_COLUMNS`, `masked_pixels`, `renormalise`,
+`perturb` and their constants) lives in `src/astro_simclr/stamp_relation.py`, outside the
+`training` package (whose `__init__` imports Lightning), so that the SimCLR views can use it
+engine-free; `class_augment` re-exports it unchanged (ADR 0018).
+
 - **The difference is computed, not augmented.** `stamp_fits(images)` fits, per crop and in
   float64, `diff ~ a·sci + b·tmpl + c` (least squares over the 441 pixels, a
   pseudo-inverse), its R², and the background sigmas of the science and the template
@@ -1383,7 +1405,7 @@ Lightning behaviour the loop reproduces (C1-C11) and the test that pins each.
 | `checkpoint` | `Checkpoint` (a `TypedDict` of plain values, read with `weights_only=True`) and its frozen key set `CHECKPOINT_KEYS`: format, engine, identity (A0's run id and attempt, the split run), `steps_done` (also the stream position), model, optimizer, task, policy, stream definition, every RNG stream, numerics (ADR 0010) and versions. `check_resumable` refuses Lightning checkpoints, other engines, formats and incomplete ones. |
 | `device` | `DevicePolicy`: one device (`world_size != 1` refused), `cudnn.benchmark = not deterministic`, `use_deterministic_algorithms(deterministic)`, `CUBLAS_WORKSPACE_CONFIG=":4096:8"` only when deterministic (`torch_flags()`, checked equal to Lightning's `_set_torch_flags`), ADR 0010's precision. |
 | `data` | `Batch` / `TrainBatch` (equal to `device_data`'s); `DataTier` (`device`, `pinned`, `memmap`, all exact); `TierChoice` (non-float32 storage is a recorded deviation); the `BatchSource` (`batch(step)`, a pure function of the stream and the step) and `EvalSource` protocols. |
-| `randomness` | `host_generator(seed, step, stream)` (= `class_augment.augment_rng`: per-sample parameters, device-independent); `device_generator(seed, step, stream, device)` (per-pixel fields: the seed is device-independent, the values are not, so runs record the device); `RESERVED_STREAMS`, the stream numbers in use. |
+| `randomness` | `host_generator(seed, step, stream)` (= `class_augment.augment_rng`: per-sample parameters, device-independent); `device_generator(seed, step, stream, device)` (per-pixel fields: the seed is device-independent, the values are not, so runs record the device); `RESERVED_STREAMS`, the stream numbers in use (1-4 the paper model's augmentations, 5-8 the SimCLR pilot's views, noise fields, batch order and diagnostics; ADR 0018). |
 
 `tests/test_engine_contracts.py` also pins the Lightning 2.6.6 facts the checklist relies on
 (the validation grid across 7-step epochs, `global_step` inside `training_step`, the
@@ -1702,6 +1724,44 @@ calls `record.start_run` and `RunRecord.end` around the fit (task A1).
   An unreadable manifest is a `ConfigError`, never overwritten. The git state and the
   `uv.lock` SHA-256 come from the source checkout (`source_root()`, `None` in an installed
   wheel). `concurrent_jobs` comes from `ASTRO_SIMCLR_CONCURRENT_JOBS` (default 1).
+
+## `simclr` (phase 5, task 5.0b; ADR 0018)
+
+`src/astro_simclr/simclr/`: SimCLR for the pilot that gates the corpus download (plan
+5.0b). **Engine-free**: nothing imports Lightning (checked in a fresh interpreter), every
+draw is keyed by `step`, so 5.3 can run the same functions on the plain engine.
+
+| Module | Contents |
+|---|---|
+| `views` | `make_views(images, params, config, *, fits, generator)`: two training views (B, C, 57, 57) of (B, C, 63, 63) stamps: optional C5 noise on the 63-pixel stamp (`background_noise`: science and template noised, the difference through the fit, the min-max again), then `dihedral(images, k)` (8 exact elements: `rot90` by `k % 4`, flip if `k >= 4`), then `crop(images, offsets)` (an integer 57-pixel window, offsets 0-6, the same for every channel, no fill). `centre_crop` is the evaluation view (offset 3). `draw_view_params(seed, step, B)`: `k`, offsets and noise strengths of both views from `default_rng([seed, step, simclr_views])`, always drawn in full; `noise_generator(seed, step, device)`: the noise fields' device generator. |
+| `network` | `resnet18_cifar()`: torchvision ResNet-18, 3x3 stride-1 stem, no max-pool, `fc = Identity`, `zero_init_residual=True` (57 -> 57 -> 29 -> 15 -> 8, `h` 512-d); `ProjectionHead`: Linear(512, 512, no bias)-BN-ReLU-Linear(512, 128); `SimCLRNetwork(x) -> (h, z)`. |
+| `objective` | `SimCLRLoss(T)(z_i, z_j)`: `losses.NT_Xent` in paper mode (ADR 0002), in float32 with autocast off; returns `(loss, pos, neg)`. |
+| `optim` | `lars_param_groups(model)`: convolution/linear weights (weight decay 1e-6, trust ratio) and an excluded group (normalisation parameters and biases: no decay, no trust ratio, `optim.EXCLUDE_KEY`); `build_lars(model, lr=...)`: fixed trust ratio, no Nesterov, momentum 0.9; `base_learning_rate(B) = 0.3 * B / 256`; `warmup_cosine_lr(step, base_lr, total_steps, warmup_steps, lr_min=0)`: linear warmup to `base_lr` at step `W - 1`, then a cosine that is exactly `lr_min` at `total_steps - 1`; `set_learning_rate`. |
+| `diagnostics` | `effective_rank(h)` (exp of the entropy of the normalised eigenvalues of `cov(h)`), `dimension_std(z)`, `alignment(z_i, z_j)`, `uniformity(z, t=2)`, `knn_predict` / `knn_balanced_accuracy` (cosine, `k = 20`, vote weights `exp(sim / 0.07)`). |
+| `probe` | `draw_label_subsets(labels, candidates, per_class, n_subsets, seed)` (nested across budgets: subset `r` is the head of a per-class permutation keyed `[seed, r, class]`), `write_label_subsets` / `read_label_subsets` (format `astro-simclr-label-subsets` v1, with the SHA-256 of the candidates and the labels); `fit_probe(h, labels, weight_decay)`: logistic regression, standardised `h`, plain cross-entropy on logits, L2 on the weights, full-batch L-BFGS in float64 on the CPU; `probe_screen(...)`: the penalty chosen on the screen's selection half from `WEIGHT_DECAY_GRID`, the score on the decision half, per subset. |
+| `pilot` | `PilotConfig` (the run's whole definition; `epochs` or `steps`), `load_pilot_data` (Train and Validation as float32 (N, 3, 63, 63); with a splits file, verified, pretraining leaves out `screen_training_excluded`), `BatchOrder` (a permutation per pass keyed `[seed, pass, simclr_batch_order]`, last partial batch dropped), `PilotRun` (model built on the CPU from the seed, LARS, the step: views, one forward of both views concatenated, loss, rate, backward, step), `diagnose`, `embed`, `dump_embeddings`, `train_pilot(config, out_dir, resume=, stop_at=)`. |
+| `commands` | The `simclr-pilot`, `simclr-embed`, `make-label-subsets` and `simclr-probe` subcommands (see `cli`). |
+
+A pilot run directory holds `pilot.json` (config, data record with the source and splits
+SHA-256, schedule, device, precision and determinism flags, versions), `metrics.jsonl`
+(loss, mean positive and negative cosine, rate), `diagnostics.jsonl`, `ckpt/last.pt`,
+`ckpt/step-NNNNNNN.pt` every `keep_every_epochs` passes, `ckpt/final.pt` (format
+`astro-simclr-pilot-checkpoint` v1, `weights_only=True`) and `embeddings/` (`train_h.npy`,
+`validation_h.npy`, the labels and `meta.json`). `--resume` restores the weights, the
+optimizer and the steps done from `last.pt` (same config only) and drops the log lines past
+it; the continued run takes the same batches and views (exact on CPU, and on CUDA with
+`--deterministic`).
+
+The pilot's protocol, end to end:
+
+```bash
+D=dataset/prepared/td_ztf_stamp_17_06_20_red-002; S=configs/splits/td_ztf_stamp_17_06_20_red-002-grouped.json
+astro-simclr simclr-pilot $D --splits $S --output-dir runs/pilot/ssl --epochs 100 --device cuda
+astro-simclr simclr-embed $D --random-init --seed 0 --output-dir runs/pilot/random-init
+astro-simclr make-label-subsets $D --splits $S --per-class 10 --n-subsets 20 --out runs/pilot/subsets-10.json
+astro-simclr simclr-probe runs/pilot/ssl/embeddings --subsets runs/pilot/subsets-10.json --splits $S --out runs/pilot/probe-ssl-10.json
+astro-simclr simclr-probe runs/pilot/random-init --subsets runs/pilot/subsets-10.json --splits $S --out runs/pilot/probe-random-10.json
+```
 
 ## `preflight` (task 1.7)
 

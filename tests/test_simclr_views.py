@@ -204,3 +204,12 @@ def test_noised_views_are_reproducible_from_the_step() -> None:
     torch.testing.assert_close(first[1], again[1], rtol=0, atol=0)
     assert not torch.equal(first[0], other[0])
     assert not torch.equal(first[0], first[1])
+
+
+def test_class_augment_re_exports_the_stamp_relation() -> None:
+    """The move to stamp_relation (ADR 0018) left every class_augment name in place."""
+    from astro_simclr import stamp_relation
+    from astro_simclr.training import class_augment
+
+    for name in stamp_relation.__all__:
+        assert getattr(class_augment, name) is getattr(stamp_relation, name)
