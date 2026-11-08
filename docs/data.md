@@ -379,6 +379,9 @@ stamps); all channels last, float32:
 **Position** (`unit_sphere(ra, dec)`, degrees): `(cos ra cos dec, sin ra cos dec,
 sin dec)`, `(N, 3)` float32; RJ23 use it instead of CD21's 23 features.
 
+**Models.** `astro_simclr.rj23_model` (task 3.4, ADR 0013) takes each view channels first
+with the position: `build_rj23_classifier(view)(x_img, x_pos)` → logits.
+
 **Layout and memory.** `channels_first` gives `(N, C, H, W)` for torch
 (`torch.from_numpy` takes it as is); the module never imports torch. Chunks of
 `chunk_size` stamps (default 1000) bound the float64 intermediates (peak about 0.7 GB for

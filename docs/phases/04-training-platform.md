@@ -129,7 +129,14 @@ compared only with a baseline rerun on the new engine.
   25 minutes on 2026-11-08, because `tmux has-session -t screen25` matched `screen25c` by
   prefix.
 
-### B0 Engine ADR (checklist of Lightning's hidden behaviour)
+### B0 Engine ADR (checklist of Lightning's hidden behaviour) — PR #35 (ADR 0014, pending renumber)
+The ADR corrects three items of the original checklist, verified in the Lightning 2.6.6
+sources:
+- fit validations run under `no_grad`, not `inference_mode`;
+- there is no forced validation after the final step when it is off the validation grid;
+- Lightning checkpoints hold no RNG state.
+
+The checklist as first written:
 The ADR lists every behaviour the loop must reproduce, each pinned by a test in 4.7(a):
 - **Seeding:** `seed_everything`, then the model built on CPU, then moved to the device.
 - **Gradients:** `zero_grad(set_to_none=True)`, also before each validation.
