@@ -605,6 +605,26 @@ This design was verified with uv 0.11 on toy projects (plan review, round 2).
       2250/217754): self-supervised multimodal pretraining for ATAT (light curves plus
       tabular data, not stamps).
     - ATAT (A&A 689, A289; github.com/alercebroker/ATAT).
-  - **Small LSST test set (unverified, no licence):** an ALeRCE Hackathon 2026 repository
+  - **Training-free adaptation block** (for the SSL / Rubin phase; user request
+  2026-11-07). Adapt a pretrained encoder to a new survey or condition without
+  retraining, in this order:
+  1. AdaBN: recompute the BatchNorm statistics on target stamps (Li et al. 2016,
+     arXiv:1603.04779; Schneider et al. 2020, arXiv:2006.16971).
+  2. TENT (arXiv:2006.10726).
+  3. Directional ablation of a domain or nuisance direction in the embedding, folded into
+     the last linear layer as W' = (I − uuᵀ)W.
+  4. Surgical fine-tuning of the first layers (arXiv:2210.11466).
+  5. A model soup or WiSE-FT over the 1/10/100 % fine-tunes of one shared encoder
+     (arXiv:2203.05482, arXiv:2109.01903).
+
+  Step 3 is inspired by MIT CSAIL's "Sparks of Weight-Space Programming" (Takehi, Teoh,
+  Zhang and Khattab, 2026-11-02, a blog report, not peer reviewed;
+  rikiyat.github.io/blog/weight-space-programming). There, GPT-6 Astra repaired
+  Qwen3.5-0.8B's repetition loops with a rank-one projection edit on 0.016 % of the
+  weights (MATH-500 7.9 → 48.1). It fixes a localised failure; it does not add ability. A
+  cheap test: domain-probe accuracy and 5-class linear-probe accuracy before and after
+  removing 1–k directions, against random directions. Seed ensembles (phase 2, ablation
+  A5) cannot be weight-averaged without a shared initialisation.
+- **Small LSST test set (unverified, no licence):** an ALeRCE Hackathon 2026 repository
     with 1,694 human-labelled LSST alerts (github.com/jurados/ALeRCE-ZTFLSST-HubbleConstant).
 - Notebooks under `jupyter_examples/`.
