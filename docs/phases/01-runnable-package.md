@@ -358,7 +358,7 @@ This design was verified with uv 0.11 on toy projects (plan review, round 2).
   - LR schedule: the test checks the *optimizer's* `param_groups[0]["lr"]` against the
     fixture for epochs 0–400, covering warmup, the cosine and the `lr_min` plateau.
 
-### 1.6 Lightning modules (after 1.2–1.5)
+### 1.6 Lightning modules (after 1.2–1.5) — done (PR #9, merged as 57dae04, 2026-11-07)
 
 - Port `SimCLR`, `Linear_classifier`, `Fine_tuning` and both supervised CE modules to
   Lightning 2:
