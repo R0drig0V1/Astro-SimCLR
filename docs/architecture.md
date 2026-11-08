@@ -981,7 +981,7 @@ row per status. They cover:
   - dropped: the unused `epoch` argument/counter of `step`, the unimplemented
     `classic_momentum=False` and the never-consulted `exclude_from_*` lists; the closure
     runs under `torch.enable_grad()` and the step under `torch.no_grad()`.
-- **Per-group exclusion (task 5.0b, ADR 0019):** a param group with
+- **Per-group exclusion (task 5.0b, ADR 0025):** a param group with
   `exclude_from_adaptation: True` (`EXCLUDE_KEY`) gets neither the weight decay nor the trust
   ratio (plain SGD with momentum): SimCLR's treatment of BatchNorm parameters and biases,
   used by `simclr.optim`. The key is read with `group.get`, so groups without it (every
@@ -1299,7 +1299,7 @@ particular; C5 / C6 are rotation-agnostic). Validation and test are never augmen
 The cross-channel relation (`stamp_fits`, `FIT_COLUMNS`, `masked_pixels`, `renormalise`,
 `perturb` and their constants) lives in `src/astro_simclr/stamp_relation.py`, outside the
 `training` package (whose `__init__` imports Lightning), so that the SimCLR views can use it
-engine-free; `class_augment` re-exports it unchanged (ADR 0019).
+engine-free; `class_augment` re-exports it unchanged (ADR 0025).
 
 - **The difference is computed, not augmented.** `stamp_fits(images)` fits, per crop and in
   float64, `diff ~ a·sci + b·tmpl + c` (least squares over the 441 pixels, a
@@ -1443,7 +1443,7 @@ Lightning behaviour the loop reproduces (C1-C11) and the test that pins each.
 | `checkpoint` | `Checkpoint` (a `TypedDict` of plain values, read with `weights_only=True`) and its frozen key set `CHECKPOINT_KEYS`: format, engine, identity (A0's run id and attempt, the split run), `steps_done` (also the stream position), model, optimizer, task, policy, stream definition, every RNG stream, numerics (ADR 0010) and versions. `check_resumable` refuses Lightning checkpoints, other engines, formats and incomplete ones. |
 | `device` | `DevicePolicy`: one device (`world_size != 1` refused), `cudnn.benchmark = not deterministic`, `use_deterministic_algorithms(deterministic)`, `CUBLAS_WORKSPACE_CONFIG=":4096:8"` only when deterministic (`torch_flags()`, checked equal to Lightning's `_set_torch_flags`), ADR 0010's precision. |
 | `data` | `Batch` / `TrainBatch` (equal to `device_data`'s); `DataTier` (`device`, `pinned`, `memmap`, all exact); `TierChoice` (non-float32 storage is a recorded deviation); the `BatchSource` (`batch(step)`, a pure function of the stream and the step) and `EvalSource` protocols. |
-| `randomness` | `host_generator(seed, step, stream)` (= `class_augment.augment_rng`: per-sample parameters, device-independent); `device_generator(seed, step, stream, device)` (per-pixel fields: the seed is device-independent, the values are not, so runs record the device); `RESERVED_STREAMS`, the stream numbers in use (1-4 the paper model's augmentations, 6-9 the SimCLR pilot's views, noise fields, batch order and diagnostics; ADR 0019). |
+| `randomness` | `host_generator(seed, step, stream)` (= `class_augment.augment_rng`: per-sample parameters, device-independent); `device_generator(seed, step, stream, device)` (per-pixel fields: the seed is device-independent, the values are not, so runs record the device); `RESERVED_STREAMS`, the stream numbers in use (1-4 the paper model's augmentations, 6-9 the SimCLR pilot's views, noise fields, batch order and diagnostics; ADR 0025). |
 
 `tests/test_engine_contracts.py` also pins the Lightning 2.6.6 facts the checklist relies on
 (the validation grid across 7-step epochs, `global_step` inside `training_step`, the
@@ -1768,7 +1768,7 @@ calls `record.start_run` and `RunRecord.end` around the fit (task A1).
   `uv.lock` SHA-256 come from the source checkout (`source_root()`, `None` in an installed
   wheel). `concurrent_jobs` comes from `ASTRO_SIMCLR_CONCURRENT_JOBS` (default 1).
 
-## `simclr` (phase 5, task 5.0b; ADR 0019)
+## `simclr` (phase 5, task 5.0b; ADR 0025)
 
 `src/astro_simclr/simclr/`: SimCLR for the pilot that gates the corpus download (plan
 5.0b). **Engine-free**: nothing imports Lightning (checked in a fresh interpreter), every

@@ -1,4 +1,4 @@
-"""SimCLR on the plain-PyTorch platform (phase 5; task 5.0b's pilot; ADR 0019).
+"""SimCLR on the plain-PyTorch platform (phase 5; task 5.0b's pilot; ADR 0025).
 
 Engine-free (ADR 0014, CLAUDE.md): nothing in this package imports Lightning
 (``tests/test_simclr_pilot.py`` checks it), so every function here can run on the plain

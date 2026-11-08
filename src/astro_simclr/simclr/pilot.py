@@ -1,4 +1,4 @@
-"""The 5.0b pilot: a minimal plain-PyTorch SimCLR pretraining loop on CD21 Train (ADR 0019).
+"""The 5.0b pilot: a minimal plain-PyTorch SimCLR pretraining loop on CD21 Train (ADR 0025).
 
 Phase 5's task 5.0b runs SimCLR on the 50.6k CD21 Train stamps before any download, to
 decide whether the corpus download is worth asking for. This module is that run, written

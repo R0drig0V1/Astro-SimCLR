@@ -99,7 +99,7 @@ from astro_simclr.paper_model import PAPER_CROP
 
 # The cross-channel relation, re-exported so that every caller keeps importing it from here;
 # it lives in stamp_relation so that phase 5's SimCLR views can use it without importing
-# this package's Lightning modules (ADR 0019).
+# this package's Lightning modules (ADR 0025).
 from astro_simclr.stamp_relation import (
     BORDER_WIDTH,
     DEFAULT_MIN_R2,

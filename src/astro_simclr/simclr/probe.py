@@ -1,4 +1,4 @@
-"""The linear probe on precomputed, frozen representations (phase 5, task 5.0b; ADR 0019).
+"""The linear probe on precomputed, frozen representations (phase 5, task 5.0b; ADR 0025).
 
 **Label subsets** (:class:`LabelSubsets`): the labelled stamps a probe may train on at a
 budget of ``per_class`` stamps per class, drawn once and stored in a file

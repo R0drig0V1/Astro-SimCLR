@@ -1,5 +1,5 @@
-<!-- ADR 0019: the SimCLR pilot of phase 5 (task 5.0b): engine-free views, network, loss, LARS and schedule, probe, diagnostics, and a minimal plain-PyTorch loop. -->
-# 0019: The 5.0b SimCLR pilot: engine-free functions and a minimal plain loop
+<!-- ADR 0025: the SimCLR pilot of phase 5 (task 5.0b): engine-free views, network, loss, LARS and schedule, probe, diagnostics, and a minimal plain-PyTorch loop. -->
+# 0025: The 5.0b SimCLR pilot: engine-free functions and a minimal plain loop
 
 - **Status:** accepted (2026-11-08, phase 5, task 5.0b; plan review
   `docs/plan-reviews/2026-11-08-phase-5.md`, findings F7, F8, F10, F11; the SimCLR review

@@ -1,4 +1,4 @@
-"""The ``simclr-*`` subcommands of the CLI (phase 5, task 5.0b; ADR 0019).
+"""The ``simclr-*`` subcommands of the CLI (phase 5, task 5.0b; ADR 0025).
 
 Registered by :func:`add_simclr_commands` from :func:`astro_simclr.cli.build_parser`; the
 handlers import torch and the pilot lazily, so ``--help`` stays fast.
@@ -181,7 +181,7 @@ def _add_pilot(commands: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         help="the 5.0b SimCLR pilot: pretrain ResNet-18 on a prepared layout's Train stamps",
         description="Pretrain SimCLR (ResNet-18 with a CIFAR stem, NT-Xent in paper mode, "
         "LARS) on the Train stamps of a prepared layout, with checkpoints, diagnostics and a "
-        "final embedding dump (ADR 0019). With --splits, the stamps a screened run may not "
+        "final embedding dump (ADR 0025). With --splits, the stamps a screened run may not "
         "use are left out and the kNN monitor queries the screen's selection half.",
     )
     pilot.add_argument("data", type=Path, metavar="DATA", help="a prepared layout directory")

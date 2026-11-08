@@ -160,7 +160,7 @@ on the CD21 Train stamps, with checkpoints, diagnostics and a final embedding du
 `simclr-embed --random-init` dumps the untrained network's embeddings, `make-label-subsets`
 stores the probe's label subsets and `simclr-probe` scores a linear probe on the screen
 halves. The whole sequence is in [docs/architecture.md](docs/architecture.md) (`simclr`)
-and the decisions in [ADR 0019](docs/decisions/0019-simclr-pilot.md).
+and the decisions in [ADR 0025](docs/decisions/0025-simclr-pilot.md).
 
 ```bash
 uv run --no-sync astro-simclr simclr-pilot dataset/prepared/td_ztf_stamp_17_06_20_red-002 \
