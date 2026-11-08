@@ -81,7 +81,6 @@ from astro_simclr.experiments import (
     METRICS_FILE,
     check_accelerator,
     dataset_path,
-    json_safe,
     machine_record,
     resolve_resume,
 )
@@ -103,6 +102,7 @@ from astro_simclr.rj23_regime import (
     predict_probabilities,
 )
 from astro_simclr.runs.record import start_run
+from astro_simclr.tasks.results import finite
 from astro_simclr.training.runs import apply_fp32_precision, build_trainer, seed_run
 
 __all__ = [
@@ -764,4 +764,4 @@ def _fit_and_report(
             "seconds_per_step": seconds / steps if steps else None,
         },
     }
-    return cast(dict[str, Any], json_safe(metrics))
+    return cast(dict[str, Any], finite(metrics))

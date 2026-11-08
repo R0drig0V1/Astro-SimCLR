@@ -20,7 +20,10 @@ The rules themselves (what may decide what, the power note) are in
   file, the parts as pool indices, the ``protocol`` metrics entry;
 - :mod:`~astro_simclr.protocol.compare`: ``compare-variants`` (the report on normal runs,
   and the decision on split runs with ``--splits``) and the decision helpers (screen,
-  cross-validation: superiority and non-inferiority) that combine the above.
+  cross-validation: superiority and non-inferiority) that combine the above;
+- :mod:`~astro_simclr.protocol.phase2_report`: ``report-phase2``, the phase-2 results
+  report (``docs/results-phase2.md``, task 2.6) built from run directories with
+  ``compare-reference`` and ``compare-variants --splits``.
 
 The phase-3 benchmarks (task 3.2 of ``docs/phases/03-newer-benchmarks.md``; the section
 "Phase 3 benchmark metrics" of ``docs/evaluation-protocol.md``):

@@ -16,7 +16,7 @@ from astro_simclr.data.schema import FEATURE_NAMES, LABEL_NAMES, STAMP_SHAPE, Sp
 from astro_simclr.protocol.predictions import Predictions, predictions_file, save_predictions
 
 N_CLASSES = len(LABEL_NAMES)
-#: The machine block of a fake run (what ``experiments._machine`` writes).
+#: The machine block of a fake run (what ``experiments.machine_record`` writes).
 MACHINE: dict[str, Any] = {"device": "cpu", "gpu": None, "torch": "2.14.0", "cuda": None}
 
 
@@ -136,11 +136,12 @@ def fake_split_run(
     fold: int | None = None,
     machine: dict[str, Any] | None = None,
     source: str = "0" * 64,
+    **extra: Any,
 ) -> Path:
     """A ``train-supervised --splits`` run directory: ``protocol`` and evaluation predictions.
 
     ``fold=None`` makes a screen run. ``sha256`` is the splits file's, as ``experiments``
-    records it.
+    records it. ``extra`` adds top-level ``metrics.json`` keys (``timing``, ...).
     """
     out = root / name
     out.mkdir(parents=True)
@@ -162,6 +163,7 @@ def fake_split_run(
                 "n": int(pred.labels.size),
             }
         },
+        **extra,
     }
     (out / "metrics.json").write_text(json.dumps(metrics))
     return out

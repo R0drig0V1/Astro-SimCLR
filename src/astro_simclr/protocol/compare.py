@@ -434,7 +434,11 @@ def load_split_run(run_dir: Path) -> SplitRunPredictions:
 
 @dataclass(slots=True)
 class DecisionComparison:
-    """The outcome of :func:`compare_decision`: the verdict, the result and the lines."""
+    """The outcome of :func:`compare_decision`: the verdict, the result and the lines.
+
+    ``mcnemar`` is the screen's McNemar on the seed ensembles (a CV comparison keeps its
+    own in ``cv.mcnemar``).
+    """
 
     mode: str
     verdict: str
@@ -442,6 +446,7 @@ class DecisionComparison:
     cv: CVResult | None = None
     screen: ScreenResult | None = None
     lines: list[str] = field(default_factory=list)
+    mcnemar: McNemar | None = None
 
 
 def _cell(run: SplitRunPredictions) -> tuple[int | None, str]:
@@ -723,4 +728,6 @@ def _decide_screen(
         f"compare-variants: {verdict}"
         + ("" if dropped else " (not dropped; decide with the CV folds)"),
     ]
-    return DecisionComparison(SCREEN, verdict, not dropped, screen=result, lines=lines)
+    return DecisionComparison(
+        SCREEN, verdict, not dropped, screen=result, lines=lines, mcnemar=test
+    )

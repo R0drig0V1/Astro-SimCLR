@@ -102,7 +102,10 @@ from `engine.randomness.host_generator` with a reserved stream.
     in a callback, and records the run in `manifest.json` (ADR 0015) with the object splits
     hashed as its splits: a decision run is a `screen`, a replication run takes the new
     split part `whole` (ADR 0015's identity requires a part with a splits hash; no existing
-    run id changes); the plain engine (phase 4) adapts the same objects.
+    run id changes). The plain engine (task 4.6) trains the paper classifier only so far:
+    its runner (`tasks.plain.run_plain`) and `astro-simclr run` with `runtime.engine:
+    plain` refuse `schedule: rj23` (`tasks.common.refuse_rj23`), and its rj23 adapter, a
+    plain `Task` over the same objects, is a follow-up.
 
 ## Consequences
 

@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import gzip
 import json
+import time
 from typing import Any
 
 import numpy as np
 import pytest
-from _alerts_support import avro_bytes, candidate_record, fits_bytes, raw_cutouts
+from _alerts_support import SYNC_MARKER, avro_bytes, candidate_record, fits_bytes, raw_cutouts
 
 from astro_simclr.alerts.alerce import AlerceClient, ResponseError, is_oid, make_client
 from astro_simclr.alerts.fits import FitsError, gunzip, read_fits_image
@@ -148,13 +149,38 @@ def test_parse_alert_rejects_inconsistent_alerts(
         parse_alert(data, oid=OID, candid=candid)
 
 
+def _with_stamps(stamps: tuple[bytes, bytes, bytes]) -> bytes:
+    return avro_bytes(OID, candidate_record(7), None, stamp_data=stamps)
+
+
 def test_parse_alert_rejects_cutouts_of_different_shapes_and_bad_fits() -> None:
-    data = avro_bytes(OID, candidate_record(7), raw_cutouts(0))
-    good = parse_alert(data, oid=OID, candid=7)
+    # The corrupt and mismatched stamps are written into the container directly
+    # (stamp_data), not byte-replaced in a compressed one: the test does not depend on
+    # where the codec puts the stamp bytes.
+    cutouts = raw_cutouts(0)
+    good = parse_alert(avro_bytes(OID, candidate_record(7), cutouts), oid=OID, candid=7)
     assert good.cutouts.shape == (63, 63, 3)
-    other = data.replace(fits_bytes(raw_cutouts(0)[:, :, 0])[:20], b"x" * 20, 1)
-    with pytest.raises(AlertFormatError):
-        parse_alert(other, oid=OID, candid=7)
+    sci, ref, diff = (fits_bytes(cutouts[:, :, k]) for k in range(3))
+    short = fits_bytes(raw_cutouts(0, shape=(50, 63))[:, :, 1])
+    with pytest.raises(AlertFormatError, match="cutouts of different shapes"):
+        parse_alert(_with_stamps((sci, short, diff)), oid=OID, candid=7)
+    bad_magic = b"x" * 20 + sci[20:]  # no longer gzip: read as an uncompressed FITS
+    with pytest.raises(AlertFormatError, match="cutoutScience: non-ASCII header"):
+        parse_alert(_with_stamps((bad_magic, ref, diff)), oid=OID, candid=7)
+    truncated = sci[: len(sci) // 2]
+    with pytest.raises(AlertFormatError, match="cutoutTemplate: truncated gzip"):
+        parse_alert(_with_stamps((sci, truncated, diff)), oid=OID, candid=7)
+
+
+def test_avro_fixture_is_deterministic(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Two containers written an hour apart are byte-identical (fixed gzip mtime and sync
+    # marker), so a test may locate a stamp's bytes inside one. gzip reads time.time() for
+    # its header: moving the clock is what made the old byte-replacing test flaky.
+    first = avro_bytes(OID, candidate_record(7), raw_cutouts(0))
+    assert first.endswith(SYNC_MARKER)
+    later = time.time() + 3600
+    monkeypatch.setattr(time, "time", lambda: later)
+    assert avro_bytes(OID, candidate_record(7), raw_cutouts(0)) == first
 
 
 def test_check_container_bounds_the_decompressed_size() -> None:

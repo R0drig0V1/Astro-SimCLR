@@ -17,13 +17,13 @@ from astro_simclr.cli import build_parser, main, training_settings
 from astro_simclr.config import ConfigError, Settings
 from astro_simclr.experiments import (
     AcceleratorError,
-    _recalls,
     check_accelerator,
-    json_safe,
     load_pretrained,
     resolve_resume,
 )
 from astro_simclr.protocol.predictions import load_predictions
+from astro_simclr.tasks.results import finite as _finite
+from astro_simclr.tasks.results import recalls_of as _recalls
 
 ROOT = Path(__file__).resolve().parents[1]
 _DRY = ["max_epochs=1", "limit_train_batches=1", "limit_val_batches=1", "num_workers=0"]
@@ -331,7 +331,7 @@ def test_resnet_supervised_model(data_dir: Path, tmp_path: Path) -> None:
 
 
 def test_non_finite_values_become_null() -> None:
-    assert json_safe({"a": [1.0, float("nan")], "b": (float("inf"), "x"), "c": 2}) == {
+    assert _finite({"a": [1.0, float("nan")], "b": (float("inf"), "x"), "c": 2}) == {
         "a": [1.0, None],
         "b": [None, "x"],
         "c": 2,

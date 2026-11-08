@@ -41,6 +41,7 @@ from astro_simclr.protocol.split_runs import file_sha256
 from astro_simclr.rj23_model import RJ23_TABLE2, BNPosition, build_rj23_classifier
 from astro_simclr.rj23_regime import KEEPS, RJ23Schedule, predict_probabilities
 from astro_simclr.runs.manifest import read_manifest
+from astro_simclr.tasks.plain import run_plain
 from astro_simclr.training.rj23 import (
     RJ23DataModule,
     RJ23Module,
@@ -410,6 +411,9 @@ def test_run_rj23_needs_its_schedule_and_raw_alerts(
         run_rj23(Settings(), RJ23Request(splits))
     with pytest.raises(ConfigError, match=r"training\.rj23\.run_rj23"):
         run_command("train-supervised", _settings(data_dir, tmp_path / "x"))
+    # The plain engine's runner refuses it too (its rj23 adapter is a follow-up).
+    with pytest.raises(ConfigError, match=r"training\.rj23\.run_rj23"):
+        run_plain("train-supervised", _settings(data_dir, tmp_path / "p"))
     phase2 = _settings(classifier_dir.parent, tmp_path / "y", dataset=classifier_dir.name)
     with pytest.raises(DataError, match="raw-alerts"):
         run_rj23(phase2, RJ23Request(splits))
@@ -494,3 +498,25 @@ def test_cli_trains_an_rj23_scenario(
     other = ["train-supervised", "--output-dir", str(tmp_path / "o"), "--alerts", "a.csv"]
     assert main(other) == 2
     assert "--alerts belongs to the rj23 schedule" in capsys.readouterr().err
+
+
+def test_run_trains_a_nested_rj23_config_on_lightning_only(
+    layout: tuple[Path, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data_dir, splits = layout
+    config = tmp_path / "rj23.yaml"
+    nested = {
+        "preset": "rj23-lowres",
+        "run": {"output_dir": str(tmp_path / "run")},
+        "runtime": {"accelerator": "cpu"},
+        "data": {"dir": str(data_dir), "dataset": DATASET, "batch_size": 8},
+        "schedule": {"max_steps": 2, "val_every_n_steps": 2, "checkpoint_every_n_steps": 2},
+    }
+    config.write_text(json.dumps(nested), encoding="utf-8")
+    argv = ["run", str(config), "--splits", str(splits)]
+    assert main([*argv, "--set", "runtime.progress_bar_refresh_rate=0"]) == 0
+    assert "val macro-F1" in capsys.readouterr().out
+    metrics = json.loads((tmp_path / "run" / "metrics.json").read_text())
+    assert metrics["preset"]["name"] == "rj23-lowres"
+    assert main([*argv, "--set", "runtime.engine=plain"]) == 2
+    assert "runtime.engine lightning only" in capsys.readouterr().err

@@ -4,7 +4,7 @@
 - **Status:** accepted (2026-11-08, audit item 1, "Record and set the conv TF32 policy")
 - **Implemented by:** `Settings.fp32_precision` (`config.py`),
   `training.runs.apply_fp32_precision` / `fp32_precision_record`,
-  `experiments.run_command` / `_machine`, `reference.machine_signature`, the `carrasco2021`
+  `experiments.run_command` / `machine_record`, `reference.machine_signature`, the `carrasco2021`
   presets (`presets.py`, `configs/phase2/carrasco2021*.yaml`)
 - **Checked by:** `tests/test_fp32_precision.py`, `tests/test_cli_training.py`
   (`test_metrics_record_the_protocol_fields`), `tests/test_presets.py`
