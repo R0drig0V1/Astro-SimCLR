@@ -74,9 +74,11 @@ __all__ = [
     "MIN_FIT_SNR",
     "PSF_COLUMNS",
     "PSF_WINDOW",
+    "apply_flux",
     "fit_central_psf",
     "flux_rescale",
     "k_floor",
+    "plan_flux",
     "psf_exclusions",
     "psf_image",
     "rescale_transient",
@@ -327,6 +329,44 @@ def flux_rescale(
         ValueError: if ``fits`` does not have the :data:`AUGMENT_COLUMNS` columns, or
             ``k_range`` is not ``0 < low <= high``.
     """
+    plan = plan_flux(
+        images.detach().cpu(),
+        features.detach().cpu(),
+        targets.detach().cpu(),
+        fits.detach().cpu().numpy(),
+        probability,
+        k_range,
+        rng,
+        skip=skip,
+    )
+    k = plan.pop("k")
+    if "rows" not in plan:
+        return images, features, k
+    device_plan = {name: value.to(images.device) for name, value in plan.items()}
+    return (*apply_flux(images, features, device_plan), k)
+
+
+def plan_flux(
+    images: torch.Tensor,
+    features: torch.Tensor,
+    targets: torch.Tensor,
+    fits: npt.NDArray[np.floating[Any]],
+    probability: float,
+    k_range: tuple[float, float],
+    rng: np.random.Generator,
+    *,
+    skip: npt.NDArray[np.bool_] | None = None,
+) -> dict[str, Any]:
+    """The host part of :func:`flux_rescale`, on CPU tensors and the host ``fits``.
+
+    Returns ``{"k": float64 ndarray (B,)}`` plus, when a row is rescaled, ``"rows"`` (int64),
+    ``"built"`` (float32 (r, 3, S, S): the rescaled crops after the min-max, computed in
+    float64 on the host as :func:`flux_rescale` always did) and ``"scale"`` (float32 (r,),
+    their ``k``). The draws are the same, in the same order, whatever the result.
+
+    Raises:
+        ValueError: as :func:`flux_rescale`.
+    """
     if fits.ndim != 2 or fits.shape[1] != len(AUGMENT_COLUMNS):
         raise ValueError(f"fits must be (B, {len(AUGMENT_COLUMNS)}), got {tuple(fits.shape)}")
     low, high = k_range
@@ -337,34 +377,47 @@ def flux_rescale(
     u = rng.random(n)
     k = np.ones(n)
     if probability == 0:
-        return images, features, k
+        return {"k": k}
 
-    table = fits.detach().cpu().numpy().astype(np.float64)
+    table = np.asarray(fits, dtype=np.float64)
     a = table[:, 0]
-    labels = targets.argmax(dim=1).cpu().numpy()
-    floor = k_floor(features.detach().cpu().double()).numpy()
+    labels = targets.argmax(dim=1).numpy()
+    floor = k_floor(features.double()).numpy()
     lower = np.maximum(low, floor)
     rows = chosen & (labels != _BOGUS) & (table[:, _PSF + 4] > 0) & (a != 0) & (lower <= high)
     if skip is not None:
         rows &= ~skip
     if not rows.any():
-        return images, features, k
+        return {"k": k}
     k[rows] = np.exp(np.log(lower[rows]) + u[rows] * (np.log(high) - np.log(lower[rows])))
 
     index = np.flatnonzero(rows)
-    crops = images[index, :3].detach().cpu().double()
+    crops = images[index, :3].double()
     changed = rescale_transient(
         crops,
         torch.from_numpy(table[index, _PSF : _PSF + 4]),
         torch.from_numpy(a[index]),
         torch.from_numpy(k[index]),
     )
-    built = renormalise(changed, masked_pixels(crops)).to(images.device, images.dtype)
+    return {
+        "k": k,
+        "rows": torch.from_numpy(index),
+        "built": renormalise(changed, masked_pixels(crops)).to(torch.float32),
+        "scale": torch.from_numpy(k[index]).to(torch.float32),
+    }
 
-    device_index = torch.from_numpy(index).to(images.device)
+
+def apply_flux(
+    images: torch.Tensor, features: torch.Tensor, plan: dict[str, torch.Tensor]
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The device part of :func:`flux_rescale`, from a :func:`plan_flux` with rows.
+
+    ``plan``'s tensors are on ``images``' device; the feature update runs there, as before.
+    """
+    index = plan["rows"]
     out_images = images.clone()
-    out_images[device_index, :3] = built
-    scale = torch.from_numpy(k[index]).to(features.device, features.dtype)
+    out_images[index, :3] = plan["built"].to(images.dtype)
     out_features = features.clone()
-    out_features[device_index] = rescaled_features(features[device_index], scale)
-    return out_images, out_features, k
+    scale = plan["scale"].to(features.dtype)
+    out_features[index] = rescaled_features(features[index], scale)
+    return out_images, out_features

@@ -851,7 +851,7 @@ def _add_protocol_commands(
         "--allow-mixed-machines",
         action="store_true",
         help=(
-            "compare runs from different machines, builds or float32 precisions "
+            "compare runs from different machines, builds, float32 precisions or engines "
             "(the plan forbids it)"
         ),
     )
@@ -944,7 +944,7 @@ def _add_benchmark_commands(
     report.add_argument(
         "--allow-mixed-machines",
         action="store_true",
-        help="report runs from different machines or builds together",
+        help="report runs from different machines, builds, precisions or engines together",
     )
     report.set_defaults(handler=_bench_report)
 
