@@ -4,6 +4,8 @@ For every variant of ``astro_simclr.paper_variants.VARIANTS`` (the replication `
 the G-CNNs and the control arms) this prints, and with ``--out`` writes as JSON:
 
 - the trainable parameters and the MACs per stamp (``count_parameters``, ``count_macs``);
+  the ConvNeXt rows (B8) take whole 63x63 stamps and are built from scratch (the Zoobot
+  row's weights do not change its speed, so nothing is downloaded);
 - on the CPU, with the default thread count and with 1 thread: the median latency of a
   batch of 1 (ms), the throughput at batch 512 (stamps/s) and the time of one training step
   at batch 64 (ms);
@@ -49,11 +51,18 @@ from astro_simclr.paper_variants import (
 from astro_simclr.presets import CARRASCO2021_PRESET, PRESETS
 
 
-def _inputs(n: int, channels: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+def _inputs(
+    n: int, channels: int, device: torch.device, side: int = 21
+) -> tuple[torch.Tensor, torch.Tensor]:
     generator = torch.Generator().manual_seed(0)
-    images = torch.rand(n, channels, 21, 21, generator=generator)
+    images = torch.rand(n, channels, side, side, generator=generator)
     features = torch.randn(n, 23, generator=generator)
     return images.to(device), features.to(device)
+
+
+def _side(model: torch.nn.Module) -> int:
+    """The input side of ``model``: 63 for the ConvNeXt rows (B8), 21 for the others."""
+    return int(getattr(model, "input_side", 21))
 
 
 def _median_seconds(
@@ -83,7 +92,7 @@ def _speed(
     model.to(device)
     with torch.inference_mode():
         for n in batches:
-            images, features = _inputs(n, channels, device)
+            images, features = _inputs(n, channels, device, _side(model))
             seconds = _median_seconds(
                 lambda x=images, f=features: model(x, f),
                 reps if n == 1 else max(3, reps // 10),
@@ -107,7 +116,7 @@ def _train_step_seconds(
     sync: Callable[[], None],
 ) -> float:
     """Median seconds of a batch-64 forward and backward in train mode (module docstring)."""
-    images, features = _inputs(64, channels, device)
+    images, features = _inputs(64, channels, device, _side(model))
     model.train()
 
     def step() -> None:

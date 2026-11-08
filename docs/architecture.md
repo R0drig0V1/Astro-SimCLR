@@ -60,7 +60,8 @@ Conventions shared by every module:
 ## Environment and torch wheels
 
 Runtime dependencies: torch, torchvision, lightning 2.x, torchmetrics, numpy, pyyaml,
-matplotlib, tensorboard. torch and torchvision come from PyPI by default (MPS on macOS,
+matplotlib, tensorboard, fastavro, and timm (the ConvNeXt rows; it brings huggingface-hub and
+safetensors, and resolves against each fork's torch: [ADR 0022](decisions/0022-convnext-native-stamp.md)). torch and torchvision come from PyPI by default (MPS on macOS,
 CUDA 13 on Linux), or from the PyTorch indexes through the conflicting extras `cpu` and
 `cu126`. After `uv sync --locked --extra X`, run everything with `UV_NO_SYNC=1` or
 `uv run --no-sync`. Design and rationale: [ADR 0001](decisions/0001-torch-wheels-and-accelerators.md);
@@ -715,6 +716,8 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
 | `p4`, `group_fields: 16` | p4 G-CNN, 16/32 fields (capacity control) | 587,635 | 209,397,504 |
 | `p4m` | p4m G-CNN, 4/8 fields (B2') | 193,107 | 53,683,968 |
 | `p4`, `context: avgpool63` | B7 with the 63×63 context (B1') | 228,915 | 53,978,880 (+1.7 %) |
+| `convnext_atto`, `image_size: 63` | timm ConvNeXt-atto on the whole stamp, 4 rotations (B8; `convnext_model`) | 3,405,227 | 714,557,184 |
+| `convnext_pico`, `image_size: 63` | timm ConvNeXt-pico on the whole stamp, 4 rotations (B8) | 8,575,667 | 1,785,014,016 |
 
 - `GroupStampClassifier(group, *, group_fields=None, with_features, dropout_active,
   drop_rate, in_channels)`: the paper's geometry with group layers: `ZeroPad2d(3)`,
@@ -729,12 +732,16 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
   weights.
 - `build_paper_model(arch, *, group_fields, context, with_features, dropout_active,
   drop_rate, n_classes, feature_set)`: the factory `PaperClassifierModule` uses; the defaults build the faithful
-  model. `paper_in_channels(context)`, `default_group_fields(arch)`.
+  model. `paper_in_channels(context)`, `default_group_fields(arch)`, `paper_input_side(arch)`
+  (21, or 63 for the ConvNeXts: what `image_size` must be).
 - `count_parameters(model)`; `count_macs(model, *, in_channels)`: MACs per stamp of an
   eval forward, from `torch.utils.flop_counter` (convolutions and matrix products, not the
-  kernel expansion, pooling or BN), tested against the analytic counts.
+  kernel expansion, pooling or BN), tested against the analytic counts. The input side is
+  the model's `input_side` (63 for the ConvNeXts) or 21; a 4-rotation model counts its 4
+  passes (divide by 4 for a view).
 - `VARIANTS`: name → `Variant(row, overrides, description)`: `rot4` (A), `single-aug`
-  (`single` + `rot90_augment`), `p4` (B7), `p4-16`, `p4m` (B2'), `p4-context` (B1'). A run
+  (`single` + `rot90_augment`), `p4` (B7), `p4-16`, `p4m` (B2'), `p4-context` (B1'),
+  `convnext-atto`, `convnext-pico` and `convnext-pico-zoobot` (B8). A run
   is the `carrasco2021` preset plus `--set key=value` for each override, for example
   `train-supervised --preset carrasco2021 --set paper_arch=p4 --set context=avgpool63`.
   Split runs (`--splits FILE --fold K | --screen`, 2.5-infra) take the same flags: one crop
@@ -757,6 +764,51 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
   (the check can fail); invariance through the input path (rotate the 63×63 stamp, then
   crop and pool); the counts; the settings checks; CPU (and MPS/CUDA when present) training
   smoke runs through `run_command`.
+
+## `convnext_model` (task 2.5, plan row B8; ADR 0022)
+
+`src/astro_simclr/convnext_model.py`: ConvNeXt-atto and ConvNeXt-pico (timm) as
+`paper_arch` values of `paper_stamp_classifier`, on the whole 63×63 stamp.
+
+- `ConvNeXtStampClassifier(arch, *, with_features, dropout_active, drop_rate, in_channels,
+  n_classes, feature_set)`: (N, 3, 63, 63) stamps → the 4 rotations as one batch → zero
+  padding to 64 (bottom, right) → the timm backbone (`num_classes=0`; its stem a 4×4
+  convolution at stride 2, padding 1; stage maps 32-16-8-4, `STAGE_SIDES`) → pooled,
+  normalised features (320 / 512) → `fc1` to 64, ReLU, dropout per rotation → the rotation
+  mean → `PaperHead`. Exactly invariant to 90° rotations up to rounding. timm's
+  initialisation for the backbone (the replaced stem drawn the same way), the paper's for
+  fc1 and the head, all from the seeded global generator. `stage_sides(x)` and
+  `representation(x)` are diagnostics. timm is imported only here, when a model is built.
+- | arch | Parameters | Backbone | MACs per view | MACs per stamp |
+  |---|---|---|---|---|
+  | `convnext_atto` | 3,405,227 | 3,374,520 | 178.6 M | 714.6 M |
+  | `convnext_pico` | 8,575,667 | 8,532,672 | 446.3 M | 1,785.0 M |
+
+  (with the 23 features; the paper model is 441,075 and 52.7 M per view.)
+- **Why this stem:** timm's `patch_size=2` alone is compensated by a stride-2 downsample in
+  stage 0 (maps 16-8-4-2 again); a 2×2 stem would not fit the Zoobot 4×4 stem kernel. The
+  constructor refuses a timm whose stage 0 downsamples.
+- **Pretrained weights:** `BackboneWeights` (repo, commit, file, size, SHA-256, licence);
+  `ZOOBOT_CONVNEXT_PICO` (Apache-2.0 per its model card; Walmsley et al. 2024,
+  arXiv:2404.02973); `BACKBONE_WEIGHTS` (`Settings.backbone_weights` → arch → weights);
+  `backbone_weights_for(name, arch)`; `fetch_backbone_weights(weights, *, download)` (the
+  Hugging Face Hub client by default, cached under `HF_HOME`; refuses an entry without a
+  recorded licence before any download, and a file of another size or SHA-256);
+  `load_backbone_weights(model, weights, path)` (`torch.load(weights_only=True)`, strict
+  keys and shapes, backbone only). `WeightsError` is a `DataError` (one CLI error line).
+  `experiments._load_backbone_weights` calls them after the seeded build and records the
+  pin in `metrics.json["paper_data"]["backbone_weights"]`.
+- The data path at 63: `device_data.float_crops(..., side=63)` (and `interim_uint8_crops`):
+  `crop_split(images, 63)`, the paper's normalisation on the whole stamp; about 2.4 GB of
+  device-resident splits for `red` (9 times the crops). The 21×21-crop flags (`context`,
+  `aug_noise`, `synthetic_bogus`, `flux_rescale`) are refused; `rot90_augment` and
+  `aug_feature_jitter` work.
+- **Tested** (`tests/test_convnext_model.py`): stage maps, the timm trap, shapes, float64
+  invariance with every parameter perturbed (and a flip visible), counts, `feature_set`,
+  the seeded initialisation, input and layout checks, the weights loader with a fake
+  downloader (licence gate, size, SHA-256, keys, shapes, channels), from scratch with sockets
+  disabled, the settings, the run wiring; a CPU split run of `convnext_atto` in
+  `tests/test_split_runs.py`; the golden fixture with `backbone_weights: none`.
 
 ## `rj23_model` (task 3.4)
 
@@ -1266,7 +1318,8 @@ documented exception to "randomness comes from `seed_everything`", and what make
 mid-epoch resume exact. TF's random numbers are not reproduced.
 
 **Device data** (`device_data.py`). `TensorSplit(images, features, labels, fits=None)`:
-float32 (N, 3, 21, 21) (or (N, 6, 21, 21) with the 63×63 context of task 2.5-models),
+float32 (N, 3, 21, 21) (or (N, 6, 21, 21) with the 63×63 context of task 2.5-models, or
+the whole stamps (N, 3, 63, 63) of the ConvNeXt rows, plan row B8; `IMAGE_SIDES`),
 float32 (N, 23), int64 (N,), and optionally the float32 (N, 6) `class_augment.stamp_fits`
 of the crops (C5 / C6), or (N, 11) with `flux_rescale.fit_central_psf` after them (C7),
 validated. `without_train_indices` keeps Train's fits with its
@@ -1290,14 +1343,16 @@ one-hot labels)`:
 
 The splits come from a prepared layout (task 2.2c):
 
-- `float_crops(path, nan_approximation=True, context=False)`, **the paper's input**: each
+- `float_crops(path, nan_approximation=True, context=False, side=21)`, **the paper's input**: each
   split's `images_f32.npy` through `data.float_input.crop_split(21)` (per-crop min-max
   without epsilon, NaN → 0, the NaN approximation), channels first, and the 23 kept
   features; `context=True` (`Settings.context: avgpool63`) appends the 3 channels of
-  `context_split`. A layout without float32 stamps raises `DataError` naming
-  `prepare-data --images float32`.
-- `interim_uint8_crops(path)`, the stand-in of 2.2a (centre 21×21 of the uint8 stamps / 255,
-  no re-normalisation), kept as the `paper_input: uint8` diagnostic.
+  `context_split`. `side=63` (the ConvNeXt rows; ADR 0022) is `crop_split(63)`, the same
+  normalisation on the whole stamp (about 2.4 GB for `red`), without context. A layout
+  without float32 stamps raises `DataError` naming `prepare-data --images float32`.
+- `interim_uint8_crops(path, side=21)`, the stand-in of 2.2a (centre 21×21, or the whole
+  63×63, of the uint8 stamps / 255, no re-normalisation), kept as the `paper_input: uint8`
+  diagnostic.
 - `without_train_indices(splits, excluded)` drops Train stamps (the leaked one) in file
   order, before the tiling; Validation and Test are unchanged.
 - Split runs (task 2.5-infra; see `protocol`): both builders take `names=("Train",
@@ -1906,8 +1961,8 @@ calls `record.start_run` and `RunRecord.end` around the fit (task A1).
   - `HASH_NEUTRAL_DEFAULTS` leaves semantic fields out at one value: `num_workers: 0`
     (with workers, per-worker seeding changes the augmentation draws, so any other count is
     hashed), and fields added later at the value that keeps old hashes: `feature_set: all`
-    (ADR 0016) and, task 3.4b, `rj23_scenario: full`, `rj23_bn_position: after_concat`,
-    `rj23_large_values: paper`, `rj23_keep: stop`.
+    (ADR 0016), `backbone_weights: none` (ADR 0022) and, task 3.4b, `rj23_scenario: full`,
+    `rj23_bn_position: after_concat`, `rj23_large_values: paper`, `rj23_keep: stop`.
   - `semantic_config_from_plain(command, view, complete=True)` and `semantic_diff` are the
     hook of the nested config (4.2): lower to the flat view, then compare hashes.
   - The pinned hashes of the `carrasco2021` presets, of ten 2.5 variants (`feature_set:

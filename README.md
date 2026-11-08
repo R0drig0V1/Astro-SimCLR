@@ -135,6 +135,12 @@ The same split runs answer the feature diagnostic (ADR 0016): `--set feature_set
 keeps only the 6 sky coordinates of the 23 features, `--set feature_set=none` the images
 only (the same model as `with_features: false`).
 
+The modern-CNN control of plan row B8 (ADR 0022) takes the whole 63×63 stamp:
+`--set paper_arch=convnext_atto --set image_size=63` (or `convnext_pico`; 3.4 M / 8.6 M
+parameters, 179 M / 446 M MACs per rotation). `--set backbone_weights=zoobot` starts
+ConvNeXt-pico from the Zoobot weights (Apache-2.0), downloaded from Hugging Face at run time,
+pinned by commit and SHA-256; from scratch needs no network.
+
 ### 4. Raw alerts
 
 `fetch-alerts` (task 3.1) recovers the raw alerts behind a prepared split from ALeRCE's
@@ -211,6 +217,10 @@ replicates and builds on:
 - Reyes-Jainaga, I. et al. 2023, ApJL (arXiv:2304.13080): the RJ23 protocol and inputs.
 - Cohen, T. and Welling, M. 2016, "Group Equivariant Convolutional Networks", ICML
   (arXiv:1602.07576): the p4 / p4m layers.
+- Liu, Z. et al. 2022, "A ConvNet for the 2020s", CVPR (arXiv:2201.03545): ConvNeXt, through
+  timm (Wightman, R., github.com/huggingface/pytorch-image-models, Apache-2.0).
+- Walmsley, M. et al. 2024, "Scaling Laws for Galaxy Images" (arXiv:2404.02973): the Zoobot
+  ConvNeXt-pico weights (huggingface.co/mwalmsley/zoobot-encoder-convnext_pico, Apache-2.0).
 - Chen, T. et al. 2020, "A Simple Framework for Contrastive Learning of Visual
   Representations", ICML (arXiv:2002.05709): SimCLR.
 - Khosla, P. et al. 2020, "Supervised Contrastive Learning", NeurIPS (arXiv:2004.11362).

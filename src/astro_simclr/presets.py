@@ -109,6 +109,9 @@ _CARRASCO2021: Final[Mapping[str, object]] = {
     "group_fields": None,
     "context": "none",
     "rot90_augment": False,
+    # The ConvNeXt backbone's initial weights (plan row B8; ADR 0022): listed so that a
+    # Zoobot-initialised run is recorded as a deviation.
+    "backbone_weights": "none",
     # The features the head reads (a 2.5 diagnostic; ADR 0016): all 23. Listed so that a
     # position-only or images-only run is recorded as a deviation.
     "feature_set": "all",

@@ -121,7 +121,7 @@ from astro_simclr.augmentations import resolve_augmentation_name
 from astro_simclr.config import CARRASCO2021, RJ23, ConfigError, Settings, settings_to_plain
 from astro_simclr.data.prepared import is_prepared, load_prepared, read_meta
 from astro_simclr.data.schema import LABEL_NAMES, SPLITS, DataError
-from astro_simclr.paper_model import PAPER_CROP
+from astro_simclr.paper_variants import paper_input_side
 from astro_simclr.presets import preset_report
 from astro_simclr.protocol.leakage import find_duplicates, train_exclusions
 from astro_simclr.protocol.predictions import Predictions, predictions_file, save_predictions
@@ -377,9 +377,12 @@ def _build_downstream(command: str, settings: Settings) -> ClassifierModule:
 def _check_schedule(command: str, settings: Settings) -> None:
     """The ``carrasco2021`` schedule and the paper model go together, on 21x21 crops.
 
+    ``image_size`` must be the side ``paper_arch`` takes: 21, or 63 (the whole stamp) for
+    the ConvNeXt rows (plan row B8), so the recorded config says what the model saw.
+
     Raises:
         ConfigError: if only one of them is chosen, the command is not ``train-supervised``,
-            or ``image_size`` is not 21.
+            or ``image_size`` is not the side of ``paper_arch``.
     """
     paper_model = command == "train-supervised" and (
         settings.supervised_model == PAPER_STAMP_CLASSIFIER
@@ -392,10 +395,11 @@ def _check_schedule(command: str, settings: Settings) -> None:
         raise ConfigError(msg)
     if paper_model and settings.schedule != CARRASCO2021:
         raise ConfigError(f"{PAPER_STAMP_CLASSIFIER} needs schedule={CARRASCO2021}")
-    if paper_model and settings.image_size != PAPER_CROP:
+    side = paper_input_side(settings.paper_arch)
+    if paper_model and settings.image_size != side:
         msg = (
-            f"{PAPER_STAMP_CLASSIFIER} takes {PAPER_CROP}x{PAPER_CROP} crops: "
-            f"set image_size={PAPER_CROP}"
+            f"{PAPER_STAMP_CLASSIFIER} with paper_arch {settings.paper_arch} takes "
+            f"{side}x{side} images: set image_size={side}"
         )
         raise ConfigError(msg)
     _check_paper_variant(paper_model, settings)
@@ -410,6 +414,8 @@ _PAPER_VARIANT_DEFAULTS: Final[Mapping[str, object]] = {
     "rot90_augment": False,
     # The features the head reads (a 2.5 diagnostic; ADR 0016).
     "feature_set": "all",
+    # The ConvNeXt backbone's initial weights (plan row B8; ADR 0022).
+    "backbone_weights": "none",
     # Class-aware augmentation (plan rows C5 and C6; ADR 0006).
     "aug_noise": 0.0,
     "aug_feature_jitter": 0.0,
@@ -511,9 +517,10 @@ def _build_paper(
         excluded = _leaked_train(settings, data)
     else:
         excluded = list(split_run.splits.excluded_train)
+    side = paper_input_side(settings.paper_arch)
     info: dict[str, Any] = {
         "input": settings.paper_input,
-        "crop": PAPER_CROP,
+        "crop": side,
         "nan_approximation": (
             settings.nan_approximation if settings.paper_input == "float32" else None
         ),
@@ -529,8 +536,9 @@ def _build_paper(
                 nan_approximation=settings.nan_approximation,
                 names=names,
                 context=settings.context != "none",
+                side=side,
             )
-        return interim_uint8_crops(data, names=names)
+        return interim_uint8_crops(data, names=names, side=side)
 
     def split_source(run: SplitRun) -> dict[str, TensorSplit]:
         pool = crops(("Train", "Validation"))  # never Test
@@ -550,6 +558,7 @@ def _build_paper(
 
     seed_run(settings)
     module = paper_module(settings)
+    _load_backbone_weights(settings, module, info)
     datamodule = DeviceTensorDataModule(
         source,
         batch_size=settings.batch_size,
@@ -560,6 +569,43 @@ def _build_paper(
         planner=module.augment_plan if module.augmenting and _PREFETCH else None,
     )
     return module, datamodule, info
+
+
+def _load_backbone_weights(
+    settings: Settings, module: PaperClassifierModule, info: dict[str, Any]
+) -> None:
+    """Start the ConvNeXt backbone from ``backbone_weights`` (plan row B8; ADR 0022).
+
+    Nothing happens for ``none`` (from scratch: no network access). Otherwise the pinned
+    file is downloaded (or read from the Hugging Face cache), verified and loaded into the
+    backbone, after the seeded initialisation, and recorded in ``info["backbone_weights"]``.
+    A resumed run loads it too, then the checkpoint replaces every weight.
+
+    Raises:
+        WeightsError: as ``convnext_model.fetch_backbone_weights`` and
+            ``load_backbone_weights`` (a ``DataError``: the CLI prints it on one line).
+    """
+    if settings.backbone_weights == "none":
+        return
+    from astro_simclr.convnext_model import (
+        ConvNeXtStampClassifier,
+        backbone_weights_for,
+        fetch_backbone_weights,
+        load_backbone_weights,
+    )
+
+    weights = backbone_weights_for(settings.backbone_weights, settings.paper_arch)
+    model = module.model
+    if weights is None or not isinstance(model, ConvNeXtStampClassifier):
+        # Settings refuses it already (zoobot needs convnext_pico); kept for direct callers.
+        raise ConfigError(f"backbone_weights need a ConvNeXt paper_arch, not {settings.paper_arch}")
+    load_backbone_weights(model, weights, fetch_backbone_weights(weights, download=_DOWNLOAD))
+    info["backbone_weights"] = weights.record()
+
+
+#: The weights downloader of ``_load_backbone_weights`` (None: the Hugging Face Hub); the
+#: tests replace it with a local file, so no test touches the network.
+_DOWNLOAD: Callable[[Any], Path] | None = None
 
 
 #: Plan the training augmentation in the loader (True) or in the step (False: the in-step

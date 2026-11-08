@@ -582,6 +582,8 @@ def test_resume_of_the_same_fold_continues(
         # The feature_set diagnostic (ADR 0016) with the 2.5 flags, C5's jitter included.
         ({**_AUGMENT, "feature_set": "position"}, {"fold": 1}),
         ({"paper_arch": "single", "rot90_augment": True, "feature_set": "none"}, {}),
+        # Plan row B8 (ADR 0022): whole 63x63 stamps through the same roles.
+        ({"paper_arch": "convnext_atto", "image_size": 63, "aug_feature_jitter": 0.1}, {"fold": 2}),
     ],
     ids=[
         "p4-context-fold",
@@ -589,6 +591,7 @@ def test_resume_of_the_same_fold_continues(
         "p4-augment-fold",
         "position-augment-fold",
         "none-screen",
+        "convnext-atto-fold",
     ],
 )
 def test_variant_split_runs(
@@ -620,7 +623,8 @@ def test_variant_split_runs(
         assert metrics["config"][key] == value
     assert set(metrics["preset"]["deviations"]) >= set(changes)
     channels = 6 if changes.get("context") == "avgpool63" else 3
-    pool = float_crops(prepared, names=("Train", "Validation"), context=channels == 6)
+    side = int(changes.get("image_size", PAPER_CROP))
+    pool = float_crops(prepared, names=("Train", "Validation"), context=channels == 6, side=side)
     table = np.concatenate([pool["Train"].images, pool["Validation"].images])
     parts = open_split_run(request, prepared).parts()
     for name, part in (
@@ -628,7 +632,7 @@ def test_variant_split_runs(
         ("Validation", parts.selection),
         ("Test", parts.evaluation),
     ):
-        assert images[name].shape[1:] == (channels, PAPER_CROP, PAPER_CROP)
+        assert images[name].shape[1:] == (channels, side, side)
         np.testing.assert_array_equal(images[name], table[part])
     predictions = load_predictions(tmp_path / metrics["predictions"]["evaluation"]["file"])
     assert np.array_equal(predictions.index, parts.evaluation_index)
