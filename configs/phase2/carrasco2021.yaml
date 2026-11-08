@@ -73,3 +73,10 @@ aug_noise: 0.0
 aug_feature_jitter: 0.0
 synthetic_bogus: 0.0
 aug_min_r2: 0.5
+
+# Transient flux rescaling (plan row C7; ADR 0007): off. A C7 run sets flux_rescale (the
+# probability per row) and may change flux_k_min / flux_k_max
+# (src/astro_simclr/training/flux_rescale.py).
+flux_rescale: 0.0
+flux_k_min: 0.5
+flux_k_max: 1.5

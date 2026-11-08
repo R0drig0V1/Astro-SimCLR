@@ -1,0 +1,43 @@
+{
+  "dataset": "td_ztf_stamp_17_06_20_red-002",
+  "psf_fit_seconds_per_stamp": 0.00362,
+  "psf_skipped": {
+    "AGN": 0.109,
+    "SN": 0.039,
+    "VS": 0.099,
+    "Asteroid": 0.049,
+    "Bogus": 0.306
+  },
+  "per_class": {
+    "AGN": {
+      "median_headroom_mag": 0.35,
+      "floor_above_0.6": 0.741,
+      "floor_above_k_max": 0.0,
+      "median_fwhm_px": 1.98
+    },
+    "SN": {
+      "median_headroom_mag": 0.96,
+      "floor_above_0.6": 0.261,
+      "floor_above_k_max": 0.0,
+      "median_fwhm_px": 2.07
+    },
+    "VS": {
+      "median_headroom_mag": 2.18,
+      "floor_above_0.6": 0.086,
+      "floor_above_k_max": 0.0,
+      "median_fwhm_px": 2.11
+    },
+    "Asteroid": {
+      "median_headroom_mag": 0.92,
+      "floor_above_0.6": 0.304,
+      "floor_above_k_max": 0.0,
+      "median_fwhm_px": 2.16
+    },
+    "Bogus": {
+      "median_headroom_mag": 1.07,
+      "floor_above_0.6": 0.24,
+      "floor_above_k_max": 0.006,
+      "median_fwhm_px": 1.54
+    }
+  }
+}

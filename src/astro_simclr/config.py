@@ -248,6 +248,16 @@ class Settings:
     #: noised nor used as a synthetic Bogus source. In [0, 1].
     aug_min_r2: float = 0.5
 
+    # --- Paper-model transient flux rescaling (plan row C7; ADR 0007) ------------------------
+
+    #: ``paper_stamp_classifier`` C7: the probability that a training row (not Bogus) has its
+    #: central transient rescaled by ``k`` (``training.flux_rescale``), in [0, 1]. 0: off.
+    flux_rescale: float = 0.0
+    #: C7: the smallest ``k`` (the alert limit may raise it per stamp); 0 < it <= flux_k_max.
+    flux_k_min: float = 0.5
+    #: C7: the largest ``k``.
+    flux_k_max: float = 1.5
+
     def __post_init__(self) -> None:
         """Check the values that a type alone cannot (ranges and names).
 
@@ -296,10 +306,33 @@ class Settings:
             if self.group_fields < 1:
                 raise ConfigError(f"group_fields must be >= 1, got {self.group_fields}")
         self._check_class_augment()
+        self._check_flux_rescale()
         if self.context != "none" and self.paper_input != "float32":
             msg = (
                 f"context {self.context!r} is part of the float input path: it needs "
                 f"paper_input=float32, got {self.paper_input!r}"
+            )
+            raise ConfigError(msg)
+
+    def _check_flux_rescale(self) -> None:
+        if not 0 <= self.flux_rescale <= 1:
+            raise ConfigError(f"flux_rescale must be in [0, 1], got {self.flux_rescale}")
+        if not 0 < self.flux_k_min <= self.flux_k_max:
+            msg = (
+                "flux_k_min and flux_k_max must satisfy 0 < flux_k_min <= flux_k_max, got "
+                f"{self.flux_k_min} and {self.flux_k_max}"
+            )
+            raise ConfigError(msg)
+        if self.flux_rescale and self.paper_input != "float32":
+            msg = (
+                "flux_rescale re-normalises the crops like the float input path: it needs "
+                f"paper_input=float32, got {self.paper_input!r}"
+            )
+            raise ConfigError(msg)
+        if self.flux_rescale and self.context != "none":
+            msg = (
+                "flux_rescale changes the 21x21 crop only, not the pooled context: it needs "
+                f"context=none, got {self.context!r}"
             )
             raise ConfigError(msg)
 

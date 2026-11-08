@@ -69,6 +69,10 @@ _FLAG_DEFAULTS: dict[str, object] = {
     "aug_feature_jitter": 0.0,
     "synthetic_bogus": 0.0,
     "aug_min_r2": 0.5,
+    # Plan row C7 (ADR 0007).
+    "flux_rescale": 0.0,
+    "flux_k_min": 0.5,
+    "flux_k_max": 1.5,
 }
 
 

@@ -127,6 +127,7 @@ from astro_simclr.training.device_data import (
     protocol_splits,
     without_train_indices,
 )
+from astro_simclr.training.flux_rescale import fit_central_psf, psf_exclusions
 from astro_simclr.training.metrics import confusion_counts, macro_f1
 from astro_simclr.training.modules import (
     ClassifierModule,
@@ -367,6 +368,10 @@ _PAPER_VARIANT_DEFAULTS: Final[Mapping[str, object]] = {
     "aug_feature_jitter": 0.0,
     "synthetic_bogus": 0.0,
     "aug_min_r2": DEFAULT_MIN_R2,
+    # Transient flux rescaling (plan row C7; ADR 0007).
+    "flux_rescale": 0.0,
+    "flux_k_min": 0.5,
+    "flux_k_max": 1.5,
 }
 
 
@@ -404,7 +409,8 @@ def paper_module(settings: Settings) -> PaperClassifierModule:
 
     The paper model's fields, including the 2.5-models variant flags (``paper_arch``,
     ``group_fields``, ``context``, ``rot90_augment``) and the C5 / C6 augmentation
-    (``aug_noise``, ``aug_feature_jitter``, ``synthetic_bogus``, ``aug_min_r2``), whose
+    (``aug_noise``, ``aug_feature_jitter``, ``synthetic_bogus``, ``aug_min_r2``) and the C7
+    flux rescaling (``flux_rescale``, ``flux_k_min``, ``flux_k_max``), whose
     draws are seeded with ``seed``.
 
     Raises:
@@ -427,6 +433,9 @@ def paper_module(settings: Settings) -> PaperClassifierModule:
         aug_feature_jitter=settings.aug_feature_jitter,
         synthetic_bogus=settings.synthetic_bogus,
         aug_min_r2=settings.aug_min_r2,
+        flux_rescale=settings.flux_rescale,
+        flux_k_min=settings.flux_k_min,
+        flux_k_max=settings.flux_k_max,
     )
 
 
@@ -482,14 +491,7 @@ def _build_paper(
         return splits
 
     def with_fits(splits: dict[str, TensorSplit]) -> dict[str, TensorSplit]:
-        # C5 / C6 need each Train stamp's cross-channel fit (computed once, on the run's
-        # own Train role, which for a split run is the fold's training part).
-        if not (settings.aug_noise or settings.synthetic_bogus):
-            return splits
-        train = splits["Train"]
-        fits = stamp_fits(train.images)
-        info["class_augment"] = fit_exclusions(fits, train.labels, settings.aug_min_r2)
-        return {**splits, "Train": dataclasses.replace(train, fits=fits)}
+        return _with_train_fits(settings, splits, info)
 
     def source() -> dict[str, TensorSplit]:
         if split_run is not None:
@@ -508,6 +510,27 @@ def _build_paper(
         run_identity=None if split_run is None else split_run.identity(),
     )
     return module, datamodule, info
+
+
+def _with_train_fits(
+    settings: Settings, splits: dict[str, TensorSplit], info: dict[str, Any]
+) -> dict[str, TensorSplit]:
+    """``splits`` with the Train role's augmentation table, when C5 / C6 / C7 need it.
+
+    C5 / C6 need each Train stamp's cross-channel fit (``class_augment.stamp_fits``), C7 its
+    central PSF fit too (``flux_rescale.fit_central_psf``, appended). Computed once, on the
+    run's own Train role (the fold's training part in a split run); the excluded shares go
+    to ``info`` (``class_augment``, ``flux_rescale``).
+    """
+    if not (settings.aug_noise or settings.synthetic_bogus or settings.flux_rescale):
+        return splits
+    train = splits["Train"]
+    fits = stamp_fits(train.images)
+    info["class_augment"] = fit_exclusions(fits, train.labels, settings.aug_min_r2)
+    if settings.flux_rescale:
+        fits = np.concatenate([fits, fit_central_psf(train.images)], axis=1)
+        info["flux_rescale"] = psf_exclusions(fits, train.labels)
+    return {**splits, "Train": dataclasses.replace(train, fits=fits)}
 
 
 def _check_split(command: str, settings: Settings) -> None:

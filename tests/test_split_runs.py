@@ -48,6 +48,7 @@ from astro_simclr.training.device_data import (
     float_crops,
     protocol_splits,
 )
+from astro_simclr.training.flux_rescale import fit_central_psf
 
 N_PER_SPLIT = 25
 LEAKED_TRAIN, LEAKED_VALIDATION = 3, 7
@@ -412,13 +413,15 @@ def test_screen_run_roles(cv_data: tuple[Path, Path, ProtocolSplits], tmp_path: 
     assert decision.tolist() == (splits.n_train + splits.screen.decision).tolist()
 
 
-#: C5 and C6 on a p4 model (ADR 0006); R^2 0 so that the random synthetic stamps qualify.
+#: C5, C6 (ADR 0006) and C7 (ADR 0007) on a p4 model; R^2 0 so that the random synthetic
+#: stamps qualify.
 _AUGMENT: dict[str, Any] = {
     "paper_arch": "p4",
     "aug_noise": 1.0,
     "aug_feature_jitter": 0.1,
     "synthetic_bogus": 0.25,
     "aug_min_r2": 0.0,
+    "flux_rescale": 0.5,
 }
 
 
@@ -620,12 +623,14 @@ def test_variant_split_runs(
         np.testing.assert_array_equal(images[name], table[part])
     predictions = load_predictions(tmp_path / metrics["predictions"]["evaluation"]["file"])
     assert np.array_equal(predictions.index, parts.evaluation_index)
-    # C5 / C6 (ADR 0006): the fits are those of the fold's own training part, only.
+    # C5 / C6 / C7 (ADR 0006, 0007): the fits are those of the fold's own training part.
     assert fits["Validation"] is None and fits["Test"] is None
     if changes is _AUGMENT:
-        expected = stamp_fits(table[parts.training])
+        training = table[parts.training]
+        expected = np.concatenate([stamp_fits(training), fit_central_psf(training)], axis=1)
         np.testing.assert_array_equal(fits["Train"].cpu().numpy(), expected)
         assert set(metrics["paper_data"]["class_augment"]["excluded"]) == set(LABEL_NAMES)
+        assert set(metrics["paper_data"]["flux_rescale"]["skipped"]) == set(LABEL_NAMES)
     else:
         assert fits["Train"] is None
 
@@ -633,7 +638,7 @@ def test_variant_split_runs(
 def test_augmented_resume_is_exact(
     cv_data: tuple[Path, Path, ProtocolSplits], tmp_path: Path
 ) -> None:
-    # The C5 / C6 draws are a function of [seed, global_step]: a resumed fold run repeats
+    # The C5 / C6 / C7 draws are a function of [seed, global_step]: a resumed fold run repeats
     # them, so its predictions match the uninterrupted run's.
     prepared, path, _ = cv_data
     whole, mid = tmp_path / "whole", tmp_path / "mid.ckpt"

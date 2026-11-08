@@ -126,6 +126,14 @@ of one run.
   | `aug_feature_jitter` | 0.0 | C5: Gaussian jitter sigma (standardised units) on the continuous features; the discrete ones never change. ≥ 0; needs `with_features` |
   | `synthetic_bogus` | 0.0 | C6: fraction of each training batch replaced by synthetic hot-pixel Bogus, in [0, 1); needs `paper_input: float32` and `context: none` |
   | `aug_min_r2` | 0.5 | C5 / C6: stamps whose `diff ~ a·sci + b·tmpl + c` fit has a lower R² are not noised nor used as C6 sources; in [0, 1] |
+- **Plan row C7** (transient flux rescaling; `training.flux_rescale`, ADR 0007). Off by
+  default, listed in the presets:
+
+  | Field | Default | Meaning |
+  |---|---|---|
+  | `flux_rescale` | 0.0 | probability that a training row (never Bogus) has its central transient rescaled by `k`; in [0, 1]; needs `paper_input: float32` and `context: none` |
+  | `flux_k_min` | 0.5 | smallest `k` (raised per stamp to keep it an alert); `0 < flux_k_min <= flux_k_max` |
+  | `flux_k_max` | 1.5 | largest `k` |
 
   `experiments` rejects a changed one with another `supervised_model` (`ConfigError`).
 - `load_settings(path, overrides, defaults=...)`: `defaults` (a subcommand's legacy
@@ -828,7 +836,8 @@ mid-epoch resume exact. TF's random numbers are not reproduced.
 **Device data** (`device_data.py`). `TensorSplit(images, features, labels, fits=None)`:
 float32 (N, 3, 21, 21) (or (N, 6, 21, 21) with the 63×63 context of task 2.5-models),
 float32 (N, 23), int64 (N,), and optionally the float32 (N, 6) `class_augment.stamp_fits`
-of the crops (C5 / C6), validated. `without_train_indices` keeps Train's fits with its
+of the crops (C5 / C6), or (N, 11) with `flux_rescale.fit_central_psf` after them (C7),
+validated. `without_train_indices` keeps Train's fits with its
 stamps; `protocol_splits` builds roles without fits. When the Train split has fits, its
 training batches carry them as a fourth element (validation and test never do). `DeviceTensorDataModule(source,
 batch_size=64, eval_batch_size=64, seed=0, balance=True)` takes the three splits (a mapping,
@@ -911,7 +920,8 @@ and `rot90_augment=False`, `augment_seed=0`: with augmentation, `training_step` 
 each stamp by `k·90°`, `k` from `numpy.random.default_rng([augment_seed, global_step])`
 (device-independent, exact on resume); validation and test are not augmented. Plan rows
 C5 and C6 add `aug_noise`, `aug_feature_jitter`, `synthetic_bogus` and `aug_min_r2` (all
-off by default; see "Class-aware augmentation" below).
+off by default; see "Class-aware augmentation" below), and row C7 `flux_rescale`,
+`flux_k_min`, `flux_k_max` (see "Transient flux rescaling").
 
 ### Class-aware augmentation (plan rows C5 and C6)
 
@@ -994,6 +1004,45 @@ smoke run on every available accelerator.
 The full replication settings are the `carrasco2021` preset (see `presets`):
 `train-supervised --preset carrasco2021`, or `--config configs/phase2/carrasco2021.yaml`.
 
+### Transient flux rescaling (plan row C7)
+
+`src/astro_simclr/training/flux_rescale.py`; decisions in ADR 0007. Training only, in
+`PaperClassifierModule.class_augment`, after C6 and before C5's noise; never Bogus (nor C6's
+synthetic rows). Scaling the whole difference would do nothing: the per-channel min-max is
+scale-invariant. So:
+
+- `fit_central_psf(images)`: once per Train stamp (`experiments._with_train_fits`, appended
+  to `stamp_fits` as the 11-column `AUGMENT_COLUMNS` table), a pixel-integrated circular
+  Gaussian plus a constant fitted by Levenberg-Marquardt (per stamp, float64,
+  `torch.func` Jacobians) to the central 11×11 of the normalised difference, masked pixels
+  with weight 0: `psf_flux`, `psf_x0`, `psf_y0`, `psf_sigma`, `psf_ok` (finite, flux > 0,
+  centroid within 2 px, FWHM in [1, 6] px, S/N ≥ 5). About 3.6 ms per stamp. `psf_exclusions`
+  (the failed share per class) goes to `metrics.json["paper_data"]["flux_rescale"]`.
+- `rescale_transient(crops, params, a, k)`: difference `+ (k − 1)·PSF`, science
+  `+ (k − 1)·PSF / a` (`a` from the cross-channel fit: a negative alert's science gets
+  fainter when its alert gets brighter), template unchanged; then `renormalise` with the
+  masked pixels.
+- `rescaled_features(features, k)`: through M1's statistics, `magpsf − 2.5 log10 k` and
+  `sigmapsf / k` (a background-dominated error; ADR 0007).
+- `flux_rescale(...)`: a row is rescaled with probability `flux_rescale` if not Bogus, its
+  fit is ok and `k_floor` (`10^(−0.4 (diffmaglim − magpsf))`, the smallest `k` that keeps
+  `magpsf' ≤ diffmaglim`) is at most `flux_k_max`; `k` is log-uniform in
+  `[max(flux_k_min, floor), flux_k_max]`. Stream 4 of `class_augment.augment_rng`.
+
+On `red` Train: fits skipped AGN 10.9 %, SN 3.9 %, VS 9.9 %, Asteroid 4.9 %; median headroom
+AGN 0.35, SN 0.96, VS 2.18, Asteroid 0.92 mag; median fitted FWHM 2.0–2.2 px
+(`scripts/inspect_flux_rescale.py`, `results/phase2/flux-rescale/`).
+
+**Tested** (`tests/test_flux_rescale.py`): the fit recovers a known Gaussian and rejects an
+off-centre source and pure noise; masked pixels are ignored; before the min-max only the
+central source changes (the residual after removing `k·PSF` equals the original's, and the
+cross-channel relation still holds); a refit of the rescaled difference has `k` times the
+flux, and `magpsf` / `sigmapsf` move by `−2.5 log10 k` and `1/k`; the alert constraint over
+many draws, a stamp beyond its limit left alone; Bogus never rescaled; seeded draws; the
+module (training only), the settings and the preset deviation; a p4 run on every
+accelerator; and in `tests/test_split_runs.py` an augmented fold run (the fits are the
+fold's training part's) and its exact resume.
+
 ## `presets` (task 2.2c)
 
 `src/astro_simclr/presets.py`: named settings for `train-supervised --preset NAME`, applied
@@ -1016,7 +1065,8 @@ Decisions and provenance: ADR 0003.
   `rot90_augment: false` to both presets (the defaults, so the faithful settings are
   unchanged), so that a variant run is reported as a deviation, not as faithful. Plan rows
   C5 and C6 add `aug_noise: 0.0`, `aug_feature_jitter: 0.0`, `synthetic_bogus: 0.0` and
-  `aug_min_r2: 0.5` the same way (ADR 0006).
+  `aug_min_r2: 0.5` the same way (ADR 0006), and row C7 `flux_rescale: 0.0`,
+  `flux_k_min: 0.5`, `flux_k_max: 1.5` (ADR 0007).
 - `preset_for(settings)`: the preset of a `carrasco2021`-schedule run (by `with_features`),
   else `None`. `preset_report(settings)`: `name`, `faithful` (no preset key changed),
   `deviations` (key → `{value, preset}`) and `diagnostics` (the flags turned on), written
@@ -1116,7 +1166,8 @@ and at the end. The outputs and metrics are the same files. Every run's
 metrics add `best_step` (the `global_step` stored in `best.ckpt`) and `last_step`;
 `carrasco2021` adds `horizon` (the final one), `paper_data` (`input`, `crop`,
 `nan_approximation`, `excluded_train`, `n_train`, `n_tiled`, and with C5 / C6
-`class_augment`: `min_r2` and each class's share below it) and `preset`
+`class_augment`: `min_r2` and each class's share below it; with C7 `flux_rescale`: each
+class's share of failed PSF fits) and `preset`
 (`presets.preset_report`: `name`, `faithful`, `deviations`, `diagnostics`). A resumed
 `carrasco2021` run is exact: the data stream is a function of the step, and the horizon
 and best weights come back from `last.ckpt`.
