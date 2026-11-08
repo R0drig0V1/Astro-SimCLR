@@ -32,17 +32,19 @@ first (A0) so that A1-A3 and 4.2 can build on them in parallel.
    means different runs under `linear-eval` and `fine-tune`.
 2. **The excluded keys are a coded list with a reason each** (`NON_SEMANTIC_KEYS`):
    `accelerator` (the device used is the machine class), `data_dir` (the content is the
-   data SHA-256), `output_dir`, `num_workers`, `checkpoint_every_n_steps` (writing a
-   checkpoint draws no random numbers) and `progress_bar_refresh_rate` (display only).
-   Every other field is semantic, including the ones a subcommand does not read (`encoder_name` of a supervised
+   data SHA-256), `output_dir`, `checkpoint_every_n_steps` (writing a checkpoint draws no
+   random numbers) and `progress_bar_refresh_rate` (display only). Every other field is
+   semantic, including the ones a subcommand does not read (`encoder_name` of a supervised
    run): an unclassified or unused key can only make two equal runs look different, never
    two different runs look equal.
-3. **`num_workers` is non-semantic, with a caveat.** On the legacy CPU-worker path,
-   Lightning seeds each DataLoader worker, so another worker count draws other
-   augmentations. That is a different draw of the same distribution, the same class of
-   difference as GPU non-determinism, so it gives a new attempt, not a new run. The
-   `carrasco2021` schedule (every phase-2 and 2.5 run) requires 0, so the question does not
-   arise there, and the manifest records the value.
+3. **`num_workers` is semantic whenever it is not 0.** On the legacy CPU-worker path,
+   Lightning seeds each DataLoader worker, so the worker count decides which augmentations
+   are drawn: 0, 2 and 3 workers are three different runs. A false run-id match would let
+   the registry take one for a repeat attempt of the other and contaminate a comparison;
+   a missed match only costs a rerun. At 0 the key is hash-neutral (`HASH_NEUTRAL_DEFAULTS`,
+   rule 9): 0 is the default and what the `carrasco2021` schedule requires, so the phase-2
+   and 2.5 hashes are the ones they would have without the field. (A first draft classed it
+   non-semantic, as a speed setting; review of PR #36 reversed it.)
 4. **Identity keys are hashed in the run id, not in the config hash** (`IDENTITY_KEYS`):
    `seed`, so that the seeds of one arm share a config hash, and `pretrained`, a path whose
    content, not its location, is what matters.
@@ -72,9 +74,10 @@ first (A0) so that A1-A3 and 4.2 can build on them in parallel.
    change in `uv.lock`, or a pixel moved by the data pipeline. A new flag whose default
    reproduces the old behaviour does not bump it, and neither does a bit-exact refactor.
    The PR template asks every PR.
-9. **Keeping hashes stable as `Settings` grows.** A field added later, whose default
-   reproduces the old behaviour, goes in `HASH_NEUTRAL_DEFAULTS` with that value, and is
-   left out of the canonical form at it. Old hashes (and old manifests) stay valid. Any
+9. **Keeping hashes stable as `Settings` grows.** `HASH_NEUTRAL_DEFAULTS` maps semantic
+   fields to a value at which they are left out of the canonical form: `num_workers: 0`
+   (rule 3), and every field added later whose default reproduces the old behaviour, at
+   that default. Old hashes (and old manifests) stay valid. Any
    other change of the canonical form moves the pinned fixture hashes and fails a test.
    It must then regenerate the fixture and say so in its PR; a change of the rules bumps
    `CANONICAL_VERSION`.
@@ -126,5 +129,7 @@ first (A0) so that A1-A3 and 4.2 can build on them in parallel.
   the directories, can add the check.
 - The run directory name uses 64 bits of the id, so a collision is negligible at this
   scale, and the manifest holds the full id for verification.
-- Revisit `num_workers` if a worker-dependent result ever has to be reproduced exactly
-  (the plain engine's data tiers draw on the device, without workers).
+- Runs that differ only in a non-zero `num_workers` never share a run id, even when the
+  augmentation is deterministic (`center_crop`) and the worker count therefore changes
+  nothing. The cost is a rerun, accepted for the safe direction. The plain engine's data
+  tiers draw on the device, without workers, so the key stops mattering there.

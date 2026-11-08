@@ -28,6 +28,7 @@ from astro_simclr.runs.canonical import (
     semantic_config_from_plain,
     semantic_diff,
 )
+from astro_simclr.runs.identity import run_identity
 
 FIELDS = {field.name for field in dataclasses.fields(Settings)}
 CONFIGS = Path(__file__).parents[1] / "configs" / "phase2"
@@ -124,7 +125,6 @@ def test_excluded_keys_are_settings_fields_with_a_reason() -> None:
         "accelerator",
         "data_dir",
         "output_dir",
-        "num_workers",
         "progress_bar_refresh_rate",
         "checkpoint_every_n_steps",
     }
@@ -143,7 +143,11 @@ def test_semantic_config_holds_every_other_field() -> None:
     assert semantic["command"] == "train-supervised"
     settings = semantic["settings"]
     assert isinstance(settings, dict)
-    assert set(settings) == FIELDS - set(NON_SEMANTIC_KEYS) - set(IDENTITY_KEYS)
+    # num_workers is semantic, but left out at its hash-neutral 0.
+    assert set(settings) == FIELDS - set(NON_SEMANTIC_KEYS) - set(IDENTITY_KEYS) - {"num_workers"}
+    with_workers = semantic_config("train-supervised", Settings(num_workers=2))["settings"]
+    assert isinstance(with_workers, dict)
+    assert with_workers["num_workers"] == 2
 
 
 @pytest.mark.parametrize(
@@ -152,7 +156,6 @@ def test_semantic_config_holds_every_other_field() -> None:
         {"accelerator": "cpu"},
         {"data_dir": "/elsewhere/dataset"},
         {"output_dir": "elsewhere/run"},
-        {"num_workers": 4},
         {"progress_bar_refresh_rate": 0},
         {"checkpoint_every_n_steps": 2_000},
         {"seed": 7},
@@ -162,8 +165,6 @@ def test_semantic_config_holds_every_other_field() -> None:
 def test_excluded_keys_do_not_move_the_hash(changes: dict[str, object]) -> None:
     for name in ("carrasco2021", "train-supervised-legacy"):
         command, settings = case_settings(name)
-        if "num_workers" in changes and settings.schedule == "carrasco2021":
-            continue  # the schedule requires 0
         assert config_sha256(command, settings.replace(**changes)) == config_sha256(
             command, settings
         )
@@ -188,6 +189,36 @@ def test_every_semantic_key_moves_the_hash(key: str) -> None:
     changed = {**plain, key: _other(plain[key])}
     base = config_sha256_of(semantic_config_from_plain("train-supervised", plain))
     assert config_sha256_of(semantic_config_from_plain("train-supervised", changed)) != base
+
+
+@pytest.mark.parametrize(
+    ("workers_a", "workers_b", "same"), [(0, 0, True), (0, 2, False), (2, 3, False)]
+)
+def test_num_workers_is_semantic_except_at_zero(workers_a: int, workers_b: int, same: bool) -> None:
+    # Per-worker seeding: the worker count decides the augmentation draws (legacy path).
+    command, settings = case_settings("train-supervised-legacy")
+
+    def run_id(workers: int) -> str:
+        identity = run_identity(
+            command,
+            settings.replace(num_workers=workers),
+            data_sha256="d" * 64,
+            machine_class="cpu-arm64",
+            engine="lightning",
+        )
+        return identity.run_id
+
+    assert (run_id(workers_a) == run_id(workers_b)) is same
+
+
+def test_num_workers_zero_keeps_the_pinned_hashes() -> None:
+    # 0 is hash-neutral: the hash is the one the config would have without the field.
+    command, settings = case_settings("carrasco2021")
+    plain = settings_to_plain(settings)
+    del plain["num_workers"]
+    without = semantic_config_from_plain(command, plain, complete=False)
+    pinned = _fixture()["configs"]["carrasco2021"]["config_sha256"]
+    assert config_sha256(command, settings) == config_sha256_of(without) == pinned
 
 
 def test_the_command_moves_the_hash() -> None:
@@ -223,7 +254,9 @@ def test_hash_neutral_defaults_are_left_out_at_their_value(
 ) -> None:
     # A field added after version 1 with a neutral default keeps old hashes valid.
     old = config_sha256("train-supervised", Settings())
-    monkeypatch.setattr(canonical, "HASH_NEUTRAL_DEFAULTS", {"rot90_augment": False})
+    monkeypatch.setattr(
+        canonical, "HASH_NEUTRAL_DEFAULTS", {**HASH_NEUTRAL_DEFAULTS, "rot90_augment": False}
+    )
     assert config_sha256("train-supervised", Settings()) != old  # rot90_augment left out
     plain = settings_to_plain(Settings())
     del plain["rot90_augment"]

@@ -23,7 +23,8 @@ without
 - :data:`IDENTITY_KEYS`: keys that are semantic but are their own components of the run
   id (:mod:`astro_simclr.runs.identity`), so that the seeds of one arm share one config
   hash;
-- the keys of :data:`HASH_NEUTRAL_DEFAULTS` that hold their neutral value.
+- the keys of :data:`HASH_NEUTRAL_DEFAULTS` that hold their neutral value
+  (``num_workers: 0``, and fields added after version 1 at their old behaviour).
 
 Every other ``Settings`` field is semantic, so a new field is hashed by default: that is
 the safe direction (a field nobody classified can only make two equal runs look different,
@@ -95,12 +96,6 @@ NON_SEMANTIC_KEYS: Final[Mapping[str, str]] = {
         "dataset name, which selects the label fraction, stays semantic)"
     ),
     "output_dir": "where the run writes its outputs",
-    "num_workers": (
-        "DataLoader processes, a speed setting: the carrasco2021 schedule requires 0 (the "
-        "data is device-resident); on the legacy CPU-worker path it changes which worker "
-        "draws which augmentation (per-worker seeding), a different draw of the same "
-        "distribution, treated like GPU non-determinism: a new attempt, not a new run"
-    ),
     "progress_bar_refresh_rate": (
         "how often the terminal progress bar is redrawn: display only, it touches no tensor"
     ),
@@ -123,11 +118,17 @@ IDENTITY_KEYS: Final[Mapping[str, str]] = {
     ),
 }
 
-#: Settings fields added after canonical version 1, each with the value that reproduces
-#: the behaviour before it. At that value the field is left out of the canonical form, so
-#: the hashes of existing configs (and of the manifests that recorded them) do not move.
-#: Empty in version 1: every field that existed then is materialised.
-HASH_NEUTRAL_DEFAULTS: Final[Mapping[str, object]] = {}
+#: Semantic settings left out of the canonical form at one value, so that the configs that
+#: hold it keep the hash they would have without the field. Two uses:
+#:
+#: - a field added after canonical version 1, at the value that reproduces the behaviour
+#:   before it (none yet), so existing hashes and recorded manifests stay valid;
+#: - ``num_workers`` at 0. With DataLoader workers, Lightning seeds each worker, so the
+#:   worker count decides which augmentations are drawn: 0, 2 and 3 workers are three
+#:   different runs, and a false run-id match would contaminate a comparison, while a
+#:   missed one only costs a rerun. At 0 (the default, and what the carrasco2021 schedule
+#:   requires) it is left out, so the phase-2 and 2.5 hashes do not depend on the field.
+HASH_NEUTRAL_DEFAULTS: Final[Mapping[str, object]] = {"num_workers": 0}
 
 _EXCLUDED: Final = frozenset(NON_SEMANTIC_KEYS) | frozenset(IDENTITY_KEYS)
 

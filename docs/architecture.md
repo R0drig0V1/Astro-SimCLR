@@ -1534,12 +1534,12 @@ yet: A1 wires it into `run_command`.
   NaN and infinity. `semantic_config(command, settings)` returns
   `{"canonical_version": 1, "command", "settings"}`: the resolved settings (defaults
   materialised) without `NON_SEMANTIC_KEYS` (`accelerator`, `data_dir`, `output_dir`,
-  `num_workers`, `progress_bar_refresh_rate`, `checkpoint_every_n_steps`, each with its reason
-  in the code) and
-  `IDENTITY_KEYS` (`seed`, `pretrained`, which are run-id components). `config_sha256` is
-  its SHA-256.
-  - `HASH_NEUTRAL_DEFAULTS` (empty in version 1) holds fields added later at the value that
-    keeps old hashes.
+  `progress_bar_refresh_rate`, `checkpoint_every_n_steps`, each with its reason in the code)
+  and `IDENTITY_KEYS` (`seed`, `pretrained`, which are run-id components). `config_sha256`
+  is its SHA-256.
+  - `HASH_NEUTRAL_DEFAULTS` leaves semantic fields out at one value: `num_workers: 0`
+    (with workers, per-worker seeding changes the augmentation draws, so any other count is
+    hashed), and fields added later at the value that keeps old hashes.
   - `semantic_config_from_plain(command, view, complete=True)` and `semantic_diff` are the
     hook of the nested config (4.2): lower to the flat view, then compare hashes.
   - The pinned hashes of the `carrasco2021` presets, of eight 2.5 variants and of the two

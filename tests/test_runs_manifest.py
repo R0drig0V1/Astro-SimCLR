@@ -158,7 +158,8 @@ def test_an_older_manifest_reads_after_a_hash_neutral_field(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Written before `rot90_augment` existed (simulated): its hash must still check out.
-    monkeypatch.setattr(canonical, "HASH_NEUTRAL_DEFAULTS", {"rot90_augment": False})
+    neutral = {**canonical.HASH_NEUTRAL_DEFAULTS, "rot90_augment": False}
+    monkeypatch.setattr(canonical, "HASH_NEUTRAL_DEFAULTS", neutral)
     manifest = _finished()
     data = manifest.to_plain()
     config = dict(manifest.config)
