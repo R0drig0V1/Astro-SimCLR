@@ -150,9 +150,11 @@ result, and the user asked whether the difference would be computed or augmented
    device's. A seeded torch generator on the device was rejected: CUDA's Philox stream
    differs from the CPU's, so the draws would depend on the device. The in-step path
    (`augmented_batch`) remains for direct calls and as the reference of the equivalence
-   tests (`tests/test_augment_prefetch.py`: the loader's planned batches equal it, and a
-   short augmented run gives the same `metrics.json`, timing aside, and the same
-   predictions on CPU and MPS; checked against the pre-prefetch code as well).
+   tests (`tests/test_augment_prefetch.py`: the loader's planned batches equal it over 200
+   steps with every flag on, and a short augmented run gives the same `metrics.json`,
+   timing aside, and the same predictions on CPU and MPS). Checked against the
+   pre-prefetch code as well: 200 CPU steps with every flag on, `torch.equal` on every
+   tensor, and the same short run's `metrics.json` on CPU and MPS.
 
 ## Consequences
 

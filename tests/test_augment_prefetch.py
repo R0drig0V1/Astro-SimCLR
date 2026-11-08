@@ -5,7 +5,8 @@ The training loader plans each step's augmentation on the host
 applies it (``apply_plan``). The contract: bit for bit the in-step path, on every device.
 
 1. ``upload_plan`` moves nested plans.
-2. The loader's planned batches equal the in-step augmentation.
+2. The loader's planned batches equal the in-step augmentation (one pass in detail, then
+   200 steps across passes with every flag on).
 3. A short augmented run gives the same ``metrics.json`` (timing aside) and the same
    predictions with the prefetch as without it, on every available accelerator.
 """
@@ -29,6 +30,7 @@ from astro_simclr.protocol.predictions import load_predictions
 from astro_simclr.training.class_augment import stamp_fits, upload_plan
 from astro_simclr.training.device_data import DeviceTensorDataModule, TensorSplit
 from astro_simclr.training.flux_rescale import fit_central_psf
+from astro_simclr.training.modules import PaperClassifierModule
 
 #: Every training augmentation at once (R^2 0 so that the random synthetic stamps qualify).
 _ALL: dict[str, Any] = {
@@ -111,6 +113,33 @@ def test_the_loader_plans_each_step_exactly_as_the_step_would() -> None:
     module.eval()
     loss = module.training_step(batches[0], 0)
     torch.testing.assert_close(loss, module.compute_loss(module(*in_step[:2]), in_step[2]))
+
+
+def test_200_planned_steps_equal_the_in_step_augmentation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The loader's real iteration, epoch after epoch, against ``augmented_batch`` at that step."""
+    current = [0]
+    # No Trainer: the module's and the loader's global step both read this counter.
+    monkeypatch.setattr(PaperClassifierModule, "global_step", property(lambda _: current[0]))
+    monkeypatch.setattr(DeviceTensorDataModule, "_global_step", lambda _: current[0])
+    torch.manual_seed(0)
+    module = paper_module(settings_from_mapping({**PRESETS[CARRASCO2021_PRESET], **_ALL}))
+    data = DeviceTensorDataModule(_splits(n=100), batch_size=16, planner=module.augment_plan)
+    data.setup("fit")
+    loader = data.train_dataloader()
+    steps = 200
+    while current[0] < steps:
+        for batch in loader:  # each epoch starts at the current step
+            plan = batch[-1]
+            assert isinstance(plan, dict)
+            planned = module.apply_plan(batch[:-1], plan)
+            in_step = module.augmented_batch(tuple(batch[:-1]))
+            for got, want in zip(planned, in_step, strict=True):
+                assert torch.equal(got, want)
+            current[0] += 1
+            if current[0] == steps:
+                break
 
 
 def test_a_run_without_augmentation_gets_no_planner() -> None:
