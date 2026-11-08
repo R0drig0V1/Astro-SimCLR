@@ -8,7 +8,9 @@ the checkpoint monitor, the eval batch size). Here they are one frozen dataclass
 The fields are flat, so that any of them can be overridden with ``--set key=value``. Besides
 the hardware, paths and protocol, they hold the hyperparameters of the four training
 subcommands (task 1.7); each subcommand reads the fields it needs, and the others are
-recorded but unused (``docs/architecture.md``, section ``config``, lists which).
+recorded but unused (``docs/architecture.md``, section ``config``, lists which). The
+``schedule`` field (task 2.2a) chooses between the legacy epoch protocol and the iteration
+schedule of Carrasco-Davis et al. 2021, whose own fields it validates.
 
 Resolution order (later wins): the dataclass defaults, an optional ``defaults`` mapping (a
 subcommand's legacy protocol), the YAML file, the overrides. YAML is read with
@@ -24,12 +26,16 @@ import types
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Union, get_args, get_origin, get_type_hints
+from typing import Any, Final, Union, get_args, get_origin, get_type_hints
 
 import yaml
 
 __all__ = [
     "ACCELERATORS",
+    "CARRASCO2021",
+    "CARRASCO2021_EVAL_BATCH_SIZE",
+    "EPOCHS",
+    "SCHEDULES",
     "ConfigError",
     "Settings",
     "load_settings",
@@ -38,6 +44,15 @@ __all__ = [
     "settings_from_mapping",
     "settings_to_plain",
 ]
+
+#: ``Settings.schedule`` of the legacy epoch protocol.
+EPOCHS: Final = "epochs"
+#: ``Settings.schedule`` of the Carrasco-Davis et al. 2021 iteration protocol (task 2.2a).
+CARRASCO2021: Final = "carrasco2021"
+#: The accepted ``Settings.schedule`` values.
+SCHEDULES: Final = (EPOCHS, CARRASCO2021)
+#: The evaluation batch the ``carrasco2021`` schedule requires (TF's batch of 64).
+CARRASCO2021_EVAL_BATCH_SIZE: Final = 64
 
 #: Accelerator names accepted by ``Settings.accelerator`` (the Lightning names this project
 #: supports). ``auto`` picks CUDA, then MPS, then CPU.
@@ -136,6 +151,28 @@ class Settings:
     pretrained: Path | None = None
     #: ``fine-tune`` trains with ``lr * fine_tune_lr_factor`` (legacy ``fine_tuning.py``: 0.2).
     fine_tune_lr_factor: float = 0.2
+    #: ``paper_stamp_classifier``: apply its dropout layers (rate ``drop_rate``). False is
+    #: faithful: M1 trained with its dropout inactive (task 2.2a).
+    dropout_active: bool = False
+
+    # --- Training schedule (task 2.2a) ------------------------------------------------------
+
+    #: ``epochs`` (the legacy schedule: ``max_epochs``, EarlyStopping, best by epoch) or
+    #: ``carrasco2021`` (ALeRCE's: steps, validation every ``val_every_n_steps``, the horizon
+    #: rule; ``training.schedule``). See :data:`SCHEDULES`.
+    schedule: str = "epochs"
+    #: ``carrasco2021``: the initial horizon, in optimizer steps (the Trainer's ``max_steps``).
+    max_steps: int = 30_000
+    #: ``carrasco2021``: validate (and select) every this many optimizer steps.
+    val_every_n_steps: int = 10
+    #: ``carrasco2021``: a new best at step ``s`` raises the horizon to ``s + horizon_increment``.
+    horizon_increment: int = 10_000
+    #: ``carrasco2021``: write ``last.ckpt`` (what ``--resume`` continues from) after the
+    #: validation of every this many optimizer steps (a multiple of ``val_every_n_steps``).
+    checkpoint_every_n_steps: int = 1_000
+    #: ``epochs``: stop early with EarlyStopping (``patience``, ``min_delta``). The
+    #: ``carrasco2021`` schedule has none and requires false.
+    early_stopping: bool = True
 
     def __post_init__(self) -> None:
         """Check the values that a type alone cannot (ranges and names).
@@ -160,6 +197,7 @@ class Settings:
             if not getattr(self, name):
                 raise ConfigError(f"{name} must not be empty")
         self._check_hyperparameters()
+        self._check_schedule()
 
     def _check_hyperparameters(self) -> None:
         for name in ("image_size", "batch_size", "projection_dim"):
@@ -174,6 +212,40 @@ class Settings:
             value = getattr(self, name)
             if value is not None and not value > 0:
                 raise ConfigError(f"{name} must be > 0, got {value}")
+
+    def _check_schedule(self) -> None:
+        if self.schedule not in SCHEDULES:
+            valid = ", ".join(SCHEDULES)
+            raise ConfigError(f"schedule {self.schedule!r} is not one of: {valid}")
+        for name in ("max_steps", "val_every_n_steps", "checkpoint_every_n_steps"):
+            if getattr(self, name) < 1:
+                raise ConfigError(f"{name} must be >= 1, got {getattr(self, name)}")
+        if self.horizon_increment < 0:
+            raise ConfigError(f"horizon_increment must be >= 0, got {self.horizon_increment}")
+        if self.schedule != CARRASCO2021:
+            return
+        # The schedule's definitions, which a setting must not silently change.
+        if self.eval_batch_size != CARRASCO2021_EVAL_BATCH_SIZE:
+            msg = (
+                f"schedule {CARRASCO2021} needs eval_batch_size={CARRASCO2021_EVAL_BATCH_SIZE} "
+                "(its selection loss is the mean of batch-64 means), got "
+                f"{self.eval_batch_size}"
+            )
+            raise ConfigError(msg)
+        if self.early_stopping:
+            msg = f"schedule {CARRASCO2021} has no EarlyStopping: set early_stopping=false"
+            raise ConfigError(msg)
+        if self.num_workers != 0:
+            msg = f"schedule {CARRASCO2021} keeps the data on the device: set num_workers=0"
+            raise ConfigError(msg)
+        if self.checkpoint_every_n_steps % self.val_every_n_steps != 0:
+            # last.ckpt is written after a validation (training.schedule.HorizonCallback).
+            msg = (
+                f"schedule {CARRASCO2021} writes last.ckpt after a validation: "
+                f"checkpoint_every_n_steps ({self.checkpoint_every_n_steps}) must be a "
+                f"multiple of val_every_n_steps ({self.val_every_n_steps})"
+            )
+            raise ConfigError(msg)
 
     def replace(self, **changes: Any) -> Settings:
         """Return a copy with ``changes`` applied, validated like :func:`settings_from_mapping`.

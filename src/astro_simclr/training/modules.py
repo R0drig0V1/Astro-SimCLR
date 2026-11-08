@@ -9,6 +9,7 @@ Ports of the legacy ``utils/training.py`` (PyTorch Lightning 1.4):
 | :class:`FineTuneModule` | ``Fine_tuning`` | the pretrained encoder and a new head |
 | :class:`SupervisedCEModule` | ``Supervised_Cross_Entropy`` | ``StampClassifier`` from scratch |
 | :class:`SupervisedCEResNetModule` | ``Supervised_Cross_Entropy_Resnet`` | a ResNet + linear head |
+| :class:`PaperClassifierModule` | (new, task 2.2a) | ``PaperStampClassifier`` from scratch |
 
 What changed for Lightning 2 (the arithmetic of every step is the legacy one):
 
@@ -52,6 +53,7 @@ from astro_simclr.models import (
     build_encoder,
 )
 from astro_simclr.optim import cosine_warmup_scheduler
+from astro_simclr.paper_model import PAPER_DROP_RATE, PaperStampClassifier
 from astro_simclr.training.metrics import METRIC_NAMES, classification_metrics, confusion_matrix
 from astro_simclr.training.optimizers import build_optimizer, check_optimizer_name
 
@@ -60,6 +62,7 @@ __all__ = [
     "EncoderClassifier",
     "FineTuneModule",
     "LinearEvalModule",
+    "PaperClassifierModule",
     "SimCLRModule",
     "SupervisedCEModule",
     "SupervisedCEResNetModule",
@@ -267,6 +270,38 @@ class SupervisedCEModule(ClassifierModule):
 
     def forward(self, x_img: torch.Tensor, x_feat: torch.Tensor) -> torch.Tensor:
         """Images and features -> (B, 5) logits."""
+        out: torch.Tensor = self.model(x_img, x_feat if self.with_features else None)
+        return out
+
+
+class PaperClassifierModule(ClassifierModule):
+    """The paper-faithful stamp classifier, ``paper_model.PaperStampClassifier`` (task 2.2a).
+
+    Trained from scratch with ``P_stamps_loss(beta_loss)`` on 21x21 crops (the batches of
+    ``device_data.DeviceTensorDataModule``). ``dropout_active=False`` is M1's training
+    (dropout layers present but inactive); ``drop_rate`` is their rate when active.
+    """
+
+    def __init__(
+        self,
+        *,
+        beta_loss: float,
+        lr: float,
+        optimizer: str,
+        with_features: bool = True,
+        dropout_active: bool = False,
+        drop_rate: float = PAPER_DROP_RATE,
+    ) -> None:
+        super().__init__(
+            beta_loss=beta_loss, lr=lr, optimizer=optimizer, with_features=with_features
+        )
+        self.model = PaperStampClassifier(
+            with_features=with_features, dropout_active=dropout_active, drop_rate=drop_rate
+        )
+        self.save_hyperparameters()
+
+    def forward(self, x_img: torch.Tensor, x_feat: torch.Tensor) -> torch.Tensor:
+        """Crops (B, 3, 21, 21) and features -> (B, 5) logits."""
         out: torch.Tensor = self.model(x_img, x_feat if self.with_features else None)
         return out
 
