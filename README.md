@@ -52,7 +52,7 @@ checkout of the tag.
 ## Development
 
 Requires [uv](https://docs.astral.sh/uv/). uv installs the Python of `.python-version`
-(3.12) and the exact tool versions of `uv.lock`.
+(3.13) and the exact tool versions of `uv.lock`.
 
 ```bash
 uv sync --locked             # create .venv with the project and its dev tools

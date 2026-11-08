@@ -801,7 +801,10 @@ memory-mapped:
   with `torch.load(weights_only=True)` (tested).
 - With `num_workers > 0` and the `spawn` start method (macOS), each worker gets a pickled
   copy of the dataset, and a pickled memory map is a full in-memory copy of the split;
-  under `fork` (Linux) the map is shared. To revisit before R3 runs on macOS.
+  under `fork` (Linux) the map is shared. To revisit before R3 runs on macOS. `fork` is
+  the Linux default only up to Python 3.13 (the project's version): 3.14 switches it to
+  `forkserver`, which pickles like `spawn`, so R1-R4 (`num_workers: 4`) would copy the
+  split into every worker. A move to 3.14 sets `multiprocessing_context` explicitly first.
 
 **Run helpers** (`runs.py`):
 
