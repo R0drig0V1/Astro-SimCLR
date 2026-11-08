@@ -127,6 +127,7 @@ from astro_simclr.tasks.common import (
 from astro_simclr.tasks.common import check_names as _check_names
 from astro_simclr.tasks.common import check_schedule as _check_schedule
 from astro_simclr.tasks.common import check_split as _check_split
+from astro_simclr.tasks.common import refuse_rj23 as _refuse_rj23
 from astro_simclr.tasks.paper import load_backbone, paper_inputs
 from astro_simclr.tasks.results import StageOutput, classifier_results, data_info
 from astro_simclr.tasks.results import finite as _finite
@@ -167,6 +168,7 @@ __all__ = [
     "check_accelerator",
     "dataset_path",
     "load_pretrained",
+    "machine_record",
     "paper_module",
     "pretrained_checkpoint",
     "resolve_resume",
@@ -448,7 +450,7 @@ def _scalar(value: torch.Tensor | float | None) -> float | None:
     return float(value)
 
 
-def _machine(trainer: L.Trainer) -> dict[str, Any]:
+def machine_record(trainer: L.Trainer) -> dict[str, Any]:
     """The machine and build a run used (task 2.3: one comparison never mixes them).
 
     The device is the one Lightning chose (``trainer.strategy.root_device``); no device is
@@ -508,7 +510,7 @@ def _base_metrics(
             "lightning": L.__version__,
         },
         "accelerator": type(trainer.accelerator).__name__,
-        "machine": _machine(trainer),
+        "machine": machine_record(trainer),
         "data": data_info(data),
         "config": settings_to_plain(settings),
     }
@@ -686,7 +688,8 @@ def run_command(
         AcceleratorError: if the accelerator is not available.
         ConfigError: on an invalid name (augmentation, model, monitor), a missing or wrong
             pretrained checkpoint, a missing ``--resume`` checkpoint, or a ``carrasco2021``
-            schedule with another command or model (and the paper model without it); with
+            schedule with another command or model (and the paper model without it), or
+            the ``rj23`` schedule (``training.rj23.run_rj23`` runs it); with
             ``split``, another command or schedule, or a fold the file does not have; a
             ``carrasco2021`` resume from a checkpoint of another split run (splits file,
             mode or fold), or across a split run and a normal run.
@@ -695,6 +698,7 @@ def run_command(
             a splits file that is malformed or does not belong to the prepared data
             (``SplitsError``).
     """
+    _refuse_rj23(settings)
     check_accelerator(settings.accelerator)
     _check_names(settings)
     # Before any module is built (ADR 0010): torch's default would run TF32 convolutions.
@@ -731,7 +735,7 @@ def run_command(
         command,
         settings,
         data=data,
-        machine=_machine(trainer),
+        machine=machine_record(trainer),
         split=split,
         pretrained_file=pretrained_checkpoint(settings.pretrained),
         resumed=ckpt_path is not None,

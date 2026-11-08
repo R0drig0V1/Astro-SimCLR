@@ -41,5 +41,17 @@ The phase-3 benchmarks (task 3.2 of ``docs/phases/03-newer-benchmarks.md``; the 
   predictions (``stats.paired_bootstrap_macro_f1`` and ``stats.minimum_detectable_effect``
   are its statistics).
 
-Nothing here imports torch, so the CLI commands that use it stay fast.
+Phase 5's evaluation (task 5.4 of ``docs/phases/05-self-supervised.md``; the section "Phase
+5 label budgets" of ``docs/evaluation-protocol.md``):
+
+- :mod:`~astro_simclr.protocol.label_budgets`: the stored label-budget subsets (labelled
+  objects per class, nested, repeated, with a selection set) of every CV fold's training
+  part or of R5 Train, verified against the parent splits and the data;
+- :mod:`~astro_simclr.protocol.budget_parser`: ``make-label-budgets`` and
+  ``verify-label-budgets``;
+- :mod:`~astro_simclr.protocol.probe`: the frozen-feature logistic-regression probe, one
+  per subset (``stats.hierarchical_paired_bootstrap`` compares two arms).
+
+Nothing here imports torch except :mod:`~astro_simclr.protocol.probe`, which no CLI command
+imports, so the CLI commands that use the package stay fast.
 """

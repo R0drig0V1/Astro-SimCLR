@@ -41,7 +41,8 @@ __all__ = ["RESERVED_STREAMS", "device_generator", "host_generator", "seed_every
 #: the per-sample view parameters (host), ``simclr_view_noise`` the views' per-pixel noise
 #: fields (device), ``simclr_batch_order`` the permutation of each pass over the stamps (its
 #: second word is the pass, not the step) and ``simclr_diagnostics`` the fixed diagnostic
-#: sample and views (second word 0).
+#: sample and views (second word 0). ``rj23_class_uniform`` is the batch draw of
+#: ``rj23_regime.ClassUniformStream`` (``[seed, step, 10]``, task 3.4b).
 RESERVED_STREAMS: Final = MappingProxyType(
     {
         "aug_noise": 1,
@@ -53,6 +54,9 @@ RESERVED_STREAMS: Final = MappingProxyType(
         "simclr_view_noise": 7,
         "simclr_batch_order": 8,
         "simclr_diagnostics": 9,
+        # rj23_regime.ClassUniformStream (task 3.4b): the classes and items of each batch.
+        # Two streams on one number would draw correlated numbers.
+        "rj23_class_uniform": 10,
     }
 )
 

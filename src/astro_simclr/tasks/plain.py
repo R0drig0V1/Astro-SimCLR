@@ -77,6 +77,7 @@ from astro_simclr.tasks.common import (
     check_schedule,
     check_split,
     dataset_path,
+    refuse_rj23,
 )
 from astro_simclr.tasks.paper import build_paper_task, check_paper_task, paper_inputs
 from astro_simclr.tasks.results import StageOutput, classifier_results, data_info, finite
@@ -300,6 +301,7 @@ def run_plain(
         DataError: if the dataset is missing or invalid, has no float32 stamps, a splits
             file does not belong to it, or a checkpoint is of another stream.
     """
+    refuse_rj23(settings)
     check_accelerator(settings.accelerator)
     check_names(settings)
     _check_plain(command, settings)

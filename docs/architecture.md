@@ -20,7 +20,7 @@ the same legacy files. The notebooks in `jupyter_examples/` import the legacy co
 them from a checkout of the tag.
 
 ```
-cli ──► config, hparams (subcommand defaults, legacy key mapping), presets (carrasco2021)
+cli ──► config, hparams (subcommand defaults, legacy key mapping), presets (carrasco2021, rj23-*)
  │
  ├──► data ──────► augmentations (protocol)      registry of transforms (1.5)
  │                                    ▲
@@ -43,7 +43,10 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  └──► simclr (phase 5, 5.0b: the SimCLR pilot; imports no Lightning) ──► engine.randomness,
       optim (LARS), losses (NT_Xent), stamp_relation, protocol (splits, stats), data
 
-rj23_model (engine-free nn.Modules, not wired yet: task 3.4b) ──► data.rj23_input
+cli train-supervised --preset rj23-* ──► training.rj23 (thin Lightning adapters, task 3.4b)
+   ──► rj23_regime (schedule policy, class-uniform sampler, Keras Adam: engine-free)
+   ──► rj23_data (parts from a raw-alerts layout + object splits) ──► data.rj23_input, protocol
+   ──► rj23_model (engine-free nn.Modules) ──► data.rj23_input
 ```
 
 Conventions shared by every module:
@@ -135,6 +138,22 @@ of one run.
   `eval_batch_size` must be 64 (the selection loss is TF's mean of batch-64 means),
   `early_stopping` false and `num_workers` 0 (`ConfigError` otherwise). The
   `carrasco2021` preset (task 2.2c, see `presets`) sets them.
+- **Task 3.4b fields** (the `rj23` schedule; see `training`, "The rj23 schedule"; ADR 0023).
+  `schedule: rj23` reuses `max_steps` (the hard cap), `val_every_n_steps` (the validation
+  interval, step 0 included) and `patience` (in validations), and adds:
+
+  | Field | Default | Meaning |
+  |---|---|---|
+  | `rj23_scenario` | `full` | the input and its Table 2 classifier: `full`, `cropped`, `lowres`, `multiscale` (`RJ23_SCENARIOS`) |
+  | `rj23_bn_position` | `after_concat` | ADR 0013's BN placement; `before_concat` is the sensitivity arm |
+  | `rj23_keep` | `stop` | whose predictions are primary: the weights at the stop (RJ23's) or the best validation's; both are written |
+  | `rj23_large_values` | `paper` | `rj23_input.normalise(large_values=...)` (ADR 0009) |
+
+  Under `rj23`, `supervised_model: rj23`, `with_features: false`, `monitor: macro_f1_val`,
+  `early_stopping: false`, `num_workers: 0`, `patience >= 1`, and `max_steps` and
+  `checkpoint_every_n_steps` multiples of `val_every_n_steps` are required; the `rj23_*`
+  fields changed, or `supervised_model: rj23`, under another schedule are errors
+  (`ConfigError`). The `rj23-<scenario>` presets set them.
 - **Task 2.2c fields** (read by `paper_stamp_classifier` only; ADR 0003):
 
   | Field | Default | Meaning |
@@ -196,6 +215,7 @@ the config hash is defined on, ADR 0015 rule 10), so it changes no numbers.
   | `model` | `stamp_classifier` | `drop_rate`, `beta_loss` |
   | | `resnet` | `name` (`supervised_model`: `resnet18/34/50/152`), `beta_loss` |
   | | `paper_stamp_classifier` | `arch` (`paper_arch`), `backbone_weights`, `group_fields`, `context`, `feature_set`, `input` (`paper_input`), `nan_approximation`, `exclude_leaked_train`, `dropout_active`, `drop_rate`, `beta_loss` |
+  | | `rj23` | `scenario` (`rj23_scenario`), `bn_position` (`rj23_bn_position`), `large_values` (`rj23_large_values`) (task 3.4b) |
   | | `simclr` | `encoder` (`encoder_name`), `projection_dim`, `temperature`, `legacy_denominator` (`nt_xent_legacy_denominator`) |
   | | `linear_eval` | `pretrained`, `beta_loss` |
   | | `fine_tune` | `pretrained`, `beta_loss`, `drop_rate`, `lr_factor` (`fine_tune_lr_factor`) |
@@ -204,8 +224,10 @@ the config hash is defined on, ADR 0015 rule 10), so it changes no numbers.
   | | `LARS` | `lr`, `legacy_trust_ratio` (`lars_legacy_trust_ratio`) |
   | `schedule` | `epochs` | `max_epochs`, `monitor`, `early_stopping`, `patience`, `min_delta`, `check_finite`, `divergence_threshold`, `limit_train_batches` |
   | | `carrasco2021` | `max_steps`, `val_every_n_steps`, `horizon_increment`, `checkpoint_every_n_steps`, `monitor`, `limit_train_batches` (lowers `early_stopping: false`) |
+  | | `rj23` | `max_steps` (the cap), `val_every_n_steps`, `patience`, `checkpoint_every_n_steps`, `monitor`, `keep` (`rj23_keep`) (lowers `early_stopping: false`; task 3.4b) |
   | `augment` | `transforms` | `name` (`augmentation`) |
   | | `paper` | `rot90` (`rot90_augment`), `noise` (`aug_noise`), `feature_jitter`, `synthetic_bogus`, `min_r2` (`aug_min_r2`), `flux_rescale`, `flux_k_min`, `flux_k_max` |
+  | | `none` | no fields: RJ23's model averages its own 8 rotation/flip views (task 3.4b) |
 
   - The model decides the command (`Config.command`). Every default is the default of the
     flat field (`Config()` lowers to `Settings()`). `runtime.engine` is `lightning` (the
@@ -213,7 +235,8 @@ the config hash is defined on, ADR 0015 rule 10), so it changes no numbers.
     `tasks.plain.run_plain`, the paper classifier on `carrasco2021` only); it is the run
     id's engine, not hashed.
   - A `Config` is valid by construction: the tags, `paper_stamp_classifier` ⇔
-    `carrasco2021` schedule ⇔ `paper` augmentation, then the lowered `Settings`' checks,
+    `carrasco2021` schedule ⇔ `paper` augmentation, `rj23` model ⇔ `rj23` schedule ⇔
+    `none` augmentation, then the lowered `Settings`' checks,
     with the flat names in their message mapped to nested paths
     (`eval_batch_size is eval.batch_size`).
   - `flat_view(config)` (every `Settings` field), `Config.to_settings()`,
@@ -225,7 +248,8 @@ the config hash is defined on, ADR 0015 rule 10), so it changes no numbers.
     shim). It refuses, naming the keys, when a flat field the chosen variants do not hold
     is not at its default.
 - **`presets`**: `PRESETS`, written out as `Config` objects: `carrasco2021`,
-  `carrasco2021-no-features` and `pretrain-legacy`, `linear-eval-legacy`,
+  `carrasco2021-no-features`, `rj23-full|cropped|lowres|multiscale` (task 3.4b) and
+  `pretrain-legacy`, `linear-eval-legacy`,
   `fine-tune-legacy`, `train-supervised-legacy` (`hparams.COMMAND_DEFAULTS`).
   `LEGACY_PRESETS` maps each command to its legacy preset.
 - **`resolve`**: `resolve_config(path, overrides, command=None)`. A nested file (section
@@ -241,7 +265,7 @@ the config hash is defined on, ADR 0015 rule 10), so it changes no numbers.
   `Settings` field has exactly one nested home.
 - `configs/runs/` holds nested configs (`carrasco2021.yaml`: the preset on `cuda`).
 
-## `cli` (task 1.1; subcommands from 1.2, 1.7, 3.1, 3.5 and A3; `run` from 4.2)
+## `cli` (task 1.1; subcommands from 1.2, 1.7, 3.1, 3.5, 5.1a and A3; `run` from 4.2)
 
 The `astro-simclr` console script (`[project.scripts]`). `main(argv)` returns the exit code,
 so tests call it in-process. Every subcommand registers in `build_parser()` and takes the
@@ -268,6 +292,11 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   PATH`; `train-supervised` also `--preset carrasco2021|carrasco2021-no-features` (task
   2.2c, see `presets`) and `--splits FILE --fold K | --screen` (task 2.5-infra, a split
   run; see `protocol`; `--fold`/`--screen` without `--splits`, or the reverse, exit 2).
+  With `--preset rj23-<scenario>` (or any `schedule: rj23`; task 3.4b) the run goes to
+  `training.rj23.run_rj23`: `--splits` is then the object-splits file of the `raw-alerts`
+  layout (required), `--screen` makes it a decision run, `--fold` is refused, and
+  `--alerts CSV` names the alert table the splits were drawn from (default: the layout's
+  own); `--alerts` outside `rj23` exits 2.
   Settings resolve as: `Settings` defaults → the subcommand's legacy
   protocol (`hparams.COMMAND_DEFAULTS`) → `--preset` → `--hparams` → `--config` → `--set` →
   the explicit flags
@@ -318,6 +347,17 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   `build-r5` exits 0 when written (and matching `--expect`), 1 when incomplete, refused
   offline, or different from `--expect`; a dry run exits 0 and prints the next round's
   request count. The same signal handling as `fetch-alerts`.
+- `ingest-archive TARBALL... --out DIR (--exclude FILE | --no-exclusions) [--night N]
+  [--no-oid-year] [--max-ndethist N] [--rows-per-file 4096] [--overwrite] [--quiet]`,
+  `archive-summary CORPUS_DIR [--verify] [--json]` and `plan-archive-nights [--seed 0]
+  [--labelled-per-year 24] [--later-per-year 8] [--spares 2] [--first D] [--last D]
+  [--stamps-per-night N] [--tarball-gb GB] [--download-hours H] [--measured DIR] [--out
+  FILE] [--json]` (task 5.1a, see `archive`).
+  - `-` as the only TARBALL reads one night from stdin and needs `--night`; `--night`
+    without `-`, or `-` beside files, exits 2.
+  - `ingest-archive` exits 0 when every night is done. A bad tarball name, an unreadable
+    tarball, other rules than `corpus.json`'s, or another file for a done night exit 1.
+  - `archive-summary --verify` loads and re-hashes every night: a bad one exits 1.
 - `preflight (--synthetic | --data-dir DIR) [--accelerator cuda] [--runs R1,R2,R3,R4]
   [--set ...]` (see `preflight`): exit 0 if no step failed, else 1.
   `scripts/gpu-preflight.sh` is a thin `uv run --no-sync` wrapper.
@@ -944,6 +984,64 @@ into training.
   `use_deterministic_algorithms`; eval logits and a training step on MPS and CUDA where
   present against the CPU.
 
+## `rj23_regime` and `rj23_data` (task 3.4b)
+
+The training regime of RJ23 as **engine-free** objects (the phase-4 rule from B0 on: no
+Lightning; the Lightning adapter is `training.rj23`, the plain engine of phase 4 adapts the
+same objects). ADR 0023 pins what the sources leave open.
+
+`src/astro_simclr/rj23_regime.py`:
+
+- `RJ23Schedule(eval_every=500, patience=5, max_steps=100_000, mode="max")`, the schedule
+  policy. `decide(step, history) -> RJ23Decision` is a pure function of the optimizer steps
+  done and the monitored values so far (`step // eval_every + 1` of them: validation `k`
+  is step `k·eval_every`, step 0 the initial weights). The decision: `validate` (the step
+  is on the grid), `stop`, `keep` (`{"best"}` at a new strict best, `"stop"` at the stop),
+  `reason` (`patience` or `cap`; `capped`), `best_step`, `best_value`, `wait`. Patience is
+  Keras' / Lightning's `EarlyStopping` with `min_delta=0`, counted in validations; NaN never
+  improves; `max_steps` must be a multiple of `eval_every`, so the cap step is validated,
+  and a stop there that patience did not cause is `cap`. A history that goes on past a
+  stop is an error.
+- `ClassUniformStream(labels, batch_size, seed, *, n_classes=None)`, RJ23's
+  `sample_from_datasets` with uniform weights: each item draws its class uniformly, then an
+  item of that class uniformly (with replacement). `batch(b)` uses
+  `engine.randomness.host_generator(seed, b, STREAM)` only (`STREAM` = 10,
+  `RESERVED_STREAMS["rj23_class_uniform"]`), so a batch is a pure function of `(seed, b)`
+  and a resume
+  at step `s` (the stored position) continues the stream exactly; `iterate(start)`,
+  `state()` (the definition a resume checks), `batches_per_pass` (`ceil(n / batch)`, the
+  logging epoch). Not CD21's tiling (`training.tiling`).
+- `KerasAdam(params, lr, betas=(0.9, 0.999), eps=1e-7)` and `keras_adam(params, lr)`:
+  Keras' update, `θ −= lr·sqrt(1 − β2^t)/(1 − β1^t) · m / (sqrt(v) + ε)`, ε added to the
+  uncorrected `sqrt(v)` (torch's `Adam` adds it to `sqrt(v̂)`).
+- `predict_probabilities(model, images, positions, batch_size)`: softmax in eval mode under
+  `no_grad`, in fixed batches, mode restored; float32 on the CPU.
+
+`src/astro_simclr/rj23_data.py`: `rj23_parts(data, splits, scenario, *, mode, table,
+large_values)` verifies the object splits (`protocol.object_splits`) against the alert table
+(default `protocol.alerts.alert_table_from_raw(data)`, grouped by `oid`; a CSV table for
+another group key), checks that every alert of a part is in the layout with the same label,
+and builds the parts of the protocol (`MODE_PARTS`):
+
+| Mode | Train on | Stop and select on | Evaluated (stage names) |
+|---|---|---|---|
+| `replication` (the paper protocol) | `Train` | the whole `Validation` | `Validation` (`val`), `Test` (`test`) |
+| `decision` (a phase-3 decision; `--screen`) | `Train` | the `selection` half | `selection`, `decision`; `Test` never read |
+
+Each `RJ23Part` holds the scenario's view `(N, C, H, W)` float32
+(`rj23_input.rj23_views` → `channels_first`), the unit-sphere position `(N, 3)`, the labels
+and the `candid`s (ascending).
+
+**Tested** (`tests/test_rj23_regime.py`, `tests/test_rj23_data.py`): the grid from step 0;
+the stop at patience on a strict improvement (an equal value is no improvement), the wait
+reset, NaN, `min` mode, purity, the cap flag (and patience at the cap step), refusals of an
+inconsistent history and bad values; the sampler's class shares (1/3 each on a 600/30/3
+split, within 5 sd of 51,200 draws), within-class uniformity, determinism and a resume from
+a stored position; Keras Adam against two hand-computed steps, against torch's placement
+(they differ by 6e-7 at step 1) and equal to torch's Adam with ε = 0; the parts of both
+modes for every scenario (shapes, counts, `candid` order), a CSV table, a label mismatch,
+an alert missing from the layout, splits of another table or of other classes.
+
 ## `oracle` (task 2.2b)
 
 `src/astro_simclr/oracle/`: the published model M1 of Carrasco-Davis et al. 2021 as a
@@ -1070,7 +1168,8 @@ prepared split ──targets (destandardise)──► fetch_row ──► Alerce
     record names differ from ZTF's). It checks `objectId`, `candid` and the required
     candidate fields and types, and keeps the scalar fields, non-finite floats as `null`.
   - The three cutouts are parsed by `fits.read_fits_image`, and CCD-edge ones repaired
-    with `repair_non_squared_stamp`.
+    with `repair_non_squared_stamp` (or refused with `CutoutShapeError` under
+    `repair=False`, the archive corpus; see `archive`).
 - `fits`: `gunzip` (a gzip stream with an output cap), and `read_fits_image`, a strict
   reader of one 2D `BITPIX -32/-64` image, at most 256 px per side, without scaling. It
   returns native float32 `(NAXIS2, NAXIS1)`, NaN kept, with no flip. It replaces a FITS
@@ -1178,6 +1277,97 @@ in its shards, and a fake service for the by-oid fetch). They cover:
 - the refusal of an incomplete snapshot;
 - `--expect`;
 - the CLI commands.
+
+## `archive` (phase 5, task 5.1a; ADR 0019)
+
+`src/astro_simclr/archive/`: the unlabelled pretraining corpus from the ZTF public alert
+archive. The rules, layout, commands and budget are in [`docs/data.md`](data.md),
+"Archive corpus"; the decisions in ADR 0019. Nothing in the package imports torch or opens
+a network connection.
+
+```
+tarball file or stdin ──► TarballStream ──Member──► parse_alert(repair=False) ──Alert──► _decide
+  (SHA-256, gzip cap,       (regular .avro            (alerts.parse: container,         │ invalid_values
+   tar stream mode,          members only,             schema and size checks,          │ first_detection_failure
+   member and count caps)    nothing extracted)        strict FITS)                     │ exclusions
+                                                                                         ▼
+           corpus.json (rules) ◄── check_corpus      NightWriter ──► nights/.N.partial ──rename──► nights/N
+                                                                                         │
+                                         corpus_index (one alert per oid, read-time exclusions) ◄──┘
+```
+
+- `stream`:
+  - `TarballStream(source, name=, max_member_bytes=1 MiB, max_decompressed_bytes=64 GiB,
+    max_members=5M)` takes a `Path` or a binary stream.
+  - The raw bytes pass through `_HashingReader` (SHA-256, byte count; drained to the end
+    so the hash covers the whole file), then `gzip.GzipFile`, then `_LimitedReader` (the
+    decompressed cap), then `tarfile.open(mode="r|")`.
+  - It yields `Member(position, name, data)` for regular `.avro` files under the member
+    cap. Everything else is counted in `StreamStats`.
+  - `_BoundedTarInfo._proc_member` refuses pax and GNU long-name headers over 1 MiB
+    (tarfile reads their body whole) and GNU sparse members, before any body is read.
+  - After the last member the gzip stream is read to its end, which checks its CRC-32
+    and length trailer.
+  - Corrupt or truncated input raises `TarballError` (a `DataError`); real I/O errors
+    propagate.
+  - `night_of` and `tarball_name` map `ztf_public_YYYYMMDD.tar.gz` to and from the night,
+    with a date check.
+- `selection`:
+  - `Selection(oid_year=True, max_ndethist=None)`.
+  - `first_detection_failure(alert, selection)` returns `previous`, `oid_year`,
+    `ndethist` or `None`, in that order. `oid_year` and `jd_year` are its helpers.
+  - `Exclusions` holds the oids, the file's SHA-256 and name. `load_exclusions(path)`
+    reads UTF-8 text, at most 64 MB, one oid per line, `#` comments, each line checked
+    against `raw_alerts.OID_PATTERN`.
+- `layout`:
+  - `INDEX_DTYPE` and `NightWriter(out, night, rows_per_file)`: `add` buffers one cutout
+    file; `commit(meta)` writes `index.npy` and `meta.json`, fsyncs them, renames the
+    `.partial` directory and fsyncs the parent.
+  - `check_corpus(out, record)` creates or compares `corpus.json` (written atomically).
+    `corpus_lock(out)` is an exclusive `flock` on `OUT/.lock`. `recover_night` puts back a
+    night that a crash left at `.<night>.replaced` during an overwrite.
+  - `load_night` checks `meta.json`, the files' dtypes and shapes, the row totals and the
+    index values. `verify_night` re-hashes. `Night.cutout(row)` reads one stamp.
+  - `list_nights` and `iter_nights` see complete nights only.
+  - `corpus_index(out, exclude=)` keeps the earliest alert of each `oid` (`jd`, then
+    `candid`), drops the excluded oids, and sorts by night and row. `excluded_rows` gives
+    the mask.
+- `ingest`:
+  - `Rules(selection, exclusions, rows_per_file, overwrite, limits)`.
+  - `ingest_archive(tarballs, out, rules, progress=)` refuses two tarballs for one night.
+    `ingest_tarball` handles one file, and `ingest_stream(handle, night, out, rules)` one
+    piped night.
+  - `_done` checks `corpus.json`, then skips a complete night (same name and, for a file,
+    the same size) without opening its input.
+  - `_decide` and `_index_row` apply the rules of `REASONS` in order. The counts go to
+    `meta.json`.
+- `plan`:
+  - `plan_nights(seed, labelled_per_year, later_per_year, spares, first, last)` returns
+    `NightPlan`: `PlannedNight(night, stratum, rank, pilot)` with `use` (`h1` or
+    `ablation`).
+  - The strata are drawn from `default_rng([seed, year])`, and the pilot stratum after
+    them.
+  - `estimate(plan, stamps_per_night, tarball_gb, download_hours, measured)` gives the
+    stamps, GB and hours per year, per use and in total. The basis is assumed or measured
+    on a corpus. `format_estimate` prints it.
+- `alerts.parse` changes for the archive:
+  - `oid` and `candid` are optional (the alert's own are taken).
+  - `repair=False` raises `CutoutShapeError` for non-63×63 cutouts.
+  - `Alert.previous_detections` counts the `prv_candidates` entries with a `candid`.
+
+Tests (`tests/test_archive_*.py`, offline): `_archive_support` writes ZTF-like avro alerts
+(three schema eras: 2018 without `drb`, 2020, and 2024 with `fp_hists`) and tarballs with
+hostile members. They cover:
+- streaming, and the hash of the whole file;
+- links, devices, and `..` and absolute names, with nothing extracted;
+- the member, decompressed-size (gzip bomb) and member-count caps;
+- truncated, non-gzip and corrupt files;
+- every reason of the ingest on one night, with the NaN of the cutouts kept bit for bit;
+- the optional rules, and a piped night;
+- resume without reading a complete night, and a night cut short and redone;
+- another file for a complete night, and a corpus refusing other rules;
+- a deterministic writer, `corpus_index`, the loader's checks and the CLI;
+- the plan's strata, seeds, spares, pilot and uses, and the assumed and measured estimates.
 
 ## `optim` (task 1.5)
 
@@ -1661,6 +1851,58 @@ module (training only), the settings and the preset deviation; a p4 run on every
 accelerator; and in `tests/test_split_runs.py` an augmented fold run (the fits are the
 fold's training part's) and its exact resume.
 
+### The `rj23` schedule (task 3.4b)
+
+`src/astro_simclr/training/rj23.py`: thin Lightning adapters of `rj23_regime` and
+`rj23_data` (ADR 0023), run by `train-supervised --preset rj23-<scenario> --splits
+OBJECT_SPLITS [--screen] [--alerts CSV]`.
+
+- `RJ23Module(scenario, n_classes, bn_position, lr)`: `rj23_model.build_rj23_classifier`,
+  unweighted cross-entropy (`loss_train`), `keras_adam`. No validation step.
+- `RJ23DataModule(parts, train, batch_size, seed, n_classes, identity)`: every part on the
+  training device; the training loader yields `ClassUniformStream` batch `s` at global step
+  `s` (an epoch is `batches_per_pass` steps, for logging only), and its checkpoint state is
+  the stream definition plus the run identity (splits SHA-256, mode, scenario): a resume of
+  another run is a `ConfigError`, of another stream (data, batch size, seed) a `DataError`.
+- `RJ23ScheduleCallback(schedule, datamodule, selection, ...)`: Lightning's validation loop
+  is off (`limit_val_batches=0`); the callback computes the selection part's macro-F1
+  (`predict_probabilities`, `benchmark_metrics.macro_f1`) after step 0 (`on_train_start`)
+  and after every grid step (`on_train_batch_end`), calls `decide`, snapshots the kept
+  weights, sets `trainer.should_stop`, and writes `last.ckpt` after the validations of
+  every `checkpoint_every_n_steps` steps and at the stop. Its state (schedule, selection
+  part, history, snapshots) is in `last.ckpt`; a resumed run that had stopped trains
+  nothing.
+- `run_rj23(settings, RJ23Request(splits, mode, alerts), *, resume, callbacks,
+  progress_bar)`: the run; a fit that ends before the policy stops it (interrupted) is a
+  `ConfigError` that says to resume. Outputs: `checkpoints/{last,stop,best}.ckpt` (`stop`
+  and `best` are plain dicts of the weights and step, read with `weights_only=True`),
+  `predictions_<stage>.npz` of the primary keep (`rj23_keep`) and
+  `predictions_<stage>_<other keep>.npz`, index = `candid`, and `metrics.json`: the
+  `bench-report` contract (`seed`, `machine`, `benchmark.splits_sha256`,
+  `predictions.<stage>.file`), `benchmark` (splits, mode, alerts, per-part class counts),
+  `schedule` (`history` of `[step, macro-F1]`, `stopped_by`, `capped`, `stop_step`,
+  `best_step`), `keep` (both keeps' step, checkpoint, evaluation and predictions),
+  `evaluation` (the primary's: accuracy, balanced accuracy, macro-F1, recalls, confusion
+  counts), `preset`, `data`, `config`, `versions`, `timing`, and `run` (run id, attempt,
+  config hash). `manifest.json` is written around the fit as for `run_command`
+  (`runs.record.start_run`, ADR 0015): a replication run hashes its object splits through
+  `object_splits=` (split part `whole`), a decision run passes them as a screen.
+
+**Resume** restores the weights, the optimizer, the step, the history and the snapshots;
+the batch stream continues exactly. Lightning does not restore the global torch generator,
+so dropout masks after a resume differ (the plain engine's checkpoint keeps every stream).
+
+**Tested** (`tests/test_rj23_training.py`, CPU, a synthetic 5-class `raw-alerts` layout):
+an end-to-end run (the history agrees with the policy, the `bench-report` contract read by
+`benchmark_report`, both keeps written, the preset deviations); the stop weights reproduce
+the stored predictions; with scripted validations, the stop at patience keeping the stop
+and the best weights (equal to the weights after those steps, and different), `rj23_keep:
+best`, the cap (`capped`, best = stop = cap); a decision run; a CSV alert table; a crash at
+step 5 resumed from step 4 seeing the uninterrupted batches and history, a finished run
+resumed training nothing, refusals of another seed and another protocol; an early end that
+says to resume; the adapter's refusals; the presets against `RJ23_TABLE2` and the input
+constants; the settings rules; the CLI.
+
 ## `engine` (phase 4, task B0; ADR 0014)
 
 `src/astro_simclr/engine/`: the contracts of the plain-PyTorch training loop that replaces
@@ -1698,7 +1940,7 @@ the Lightning path is unchanged.
 | `precision` | ADR 0010's `apply_fp32_precision(precision)` and `fp32_precision_record(device)`, moved from `training.runs` (which delegates). |
 | `randomness` (4.1 part) | `seed_everything(seed)`: `lightning.seed_everything`'s three calls, without its environment variables. |
 | `scalars` | `ScalarLog`: `scalars.jsonl`, one flushed line per validation (step, epoch, `loss_val`, mean `loss_train` since the previous validation, `improved`, horizon, wait count, seconds); a resume keeps the lines of steps up to the checkpoint's; NaN is `null`. `read_scalars`. |
-| `record` | `machine_record(device)` (`experiments._machine`'s keys, `engine: plain`) and `recorded(record)`, which ends a `runs.record.start_run(..., engine="plain")` record `finished`, `failed` or `cancelled`. |
+| `record` | `machine_record(device)` (`experiments.machine_record`'s keys, `engine: plain`) and `recorded(record)`, which ends a `runs.record.start_run(..., engine="plain")` record `finished`, `failed` or `cancelled`. |
 
 Run outputs under `run_dir` (ADR 0015's layout): `scalars.jsonl`, `ckpt/last.pt` (after the
 validation of every `checkpoint_every_n_steps` steps and at the end of training, if a step
@@ -1844,10 +2086,22 @@ Decisions and provenance: ADR 0003.
   that a TF32 run is a deviation, and ADR 0016 `feature_set: all`, so that a `position` or
   `none` run is a deviation of `carrasco2021` (`preset_for` still goes by
   `with_features`).
+- `PRESETS["rj23-<scenario>"]` (`RJ23_PRESETS`, task 3.4b; ADR 0023), one per scenario
+  of RJ23 (`full`, `cropped`, `lowres`, `multiscale`): `supervised_model: rj23`, the
+  scenario, `rj23_bn_position: after_concat`, `rj23_large_values: paper`,
+  `with_features: false`; `optimizer: Adam` (built as Keras' Adam) with Table 2's
+  learning rate (`RJ23_LEARNING_RATES`: 7.589e-4, 3.4627e-4, 1.125e-3, 7.445e-4; a test
+  keeps them equal to `rj23_model.RJ23_TABLE2`), batch 256, `num_workers` 0;
+  `schedule: rj23`, `monitor: macro_f1_val`, validation every 500 steps, patience 5,
+  `max_steps` 100000, no EarlyStopping, `rj23_keep: stop`; `fp32_precision: ieee`. The
+  dataset and the splits are not part of a preset. One preset per scenario so that the
+  learning rate is the preset's and another one is a recorded deviation.
+  `configs/phase3/rj23-<scenario>.yaml` hold the same values with their provenance.
 - `preset_for(settings)`: the preset of a `carrasco2021`-schedule run (by `with_features`),
-  else `None`. `preset_report(settings)`: `name`, `faithful` (no preset key changed),
-  `deviations` (key → `{value, preset}`) and `diagnostics` (the flags turned on), written
-  to `metrics.json["preset"]`. Seed, paths, accelerator and `checkpoint_every_n_steps` are
+  `rj23-<rj23_scenario>` for an `rj23` run, else `None`. `preset_report(settings)`:
+  `name`, `faithful` (no preset key changed), `deviations` (key → `{value, preset}`) and
+  `diagnostics` (the flags turned on; `carrasco2021` only), written to
+  `metrics.json["preset"]`. Seed, paths, accelerator and `checkpoint_every_n_steps` are
   not compared.
 
 The pilot (task 2.2c, one seed on the GPU machine):
@@ -1954,6 +2208,13 @@ class's share of failed PSF fits) and `preset`
 `carrasco2021` run is exact: the data stream is a function of the step, and the horizon
 and best weights come back from `last.ckpt`.
 
+**`rj23` (task 3.4b).** `run_command` and `tasks.plain.run_plain` refuse `schedule: rj23`
+(`tasks.common.refuse_rj23`, `ConfigError`): those runs go through
+`training.rj23.run_rj23` (see `training`, "The rj23 schedule"), on Lightning only until its
+plain adapter lands (`astro-simclr run` with `runtime.engine: plain` refuses it). It
+reuses `check_accelerator`, `dataset_path`, `resolve_resume`, `machine_record` (the
+`machine` block, public for it) and `tasks.results.finite` (non-finite floats to `null`).
+
 **Timing (task 2.2c).** Every run's metrics hold `timing`: `fit_seconds` (wall clock from
 the first step to the end of the fit loop, validation included), `steps` (the optimizer
 steps of this fit, fewer than `last_step` after a resume) and `seconds_per_step`; `null`
@@ -2005,13 +2266,14 @@ checked (command, `supervised_model`, no duplicate seed) and `val_acc_best` aggr
   `--allow-mixed-machines` is given, so a new-engine variant is compared only with a
   baseline rerun on the new engine.
 
-## `protocol` (task 2.3; split runs and decisions in 2.5-infra; grouped splits; benchmarks in 3.2)
+## `protocol` (task 2.3; split runs and decisions in 2.5-infra; grouped splits; benchmarks in 3.2; label budgets in 5.4)
 
 `src/astro_simclr/protocol/`: the code of the phase-2 evaluation protocol, and of the
 phase-3 benchmarks (task 3.2); the rules and the power note are in
 `docs/evaluation-protocol.md`, the design choices in ADR 0004 (phase 2) and ADR 0008
-(phase 3). No torch import, so `make-splits`, `leakage-audit`, `compare-variants`,
-`make-object-splits`, `bench-report` and `report-phase2` start fast.
+(phase 3). No torch import (except `probe`, which no command imports), so `make-splits`,
+`leakage-audit`, `compare-variants`, `make-object-splits`, `bench-report`, `report-phase2`
+and `make-label-budgets` start fast.
 
 | Module | What it does |
 |---|---|
@@ -2020,7 +2282,7 @@ phase-3 benchmarks (task 3.2); the rules and the power note are in
 | `splits` | Format version 2 (grouped; version 1 still read). `make_splits(prepared_dir, seed=0, radius_arcsec=1.5, group_ids_file=None)`: groups the pool (Train ∪ Validation), then the grouped 250/250 screen of Validation (groups placed largest first into the half with room; a documented fallback trims both halves to a common per-class count), `screen_excluded_train` (the Train alerts grouped with Validation, out of the screen's training), and the class-stratified group 5-fold CV (greedy placement, largest group first, per-class spread at most the largest group's stamps of the class), each fold with an exact 100-per-class selection set drawn from whole groups outside the fold (the other stamps of a selection group are the fold's `unused`); leaked Train stamps are in no fold. At most 10 folds (`fold_of` is one digit per stamp). `write_splits` / `read_splits` (structure checks: sizes, disjointness, ranges, positive integers, the grouping block, and `check_group_integrity`: no group in two folds, in a fold's selection and training, or in both screen halves; `screen_excluded_train` consistent) / `verify_splits(splits, prepared_dir, group_ids_file=None)` (dataset identity by source and label SHA-256 and sizes, not the directory name; group integrity; the stored groups equal a fresh grouping; class balance; fold stratification within the grouped tolerance; `excluded_train` equal to a fresh leakage check). `ProtocolSplits.locate` maps pool indices to Train and Validation indices; `ProtocolSplits.screen_training_excluded()` |
 | `audit` | `leakage_audit(prepared_dir, radius_arcsec=1.5, group_ids_file=None)` (CLI `leakage-audit`): groups all three splits together and reports the groups within each split and per split pair by class, the Validation and Test rows with a Train alert within the radius (or the same id), and the byte duplicates, as a JSON-ready dict; `format_audit` prints it |
 | `predictions` | `Predictions(probabilities, labels, index, n_classes=5)` (task 3.2: `n_classes` generalises the column count; 5 by default, so phase 2 is unchanged; the benchmarks pass 6 and index by `candid`), `save_predictions` / `load_predictions` (`.npz`, `allow_pickle=False`), `check_paired`, `ensemble` (mean probabilities per stamp), `seed_mean_correct` |
-| `stats` | `mcnemar` (exact, integer arithmetic), `paired_bootstrap` (percentile CI of variant − baseline, stratified by class, metric `accuracy` or `balanced_accuracy`, own `default_rng(seed)`, memory-bounded blocks), `paired_bootstrap_macro_f1(pred_baseline, pred_variant, labels, n_classes)` (task 3.2: the same paired, class-stratified resampling for macro-F1; each resample recounts every run's confusion matrix as one matrix product of item multiplicities with (run, true, predicted) indicator columns; observed = mean-over-runs macro-F1 difference, the report passes one row per side, the seed-ensemble argmax; identical sides give exactly [0, 0]; `BootstrapCI.metric` is now `IntervalMetric`), `minimum_detectable_effect(n, discordant= \| rate=)` (2.80·SE, paired or unpaired), `balanced_accuracy`, `adoption_decision` (superiority: `adopt` only if the CI is above 0), `non_inferiority_decision(interval, margin=0.005)` (`adopt` if the CI lower bound is above −margin, `worse` if the CI is below it; `check_margin` refuses margins outside (0, 0.05], a likely points-for-fraction mistake), `screen_decision` (`drop` at 4 points or more, never adopt) |
+| `stats` | `mcnemar` (exact, integer arithmetic), `paired_bootstrap` (percentile CI of variant − baseline, stratified by class, metric `accuracy` or `balanced_accuracy`, own `default_rng(seed)`, memory-bounded blocks), `paired_bootstrap_macro_f1(pred_baseline, pred_variant, labels, n_classes)` (task 3.2: the same paired, class-stratified resampling for macro-F1; each resample recounts every run's confusion matrix as one matrix product of item multiplicities with (run, true, predicted) indicator columns; observed = mean-over-runs macro-F1 difference, the report passes one row per side, the seed-ensemble argmax; identical sides give exactly [0, 0]; `BootstrapCI.metric` is now `IntervalMetric`), `hierarchical_paired_bootstrap(pred_baseline, pred_variant, labels, n_classes, metric="balanced_accuracy"\|"macro_f1", groups=None, reference_counts=None)` (task 5.4: `(R, N)` predictions paired by label subset; each resample draws the subsets with replacement, then the objects within class (an object's items together, one class per object), shared by all subsets and both arms; statistic = mean over drawn subsets of the paired difference; optional prior-reweighted macro-F1; `_hierarchical_draws` fixes the draw order, which the golden tests replay; they also enumerate a tiny case exactly), `minimum_detectable_effect(n, discordant= \| rate=)` (2.80·SE, paired or unpaired), `balanced_accuracy`, `adoption_decision` (superiority: `adopt` only if the CI is above 0), `non_inferiority_decision(interval, margin=0.005)` (`adopt` if the CI lower bound is above −margin, `worse` if the CI is below it; `check_margin` refuses margins outside (0, 0.05], a likely points-for-fraction mistake), `screen_decision` (`drop` at 4 points or more, never adopt) |
 | `split_runs` | Task 2.5-infra. `SplitRequest(file, fold)` (`fold=None`: the screen); `open_split_run(request, prepared_dir)` reads the file, refuses a fold it does not have (`ConfigError`) and runs `verify_splits` on the prepared data (a wrong fingerprint is a `SplitsError`); `SplitRun.parts()` gives `RunParts` (training, selection, evaluation as sorted pool indices, and `evaluation_index`: pool indices for a fold, Validation indices for the screen) and checks that they are pairwise disjoint and hold no excluded stamp; `SplitRun.describe()` is `metrics.json["protocol"]` (mode, fold, splits file and SHA-256, part sizes, `grouping`); the screen trains on Train minus `ProtocolSplits.screen_training_excluded()`; `SplitRun.identity()` (splits SHA-256, mode, fold) is stored in every checkpoint and checked on resume. `file_sha256` |
 | `compare` | `compare_variants(baseline_dirs, variant_dirs, stage)`: loads each run's `metrics.json` and predictions file, refuses repeated seeds, runs on different data (`data.source.sha256`: a normal run's `index` is `arange(N)`, so the data identity and the labels are what show two runs saw the same stamps), unpaired runs and mixed machines or float32 precisions (unless allowed), reports McNemar on the seed ensembles and the bootstrap, always as REPORT; it points split runs to `--splits`. `screen_comparison` / `cv_comparison(..., rule="superiority"\|"non-inferiority", margin)`: the decision helpers, which check that the predictions cover exactly the screen's decision half or each fold's evaluation part (so the CV bootstrap is paired by pool index); `CVResult` holds the per-fold and pooled balanced accuracies, the CI, McNemar on the seed ensembles and the decision. `compare_decision(baseline_dirs, variant_dirs, splits_file, rule, margin)` (CLI `compare-variants --splits`): loads split runs (`load_split_run`), checks the splits file's SHA-256, one mode, one data source and machine, the same (fold, seed) cells on both sides and every fold, then applies `cv_comparison` (verdict `ADOPT` / `NOT ADOPTED`) or `screen_comparison` (`KEEP` / `DROP`; `--rule` refused); `DecisionComparison.mcnemar` is the screen's McNemar on the seed ensembles (the CV's is `cv.mcnemar`) |
 | `phase2_report` | Task 2.6. `build_report(ReportInputs)` → the markdown of `docs/results-phase2.md` (CLI `report-phase2`). `find_arms(dir)`: one arm per subdirectory, its runs at any depth (`DIR/<arm>/.../metrics.json`; a run directly under `DIR` is refused). Sections: the replication (per-seed table, mean ± std with ddof = 1, and `reference.compare_reference("CD21", ...)` verbatim with the M1 oracle report, default `DIR/m1_oracle.json`); the screen (`compare_decision` per arm against `--baseline-arm`, rot4 by default: accuracies, McNemar, KEEP/DROP and the verbatim output); the CV (`compare_decision` with each arm's pre-registered rule, superiority or `--non-inferiority`; balanced accuracy per run, per fold and pooled from `CVResult`, the CI, McNemar, both verdicts from `stats.adoption_decision` / `stats.non_inferiority_decision` on the same interval, the verbatim output; `pooled_class_scores` gives the per-class recall and confusion matrix of every arm from the per-stamp seed-mean scores, so the mean recall is the pooled balanced accuracy); then throughput (`read_run_facts`: s/step, GPU, the manifest's `concurrent_jobs`, flagged when > 1, "not recorded" without a manifest) and provenance (git commits and config hashes of manifest runs; with `--registry`, indexed and stale runs by `metrics.json` SHA-256). Deterministic: sorted arms and runs, a seeded bootstrap, paths as given, no timestamps. No statistics of its own |
@@ -2029,6 +2291,9 @@ phase-3 benchmarks (task 3.2); the rules and the power note are in
 | `object_splits` | Task 3.2. `make_object_splits(table, seed, fractions=(0.6, 0.2, 0.2), on_conflict="refuse"\|"drop", allowed=None)`: `grouped_split` by `table.group` (task 3.5: `allowed` maps groups to the splits they may be in, stored as `constraints`, format version 2; version 1 still read; the bound is verified only for classes without constraints), then `grouped_halves` of Validation; `ObjectSplits` (table identity, group key, label names, seed, fractions, conflicts, sorted group ids per split and half, class counts per part), `split_of` / `half_of` / `rows(table, part)`; `write_object_splits` / `read_object_splits` (structure: valid sorted ids, disjoint splits and halves, halves inside Validation) / `verify_object_splits(splits, table)` (fingerprint, group key, label names, conflicts, coverage, the bound, the counts). CLI `make-object-splits` |
 | `benchmark_metrics` | Task 3.2, numpy only: `confusion_counts`, `confusion_percent` (rows to 100; an empty row stays zeros), `macro_f1`, `macro_f1_from_counts` (stacked `(..., C, C)`), `reweighted_counts(counts, reference)` (prior reweighting), `benchmark_metrics(labels, predicted, label_names, reference_counts=None)` → `BenchmarkMetrics` (accuracy, macro P/R/F1, `ClassScores` per class, counts, percent, reweighted macro P and F1; `as_dict`). Zero-division rule: 0/0 → 0, and classes absent from labels and predictions are left out of the macro means (`None` per class), as torchmetrics. `RJ23_CLASS_COUNTS`, `rj23_reference(label_names)` (the default reference: only proportions matter) |
 | `bench_report` | Task 3.2. `load_benchmark_run` (the run contract: `seed`, `machine`, `benchmark.splits_sha256`, `predictions.<stage>.file` with `index` = `candid`; aligned to the split's rows, which it must cover exactly with the table's labels), `benchmark_report(run_dirs, splits_file, alerts_file, baseline_dirs=(), stage="test", reference_counts=None)` → lines: per view (all alerts, first stamp) and side, macro-F1/P/R and accuracy mean ± std over seeds, the seed-ensemble macro-F1, the prior-reweighted macro-F1, per-class scores with alerts, objects and the recall MDE (on objects), the % confusion matrix; with a baseline, the ensembles' macro-F1 bootstrap CI and McNemar; always `REPORT`. CLI `bench-report` |
+| `label_budgets` | Task 5.4. `BudgetPart(name, rows, objects, labels, selection)` (one training part as rows of a larger index space); `cv_parts(splits, pool_labels)` (a fold's training part; the object is the position group named by its smallest pool index in the part) and `object_split_parts(splits, table)` (R5 Train; the object is the table's group key); `cv_source` / `object_split_source` (parent name, SHA-256 and data fingerprint); `cv_parts_from_files` / `object_split_parts_from_files` (read and **verify** the parent on the data first) → `PartsSource`. `make_label_budgets(parts, source, label_names, object_id, budgets=(10, 100, 1000), n_repeats=20, selection_fraction=0.2, include_full=True, seed=0)`: per part and repeat, one seeded object order (`default_rng([seed, 5, part, repeat])`); per class, budget `b` = the first `b` objects having the class (nested budgets, exactly `b` per class); the selection set = the next objects of the class outside the subset, `floor(fraction × b)` capped to the smallest remainder over classes, parts and repeats (CD21: 2/20/83). `LabelBudgets`, `write_label_budgets` / `read_label_budgets` (structure) / `verify_label_budgets(budgets, parts, source)` (parent kind, SHA-256 and fingerprint, part names, per-class sizes and classes, selection outside the subset); `resolve(budgets, part)` → `BudgetSubset(part, repeat, budget, labelled, selection)` rows, 100 % last (the whole part and its own selection set). `BudgetError` is a `SplitsError` |
+| `budget_parser` | Task 5.4: argparse only, handlers load on use. `make-label-budgets --out FILE (--splits FILE --data DIR \| --object-splits FILE --alerts CSV) [--budgets ...] [--repeats R] [--selection-fraction F] [--no-full] [--seed N] [--overwrite]` and `verify-label-budgets FILE` with the same parent options (exit 0 / 1) |
+| `probe` | Task 5.4 (imports torch). `fit_probe(h, labels, n_classes, weight_decay=1e-3)` → `LinearProbe` (standardised features; mean CE on logits + `wd/2·‖W‖²`; full-batch L-BFGS, strong Wolfe, from zeros, on `h`'s device and dtype; deterministic); `run_probes(embeddings, labels, subsets, evaluation, n_classes, weight_decay=(1e-3,), reference_counts=None, device="cpu", dtype=float64)` → one `ProbeResult` per subset (chosen penalty, selection BA when a grid is searched on the subset's selection set, BA / macro-F1 / reweighted macro-F1 on the part's evaluation rows, the predictions); `paired_predictions(baseline, variant, part, budget)` (the `(R, N)` input of `hierarchical_paired_bootstrap`, paired by repeat); `summarise` (mean ± std over subsets). Same objective as the 5.0b pilot's probe |
 
 - **Phase 3** (task 3.2): the benchmark modules above (`alerts`, `grouping`,
   `object_splits`, `benchmark_metrics`, `bench_report`) are built and tested on synthetic
@@ -2041,6 +2306,10 @@ phase-3 benchmarks (task 3.2); the rules and the power note are in
   Validation 115 (SN); 49,717 pool groups (663 of two or more stamps); 107 Train alerts
   grouped with Validation leave the screen's training; folds of about 40,365 training /
   500 selection / 10,216 evaluation stamps, no unused stamps.
+- **Stored label budgets** (task 5.4): `configs/label-budgets/td_ztf_stamp_17_06_20_red-002-grouped.json`
+  (from the grouped CD21 splits on the real data, seed 0; 5 folds × 20 repeats × 10/100/1000
+  objects per class plus 100 %; selection 2/20/83 per class; about 3.7 MB). Rules:
+  `docs/evaluation-protocol.md`, "Phase 5 label budgets".
 - Randomness: the splits and the bootstrap use their own seeded generators, independent of
   `seed_run`, so a training seed never moves a split and a comparison is reproducible on
   its own (an exception to the "Randomness" convention above, for data definitions and
@@ -2075,7 +2344,8 @@ calls `record.start_run` and `RunRecord.end` around the fit (task A1).
   - `HASH_NEUTRAL_DEFAULTS` leaves semantic fields out at one value: `num_workers: 0`
     (with workers, per-worker seeding changes the augmentation draws, so any other count is
     hashed), and fields added later at the value that keeps old hashes: `feature_set: all`
-    (ADR 0016).
+    (ADR 0016), `backbone_weights: none` (ADR 0022) and, task 3.4b, `rj23_scenario: full`,
+    `rj23_bn_position: after_concat`, `rj23_large_values: paper`, `rj23_keep: stop`.
   - `semantic_config_from_plain(command, view, complete=True)` and `semantic_diff` are the
     hook of the nested config (4.2): `config_tree.config_sha256` lowers to the flat view
     and hashes it there (ADR 0017).
@@ -2123,7 +2393,9 @@ calls `record.start_run` and `RunRecord.end` around the fit (task A1).
   - a finished one deletes `last`, and keeps `best` only for `pretrain`;
   - records, results, logs, figures and unknown files are kept.
 - **`record`** (task A1): `start_run(command, settings, data=..., machine=..., split=...,
-  pretrained_file=..., resumed=...)` computes the identity, with the machine class from
+  object_splits=..., pretrained_file=..., resumed=...)` computes the identity
+  (`object_splits`, task 3.4b: an `rj23` replication run's object-splits file, hashed as
+  its splits with the split part `whole`; at most one of `split` and `object_splits`), with the machine class from
   the Trainer's device and `engine: lightning`, and writes `manifest.json` as `queued` then
   `running`. `RunRecord.end(status)` writes `finished`, `failed` or `cancelled`, once.
   Attempts, since `--output-dir` keeps only the latest attempt:

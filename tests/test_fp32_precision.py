@@ -93,7 +93,7 @@ def test_record_on_a_cuda_device(
 def test_machine_records_the_policy() -> None:
     apply_fp32_precision(Settings())
     trainer = SimpleNamespace(strategy=SimpleNamespace(root_device=torch.device("cpu")))
-    machine = experiments._machine(cast(Any, trainer))
+    machine = experiments.machine_record(cast(Any, trainer))
     assert machine["fp32_precision"] == "ieee"
     assert machine["fp32_backends"]["cudnn_conv"] == "ieee"
     assert machine["compute_capability"] is None

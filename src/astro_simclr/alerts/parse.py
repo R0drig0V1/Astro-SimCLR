@@ -11,7 +11,15 @@ the alerts, so its record names differ from ZTF's own schema and a fixed reader 
 break on them). The record is then validated here: exactly one record, the expected
 ``objectId`` and ``candid``, the required candidate fields with their types, and three
 cutouts of the same shape, at most 63x63. Only the scalar candidate fields are kept; the
-previous candidates are not (``docs/data.md`` explains why).
+previous candidates are not (``docs/data.md`` explains why), except for their number of
+detections (:attr:`Alert.previous_detections`, the first-detection rule of the archive
+corpus, :mod:`astro_simclr.archive`).
+
+The same parser reads the alerts of the ZTF public archive (``ingest-archive``): there the
+expected ``oid`` and ``candid`` are unknown, so they are optional (the alert's own are then
+taken, after a type check), and ``repair=False`` refuses a cutout smaller than 63x63 with
+:class:`CutoutShapeError` instead of padding it (the stamp classifier's input, CD21 Sec.
+3.1, drops non-square stamps).
 
 **Size limits.** The download is capped (``alerce.MAX_AVRO_BYTES``), and before fastavro
 decompresses anything, :func:`check_container` walks the container's blocks and bounds
@@ -52,6 +60,7 @@ __all__ = [
     "REQUIRED_FIELDS",
     "Alert",
     "AlertFormatError",
+    "CutoutShapeError",
     "Scalar",
     "check_container",
     "check_schema",
@@ -88,6 +97,10 @@ class AlertFormatError(ValueError):
     """The bytes are not one valid alert for the requested ``oid``/``candid``."""
 
 
+class CutoutShapeError(AlertFormatError):
+    """The cutouts are valid but not 63x63, and :func:`parse_alert` was told not to repair."""
+
+
 @dataclass(frozen=True, slots=True)
 class Alert:
     """One parsed alert.
@@ -99,6 +112,8 @@ class Alert:
             ``None``, so the record is valid JSON).
         cutouts: float32 ``(63, 63, 3)``: science, template, difference, NaN kept.
         raw_shape: the cutouts' shape before any repair, ``(H, W)``.
+        previous_detections: the entries of ``prv_candidates`` that are detections (a
+            record with a ``candid``; upper limits have none), 0 when there is no list.
     """
 
     oid: str
@@ -106,6 +121,7 @@ class Alert:
     candidate: dict[str, Scalar]
     cutouts: npt.NDArray[np.float32]
     raw_shape: tuple[int, int]
+    previous_detections: int = 0
 
     @property
     def repaired(self) -> bool:
@@ -113,18 +129,26 @@ class Alert:
         return self.raw_shape != STAMP_SHAPE[:2]
 
 
-def parse_alert(data: bytes, *, oid: str, candid: int) -> Alert:
+def parse_alert(
+    data: bytes, *, oid: str | None = None, candid: int | None = None, repair: bool = True
+) -> Alert:
     """Parse the avro bytes of alert (``oid``, ``candid``) (module docstring).
 
+    ``oid`` and ``candid`` are the expected identity; ``None`` accepts the alert's own (a
+    string ``objectId``; the candidate's ``candid``). With ``repair`` false a cutout that
+    is not 63x63 raises :class:`CutoutShapeError` instead of being padded with NaN.
+
     Raises:
+        CutoutShapeError: if ``repair`` is false and the (valid) cutouts are not 63x63.
         AlertFormatError: if the bytes are not an avro file with exactly one alert, the
             alert is for another object or candidate, a required candidate field is
             missing or of the wrong type, or a cutout is missing, invalid, larger than
             63x63, or of a different shape than the others.
     """
     record = _single_record(data)
-    if record.get("objectId") != oid:
-        raise AlertFormatError(f"objectId {record.get('objectId')!r}, expected {oid!r}")
+    object_id = record.get("objectId")
+    if not isinstance(object_id, str) or (oid is not None and object_id != oid):
+        raise AlertFormatError(f"objectId {object_id!r}, expected {oid or 'a string'!r}")
     raw_candidate = record.get("candidate")
     if not isinstance(raw_candidate, dict):
         raise AlertFormatError("no candidate record")
@@ -133,8 +157,10 @@ def parse_alert(data: bytes, *, oid: str, candid: int) -> Alert:
         value = candidate.get(name)
         if isinstance(value, bool) or not isinstance(value, types):
             raise AlertFormatError(f"candidate.{name} is {value!r}, expected {types[0].__name__}")
-    if candidate["candid"] != candid:
-        raise AlertFormatError(f"candid {candidate['candid']}, expected {candid}")
+    own_candid = candidate["candid"]
+    assert isinstance(own_candid, int)  # noqa: S101 - checked by REQUIRED_FIELDS above
+    if candid is not None and own_candid != candid:
+        raise AlertFormatError(f"candid {own_candid}, expected {candid}")
     channels = [_cutout(record, name) for name in CUTOUT_FIELDS]
     shapes = {channel.shape for channel in channels}
     if len(shapes) != 1:
@@ -142,9 +168,25 @@ def parse_alert(data: bytes, *, oid: str, candid: int) -> Alert:
     height, width = channels[0].shape
     stamp: npt.NDArray[np.floating[Any]] = np.stack(channels, axis=-1)
     if (height, width) != STAMP_SHAPE[:2]:
+        if not repair:
+            raise CutoutShapeError(f"cutouts of shape {(height, width)}, not 63x63")
         stamp = _repair(stamp, candidate)
     cutouts = np.ascontiguousarray(stamp, dtype=np.float32)
-    return Alert(oid, candid, candidate, cutouts, (height, width))
+    previous = _previous_detections(record.get("prv_candidates"))
+    return Alert(object_id, own_candid, candidate, cutouts, (height, width), previous)
+
+
+def _previous_detections(previous: object) -> int:
+    """The detections in ``prv_candidates``: records whose ``candid`` is an integer."""
+    if not isinstance(previous, list):
+        return 0
+    return sum(
+        1
+        for entry in previous
+        if isinstance(entry, dict)
+        and isinstance(entry.get("candid"), int)
+        and not isinstance(entry.get("candid"), bool)
+    )
 
 
 class _Cursor:

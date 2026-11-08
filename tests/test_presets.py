@@ -76,7 +76,9 @@ def _preset_settings(
 
 @pytest.mark.parametrize("name", list(PRESETS))
 def test_config_files_hold_the_preset(name: str) -> None:
-    on_disk = read_settings_file(CONFIGS / f"{name}.yaml")
+    # The CD21 presets are phase 2's, the RJ23 ones (task 3.4b) phase 3's.
+    folder = CONFIGS.with_name("phase3") if name.startswith("rj23-") else CONFIGS
+    on_disk = read_settings_file(folder / f"{name}.yaml")
     assert settings_from_mapping(on_disk) == settings_from_mapping(PRESETS[name])
     assert sorted(on_disk) == sorted(PRESETS[name])
 
