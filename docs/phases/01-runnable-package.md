@@ -109,7 +109,7 @@ behaviour stays the default.
   `hparams_best_ce_resnet.yaml`: rotation_v3, 63 px, no features).
 - **External reference (context, not a gate):** Carrasco-Davis et al. 2021 (AJ 162, 231,
   arXiv:2008.03309) is the ALeRCE stamp classifier on the same ZTF 5-class data (51,594
-  alerts; validation and test balanced at 100 per class; 21×21 crop; 26 features). It
+  alerts; validation and test balanced at 100 per class; 21×21 crop zero-padded to 27; 23 of the 26 alert features). It
   reports validation accuracy 0.950 ± 0.005 and **test accuracy 0.941 ± 0.004** (0.883
   without features). R1 reports its test accuracy next to that figure. Later ALeRCE work
   (multi-scale stamps, Reyes-Jainaga et al. 2023) uses another class set and split, and no
