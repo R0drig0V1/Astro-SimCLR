@@ -1,0 +1,10 @@
+CD21: Carrasco-Davis et al. 2021 stamp classifier, paper replication (test accuracy)
+  WARN: results/phase2/replication/no-features/seed-0 differs from the CD21 config: paper_arch=None (expected 'rot4'), context=None (expected 'none'), rot90_augment=None (expected False)
+  WARN: results/phase2/replication/no-features/seed-1 differs from the CD21 config: paper_arch=None (expected 'rot4'), context=None (expected 'none'), rot90_augment=None (expected False)
+  WARN: results/phase2/replication/no-features/seed-2 differs from the CD21 config: paper_arch=None (expected 'rot4'), context=None (expected 'none'), rot90_augment=None (expected False)
+  WARN: results/phase2/replication/no-features/seed-3 differs from the CD21 config: paper_arch=None (expected 'rot4'), context=None (expected 'none'), rot90_augment=None (expected False)
+  WARN: results/phase2/replication/no-features/seed-4 differs from the CD21 config: paper_arch=None (expected 'rot4'), context=None (expected 'none'), rot90_augment=None (expected False)
+  without features (advisory, not gating): test accuracy 0.8724 ± 0.0095 (ddof=1; 0.0085 with ddof=0, n=5); paper 0.883 ± 0.006 (ddof=0); |difference| = 0.0106
+  no run with features: nothing to gate (the without-features line is advisory)
+  note: a perfect replication misses the faithful tier about 8 % of the time; one confirmatory 5-seed rerun is allowed (plan, task 2.3)
+CD21: REPORT
