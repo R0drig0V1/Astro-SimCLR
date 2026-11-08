@@ -1,7 +1,7 @@
-<!-- ADR 0018: the training regime of RJ23's classifiers (task 3.4b): the schedule policy,
+<!-- ADR 0023: the training regime of RJ23's classifiers (task 3.4b): the schedule policy,
      the class-uniform sampler, Keras' Adam, the two protocols and the CLI path, each
      choice with its source, as engine-free objects with thin Lightning adapters. -->
-# 0018: The RJ23 training regime: macro-F1 every 500 steps from step 0, strict patience 5, a 100k cap, stop and best kept, per-sample class-uniform batches, Keras Adam with Keras' ε placement, `--preset rj23-<scenario>`
+# 0023: The RJ23 training regime: macro-F1 every 500 steps from step 0, strict patience 5, a 100k cap, stop and best kept, per-sample class-uniform batches, Keras Adam with Keras' ε placement, `--preset rj23-<scenario>`
 
 - **Status:** accepted (2026-11-08, phase 3, task 3.4b)
 - **Implemented by:** `src/astro_simclr/rj23_regime.py`, `src/astro_simclr/rj23_data.py`
@@ -56,7 +56,7 @@ from `engine.randomness.host_generator` with a reserved stream.
    within-class order of RJ23's per-class `tf.data` pipelines (their shuffle buffer and
    repeat are not recorded), which only correlates draws within a class. Unlike CD21's
    tiling (`training.tiling`), the batch proportions are random and no class is copied to
-   the largest's size. Batch `b` is drawn from `host_generator(seed, b, 5)` only (stream 5,
+   the largest's size. Batch `b` is drawn from `host_generator(seed, b, 10)` only (stream 10,
    `rj23_class_uniform`, reserved in `engine.randomness.RESERVED_STREAMS`), so a batch is a
    pure function of the seed and the step: the stored position of a resume is its step
    count (ADR 0014's `BatchSource` contract), and a resumed run sees the batches of an

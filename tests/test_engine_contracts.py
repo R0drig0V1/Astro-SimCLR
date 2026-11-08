@@ -344,6 +344,14 @@ def test_reserved_streams_are_the_augmentations_numbers() -> None:
     assert len(set(RESERVED_STREAMS.values())) == len(RESERVED_STREAMS)
 
 
+def test_reserved_stream_numbers_are_unique() -> None:
+    # Two augmentations on one stream number would draw correlated numbers at every step.
+    numbers = list(RESERVED_STREAMS.values())
+    assert len(set(numbers)) == len(numbers)
+    assert all(isinstance(n, int) and not isinstance(n, bool) and n >= 1 for n in numbers)
+    assert RESERVED_STREAMS["rj23_class_uniform"] == 10
+
+
 def test_host_generator_is_augment_rng() -> None:
     for seed, step, stream in [(0, 0, 1), (7, 4_780, 4), (2**40, 3, 2)]:
         ours = host_generator(seed, step, stream).random(5)

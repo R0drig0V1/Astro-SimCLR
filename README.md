@@ -155,7 +155,7 @@ alerts") and [ADR 0011](docs/decisions/0011-raw-alert-store.md). The other phase
 
 RJ23's four classifiers train on a `raw-alerts` layout and its object splits with their
 regime (Keras Adam, class-uniform batches, the validation macro-F1 every 500 steps with
-patience 5; [ADR 0018](docs/decisions/0018-rj23-training-regime.md)); `--screen` stops on
+patience 5; [ADR 0023](docs/decisions/0023-rj23-training-regime.md)); `--screen` stops on
 the selection half instead of the whole Validation:
 
 ```bash

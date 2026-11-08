@@ -226,7 +226,7 @@ def test_resume_from_a_stored_position_sees_the_same_batches() -> None:
 def test_batches_come_from_the_reserved_host_generator() -> None:
     labels = np.array([0, 0, 0, 1, 2, 2])
     stream = ClassUniformStream(labels, batch_size=5, seed=4)
-    assert STREAM == RESERVED_STREAMS["rj23_class_uniform"] == 5
+    assert STREAM == RESERVED_STREAMS["rj23_class_uniform"] == 10
     rng = host_generator(4, 9, STREAM)
     classes = rng.integers(0, 3, size=5)
     within = rng.integers(0, np.bincount(labels)[classes])

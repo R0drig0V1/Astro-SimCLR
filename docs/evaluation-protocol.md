@@ -404,7 +404,7 @@ Everything is built and tested on synthetic tables. The real `oid`s come from ta
 ### Training an RJ23 scenario on the benchmark (task 3.4b)
 
 `astro-simclr train-supervised --preset rj23-<scenario> --splits OBJECT_SPLITS` trains one
-of RJ23's four classifiers on a `raw-alerts` layout with their regime (ADR 0018) and writes
+of RJ23's four classifiers on a `raw-alerts` layout with their regime (ADR 0023) and writes
 a benchmark run for `bench-report` (below). Two protocols:
 
 - **replication** (no `--screen`, the paper protocol, as 2.4 for CD21): train on Train,

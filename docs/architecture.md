@@ -128,7 +128,7 @@ of one run.
   `eval_batch_size` must be 64 (the selection loss is TF's mean of batch-64 means),
   `early_stopping` false and `num_workers` 0 (`ConfigError` otherwise). The
   `carrasco2021` preset (task 2.2c, see `presets`) sets them.
-- **Task 3.4b fields** (the `rj23` schedule; see `training`, "The rj23 schedule"; ADR 0018).
+- **Task 3.4b fields** (the `rj23` schedule; see `training`, "The rj23 schedule"; ADR 0023).
   `schedule: rj23` reuses `max_steps` (the hard cap), `val_every_n_steps` (the validation
   interval, step 0 included) and `patience` (in validations), and adds:
 
@@ -807,7 +807,7 @@ into training.
 
 The training regime of RJ23 as **engine-free** objects (the phase-4 rule from B0 on: no
 Lightning; the Lightning adapter is `training.rj23`, the plain engine of phase 4 adapts the
-same objects). ADR 0018 pins what the sources leave open.
+same objects). ADR 0023 pins what the sources leave open.
 
 `src/astro_simclr/rj23_regime.py`:
 
@@ -824,7 +824,7 @@ same objects). ADR 0018 pins what the sources leave open.
 - `ClassUniformStream(labels, batch_size, seed, *, n_classes=None)`, RJ23's
   `sample_from_datasets` with uniform weights: each item draws its class uniformly, then an
   item of that class uniformly (with replacement). `batch(b)` uses
-  `engine.randomness.host_generator(seed, b, STREAM)` only (`STREAM` = 5,
+  `engine.randomness.host_generator(seed, b, STREAM)` only (`STREAM` = 10,
   `RESERVED_STREAMS["rj23_class_uniform"]`), so a batch is a pure function of `(seed, b)`
   and a resume
   at step `s` (the stored position) continues the stream exactly; `iterate(start)`,
@@ -1490,7 +1490,7 @@ fold's training part's) and its exact resume.
 ### The `rj23` schedule (task 3.4b)
 
 `src/astro_simclr/training/rj23.py`: thin Lightning adapters of `rj23_regime` and
-`rj23_data` (ADR 0018), run by `train-supervised --preset rj23-<scenario> --splits
+`rj23_data` (ADR 0023), run by `train-supervised --preset rj23-<scenario> --splits
 OBJECT_SPLITS [--screen] [--alerts CSV]`.
 
 - `RJ23Module(scenario, n_classes, bn_position, lr)`: `rj23_model.build_rj23_classifier`,
@@ -1590,7 +1590,7 @@ Decisions and provenance: ADR 0003.
   that a TF32 run is a deviation, and ADR 0016 `feature_set: all`, so that a `position` or
   `none` run is a deviation of `carrasco2021` (`preset_for` still goes by
   `with_features`).
-- `PRESETS["rj23-<scenario>"]` (`RJ23_PRESETS`, task 3.4b; ADR 0018), one per scenario
+- `PRESETS["rj23-<scenario>"]` (`RJ23_PRESETS`, task 3.4b; ADR 0023), one per scenario
   of RJ23 (`full`, `cropped`, `lowres`, `multiscale`): `supervised_model: rj23`, the
   scenario, `rj23_bn_position: after_concat`, `rj23_large_values: paper`,
   `with_features: false`; `optimizer: Adam` (built as Keras' Adam) with Table 2's

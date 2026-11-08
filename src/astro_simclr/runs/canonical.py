@@ -105,7 +105,7 @@ NON_SEMANTIC_KEYS: Final[Mapping[str, str]] = {
     ),
     "rj23_keep": (
         "which of the two kept weights (stop, best) an rj23 run names primary: every run "
-        "trains, keeps, evaluates and writes both (task 3.4b; ADR 0018)"
+        "trains, keeps, evaluates and writes both (task 3.4b; ADR 0023)"
     ),
 }
 

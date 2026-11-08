@@ -145,7 +145,7 @@ def test_semantic_config_holds_every_other_field() -> None:
     settings = semantic["settings"]
     assert isinstance(settings, dict)
     # The hash-neutral fields are semantic, but left out at their neutral values: num_workers
-    # 0, feature_set all (ADR 0016) and the rj23_* defaults (task 3.4b; ADR 0018).
+    # 0, feature_set all (ADR 0016) and the rj23_* defaults (task 3.4b; ADR 0023).
     neutral = {
         "num_workers",
         "feature_set",

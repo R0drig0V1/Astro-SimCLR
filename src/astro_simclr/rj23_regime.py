@@ -8,7 +8,7 @@ validations without improvement and save the model **at the stopping iteration**
 module holds those rules as pure objects, with no training engine (the phase-4 rule from B0
 on: ``docs/phases/04-training-platform.md``). The Lightning adapter is
 :mod:`astro_simclr.training.rj23`; the plain engine of phase 4 adapts the same objects. The
-choices the sources leave open are pinned in ADR 0018.
+choices the sources leave open are pinned in ADR 0023.
 
 - :class:`RJ23Schedule`, the **schedule policy**: :meth:`RJ23Schedule.decide` is a pure
   function of ``(step, history)``, the number of optimizer steps done and the monitored
@@ -44,7 +44,7 @@ choices the sources leave open are pinned in ADR 0018.
   epsilon placement, ``theta -= lr_t m / (sqrt(v) + eps)``, ``lr_t = lr sqrt(1 - beta_2^t)
   / (1 - beta_1^t)``. torch's ``Adam`` adds epsilon to the bias-corrected ``sqrt(v_hat)``
   instead, which equals Keras' only with ``eps / sqrt(1 - beta_2^t)``, a step-dependent
-  epsilon torch cannot take (ADR 0003 kept torch's placement for CD21; ADR 0018 says why
+  epsilon torch cannot take (ADR 0003 kept torch's placement for CD21; ADR 0023 says why
   RJ23 does not).
 
 - :func:`predict_probabilities`, the evaluation every engine shares: softmax outputs in
@@ -147,7 +147,7 @@ class RJ23Decision:
 
 @dataclass(frozen=True, slots=True)
 class RJ23Schedule:
-    """RJ23's validation, patience, cap and keep rules (module docstring; ADR 0018).
+    """RJ23's validation, patience, cap and keep rules (module docstring; ADR 0023).
 
     Attributes:
         eval_every: validate after every this many optimizer steps, step 0 included.

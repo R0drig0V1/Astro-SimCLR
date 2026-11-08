@@ -312,7 +312,7 @@ class Settings:
     #: C7: the largest ``k``.
     flux_k_max: float = 1.5
 
-    # --- The RJ23 regime (task 3.4b; ADR 0018) ----------------------------------------------
+    # --- The RJ23 regime (task 3.4b; ADR 0023) ----------------------------------------------
 
     #: ``rj23``: the input and its Table 2 classifier; see :data:`RJ23_SCENARIOS`.
     rj23_scenario: str = "full"

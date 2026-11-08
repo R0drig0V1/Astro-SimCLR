@@ -32,7 +32,7 @@ recorded by :func:`preset_report` in the run's ``metrics.json["preset"]`` (``fai
 false, and the key in ``deviations``), so a diagnostic run can never pass for the
 replication.
 
-**The ``rj23-<scenario>`` presets** (task 3.4b; ADR 0018), one per input of Reyes-Jainaga et
+**The ``rj23-<scenario>`` presets** (task 3.4b; ADR 0023), one per input of Reyes-Jainaga et
 al. 2023 (``full``, ``cropped``, ``lowres``, ``multiscale``): the scenario's Table 2
 classifier (``supervised_model: rj23``, ``rj23_model.RJ23_TABLE2``) with its Table 2 learning
 rate, Keras' Adam (``optimizer: Adam`` is built by ``rj23_regime.keras_adam``: epsilon 1e-7,

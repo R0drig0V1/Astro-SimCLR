@@ -39,7 +39,9 @@ RESERVED_STREAMS: Final = MappingProxyType(
         "synthetic_bogus": 3,
         "flux_rescale": 4,
         # rj23_regime.ClassUniformStream (task 3.4b): the classes and items of each batch.
-        "rj23_class_uniform": 5,
+        # 5 (block_shuffle, PR #42) and 6-9 (simclr-pilot, PR #47) are assigned to other
+        # branches by the integrator: two streams on one number draw correlated numbers.
+        "rj23_class_uniform": 10,
     }
 )
 
