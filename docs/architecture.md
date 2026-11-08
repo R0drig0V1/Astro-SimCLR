@@ -1469,7 +1469,11 @@ bandwidth choice that cannot change a result.
   mutable state is the position (`steps_done`).
 - **Storage dtype:** `float16` / `uint8` images (`TierChoice.storage_dtype`) are quantised
   once and dequantised on the device after the gather; `describe()["deviation"]` is true,
-  a resume under another dtype is refused, and the `memmap` tier refuses them.
+  a resume under another dtype is refused, and the `memmap` tier refuses them. `uint8`
+  dequantises through a 256-entry table of `k / 255` computed on the host (numpy, correctly
+  rounded), not by a division on the device: CUDA divides by a Python scalar as a
+  multiplication by the reciprocal, one ulp off for 126 of the 256 values, so the same
+  batch would differ between CPU and CUDA.
 
 **Tested** (`tests/test_engine_tiers.py`, on CPU and on MPS or CUDA when present): `pinned`
 and `memmap` `torch.equal` to `device` for 40 steps across pass boundaries, balanced and
