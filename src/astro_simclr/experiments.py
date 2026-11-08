@@ -7,7 +7,9 @@ run is:
 1. check that the requested accelerator exists (:func:`check_accelerator`): a reference
    config says ``accelerator: cuda``, and without CUDA it must fail here, clearly, instead
    of inside Lightning or, worse, train on the CPU;
-2. open the prepared layout ``data_dir/<dataset>`` (:func:`dataset_path`);
+2. set the float32 precision of convolutions and matmuls (``apply_fp32_precision``,
+   ADR 0008: ``ieee`` by default, where torch would use TF32 convolutions on Ampere+), then
+   open the prepared layout ``data_dir/<dataset>`` (:func:`dataset_path`);
 3. ``seed_run`` (before any module is built: initial weights consume the generators);
 4. build the module and its data module from the settings;
 5. ``trainer.fit`` with EarlyStopping, the best-by-monitor checkpoint ``best.ckpt`` and the
@@ -31,11 +33,12 @@ Everything a run writes is under ``settings.output_dir``::
 ``metrics.json`` holds the command, the seed, the selected (``best_epoch``, 0-based) and
 last epoch and global step (``best_step``, ``last_step``), the monitored value at the
 best epoch, the package/torch/Lightning versions, the machine (``machine``: device type,
-GPU name, torch, CUDA and cuDNN versions, platform; task 2.3: runs of one comparison must
-share it), the data (prepared directory, source SHA-256 and the class counts of
-``meta.json``) and the resolved settings. Classifiers add ``val_acc_best`` (micro accuracy
-on Validation at the best checkpoint: with the default monitor ``accuracy_val`` this is the
-best validation accuracy over epochs, the metric of the legacy tables),
+GPU name, torch, CUDA and cuDNN versions, platform, the effective float32 precision; task
+2.3 and ADR 0008: runs of one comparison must share it), the data (prepared directory,
+source SHA-256 and the class counts of ``meta.json``) and the resolved settings.
+Classifiers add ``val_acc_best`` (micro accuracy on Validation at the best checkpoint: with
+the default monitor ``accuracy_val`` this is the best validation accuracy over epochs, the
+metric of the legacy tables),
 ``test_acc_at_best``, the macro-F1 and, per split, the balanced accuracy, the per-class
 recall and the confusion matrices (normalised and counts). They also write the per-stamp
 softmax probabilities of the selected checkpoint on each split
@@ -139,9 +142,11 @@ from astro_simclr.training.modules import (
     SupervisedCEResNetModule,
 )
 from astro_simclr.training.runs import (
+    apply_fp32_precision,
     build_callbacks,
     build_last_checkpoint,
     build_trainer,
+    fp32_precision_record,
     monitor_mode,
     seed_run,
 )
@@ -650,7 +655,9 @@ def _machine(trainer: L.Trainer) -> dict[str, Any]:
 
     The device is the one Lightning chose (``trainer.strategy.root_device``); no device is
     named here. ``gpu`` is the CUDA device name, ``None`` on other devices (MPS has no name
-    API; ``platform`` and ``processor`` identify the Mac).
+    API; ``platform`` and ``processor`` identify the Mac). ``fp32_precision`` (the effective
+    float32 policy), ``fp32_backends`` and ``compute_capability`` come from
+    :func:`~astro_simclr.training.runs.fp32_precision_record` (ADR 0008).
     """
     device = trainer.strategy.root_device
     gpu = torch.cuda.get_device_name(device) if device.type == "cuda" else None
@@ -667,6 +674,7 @@ def _machine(trainer: L.Trainer) -> dict[str, Any]:
         "platform": platform.platform(),
         "processor": platform.machine(),
         "python": platform.python_version(),
+        **fp32_precision_record(device),
     }
 
 
@@ -991,6 +999,8 @@ def run_command(
     """
     check_accelerator(settings.accelerator)
     _check_names(settings)
+    # Before any module is built (ADR 0008): torch's default would run TF32 convolutions.
+    apply_fp32_precision(settings)
     data = dataset_path(settings)
     ckpt_path = resolve_resume(resume, settings.output_dir)
     split_run = None

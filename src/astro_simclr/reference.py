@@ -49,8 +49,9 @@ the behaviour the run had: the 2.5 flags (ADR 0005, ADR 0006) default to the fai
 so the replication runs of task 2.4 no longer warn about them.
 
 Every gate also prints a WARN line when the runs come from different machines or builds
-(``metrics.json["machine"]``, :func:`machine_signature`): the runs of one comparison use
-the same machine and build (plan, phase 2, "Machines").
+(``metrics.json["machine"]``, :func:`machine_signature`), or with different effective
+float32 precisions (ADR 0008): the runs of one comparison use the same machine, build and
+precision (plan, phase 2, "Machines").
 
 The result is ``PASS`` (for CD21 with its tier), ``FAIL`` or ``REPORT``; :func:`exit_code`
 maps it to 0, 1, 0.
@@ -282,14 +283,18 @@ def load_run(run_dir: Path) -> dict[str, Any]:
 
 
 def machine_signature(run: dict[str, Any]) -> tuple[object, ...] | None:
-    """What must match between runs of one comparison: device type, GPU, torch and CUDA.
+    """What must match between runs of one comparison: device type, GPU, torch, CUDA and
+    the effective float32 precision (``ieee`` or ``tf32``; ADR 0008).
 
-    Read from ``metrics.json["machine"]`` (written since task 2.3); ``None`` if absent.
+    Read from ``metrics.json["machine"]`` (written since task 2.3); ``None`` if absent. A
+    run written before ADR 0008 has no ``fp32_precision`` and reads as ``ieee``: every such
+    run ran on hardware without TF32 (the GTX 1050, CPU or MPS; ``results/``).
     """
     machine = run.get("machine")
     if not isinstance(machine, dict):
         return None
-    return tuple(machine.get(key) for key in ("device", "gpu", "torch", "cuda"))
+    hardware = tuple(machine.get(key) for key in ("device", "gpu", "torch", "cuda"))
+    return (*hardware, machine.get("fp32_precision", "ieee"))
 
 
 def read_oracle_report(path: Path) -> bool:
@@ -410,7 +415,9 @@ def _machine_warnings(runs: Sequence[dict[str, Any]]) -> list[str]:
     if len(signatures) <= 1:
         return []
     detail = "; ".join(sorted(map(str, signatures)))
-    return [f"  WARN: the runs come from different machines or builds: {detail}"]
+    return [
+        f"  WARN: the runs come from different machines, builds or float32 precisions: {detail}"
+    ]
 
 
 def _with_features(run: dict[str, Any]) -> bool:

@@ -39,6 +39,7 @@ __all__ = [
     "CARRASCO2021_EVAL_BATCH_SIZE",
     "CONTEXTS",
     "EPOCHS",
+    "FP32_PRECISIONS",
     "GROUP_ARCHS",
     "PAPER_ARCHS",
     "PAPER_INPUTS",
@@ -76,6 +77,11 @@ GROUP_ARCHS: Final = ("p4", "p4m")
 #: ``Settings.context`` (task 2.5-models; ``paper_variants.CONTEXTS``).
 CONTEXTS: Final = ("none", "avgpool63")
 
+#: ``Settings.fp32_precision`` (ADR 0008): ``ieee`` keeps float32 convolutions and matmuls
+#: in full float32 on every device; ``tf32`` lets Ampere and newer CUDA GPUs run them in
+#: TensorFloat-32 (10-bit mantissa; Pascal, CPU and MPS have no TF32 and stay float32).
+FP32_PRECISIONS: Final = ("ieee", "tf32")
+
 #: Accelerator names accepted by ``Settings.accelerator`` (the Lightning names this project
 #: supports). ``auto`` picks CUDA, then MPS, then CPU.
 ACCELERATORS = frozenset({"auto", "cpu", "cuda", "gpu", "mps"})
@@ -112,6 +118,10 @@ class Settings:
     seed: int = 0
     #: ``Trainer(deterministic=...)``. False keeps the legacy ``benchmark=True`` behaviour.
     deterministic: bool = False
+    #: float32 convolutions and matmuls; see :data:`FP32_PRECISIONS` (ADR 0008). Applied by
+    #: ``training.runs.apply_fp32_precision`` before any module is built, and recorded with
+    #: its effect in ``metrics.json["machine"]``. torch's own default is TF32 convolutions.
+    fp32_precision: str = "ieee"
     #: Upper bound on training epochs.
     max_epochs: int = 220
     #: EarlyStopping patience, in epochs.
@@ -267,6 +277,7 @@ class Settings:
         if self.accelerator not in ACCELERATORS:
             valid = ", ".join(sorted(ACCELERATORS))
             raise ConfigError(f"accelerator {self.accelerator!r} is not one of: {valid}")
+        self._check_fp32_precision()
         if isinstance(self.devices, int) and self.devices < 1:
             raise ConfigError(f"devices must be >= 1, got {self.devices}")
         for name in ("max_epochs", "eval_batch_size"):
@@ -284,6 +295,11 @@ class Settings:
         self._check_paper_model()
         self._check_paper_variants()
         self._check_schedule()
+
+    def _check_fp32_precision(self) -> None:
+        if self.fp32_precision not in FP32_PRECISIONS:
+            valid = ", ".join(FP32_PRECISIONS)
+            raise ConfigError(f"fp32_precision {self.fp32_precision!r} is not one of: {valid}")
 
     def _check_paper_model(self) -> None:
         for name, valid in (("paper_input", PAPER_INPUTS), ("adam_betas", ADAM_BETAS_CHOICES)):

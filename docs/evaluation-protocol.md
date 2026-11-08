@@ -279,7 +279,8 @@ astro-simclr compare-variants --splits $SPLITS \
 
 - Every run is a split run trained on **this** file (its SHA-256 is in the run's
   `protocol`), all in one mode (folds or screen), on the same data (`data.source.sha256`)
-  and machine and build (unless `--allow-mixed-machines`).
+  and machine, build and effective float32 precision (ADR 0008; unless
+  `--allow-mixed-machines`).
 - Both sides cover **the same (fold, seed) cells**, once each, and the CV runs cover
   **every fold** of the file. A missing fold, a seed on one side only or a repeated cell is
   an error that names it (exit 2). Fewer than 2 seeds in a fold gives a WARN line.

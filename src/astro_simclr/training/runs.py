@@ -5,6 +5,9 @@ hard-coded these: ``Trainer(gpus=..., benchmark=True, max_epochs=...)``, an Earl
 and a ``ModelCheckpoint_V2`` (a subclass that overrode a private method to drop the ``-v1``
 suffix) on ``accuracy_val`` or ``loss_train_enc``, and no seed. Here:
 
+- :func:`apply_fp32_precision` sets torch's float32 policy of convolutions and matmuls from
+  ``fp32_precision`` (ADR 0008), and :func:`fp32_precision_record` reads back what a run
+  used (``metrics.json["machine"]``);
 - :func:`seed_run` calls ``lightning.seed_everything(seed, workers=True)``; it must run
   before the modules are built, because their initial weights consume the generators;
 - :func:`build_callbacks` reads ``monitor``, ``patience`` and ``min_delta`` from the
@@ -18,9 +21,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, cast
 
 import lightning as L
+import torch
 from lightning.pytorch.callbacks import Callback, EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import Logger
 
@@ -28,9 +32,11 @@ from astro_simclr.config import ConfigError, Settings
 
 __all__ = [
     "MONITOR_MODES",
+    "apply_fp32_precision",
     "build_callbacks",
     "build_last_checkpoint",
     "build_trainer",
+    "fp32_precision_record",
     "monitor_mode",
     "seed_run",
 ]
@@ -42,6 +48,65 @@ MONITOR_MODES: Final[dict[str, Literal["min", "max"]]] = {
     "loss_val": "min",
     "loss_train_enc": "min",
 }
+
+
+#: ``torch.set_float32_matmul_precision`` value of each ``Settings.fp32_precision``.
+_MATMUL_PRECISION: Final[dict[str, str]] = {"ieee": "highest", "tf32": "high"}
+#: The first CUDA compute capability (major) with TF32 tensor cores: Ampere.
+_TF32_MIN_MAJOR: Final = 8
+
+
+def apply_fp32_precision(settings: Settings) -> None:
+    """Set the float32 precision of cuDNN convolutions and of matmuls from the settings.
+
+    torch 2.14 runs cuDNN convolutions in TF32 by default
+    (``torch.backends.cudnn.conv.fp32_precision == "tf32"``), so without this a run on an
+    Ampere or newer GPU would silently use 10-bit-mantissa convolutions while the GTX 1050
+    (Pascal, no TF32) uses float32 (ADR 0008). Call it at the start of every run, before
+    any module is built; the setting is process-global, so it also replaces whatever an
+    earlier run in the same process set.
+
+    Convolutions use the per-operator API of the 2.14 line. Matmuls go through
+    ``torch.set_float32_matmul_precision`` instead of
+    ``torch.backends.cuda.matmul.fp32_precision``: after the latter is set to ``tf32``,
+    ``torch.get_float32_matmul_precision()`` raises (torch reports mixed legacy and new
+    APIs, measured on 2.14.1), and Lightning's CUDA accelerator calls it on Ampere GPUs.
+    ``high`` also lets oneDNN use TF32 for CPU matmuls on CPUs that support it.
+    """
+    # torch.backends.cudnn is untyped; the cast states the documented attribute.
+    conv = cast(Any, torch.backends.cudnn).conv
+    conv.fp32_precision = settings.fp32_precision
+    torch.set_float32_matmul_precision(_MATMUL_PRECISION[settings.fp32_precision])
+
+
+def fp32_precision_record(device: torch.device) -> dict[str, Any]:
+    """What float32 precision a run on ``device`` used, for ``metrics.json["machine"]``.
+
+    ``fp32_precision`` is the effective policy, ``tf32`` only when ``device`` is a CUDA GPU
+    with TF32 (compute capability 8.0 or newer) and the convolutions or the matmuls allow
+    it, else ``ieee``: this is what a comparison must not mix (``reference.machine_signature``).
+    ``fp32_backends`` holds the torch settings read back (cuDNN convolutions, CUDA and oneDNN
+    matmuls) and ``compute_capability`` the CUDA device's ``"major.minor"`` (``None`` on
+    other devices).
+    """
+    backends = cast(Any, torch.backends)
+    settings = {
+        "cudnn_conv": backends.cudnn.conv.fp32_precision,
+        "cuda_matmul": backends.cuda.matmul.fp32_precision,
+        "mkldnn_matmul": backends.mkldnn.matmul.fp32_precision,
+    }
+    capability = None
+    tf32 = False
+    if device.type == "cuda":
+        major, minor = torch.cuda.get_device_capability(device)
+        capability = f"{major}.{minor}"
+        uses_tf32 = "tf32" in (settings["cudnn_conv"], settings["cuda_matmul"])
+        tf32 = major >= _TF32_MIN_MAJOR and uses_tf32
+    return {
+        "fp32_precision": "tf32" if tf32 else "ieee",
+        "fp32_backends": settings,
+        "compute_capability": capability,
+    }
 
 
 def seed_run(settings: Settings) -> int:

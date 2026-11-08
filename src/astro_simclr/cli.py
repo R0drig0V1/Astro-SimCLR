@@ -655,7 +655,10 @@ def _add_protocol_commands(
     variants.add_argument(
         "--allow-mixed-machines",
         action="store_true",
-        help="compare runs from different machines or builds (the plan forbids it)",
+        help=(
+            "compare runs from different machines, builds or float32 precisions "
+            "(the plan forbids it)"
+        ),
     )
     variants.set_defaults(handler=_compare_variants)
 

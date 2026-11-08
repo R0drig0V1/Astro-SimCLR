@@ -58,6 +58,11 @@ of one run.
   change the loss); `deterministic: false` (the legacy runs used `benchmark=True`); the
   protocol defaults are the legacy classifier values (220 epochs, patience 40,
   `min_delta` 0.001, `accuracy_val`, eval batch 100).
+- `fp32_precision: ieee | tf32` (ADR 0008; default `ieee`): the float32 precision of cuDNN
+  convolutions and of matmuls. `ieee` is full float32 on every device; `tf32` lets Ampere+
+  GPUs use TensorFloat-32 (torch 2.14's own default for convolutions). Set at the start of
+  every run (`training.runs.apply_fp32_precision`) and recorded, with its effect, in
+  `metrics.json["machine"]`.
 - Later tasks add their fields here (for example the NT-Xent denominator flag of 1.3).
 - **Task 1.7 fields** (flat, so every one can be `--set`): EarlyStopping `check_finite`
   (default true, Lightning's default) and `divergence_threshold` (null: never; R1 uses
@@ -767,6 +772,14 @@ memory-mapped:
 **Run helpers** (`runs.py`):
 
 - `seed_run(settings)`: `L.seed_everything(settings.seed, workers=True)`.
+- `apply_fp32_precision(settings)` (ADR 0008): `torch.backends.cudnn.conv.fp32_precision`
+  and `torch.set_float32_matmul_precision("highest" | "high")` from `fp32_precision`
+  (the matmul call, not `torch.backends.cuda.matmul.fp32_precision`, because after the
+  latter is set to `tf32` `torch.get_float32_matmul_precision()` raises, and Lightning calls
+  it on Ampere+ GPUs). Process-global; `run_command` calls it before anything is built.
+  `fp32_precision_record(device)`: the effective policy (`tf32` only on a CUDA device of
+  compute capability 8.0+ that allows it), the torch settings read back
+  (`fp32_backends`) and `compute_capability`, for `metrics.json["machine"]`.
 - `build_callbacks(settings, monitorable, dirpath, filename="best")`: `EarlyStopping` and
   `ModelCheckpoint(save_top_k=1, enable_version_counter=False)` (the legacy
   `ModelCheckpoint_V2` overrode a private method to the same effect), both on
@@ -1067,8 +1080,9 @@ Decisions and provenance: ADR 0003.
   `rot90_augment: false` to both presets (the defaults, so the faithful settings are
   unchanged), so that a variant run is reported as a deviation, not as faithful. Plan rows
   C5 and C6 add `aug_noise: 0.0`, `aug_feature_jitter: 0.0`, `synthetic_bogus: 0.0` and
-  `aug_min_r2: 0.5` the same way (ADR 0006), and row C7 `flux_rescale: 0.0`,
-  `flux_k_min: 0.5`, `flux_k_max: 1.5` (ADR 0007).
+  `aug_min_r2: 0.5` the same way (ADR 0006), row C7 `flux_rescale: 0.0`,
+  `flux_k_min: 0.5`, `flux_k_max: 1.5` (ADR 0007), and ADR 0008 `fp32_precision: ieee`, so
+  that a TF32 run is a deviation.
 - `preset_for(settings)`: the preset of a `carrasco2021`-schedule run (by `with_features`),
   else `None`. `preset_report(settings)`: `name`, `faithful` (no preset key changed),
   `deviations` (key → `{value, preset}`) and `diagnostics` (the flags turned on), written
@@ -1118,7 +1132,8 @@ preflight alike:
 1. `check_accelerator`: `cuda` without `torch.cuda.is_available()` (or `mps`, `gpu`
    without one) raises `AcceleratorError`, naming the torch build and the preflight, before
    anything is built;
-2. `dataset_path`: `data_dir/<dataset>` must be a prepared layout (`DataError` says how to
+2. `apply_fp32_precision` (ADR 0008), then `dataset_path`: `data_dir/<dataset>` must be a
+   prepared layout (`DataError` says how to
    prepare it);
 3. `seed_run` before any module is built (downstream: after loading the pretrained
    checkpoint, so the head's initial weights do not depend on the loading path);
@@ -1136,7 +1151,8 @@ Outputs, all under `output_dir`: `checkpoints/{best,last}.ckpt`,
 `confusion_matrix_{val,test}.png`. `metrics.json`: command, seed, `best_epoch` (0-based),
 `last_epoch`, monitor and `monitor_best`, versions, accelerator, `machine` (task 2.3:
 `device` from `trainer.strategy.root_device`, `gpu` = the CUDA device name or `null`,
-`torch`, `cuda`, `cudnn`, `platform`, `processor`, `python`), the data (prepared path,
+`torch`, `cuda`, `cudnn`, `platform`, `processor`, `python`; ADR 0008: `fp32_precision`,
+the effective `ieee` or `tf32`, `fp32_backends` and `compute_capability`), the data (prepared path,
 source SHA-256, class counts per split from `meta.json`), the resolved `config`; the
 classifiers add `val_acc_best` (micro accuracy on Validation at the best checkpoint: with
 the monitor `accuracy_val`, the best validation accuracy over epochs, the metric of the
@@ -1218,7 +1234,8 @@ checked (command, `supervised_model`, no duplicate seed) and `val_acc_best` aggr
   Runs with and without features may share seeds (`Reference.split_by_features`); the
   result line is `CD21: PASS (faithful|acceptable)`. Constants: `CD21_*`.
 - Every gate prints a WARN line when the runs' `machine_signature` (device, GPU, torch,
-  CUDA) differ.
+  CUDA and the effective float32 precision, ADR 0008; a run without it reads as `ieee`)
+  differ.
 
 ## `protocol` (task 2.3; split runs and decisions in 2.5-infra)
 
@@ -1233,7 +1250,7 @@ import, so `make-splits` and `compare-variants` start fast.
 | `predictions` | `Predictions(probabilities, labels, index)`, `save_predictions` / `load_predictions` (`.npz`, `allow_pickle=False`), `check_paired`, `ensemble` (mean probabilities per stamp), `seed_mean_correct` |
 | `stats` | `mcnemar` (exact, integer arithmetic), `paired_bootstrap` (percentile CI of variant − baseline, stratified by class, metric `accuracy` or `balanced_accuracy`, own `default_rng(seed)`, memory-bounded blocks), `balanced_accuracy`, `adoption_decision` (superiority: `adopt` only if the CI is above 0), `non_inferiority_decision(interval, margin=0.005)` (`adopt` if the CI lower bound is above −margin, `worse` if the CI is below it; `check_margin` refuses margins outside (0, 0.05], a likely points-for-fraction mistake), `screen_decision` (`drop` at 4 points or more, never adopt) |
 | `split_runs` | Task 2.5-infra. `SplitRequest(file, fold)` (`fold=None`: the screen); `open_split_run(request, prepared_dir)` reads the file, refuses a fold it does not have (`ConfigError`) and runs `verify_splits` on the prepared data (a wrong fingerprint is a `SplitsError`); `SplitRun.parts()` gives `RunParts` (training, selection, evaluation as sorted pool indices, and `evaluation_index`: pool indices for a fold, Validation indices for the screen) and checks that they are pairwise disjoint and hold no excluded stamp; `SplitRun.describe()` is `metrics.json["protocol"]` (mode, fold, splits file and SHA-256, part sizes); `SplitRun.identity()` (splits SHA-256, mode, fold) is stored in every checkpoint and checked on resume. `file_sha256` |
-| `compare` | `compare_variants(baseline_dirs, variant_dirs, stage)`: loads each run's `metrics.json` and predictions file, refuses repeated seeds, runs on different data (`data.source.sha256`: a normal run's `index` is `arange(N)`, so the data identity and the labels are what show two runs saw the same stamps), unpaired runs and mixed machines (unless allowed), reports McNemar on the seed ensembles and the bootstrap, always as REPORT; it points split runs to `--splits`. `screen_comparison` / `cv_comparison(..., rule="superiority"\|"non-inferiority", margin)`: the decision helpers, which check that the predictions cover exactly the screen's decision half or each fold's evaluation part (so the CV bootstrap is paired by pool index); `CVResult` holds the per-fold and pooled balanced accuracies, the CI, McNemar on the seed ensembles and the decision. `compare_decision(baseline_dirs, variant_dirs, splits_file, rule, margin)` (CLI `compare-variants --splits`): loads split runs (`load_split_run`), checks the splits file's SHA-256, one mode, one data source and machine, the same (fold, seed) cells on both sides and every fold, then applies `cv_comparison` (verdict `ADOPT` / `NOT ADOPTED`) or `screen_comparison` (`KEEP` / `DROP`; `--rule` refused) |
+| `compare` | `compare_variants(baseline_dirs, variant_dirs, stage)`: loads each run's `metrics.json` and predictions file, refuses repeated seeds, runs on different data (`data.source.sha256`: a normal run's `index` is `arange(N)`, so the data identity and the labels are what show two runs saw the same stamps), unpaired runs and mixed machines or float32 precisions (unless allowed), reports McNemar on the seed ensembles and the bootstrap, always as REPORT; it points split runs to `--splits`. `screen_comparison` / `cv_comparison(..., rule="superiority"\|"non-inferiority", margin)`: the decision helpers, which check that the predictions cover exactly the screen's decision half or each fold's evaluation part (so the CV bootstrap is paired by pool index); `CVResult` holds the per-fold and pooled balanced accuracies, the CI, McNemar on the seed ensembles and the decision. `compare_decision(baseline_dirs, variant_dirs, splits_file, rule, margin)` (CLI `compare-variants --splits`): loads split runs (`load_split_run`), checks the splits file's SHA-256, one mode, one data source and machine, the same (fold, seed) cells on both sides and every fold, then applies `cv_comparison` (verdict `ADOPT` / `NOT ADOPTED`) or `screen_comparison` (`KEEP` / `DROP`; `--rule` refused) |
 
 - **Stored splits:** `configs/splits/td_ztf_stamp_17_06_20_red-002.json` (seed 0, made with
   `make-splits` on the real data). On `red`: one duplicate, Train 2995 (Bogus) =
