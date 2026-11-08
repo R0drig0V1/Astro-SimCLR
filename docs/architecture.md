@@ -31,7 +31,8 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  ├──► oracle (fetch-m1, m1-oracle: the published M1 vs our input path) ──► paper_model, data
  ├──► alerts (fetch-alerts, alerts-summary: raw alerts from ALeRCE) ──► data (prepared, m1_features)
  │    (training ──► paper_variants: rot4 / single / p4 / p4m ──► paper_model, group_conv)
- └──► preflight ──► experiments, data (inspection, manifest)
+ ├──► preflight ──► experiments, data (inspection, manifest)
+ └──► runs (phase 4, A0: run identity, manifest.json, layout, retention) ──► config, data
 
 rj23_model (engine-free nn.Modules, not wired yet: task 3.4b) ──► data.rj23_input
 ```
@@ -1578,6 +1579,68 @@ phase-3 benchmarks (task 3.2); the rules and the power note are in
   another fold's weights. The default path, and so the
   faithful preset, is unchanged. The end-to-end commands are in
   `docs/evaluation-protocol.md`.
+
+## `runs` (phase 4, task A0; ADR 0015)
+
+`src/astro_simclr/runs/` defines the interfaces of run identity that the registry (A2), the
+queue (A3) and the new engine build on. Nothing in it imports torch, and nothing calls it
+yet: A1 wires it into `run_command`.
+
+- **`canonical`**: `canonical_json(value)` writes sorted keys with no whitespace, ASCII
+  escapes, `repr` floats, `-0.0` as `0.0` and ints distinct from floats, and refuses
+  NaN and infinity. `semantic_config(command, settings)` returns
+  `{"canonical_version": 1, "command", "settings"}`: the resolved settings (defaults
+  materialised) without `NON_SEMANTIC_KEYS` (`accelerator`, `data_dir`, `output_dir`,
+  `progress_bar_refresh_rate`, `checkpoint_every_n_steps`, each with its reason in the code)
+  and `IDENTITY_KEYS` (`seed`, `pretrained`, which are run-id components). `config_sha256`
+  is its SHA-256.
+  - `HASH_NEUTRAL_DEFAULTS` leaves semantic fields out at one value: `num_workers: 0`
+    (with workers, per-worker seeding changes the augmentation draws, so any other count is
+    hashed), and fields added later at the value that keeps old hashes.
+  - `semantic_config_from_plain(command, view, complete=True)` and `semantic_diff` are the
+    hook of the nested config (4.2): lower to the flat view, then compare hashes.
+  - The pinned hashes of the `carrasco2021` presets, of eight 2.5 variants and of the two
+    legacy protocols are in `tests/fixtures/runs/canonical_configs.json`; regenerate them with
+    `uv run python tests/_canonical_cases.py`, and only on purpose.
+- **`identity`**: `RunIdentity` holds the config hash, `seed`, `split` (a fold, `"screen"`,
+  or `None`), `data_sha256`, `splits_sha256`, `pretrained_sha256`, `machine_class`, `engine`
+  (`lightning` or `plain`) and
+  `numerics_epoch`. `run_id` is the SHA-256 of its canonical JSON.
+  - `run_identity(command, settings, ...)` builds it from a run's settings.
+  - `NUMERICS_EPOCH` is the integer that a PR bumps when it changes what an existing config
+    computes. The module docstring lists when; the PR template asks.
+  - Helpers: `prepared_data_sha256` / `data_sha256` (from `meta.json`'s recorded array
+    hashes, split layouts and `raw-alerts` pools alike; independent of `created_by` and of
+    the format version), `uv_lock_sha256`,
+    `git_state` (HEAD and `git status --porcelain`; `None` outside git), `split_part` (from
+    a `SplitRequest`) and `default_machine_class` (`cuda-<gpu model>`, `cpu-<isa>`,
+    `mps-<isa>`).
+- **`manifest`**: `Manifest` is the versioned `manifest.json` (format
+  `astro-simclr-run-manifest`, version 1). Its fields are:
+  - run id and attempt;
+  - command, the full config, the config hash and `canonical_version`;
+  - the identity;
+  - git `{sha, dirty}` and the `uv.lock` SHA-256;
+  - `machine`: the `metrics.json` record, with `fp32_precision` (ADR 0010);
+  - `engine` (the identity's), named `seeds` and `concurrent_jobs`;
+  - `status` and the UTC timestamps.
+
+  `new_manifest` starts it `queued`. `transition` allows `queued → running | cancelled`
+  and `running → finished | failed | cancelled | queued` (an expired lease); only
+  `finished` counts as finished (`is_finished`). `write_manifest` writes the file
+  atomically. `read_manifest` checks the format, the exact keys (none repeated) and the
+  types, the consistency of the status and timestamps and of `pretrained` with its
+  SHA-256, and that the recorded `config_sha256` and `run_id` are what the content hashes
+  to; any failure, a garbled file included, is a `ManifestError`.
+- **`layout`**: `run_dir_name(run_id, attempt)` is `<id[:16]>-a<attempt>`. The files of an
+  attempt are `manifest.json`, `metrics.json`, `scalars.jsonl`, `tb/`,
+  `predictions_*.npz` and `ckpt/{last,best}.pt`; Lightning runs keep
+  `checkpoints/{last,best}.ckpt` and `lightning_logs/`. `classify_artefact(path)` gives a
+  file's kind. `retention(manifest, paths)` is pure and decides keep or delete, with a
+  reason, for each path:
+  - an unfinished attempt keeps everything;
+  - a finished one deletes `last`, and keeps `best` only for `pretrain`;
+  - records, results, logs, figures and unknown files are kept.
 
 ## `preflight` (task 1.7)
 
