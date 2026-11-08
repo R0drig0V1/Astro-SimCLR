@@ -203,7 +203,7 @@ def test_verify_refuses_other_data(table: AlertTable, tmp_path: Path) -> None:
     ("change", "message"),
     [
         (lambda raw: raw.update(format="other"), "not a astro-simclr-object-splits"),
-        (lambda raw: raw.update(format_version=2), "unsupported format_version"),
+        (lambda raw: raw.update(format_version=3), "unsupported format_version"),
         (lambda raw: raw.pop("halves"), "malformed"),
         (lambda raw: raw.update(seed="0"), "seed must be an integer"),
         (lambda raw: raw.update(group_key="ra"), "group_key"),

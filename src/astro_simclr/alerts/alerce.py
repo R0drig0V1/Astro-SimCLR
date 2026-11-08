@@ -17,11 +17,19 @@ The JSON is untrusted. :class:`AlerceClient` checks its shape and types and rais
 :class:`ResponseError` for anything unexpected; an ``oid`` must look like a ZTF object id
 before it is put into a URL. Detections without a numeric ``magpsf``/``sigmapsf`` or an
 integer ``candid`` (forced photometry, upper limits) are skipped, since they cannot match.
+
+The phase-3 reconstruction (task 3.5) reads more of each detection than the photometric
+match: :func:`parse_detection_records` turns the same detection list into
+:class:`DetectionRecord` items (``candid``, ``jd``, ``fid``, ``has_stamp``, position), the
+input of its seeded draw. ALeRCE reports ``mjd``; ``jd = mjd + 2400000.5`` (or ``jd``
+itself when present). A detection that is not usable for a stamp draw (no integer
+``candid``, no finite time) is skipped and counted, never guessed.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import re
 import urllib.parse
 from dataclasses import dataclass
@@ -35,14 +43,20 @@ __all__ = [
     "AVRO_URL",
     "MAX_AVRO_BYTES",
     "MAX_JSON_BYTES",
+    "MJD_OFFSET",
     "RADIUS_ARCSEC",
     "AlerceClient",
     "Detection",
+    "DetectionRecord",
+    "DetectionRecords",
     "Getter",
     "ObjectsPage",
     "ResponseError",
+    "avro_url",
+    "detections_url",
     "is_oid",
     "make_client",
+    "parse_detection_records",
 ]
 
 #: ALeRCE's ZTF API and avro service (checked 2026-11-08).
@@ -92,6 +106,32 @@ class Detection:
     candid: int
     magpsf: float
     sigmapsf: float
+
+
+@dataclass(frozen=True, slots=True)
+class DetectionRecord:
+    """One detection of an object as the stamp draw of task 3.5 needs it.
+
+    ``jd`` is the Julian date (``mjd + 2400000.5``); ``has_stamp`` is ALeRCE's flag that the
+    detection's alert (and so its cutouts) exists, false for the earlier detections an alert
+    only lists as previous candidates. ``fid``, ``ra`` and ``dec`` are ``None`` when the
+    list lacks a valid value.
+    """
+
+    candid: int
+    jd: float
+    has_stamp: bool
+    fid: int | None
+    ra: float | None
+    dec: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class DetectionRecords:
+    """The detection list of one object: its usable records and how many were skipped."""
+
+    records: tuple[DetectionRecord, ...]
+    skipped: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,8 +191,7 @@ class AlerceClient:
             HttpError: if the request fails.
             ResponseError: if the answer is not a list of objects.
         """
-        _check_oid(oid)
-        url = f"{self.api_url}/objects/{oid}/detections"
+        url = detections_url(oid, self.api_url)
         payload = _json(
             self.getter.get(url, max_bytes=MAX_JSON_BYTES, kind="detections", cache=True)
         )
@@ -169,6 +208,20 @@ class AlerceClient:
                 found.append(detection)
         return found
 
+    def detection_records(self, oid: str) -> DetectionRecords:
+        """The detection list of ``oid`` as :class:`DetectionRecord` items (task 3.5).
+
+        The same request (and cache entry) as :meth:`detections`.
+
+        Raises:
+            ValueError: if ``oid`` is not a ZTF object id.
+            HttpError: if the request fails.
+            ResponseError: if the answer is not a list of objects.
+        """
+        url = detections_url(oid, self.api_url)
+        body = self.getter.get(url, max_bytes=MAX_JSON_BYTES, kind="detections", cache=True)
+        return parse_detection_records(body, oid)
+
     def alert_avro(self, oid: str, candid: int) -> bytes:
         """The avro bytes of alert (``oid``, ``candid``); parse them with ``parse_alert``.
 
@@ -176,10 +229,81 @@ class AlerceClient:
             ValueError: if ``oid`` is not a ZTF object id.
             HttpError: if the request fails.
         """
-        _check_oid(oid)
-        query = urllib.parse.urlencode({"oid": oid, "candid": str(int(candid))})
-        url = f"{self.avro_url}/get_avro?{query}"
+        url = avro_url(oid, candid, self.avro_url)
         return self.getter.get(url, max_bytes=MAX_AVRO_BYTES, kind="avro", cache=False)
+
+
+def detections_url(oid: str, base: str = API_URL) -> str:
+    """The URL of ``oid``'s detection list (the key of its response in a snapshot).
+
+    Raises:
+        ValueError: if ``oid`` is not a ZTF object id.
+    """
+    _check_oid(oid)
+    return f"{base.rstrip('/')}/objects/{oid}/detections"
+
+
+def avro_url(oid: str, candid: int, base: str = AVRO_URL) -> str:
+    """The URL of alert (``oid``, ``candid``)'s avro file (its key in a snapshot).
+
+    Raises:
+        ValueError: if ``oid`` is not a ZTF object id.
+    """
+    _check_oid(oid)
+    query = urllib.parse.urlencode({"oid": oid, "candid": str(int(candid))})
+    return f"{base.rstrip('/')}/get_avro?{query}"
+
+
+#: ``jd - mjd``.
+MJD_OFFSET = 2400000.5
+
+
+def parse_detection_records(body: bytes, oid: str) -> DetectionRecords:
+    """Parse a detection-list response (untrusted JSON) into :class:`DetectionRecords`.
+
+    Accepts a bare list or ``{"items": [...]}``. A record needs an integer ``candid`` and a
+    finite ``jd`` (or ``mjd``); ``has_stamp`` must be the JSON ``true`` to count as true.
+    Records without a candid or time are skipped and counted.
+
+    Raises:
+        ResponseError: if the body is not JSON, or not a list of objects.
+    """
+    payload = _json(body)
+    if isinstance(payload, dict):
+        payload = payload.get("items")
+    if not isinstance(payload, list):
+        raise ResponseError(f"detections of {oid}: expected a list")
+    records: list[DetectionRecord] = []
+    skipped = 0
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ResponseError(f"detections of {oid}: expected objects in the list")
+        record = _record(item)
+        if record is None:
+            skipped += 1
+        else:
+            records.append(record)
+    return DetectionRecords(tuple(records), skipped)
+
+
+def _record(item: dict[str, Any]) -> DetectionRecord | None:
+    candid = _candid(item.get("candid"))
+    jd = _number(item.get("jd"))
+    if jd is None:
+        mjd = _number(item.get("mjd"))
+        jd = None if mjd is None else mjd + MJD_OFFSET
+    if candid is None or jd is None or not math.isfinite(jd):
+        return None
+    fid = item.get("fid")
+    ra, dec = _number(item.get("ra")), _number(item.get("dec"))
+    return DetectionRecord(
+        candid=candid,
+        jd=jd,
+        has_stamp=item.get("has_stamp") is True,
+        fid=fid if isinstance(fid, int) and not isinstance(fid, bool) else None,
+        ra=ra if ra is not None and math.isfinite(ra) else None,
+        dec=dec if dec is not None and math.isfinite(dec) else None,
+    )
 
 
 def make_client(rate: float) -> AlerceClient:

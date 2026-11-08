@@ -10,7 +10,9 @@
    G-CNN silently. Every invariant configuration is checked in eval mode, in float64 and
    float32, under the rotations by 90 degrees, and under the flips for p4m, with random
    biases and BN affine parameters (the initial zeros would hide an expansion bug). The
-   non-invariant cases are checked to fail, so the test can see a break.
+   non-invariant cases are checked to fail, so the test can see a break. The check on each
+   accelerator runs in float64 on CUDA, where cuDNN's float32 Winograd convolutions move
+   the logits by ~1e-5 under a rotation (the comment in the test has the measurements).
 3. Parameter and MAC counts, the initialisation, the head's equivalence with the paper's,
    the settings, the context data path and a CPU training smoke run.
 """
@@ -225,9 +227,17 @@ def test_the_single_pass_model_is_not_invariant() -> None:
 @pytest.mark.parametrize("accelerator", ACCELERATORS)
 @pytest.mark.parametrize("arch", ["p4", "p4m"])
 def test_invariance_on_each_accelerator(arch: str, accelerator: str) -> None:
+    # CUDA runs in float64. In float32, cuDNN runs the 5x5 group convolutions (32 -> 32
+    # channels) with its non-fused Winograd F(5x5) on 9x9 tiles, whatever the TF32 policy:
+    # 4e-3 relative error per layer against 6e-7 on the CPU (RTX 5090, torch 2.14.1+cu130,
+    # cuDNN 9.24), and a rotated input lands on other tiles, so the logits move by up to
+    # 1.6e-5 (p4) and 8e-6 (p4m) under `ieee` (2.9e-5 and 1.7e-5 under torch's default
+    # TF32). The model is invariant there too: float64 gives 7e-16, and float32 with
+    # cuDNN disabled 3.5e-7 on that layer. MPS has no float64 and stays in float32.
     device = torch.device(accelerator)
-    model = _variant(arch, None, "avgpool63").to(device)
-    images, features = _inputs(6, torch.float32)
+    dtype = torch.float64 if accelerator == "cuda" else torch.float32
+    model = _variant(arch, None, "avgpool63").to(device=device, dtype=dtype)
+    images, features = _inputs(6, dtype)
     changes = _max_change(model, images.to(device), features.to(device))
     assert changes["rotation"] < 1e-5
     if arch == "p4m":
