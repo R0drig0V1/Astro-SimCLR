@@ -61,7 +61,10 @@ with `pickletools`.
     flips);
   - features through BN, then concatenated: 64 + 23 = 87;
   - fc2 87→64, ReLU, dropout; fc3 64→64, ReLU, dropout; 64→5 logits;
-  - Glorot-uniform weights, zero biases.
+  - Glorot-uniform weights; zero biases on the convolutions and the logits, but
+    **Glorot-uniform biases on fc1–fc3**, U(±0.2165): ALeRCE passes
+    `bias_initializer=None` and Keras falls back to `glorot_uniform` (M1 graph:
+    `dense_*/bias/Initializer/random_uniform`; found in task 2.2a).
 
 - **Dropout was inactive in training** (plan review round 2; verified by the integrator in
   the meta graph). Keras `Dropout` is called without a `training` argument
@@ -165,7 +168,7 @@ except the manual runs, and the phase-1 portability rule applies to all of them.
     ALeRCE code.
   - An "alignment check" that the uint8 and float crops cover the same pixels.
 
-### 2.2a Paper-faithful model, schedule and sampler (now; synthetic data only)
+### 2.2a Paper-faithful model, schedule and sampler (now; synthetic data only) — done (PR #14, merged as 0ce8c77, 2026-11-08)
 
 - `PaperStampClassifier`, a new class:
   - `ZeroPad2d(3)`;
@@ -174,7 +177,7 @@ except the manual runs, and the phase-1 portability rule applies to all of them.
     `dropout_active=True, rate=0.5` is diagnostic 1 of 2.4;
   - feature `BatchNorm1d(23, eps=1e-3, momentum=0.0)`, so the running statistics stay at
     (0, 1);
-  - Glorot-uniform weights and zero biases;
+  - Glorot-uniform weights; zero conv/logits biases, Glorot-uniform fc1–fc3 biases;
   - no flips.
 
   A `with_features=False` variant matches ALeRCE's `DeepHitsExtraLayer`.
