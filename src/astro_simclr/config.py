@@ -39,6 +39,7 @@ __all__ = [
     "CARRASCO2021_EVAL_BATCH_SIZE",
     "CONTEXTS",
     "EPOCHS",
+    "FP32_PRECISIONS",
     "GROUP_ARCHS",
     "PAPER_ARCHS",
     "PAPER_INPUTS",
@@ -76,6 +77,11 @@ GROUP_ARCHS: Final = ("p4", "p4m")
 #: ``Settings.context`` (task 2.5-models; ``paper_variants.CONTEXTS``).
 CONTEXTS: Final = ("none", "avgpool63")
 
+#: ``Settings.fp32_precision`` (ADR 0010): ``ieee`` keeps float32 convolutions and matmuls
+#: in full float32 on every device; ``tf32`` lets Ampere and newer CUDA GPUs run them in
+#: TensorFloat-32 (10-bit mantissa; Pascal, CPU and MPS have no TF32 and stay float32).
+FP32_PRECISIONS: Final = ("ieee", "tf32")
+
 #: Accelerator names accepted by ``Settings.accelerator`` (the Lightning names this project
 #: supports). ``auto`` picks CUDA, then MPS, then CPU.
 ACCELERATORS = frozenset({"auto", "cpu", "cuda", "gpu", "mps"})
@@ -112,6 +118,10 @@ class Settings:
     seed: int = 0
     #: ``Trainer(deterministic=...)``. False keeps the legacy ``benchmark=True`` behaviour.
     deterministic: bool = False
+    #: float32 convolutions and matmuls; see :data:`FP32_PRECISIONS` (ADR 0010). Applied by
+    #: ``training.runs.apply_fp32_precision`` before any module is built, and recorded with
+    #: its effect in ``metrics.json["machine"]``. torch's own default is TF32 convolutions.
+    fp32_precision: str = "ieee"
     #: Upper bound on training epochs.
     max_epochs: int = 220
     #: EarlyStopping patience, in epochs.
@@ -136,6 +146,10 @@ class Settings:
     limit_train_batches: int | float | None = None
     #: ``Trainer(limit_val_batches=...)``, as ``limit_train_batches``.
     limit_val_batches: int | float | None = None
+    #: Redraw Lightning's progress bar every this many batches (``TQDMProgressBar``); 0
+    #: hides it. Lightning's default, 1, costs ~0.4 ms a step on a 30,000-step run
+    #: (``carrasco2021``); no effect on the numbers.
+    progress_bar_refresh_rate: int = 50
 
     # --- Data and model hyperparameters of the training subcommands (task 1.7) -------------
 
@@ -267,12 +281,13 @@ class Settings:
         if self.accelerator not in ACCELERATORS:
             valid = ", ".join(sorted(ACCELERATORS))
             raise ConfigError(f"accelerator {self.accelerator!r} is not one of: {valid}")
+        self._check_fp32_precision()
         if isinstance(self.devices, int) and self.devices < 1:
             raise ConfigError(f"devices must be >= 1, got {self.devices}")
         for name in ("max_epochs", "eval_batch_size"):
             if getattr(self, name) < 1:
                 raise ConfigError(f"{name} must be >= 1, got {getattr(self, name)}")
-        for name in ("num_workers", "patience", "seed"):
+        for name in ("num_workers", "patience", "seed", "progress_bar_refresh_rate"):
             if getattr(self, name) < 0:
                 raise ConfigError(f"{name} must be >= 0, got {getattr(self, name)}")
         if self.min_delta < 0:
@@ -284,6 +299,11 @@ class Settings:
         self._check_paper_model()
         self._check_paper_variants()
         self._check_schedule()
+
+    def _check_fp32_precision(self) -> None:
+        if self.fp32_precision not in FP32_PRECISIONS:
+            valid = ", ".join(FP32_PRECISIONS)
+            raise ConfigError(f"fp32_precision {self.fp32_precision!r} is not one of: {valid}")
 
     def _check_paper_model(self) -> None:
         for name, valid in (("paper_input", PAPER_INPUTS), ("adam_betas", ADAM_BETAS_CHOICES)):

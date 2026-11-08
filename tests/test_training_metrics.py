@@ -39,6 +39,16 @@ def test_precision_and_recall_are_macro_over_the_classes_present() -> None:
     assert metrics["recall"].item() == pytest.approx((9 / 10 + 1 / 2 + 0 + 0) / 4)
 
 
+def test_metrics_without_value_checks_are_the_same() -> None:
+    checked = classification_metrics(Y_PRED, Y_TRUE)
+    unchecked = classification_metrics(Y_PRED, Y_TRUE, validate_args=False)
+    for key, value in checked.items():
+        assert torch.equal(unchecked[key], value), key
+    # The shape check is ours, not torchmetrics', so it still runs.
+    with pytest.raises(ValueError, match="same shape"):
+        classification_metrics(Y_PRED, Y_TRUE[:-1], validate_args=False)
+
+
 def test_confusion_matrix_is_normalised_over_the_true_labels() -> None:
     cm = confusion_matrix(Y_PRED, Y_TRUE)
     assert cm.shape == (5, 5)

@@ -122,10 +122,16 @@ def test_fast_dev_run_classifiers(
     metrics = trainer.callback_metrics
     for key in ("accuracy_val", "loss_val", "Loss/Train", "Accuracy/Train", "Recall/Validation"):
         assert torch.isfinite(metrics[key]), key
+    # The fit's validations only feed the monitor: no confusion matrix, no CPU copies.
+    assert not module.confusion_matrices
+    assert not module.predictions
+    assert not module.probabilities
     (results,) = trainer.test(module, datamodule=datamodule, verbose=False)
     assert 0.0 <= results["Accuracy/Test"] <= 1.0
     assert module.confusion_matrices["test"].shape == (5, 5)
+    trainer.validate(module, datamodule=datamodule, verbose=False)
     assert module.confusion_matrices["val"].device.type == "cpu"
+    assert module.probabilities["val"].device.type == "cpu"
 
 
 def _run_simclr(tmp_path: Path, path: Path, seed: int, epochs: int = 2) -> list[float]:

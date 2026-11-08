@@ -2,10 +2,22 @@
      its own section, so parallel PRs do not conflict. Plan: docs/phases/01-runnable-package.md. -->
 # Architecture
 
-`src/astro_simclr/` is the typed, tested package that replaces the legacy research code at
-the repository root (`utils/`, `models/`, `losses/`, the root scripts). Phase 1 ports the
-legacy modules one task at a time; until a module is ported, its legacy file is the
-characterization oracle and stays excluded from ruff, mypy and coverage.
+`src/astro_simclr/` is the typed, tested package that replaced the legacy research code
+(`utils/`, `models/`, `losses/`, the root scripts and `env.yml`). Phase 1 ported the legacy
+modules one task at a time, each against a characterization fixture generated from the
+legacy code; task 1.8 then deleted the legacy code from the tree.
+
+**Legacy code.** Every legacy path cited on this page and in the docstrings (`utils/training.py`,
+`iter_clr.py`, ...) is readable at the git tag `legacy-final`, the last commit of `main` that
+had it: `git show legacy-final:utils/training.py` (or `git fetch origin tag legacy-final`
+first). Paths cited with another commit (`b357b43^`, `31b10c9`) are read at that commit. The
+generators in `scripts/characterize/` import the legacy code through
+`scripts/characterize/legacy_tree.py`, which names the tag once (`LEGACY_REF`; the
+environment variable `ASTRO_SIMCLR_LEGACY_REF` overrides it) and copies the legacy packages
+into a temporary directory. Their recorded `legacy_sha`/`legacy_commit` is the commit the
+tag points at; fixtures generated before task 1.8 recorded the `HEAD` they ran at, which had
+the same legacy files. The notebooks in `jupyter_examples/` import the legacy code too: run
+them from a checkout of the tag.
 
 ```
 cli ──► config, hparams (subcommand defaults, legacy key mapping), presets (carrasco2021)
@@ -17,8 +29,11 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  ├──► reference (compare-reference: the gates of R1-R4 and CD21)
  ├──► protocol (make-splits, compare-variants: the phase-2 evaluation protocol) ──► data
  ├──► oracle (fetch-m1, m1-oracle: the published M1 vs our input path) ──► paper_model, data
+ ├──► alerts (fetch-alerts, alerts-summary: raw alerts from ALeRCE) ──► data (prepared, m1_features)
  │    (training ──► paper_variants: rot4 / single / p4 / p4m ──► paper_model, group_conv)
  └──► preflight ──► experiments, data (inspection, manifest)
+
+rj23_model (engine-free nn.Modules, not wired yet: task 3.4b) ──► data.rj23_input
 ```
 
 Conventions shared by every module:
@@ -58,11 +73,18 @@ of one run.
   change the loss); `deterministic: false` (the legacy runs used `benchmark=True`); the
   protocol defaults are the legacy classifier values (220 epochs, patience 40,
   `min_delta` 0.001, `accuracy_val`, eval batch 100).
+- `fp32_precision: ieee | tf32` (ADR 0010; default `ieee`): the float32 precision of cuDNN
+  convolutions and of matmuls. `ieee` is full float32 on every device; `tf32` lets Ampere+
+  GPUs use TensorFloat-32 (torch 2.14's own default for convolutions). Set at the start of
+  every run (`training.runs.apply_fp32_precision`) and recorded, with its effect, in
+  `metrics.json["machine"]`.
 - Later tasks add their fields here (for example the NT-Xent denominator flag of 1.3).
 - **Task 1.7 fields** (flat, so every one can be `--set`): EarlyStopping `check_finite`
   (default true, Lightning's default) and `divergence_threshold` (null: never; R1 uses
   0.1); `limit_train_batches` / `limit_val_batches` (null: every batch; the dry mode sets
-  2); and the hyperparameters of the training subcommands. Each subcommand reads only its
+  2); `progress_bar_refresh_rate` (added by audit item 2; default 50: redraw Lightning's
+  progress bar every 50 batches; 0 hides it; no effect on the numbers, not a preset key);
+  and the hyperparameters of the training subcommands. Each subcommand reads only its
   own; the others are recorded in the run's metrics but unused:
 
   | Field | Default | Read by |
@@ -141,7 +163,7 @@ of one run.
   YAML mapping without checking keys; `settings_to_plain` gives the plain (YAML/JSON) form
   that `show-config` prints and the metrics JSON records.
 
-## `cli` (task 1.1; subcommands from 1.2 and 1.7)
+## `cli` (task 1.1; subcommands from 1.2, 1.7 and 3.1)
 
 The `astro-simclr` console script (`[project.scripts]`). `main(argv)` returns the exit code,
 so tests call it in-process. Every subcommand registers in `build_parser()` and takes the
@@ -179,8 +201,22 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   2.5-infra) it decides on split runs: 0 for ADOPT / KEEP, 1 for NOT ADOPTED / DROP;
   `--rule`/`--margin` without `--splits`, `--split` with it, or `--margin` without
   `--rule non-inferiority` exit 2.
+- `make-object-splits ALERTS_CSV --out FILE [--seed 0] [--fractions 0.6 0.2 0.2]
+  [--labels NAMES] [--drop-conflicts] [--overwrite]` and `bench-report RUN... --splits FILE
+  --alerts ALERTS_CSV [--baseline RUN...] [--split test|val] [--reference-counts N...]
+  [--n-boot N] [--seed S] [--allow-mixed-machines]` (task 3.2, see `protocol`):
+  `bench-report` always exits 0 (a report); runs of another splits file, of other alerts or
+  of mixed machines exit 2, an unusable table, splits file or predictions file exits 1.
 - `fetch-m1` and `m1-oracle --data-dir DIR [--out DIR]` (task 2.2b, see `oracle`): exit
   0 if the oracle passed, else 1.
+- `fetch-alerts --dataset NAME --split S [--data-dir DIR] [--out DIR] [--rate 1.5]
+  [--limit N] [--resume] [--batch-size 100] [--cooldown 300] [--from-snapshot RAW_DIR]
+  [--quiet]` and `alerts-summary RAW_DIR [--split S]... [--json]` (task 3.1, see
+  `alerts`). `fetch-alerts` exits 0 when the run ends. It turns SIGTERM, SIGHUP and Ctrl-C
+  into a stop flag polled between rows (exit 128 + the signal; a second signal forces the
+  exit), and restores the previous handlers. A store that exists without `--resume` is a
+  data error (1); an out-of-range option is 2. `alerts-summary` exits 0 if every split
+  shown meets the acceptance, else 1.
 - `preflight (--synthetic | --data-dir DIR) [--accelerator cuda] [--runs R1,R2,R3,R4]
   [--set ...]` (see `preflight`): exit 0 if no step failed, else 1.
   `scripts/gpu-preflight.sh` is a thin `uv run --no-sync` wrapper.
@@ -224,7 +260,13 @@ only on this protocol, never on a concrete transform.
   them with `lightning.seed_everything(seed, workers=True)`; DataLoader workers are seeded
   by Lightning's `pl_worker_init_function`, which the Trainer injects (a DataLoader built
   outside a Trainer must pass it as `worker_init_fn`). Same seed → identical batches, with
-  0 or more workers (tested with 0 and 2).
+  0 or more workers, and a different seed → different batches (tested with 0 workers
+  everywhere and with 2 workers where they fork). The 2-worker case forks its workers
+  explicitly and is skipped, with its reason, on macOS: a spawned worker re-imports torch,
+  torchvision and Lightning (about 5 s of CPU each; 26 s of the suite), and fork is unsafe
+  there once Metal has started. The start method does not change what is checked: torch's
+  worker loop seeds torch, numpy and `random` from the base seed in every worker under any
+  start method, then the init function reseeds them. The Linux CI job runs it.
 - **Naming change:** registry names are descriptive; the legacy names keep working as
   aliases, so no config needs to change.
 - **Characterization:** `tests/fixtures/augmentations/legacy_views.npz`, from
@@ -315,6 +357,60 @@ Task 2.1 adds the paper's float input path (`docs/data.md`, "Float input path"):
 
 Neither module imports torch. The uint8 path (`images.npy`, `StampDataset`) is unchanged.
 
+Task 3.3 adds RJ23's input path on raw cutouts (`docs/data.md`, "RJ23 inputs"; ADR 0009):
+
+- `rj23_input`: `normalise(stamps, *, large_values="paper", chunk_size=1000)` takes
+  `(N, 63, 63, 3)` raw floats with NaN/inf and returns `(N, 63, 63, 6)` float32 (the
+  |x|-min-p99 normalisation clipped to ±2, then the 3 mask channels); `invalid_mask`,
+  `channel_statistics` (`min|x|`, `p99|x|` per stamp and channel, one sort per chunk, equal
+  to `np.nanpercentile`). `large_values="code"` is RJ23's code behaviour for `|x| > 1e10`.
+- The views: `full_view`, `cropped_view` (24:40), `lowres_view` (one 4×4 TF-'same'
+  pooling), `multiscale_view` (8×8×24, scale-major 1″/2″/4″/8″), and `rj23_views`, which
+  runs the normalisation and the requested views chunk by chunk into preallocated outputs.
+  `tf_same_avg_pool` is TF's `AveragePooling2D(k, padding='same')` (valid-pixel means,
+  float64 sums); `crop_offset` is RJ23's `⌈(n − size) / 2⌉`.
+- `unit_sphere(ra, dec)` (degrees → `(N, 3)` float32) and `channels_first`.
+- numpy only (a test checks that importing it does not import torch); not wired into a
+  data module yet: that waits for task 3.1b's `raw-alerts` kind.
+
+Task 3.1b adds the `raw-alerts` kind (`docs/data.md`, "Raw-alert layout"; ADR 0012):
+
+```
+fetcher (3.1): cutouts + per-row table [+ features] ──write_raw_alerts──► DIR/<name>/*.npy + meta.json
+                                                                                  │
+                                  RawAlerts ◄──load_raw_alerts (mmap, no pickle)───┘
+   (cutouts, index, label_names, features; n_classes)
+       ├──► protocol.alerts.alert_table_from_raw ──► object splits, benchmark report (3.2)
+       └──► rows_of(split candids) ──► 3.3 input path ──► N-class model
+```
+
+- `raw_alerts`: `INDEX_DTYPE` (the per-row structured dtype), `make_index` (columns → the
+  table, with kind and width checks, never a silent cast or truncation), `write_raw_alerts`
+  (the builder; atomic and deterministic like `write_prepared`; optional `features`, the 23
+  `CD21_FEATURES` not standardised), `load_raw_alerts` → `RawAlerts` (cutouts and features
+  memory-mapped, the index read and checked: dtypes, shapes, label range, unique `candid`,
+  field ranges, counts; `rows_of(candids)`), `verify_raw_alerts` (SHA-256),
+  `label_names_of` (the label names from `meta.json` alone) and `check_label_names`. The
+  `_*_problem` functions hold the rules, and both the writer and the loader call them, so
+  the writer never writes what the loader refuses. No split and no mask is stored: the
+  splits are task 3.2's (by `oid` group, ADR 0008), the mask a function of the cutouts.
+- `protocol.alerts.alert_table_from_raw(data, group=None)`: task 3.2's `AlertTable` from a
+  loaded layout. The index's `oid` character set, `candid` and `jd` rules are the
+  table's, so every stored row is accepted (tested).
+- Task 3.3's `rj23_input.rj23_views(data.cutouts[rows])` and
+  `unit_sphere(data.index["ra"][rows], data.index["dec"][rows])` read a loaded layout as
+  it is (tested); a data module that feeds them to the RJ23 models is task 3.4's.
+- `prepared`: `read_meta_file` reads `meta.json` of either kind (format check only),
+  `layout_kind` returns its kind without raising, and `read_meta` / `load_prepared` refuse
+  a `raw-alerts` layout with a message naming `load_raw_alerts`. Versions 1 and 2 are
+  unchanged, and the writer still writes version 2.
+- `inspection`: `summarize` dispatches on the kind; a `raw-alerts` summary has the row
+  count, both files, the counts per class (under the layout's own names) and per
+  `label_source`. `preflight.prepared_dirs` leaves `raw-alerts` layouts out (its steps and
+  manifest read splits).
+- `synthetic.synthetic_raw_alerts(label_names, n_per_class, seed)`: raw-count cutouts with
+  NaN corners and inf pixels and a valid per-row table, for tests and for the fetcher's.
+
 The CLI imports these modules inside its handlers, so `show-config` does not import them;
 `data/__init__.py` does not re-export the torch datasets.
 
@@ -378,7 +474,7 @@ legacy initial weights.
 |---|---|---|
 | `StampEncoder(k)` | `Stamp_encoder` (`stamp<k>`) | widths `int(32k)`/`2·int(32k)`, 5×5 kernels, `out_features = int(128k)`, mean of the 4 rotations after ReLU |
 | `PStampsEncoder(k=1.0)` | `P_stamps_net_SimCLR_v2` from `b357b43^` (`pstamps`) | 3×3 kernels, `fc1` without bias, rotation mean through `bn1` |
-| `StampClassifier(drop_rate, with_features)` | `Stamp_classifier` | Carrasco-Davis et al. 2021; 23 features through `bn1`, 5 logits |
+| `StampClassifier(drop_rate, with_features, n_classes=5)` | `Stamp_classifier` | Carrasco-Davis et al. 2021; 23 features through `bn1`, `n_classes` logits |
 | `SimCLRNet(encoder, input_size, projection_size)` | `CLR` | 3-layer projector on `h / ‖h‖`; returns `(h_i, h_j, z_i, z_j)` |
 | `LinearClassifier`, `ThreeLayerClassifier` | `Linear_classifier`, `Three_layers_classifier` | heads; `LinearClassifier` keeps the `model.` key prefix |
 | `Identity` | `Identity` | alias of `torch.nn.Identity` |
@@ -392,6 +488,32 @@ the legacy `SimCLR`. Names: `stamp<k>` (any positive `k`, e.g. `stamp1`, `stamp0
 `pstamps`, `resnet18`, `resnet34`, `resnet50`, `resnet152` (torchvision, no pretrained
 weights, `fc` replaced by `Identity`). `out_features` is what the encoder declares: the
 stamp encoders' `out_features`, the ResNets' `fc.in_features`.
+
+**N classes (task 3.1b).** `N_CLASSES = 5` (CD21's AGN, SN, VS, Asteroid, Bogus) is now the
+*default* class count, not a constant of the networks. Every classifier takes
+`n_classes`, checked by `check_n_classes` (an integer ≥ 2), and only its last layer
+depends on it:
+
+- the networks: `StampClassifier`, `paper_model.PaperStampClassifier`,
+  `paper_variants.PaperHead` / `GroupStampClassifier` / `build_paper_model`;
+- the Lightning modules: `ClassifierModule` (it sizes the metrics and the confusion
+  matrices), `SupervisedCEModule`, `PaperClassifierModule`, `SupervisedCEResNetModule`,
+  `LinearEvalModule`, `FineTuneModule`;
+- the data: `device_data.TensorSplit.n_classes` (the one-hot width and the label range;
+  `DeviceTensorDataModule` refuses splits that disagree), `protocol.predictions`
+  (`Predictions` takes any K ≥ 2 columns, `load_predictions(path, n_classes=5)` checks the
+  count, `check_paired` refuses runs with different counts).
+
+An N-class run reads the count from its dataset, `len(data.raw_alerts.label_names_of(path))`,
+and passes it down. **The phase-2 path is byte-identical:** with the default, the layers
+are built in the same order and draw the same weights, and the modules record `n_classes`
+in their hyperparameters only when it is not 5, so `hparams.yaml` and checkpoints are what
+they were (`tests/test_n_classes.py` pins the seeded weights, the hyperparameter names and
+the bytes of a predictions file, computed before the parameter existed). CD21-specific code
+stays 5-class: `schema.LABEL_NAMES`, the pickle loader and the split layouts, the protocol's
+splits and leakage, the M1 oracle, the CLI's metrics, and C6 (`synthetic_bogus` needs
+`n_classes=5`, it draws from CD21's Bogus and Asteroid). The training CLI does not build
+N-class runs yet: RJ23's input path and models are tasks 3.3 and 3.4.
 
 **Input size.** The stamp networks accept only (N, 3, 27, 27): `fc1` is sized for that
 crop. Anything else raises `ValueError` naming the expected shape. The ResNets accept 27
@@ -478,11 +600,19 @@ runs one `F.conv2d`, so it works on CPU, CUDA and MPS, and costs what a plain CN
   `(field, g)` order.
 - `LiftingConv(group, in_channels, out_fields, k, padding)`: image → regular map;
   `GroupConv(group, in_fields, out_fields, k, padding)`: regular → regular, with the input
-  orientations permuted by `h → g⁻¹h` for output `g` (a stack of slices, not an advanced
-  index: the index's backward has no deterministic MPS kernel); `GroupReadout(group,
+  orientations permuted by `h → g⁻¹h` for output `g`; `GroupReadout(group,
   in_fields, out_fields, k)`: a valid `GroupConv` covering the whole k×k map (the paper's
   fc1); `orientation_mean(x, order)`: the invariant mean over the orientations of each
   field. Biases: one per field.
+- **Expansion = one gather** (ADR 0005, decision 8): each layer computes once, from the
+  transforms applied to an `arange` of its weight's shape, the flat source index of every
+  expanded entry and keeps it as a non-persistent buffer (it follows `.to()`, stays out of
+  `state_dict`). `expanded()` is one `index_select` of the flattened weight through
+  `_KernelGather`, whose backward gathers each entry's `|G|` copies with an inverse index
+  and adds them from the last output orientation to the first. Not `index_select`'s own
+  backward: that is an `index_add_` scatter, with no deterministic MPS kernel, and it sums
+  in another order. Values and gradients are bit-equal to the transform-by-transform
+  expansion it replaced (~200 `select`/`rot90`/`stack` ops per p4 training step).
 - **Glorot fans** (the initialisation of the faithful model, defined for group layers):
   those of the expanded linear map. Convolutions use Keras' convention on the expanded
   kernel, `fan_in = in_channels·k²`, `fan_out = out_fields·|G|·k²` (= `xavier_uniform_`'s
@@ -495,7 +625,11 @@ runs one `F.conv2d`, so it works on CPU, CUDA and MPS, and costs what a plain CN
 - **Tested** (`tests/test_group_conv.py`): the group axioms and the table against the
   transforms; the equivariance law `layer(T_g x) = T_g(layer(x))` with the orientation
   permutation, for every element, kernel parity and padding, in float64 with random
-  biases; the readout's invariance after the orientation mean; the fans and bounds.
+  biases; the readout's invariance after the orientation mean; the fans and bounds; the
+  gathered kernel and its gradient bit-equal to the transform expansion (kept in the test
+  as the reference) for every group layer of the p4 and p4m paper models and a few odd
+  shapes, on CPU and on MPS / CUDA when present, also under
+  `torch.use_deterministic_algorithms(True)`; the buffers out of `state_dict`.
 
 ## `paper_variants` (task 2.5-models)
 
@@ -538,10 +672,12 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
   gathers the 6-channel images by pool index like the 3-channel ones (tested in
   `tests/test_split_runs.py`).
 - `scripts/bench_paper_models.py`: parameters, MACs, CPU latency (batch 1) and
-  throughput (batch 512, default threads and 1 thread) and, on the accelerator torch
-  reports, batch 1 / 512 / 4096, for every variant (`--out FILE` writes JSON). The group
-  layers re-expand their kernels on every call, which shows in the batch-1 latency, not in
-  the throughput; an exported, constant-folded model does not pay it.
+  throughput (batch 512, default threads and 1 thread), a batch-64 training step (forward
+  and backward of the summed logits, train mode, no optimiser step) and, on the
+  accelerator torch reports, batch 1 / 512 / 4096 and the training step, for every variant
+  (`--out FILE` writes JSON). The group layers re-expand their kernels on every call,
+  which shows in the batch-1 latency and the training step more than in the throughput; an
+  exported, constant-folded model does not pay it.
 - **Tested** (`tests/test_paper_variants.py`): once per new flag, the faithful preset with
   that flag at its default reproduces the golden fixture (parameter count, every initial
   tensor's sum, float64 logits); every invariant configuration (`rot4`, `p4`, `p4` 16/32,
@@ -551,6 +687,58 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
   (the check can fail); invariance through the input path (rotate the 63×63 stamp, then
   crop and pool); the counts; the settings checks; CPU (and MPS/CUDA when present) training
   smoke runs through `run_command`.
+
+## `rj23_model` (task 3.4)
+
+`src/astro_simclr/rj23_model.py`: the stamp classifiers of Reyes-Jainaga et al. 2023 (RJ23)
+for the four scenarios of `data.rj23_input` (full 63², cropped 16², low-resolution 16²,
+multi-scale 8×8×24), rebuilt from the paper's Table 2 and Appendix A because RJ23's
+`models.py` is not public. ADR 0013 pins every detail the paper leaves open, with its
+source. **Engine-free** (the phase-4 rule): plain `nn.Module` builders that import torch
+and `rj23_input`'s constants only, no Lightning (a test checks it); task 3.4b wires them
+into training.
+
+- `RJ23_TABLE2`: scenario → `RJ23Architecture(scenario, layers, dense, dropout,
+  learning_rate, first_kernel_size=3)`, Table 2 as published (cited in code); `layers`
+  lists the convolution widths and `MAXPOOL` markers in order. `input_shape` is the
+  channels-first view shape, `representation_size` `8·8·c_L`.
+
+| Scenario | Trunk (3×3 'same' convs, 2×2 TF-'same' max-pools) | Dropout | FC | Parameters (K = 5) |
+|---|---|---|---|---|
+| `full` | 37, pool, 60, pool, 29, pool, 26 (63 → 32 → 16 → 8) | 0.71726 | 31 | 99,778 |
+| `cropped` | 112, 27, pool, 92, 121 (16 → 8) | 0.866799 | 133 | 1,202,808 |
+| `lowres` | 63, 31, pool, 108, 14 (16 → 8) | 0.73065 | 22 | 86,648 |
+| `multiscale` | 76, 18, 54, 28 (8) | 0.8478 | 69 | 179,124 |
+
+- `RJ23Classifier(architecture, *, n_classes=5, bn_position="after_concat")` and
+  `build_rj23_classifier(scenario, ...)`: `forward(x_img, x_pos)` takes the view
+  `(N, C, H, W)` (`rj23_input.channels_first`) and the unit-sphere position `(N, 3)`
+  (`rj23_input.unit_sphere`) and returns `(N, K)` logits. `dihedral_views` stacks the 8
+  views (4 counter-clockwise rotations, then the up-down flip of each) as one batch of
+  8N through `trunk` (ReLU after every convolution); `representation` flattens and
+  averages over the views (`(N, 64·c_L)`, exactly D4-invariant on the view); `head`:
+  `dropout`, concat(x, y, z), `bn`, `fc`, ReLU, `logits`. `bn_position="before_concat"`
+  is the pre-registered sensitivity arm (BN on the representation only).
+- TF-default parity: `TFSameMaxPool2d(kernel_size, stride)` (TF 'same' padding from
+  `tf_same_padding`, filled with −∞); `KerasBatchNorm1d` (momentum 0.99 as torch's 0.01,
+  eps 1e-3, moving variance from the biased batch variance as Keras' non-fused path);
+  `init_keras_defaults` (Glorot-uniform kernels, zero biases, BN gamma 1 and beta 0,
+  drawn from the global generator after the constructor's own default draws). The Adam
+  epsilon 1e-7 and Table 2's learning rates belong to the training regime (3.4b).
+- `rj23_parameter_count(architecture, *, n_classes, bn_position)`: the formula of the
+  module docstring, `Σ (k_l² c_{l−1} + 1) c_l + 2(D + 3) + (D + 4) F + (F + 1) K`.
+- **Tested** (`tests/test_rj23_model.py`): Table 2's values; output and trunk shapes per
+  scenario on `rj23_views` outputs (5 and 6 classes); the parameter counts, hand-computed
+  and by formula, for both BN positions; golden tests for TF 'same' padding and max-pooling
+  (negative inputs, padding before, the gradient), Keras BN (one hand-computed step,
+  against torch's unbiased update, output and gradient equal to torch's) and the Glorot
+  bounds; the representation's invariance under all 8 D4 elements on the view (float64,
+  random biases), on the raw stamp for the full scenario (all 8) and every scenario (the
+  transpose), the cropped scenario seeing the mirrored 23:39 window of a rotated stamp
+  (ADR 0009) and the pooled scenarios not invariant to a raw 90° rotation; the head order
+  and the arm; seeded determinism of builds, losses and gradients under
+  `use_deterministic_algorithms`; eval logits and a training step on MPS and CUDA where
+  present against the CPU.
 
 ## `oracle` (task 2.2b)
 
@@ -625,6 +813,94 @@ and no ALeRCE code or weights in the repository (the pipeline repository has no 
 - Tests (`tests/test_oracle_*.py`) use synthetic checkpoints and event files written by
   `tests/_tf_writer.py` (from the format description, with knobs that break one property at
   a time), random M1-shaped weights, `file://` downloads and the synthetic prepared data.
+
+## `alerts` (task 3.1)
+
+`src/astro_simclr/alerts/`: recovers the raw ZTF alerts behind a prepared split from
+ALeRCE's public services, verifies them against the stored stamps and stores them with
+their provenance. Method, layout, statuses and the acceptance are in
+[`docs/data.md`](data.md), "Raw alerts"; the format and dependency choices in ADR 0011.
+Nothing in the package imports torch.
+
+```
+prepared split ──targets (destandardise)──► fetch_row ──► AlerceClient ──► Recorder ──► Fetcher ──► urllib
+                                              │  match_detections, ties   (cache, snapshot)  (rate limit,
+                                              │  parse_alert (fastavro, FITS)                 retries)
+                                              │  verify_cutouts (alerce_normalise)
+                                              ▼
+                         batch ──_commit──► shard-NNNNN.npz (ok cutouts + raw responses), then index.csv lines
+                                                    ▲
+                     Snapshot (offline RawFetch) ───┘  fetch-alerts --from-snapshot
+```
+
+- `transport`: `RateLimiter` (request starts at least `1/rate` apart; one limiter covers
+  both hosts), and `Fetcher.get(url, max_bytes)`.
+  - Retries timeouts, `OSError`, `http.client.HTTPException`, 5xx and 429: 5 attempts,
+    backoff `2·2^(k-1)` s capped at 60 s, but at least a numeric `Retry-After` (up to
+    600 s), no jitter (a single sequential client).
+  - Other statuses raise `HttpError` at once.
+  - `urllib_opener` opens only `https://` and follows redirects only to `https://`
+    (`_HttpsRedirects`). It reads at most `max_bytes` in chunks within a 300 s total
+    deadline (`TimeoutError`, retried), and sends the generic `USER_AGENT`.
+- `snapshot`: `Recorder` is the `Getter` between the client and a `RawFetch`
+  (`online_fetch(fetcher)` or `store.Snapshot.fetch`).
+  - It caches cone searches and detection lists by URL (an LRU bounded at 256 MB of
+    bodies), and keeps every new response (url, kind, UTC time, SHA-256, bytes) as
+    `pending()` until a commit has made it durable (`drop_pending(n)`).
+  - It lists the responses each row used (`row_refs`, as `kind:sha256`).
+- `alerce`: `AlerceClient.objects_near`, `detections` and `alert_avro` (the URLs of the
+  module docstring), and `make_client(rate)`, the production stack (the CLI's seam for
+  tests).
+  - The JSON is validated: `items` of ZTF-shaped `oid`s, and detections with an integer
+    `candid` (string or int) and numeric `magpsf`/`sigmapsf`. Others are skipped, and a
+    wrong shape raises `ResponseError`.
+  - An `oid` is checked against `ZTF\d{2}[a-z]{7}` before it goes into a URL. Size caps:
+    16 MB of JSON, 1 MB of avro.
+- `parse`: `check_container` walks the avro container before fastavro reads it.
+  - It accepts the `null`, `deflate` and `snappy` codecs, and bounds the decompressed
+    size to 4 MB: the snappy preamble length, or deflate inflated with an output limit.
+  - `check_schema` refuses a writer schema that is not a record, or that has an array or
+    map of zero-size items (`null`, empty records, `fixed` of size 0). Every other item
+    takes at least one byte, so the decoding work is bounded by the data.
+  - `parse_alert` then reads exactly one record with the embedded writer schema (ALeRCE's
+    record names differ from ZTF's). It checks `objectId`, `candid` and the required
+    candidate fields and types, and keeps the scalar fields, non-finite floats as `null`.
+  - The three cutouts are parsed by `fits.read_fits_image`, and CCD-edge ones repaired
+    with `repair_non_squared_stamp`.
+- `fits`: `gunzip` (a gzip stream with an output cap), and `read_fits_image`, a strict
+  reader of one 2D `BITPIX -32/-64` image, at most 256 px per side, without scaling. It
+  returns native float32 `(NAXIS2, NAXIS1)`, NaN kept, with no flip. It replaces a FITS
+  library for the one layout ZTF uses.
+- `fetch`:
+  - `targets`, `interleaved_order` (round-robin over the classes) and `match_detections`
+    (distinct candids within 1e-4 on both magnitudes);
+  - `alerce_normalise` (`crop_then_normalise` at 63 without the NaN approximation) and
+    `verify_cutouts`;
+  - `fetch_row` (never raises for a miss);
+  - `fetch_alerts`: resume (an `ok` row whose shard is missing is fetched again), and
+    batches of `batch_size` rows. A full batch is detached before `_commit`, so a failed
+    commit is never retried by the `finally`. The run stops between rows when `stop()`
+    turns true. The cooldown follows 3 consecutive *transient* failures
+    (`RowResult.transient`). `fetch.json`'s data identity and every status-deciding
+    setting (radius, tolerances, `max_candidates`) must match on `--resume`.
+- `store`: the layout and its readers. `IndexRow` and `COLUMNS`; `IndexWriter`
+  (append, fsync, repairs a truncated last line); `read_index` and `latest_rows`;
+  `write_shard` / `read_shard` (atomic; `allow_pickle=False`); `load_recovered` (the `ok`
+  alerts, by row); `Snapshot` (URL → stored body, SHA-256 checked); `summarize` /
+  `Summary` / `format_summary` (counts, groups, ghosts, the recovery of non-ghost rows,
+  CCD-edge counts, costs, the 98 % acceptance); `duplicates` / `format_duplicates` (a
+  candid stored for several rows, within or across splits).
+
+Tests (`tests/test_alerts_*.py`, offline): `_alerts_support` writes FITS and avro files
+(fastavro, all three codecs) and runs a fake ALeRCE on an in-memory sky with one Validation
+row per status. They cover:
+- ties decided by the stamp check;
+- two objects in the cone, and cache hits on a shared object;
+- resume, and the retry of `http_error` only;
+- orphan shards, a truncated index, and an interrupt mid-batch;
+- the cooldown, the offline rebuild, and duplicates across splits;
+- backoff and `Retry-After` on a fake clock;
+- the size caps and malformed inputs.
 
 ## `optim` (task 1.5)
 
@@ -713,7 +989,17 @@ legacy modules.
   `module.confusion_matrices["val"|"test"]`, the labels `(y_pred, y_true)` in
   `module.predictions["val"|"test"]`, for the figures and metrics JSON of 1.7, and the
   softmax probabilities (N, 5) in `module.probabilities["val"|"test"]`, for the per-stamp
-  predictions files of task 2.3.
+  predictions files of task 2.3. The validations inside `trainer.fit` skip all three
+  (`trainer.state.fn == FITTING`; audit item 2): they only feed the monitor, and every
+  output of a run comes from `trainer.validate` / `trainer.test(ckpt_path=best)` after the
+  fit, so a 30,000-step `carrasco2021` run no longer builds 3,000 confusion matrices nor
+  copies them, the labels and the probabilities to the host, only to throw them away. The
+  epoch metrics pass
+  `validate_args=False` (the labels are argmaxes, always in range), which skips
+  torchmetrics' value checks and their host sync on a GPU. Neither changes a number:
+  `tests/test_fit_validation.py` runs a short `carrasco2021` schedule with the old
+  behaviour patched back in and compares `metrics.json` (except `timing`), the predictions
+  files and the best weights.
 - `MONITORABLE` (class attribute) lists what `Settings.monitor` may select:
   `accuracy_val`, `loss_val` for the classifiers, `loss_train_enc` for SimCLR (which has no
   validation loop). The protocol default `accuracy_val` therefore raises `ConfigError` for
@@ -742,7 +1028,10 @@ module's logged `accuracy_val`), macro precision and macro recall (classes absen
 predictions and targets left out, as in torchmetrics 0.6); `confusion_matrix(y_pred,
 y_true)` uses `normalize="true"` (an empty row is zeros). Added in 1.7 for the metrics JSON:
 `confusion_counts` (not normalised) and `macro_f1` (classes absent from predictions and
-targets left out, like precision and recall).
+targets left out, like precision and recall). `classification_metrics(...,
+validate_args=False)` skips torchmetrics' dtype and range checks of the label values (same
+numbers; for labels known to be in range, like the modules' argmaxes); its own shape check
+always runs.
 
 **Data modules** (`datamodules.py`) build their datasets in `setup()` (legacy:
 `prepare_data()`, which runs on one process only), from a prepared layout directory,
@@ -762,11 +1051,22 @@ memory-mapped:
   with `torch.load(weights_only=True)` (tested).
 - With `num_workers > 0` and the `spawn` start method (macOS), each worker gets a pickled
   copy of the dataset, and a pickled memory map is a full in-memory copy of the split;
-  under `fork` (Linux) the map is shared. To revisit before R3 runs on macOS.
+  under `fork` (Linux) the map is shared. To revisit before R3 runs on macOS. `fork` is
+  the Linux default only up to Python 3.13 (the project's version): 3.14 switches it to
+  `forkserver`, which pickles like `spawn`, so R1-R4 (`num_workers: 4`) would copy the
+  split into every worker. A move to 3.14 sets `multiprocessing_context` explicitly first.
 
 **Run helpers** (`runs.py`):
 
 - `seed_run(settings)`: `L.seed_everything(settings.seed, workers=True)`.
+- `apply_fp32_precision(settings)` (ADR 0010): `torch.backends.cudnn.conv.fp32_precision`
+  and `torch.set_float32_matmul_precision("highest" | "high")` from `fp32_precision`
+  (the matmul call, not `torch.backends.cuda.matmul.fp32_precision`, because after the
+  latter is set to `tf32` `torch.get_float32_matmul_precision()` raises, and Lightning calls
+  it on Ampere+ GPUs). Process-global; `run_command` calls it before anything is built.
+  `fp32_precision_record(device)`: the effective policy (`tf32` only on a CUDA device of
+  compute capability 8.0+ that allows it), the torch settings read back
+  (`fp32_backends`) and `compute_capability`, for `metrics.json["machine"]`.
 - `build_callbacks(settings, monitorable, dirpath, filename="best")`: `EarlyStopping` and
   `ModelCheckpoint(save_top_k=1, enable_version_counter=False)` (the legacy
   `ModelCheckpoint_V2` overrode a private method to the same effect), both on
@@ -783,6 +1083,9 @@ memory-mapped:
   `devices`, `max_epochs`, `deterministic`, and (when set) `limit_train_batches` /
   `limit_val_batches` from the settings, `benchmark=not deterministic`
   (legacy `True`), `default_root_dir=output_dir`. This is the only place a device is chosen.
+  The progress bar is a `TQDMProgressBar(refresh_rate=progress_bar_refresh_rate)` (default
+  50 batches; Lightning's 1 cost ~0.4 ms a step of the loop's ~1.3 ms on the CPU, audit
+  item 2); a rate of 0, or `enable_progress_bar=False` in the overrides, hides it.
 
 **Tests** run on the CPU everywhere and on MPS/CUDA when available
 (`tests/_training_support.py: ACCELERATORS`): `fast_dev_run` for every module and variant
@@ -792,8 +1095,8 @@ memory-mapped:
 does not); the scheduler steps once per epoch; selection on `loss_train_enc` and `loss_val`;
 EarlyStopping stops a flat run; every epoch and every validation pass starts from an empty
 buffer (a module whose predictions flip between passes); downstream checkpoints reload.
-Worker seeding (`num_workers=2`) is covered by the augmentation tests, not repeated here
-because spawned workers cost about 25 s on macOS.
+Worker seeding (`num_workers=2`) is covered by the augmentation tests (on Linux, where the
+workers fork), not repeated here because spawned workers cost about 25 s on macOS.
 
 **Behaviour changes against the legacy code** (no result of a valid legacy run changes):
 
@@ -1082,8 +1385,9 @@ Decisions and provenance: ADR 0003.
   `rot90_augment: false` to both presets (the defaults, so the faithful settings are
   unchanged), so that a variant run is reported as a deviation, not as faithful. Plan rows
   C5 and C6 add `aug_noise: 0.0`, `aug_feature_jitter: 0.0`, `synthetic_bogus: 0.0` and
-  `aug_min_r2: 0.5` the same way (ADR 0006), and row C7 `flux_rescale: 0.0`,
-  `flux_k_min: 0.5`, `flux_k_max: 1.5` (ADR 0007).
+  `aug_min_r2: 0.5` the same way (ADR 0006), row C7 `flux_rescale: 0.0`,
+  `flux_k_min: 0.5`, `flux_k_max: 1.5` (ADR 0007), and ADR 0010 `fp32_precision: ieee`, so
+  that a TF32 run is a deviation.
 - `preset_for(settings)`: the preset of a `carrasco2021`-schedule run (by `with_features`),
   else `None`. `preset_report(settings)`: `name`, `faithful` (no preset key changed),
   `deviations` (key → `{value, preset}`) and `diagnostics` (the flags turned on), written
@@ -1133,7 +1437,8 @@ preflight alike:
 1. `check_accelerator`: `cuda` without `torch.cuda.is_available()` (or `mps`, `gpu`
    without one) raises `AcceleratorError`, naming the torch build and the preflight, before
    anything is built;
-2. `dataset_path`: `data_dir/<dataset>` must be a prepared layout (`DataError` says how to
+2. `apply_fp32_precision` (ADR 0010), then `dataset_path`: `data_dir/<dataset>` must be a
+   prepared layout (`DataError` says how to
    prepare it);
 3. `seed_run` before any module is built (downstream: after loading the pretrained
    checkpoint, so the head's initial weights do not depend on the loading path);
@@ -1151,7 +1456,8 @@ Outputs, all under `output_dir`: `checkpoints/{best,last}.ckpt`,
 `confusion_matrix_{val,test}.png`. `metrics.json`: command, seed, `best_epoch` (0-based),
 `last_epoch`, monitor and `monitor_best`, versions, accelerator, `machine` (task 2.3:
 `device` from `trainer.strategy.root_device`, `gpu` = the CUDA device name or `null`,
-`torch`, `cuda`, `cudnn`, `platform`, `processor`, `python`), the data (prepared path,
+`torch`, `cuda`, `cudnn`, `platform`, `processor`, `python`; ADR 0010: `fp32_precision`,
+the effective `ieee` or `tf32`, `fp32_backends` and `compute_capability`), the data (prepared path,
 source SHA-256, class counts per split from `meta.json`), the resolved `config`; the
 classifiers add `val_acc_best` (micro accuracy on Validation at the best checkpoint: with
 the monitor `accuracy_val`, the best validation accuracy over epochs, the metric of the
@@ -1233,27 +1539,44 @@ checked (command, `supervised_model`, no duplicate seed) and `val_acc_best` aggr
   Runs with and without features may share seeds (`Reference.split_by_features`); the
   result line is `CD21: PASS (faithful|acceptable)`. Constants: `CD21_*`.
 - Every gate prints a WARN line when the runs' `machine_signature` (device, GPU, torch,
-  CUDA) differ.
+  CUDA and the effective float32 precision, ADR 0010; a run without it reads as `ieee`)
+  differ.
 
-## `protocol` (task 2.3; split runs and decisions in 2.5-infra)
+## `protocol` (task 2.3; split runs and decisions in 2.5-infra; grouped splits; benchmarks in 3.2)
 
-`src/astro_simclr/protocol/`: the code of the phase-2 evaluation protocol; the rules and the
-power note are in `docs/evaluation-protocol.md`, the design choices in ADR 0004. No torch
-import, so `make-splits` and `compare-variants` start fast.
+`src/astro_simclr/protocol/`: the code of the phase-2 evaluation protocol, and of the
+phase-3 benchmarks (task 3.2); the rules and the power note are in
+`docs/evaluation-protocol.md`, the design choices in ADR 0004 (phase 2) and ADR 0008
+(phase 3). No torch import, so `make-splits`, `leakage-audit`, `compare-variants`,
+`make-object-splits` and `bench-report` start fast.
 
 | Module | What it does |
 |---|---|
 | `leakage` | `find_duplicates(StampData)`: byte-identical uint8 stamps across every pair of splits (BLAKE2b-128), with both labels and whether the features match; `train_exclusions` (the Train indices to drop, from Train only), `train_keep_indices(n_train, excluded)` |
-| `splits` | `make_splits(prepared_dir, seed=0)`: the 250/250 screen of Validation (50 per class per half) and the stratified 5-fold CV on the pool Train + Validation (pool index: Train `i`, Validation `n_train + j`), each fold with its own 100-per-class selection set drawn from outside the fold; leaked Train stamps are in no fold. At most 10 folds (`fold_of` is one digit per stamp). `write_splits` / `read_splits` (structure checks: sizes, disjointness, ranges, positive integers) / `verify_splits(splits, prepared_dir)` (dataset identity by source and label SHA-256 and sizes, not the directory name; class balance; fold stratification within 1 per class; `excluded_train` equal to a fresh leakage check). `ProtocolSplits.locate` maps pool indices to Train and Validation indices |
-| `predictions` | `Predictions(probabilities, labels, index)`, `save_predictions` / `load_predictions` (`.npz`, `allow_pickle=False`), `check_paired`, `ensemble` (mean probabilities per stamp), `seed_mean_correct` |
-| `stats` | `mcnemar` (exact, integer arithmetic), `paired_bootstrap` (percentile CI of variant − baseline, stratified by class, metric `accuracy` or `balanced_accuracy`, own `default_rng(seed)`, memory-bounded blocks), `balanced_accuracy`, `adoption_decision` (superiority: `adopt` only if the CI is above 0), `non_inferiority_decision(interval, margin=0.005)` (`adopt` if the CI lower bound is above −margin, `worse` if the CI is below it; `check_margin` refuses margins outside (0, 0.05], a likely points-for-fraction mistake), `screen_decision` (`drop` at 4 points or more, never adopt) |
-| `split_runs` | Task 2.5-infra. `SplitRequest(file, fold)` (`fold=None`: the screen); `open_split_run(request, prepared_dir)` reads the file, refuses a fold it does not have (`ConfigError`) and runs `verify_splits` on the prepared data (a wrong fingerprint is a `SplitsError`); `SplitRun.parts()` gives `RunParts` (training, selection, evaluation as sorted pool indices, and `evaluation_index`: pool indices for a fold, Validation indices for the screen) and checks that they are pairwise disjoint and hold no excluded stamp; `SplitRun.describe()` is `metrics.json["protocol"]` (mode, fold, splits file and SHA-256, part sizes); `SplitRun.identity()` (splits SHA-256, mode, fold) is stored in every checkpoint and checked on resume. `file_sha256` |
-| `compare` | `compare_variants(baseline_dirs, variant_dirs, stage)`: loads each run's `metrics.json` and predictions file, refuses repeated seeds, runs on different data (`data.source.sha256`: a normal run's `index` is `arange(N)`, so the data identity and the labels are what show two runs saw the same stamps), unpaired runs and mixed machines (unless allowed), reports McNemar on the seed ensembles and the bootstrap, always as REPORT; it points split runs to `--splits`. `screen_comparison` / `cv_comparison(..., rule="superiority"\|"non-inferiority", margin)`: the decision helpers, which check that the predictions cover exactly the screen's decision half or each fold's evaluation part (so the CV bootstrap is paired by pool index); `CVResult` holds the per-fold and pooled balanced accuracies, the CI, McNemar on the seed ensembles and the decision. `compare_decision(baseline_dirs, variant_dirs, splits_file, rule, margin)` (CLI `compare-variants --splits`): loads split runs (`load_split_run`), checks the splits file's SHA-256, one mode, one data source and machine, the same (fold, seed) cells on both sides and every fold, then applies `cv_comparison` (verdict `ADOPT` / `NOT ADOPTED`) or `screen_comparison` (`KEEP` / `DROP`; `--rule` refused) |
+| `groups` | Phase 2: builds object groups from the prepared data (unlike task 3.2's `grouping`, which assigns given ids): `neighbour_pairs(ra, dec, radius_arcsec)` (every pair within the radius, inclusive; an exact dec-sorted window search with the haversine separation, numpy only, correct at the poles and across the RA wrap; refuses non-finite coordinates and `|dec| > 90`), `union_groups` (union-find, canonical ids: groups numbered by their smallest row), `position_groups` / `external_groups` (equal ids, e.g. `oid`) → `Grouping(method, radius_arcsec, group_of)` (`n_groups`, `multi()`), `split_positions(data, names)` (ra/dec de-standardised with M1's statistics), `grouping_for(data, names, radius_arcsec=1.5, group_ids=None)`, `load_group_ids(npz)` (one array per split, integers or strings, no pickles; returns the file's name and SHA-256) |
+| `splits` | Format version 2 (grouped; version 1 still read). `make_splits(prepared_dir, seed=0, radius_arcsec=1.5, group_ids_file=None)`: groups the pool (Train ∪ Validation), then the grouped 250/250 screen of Validation (groups placed largest first into the half with room; a documented fallback trims both halves to a common per-class count), `screen_excluded_train` (the Train alerts grouped with Validation, out of the screen's training), and the class-stratified group 5-fold CV (greedy placement, largest group first, per-class spread at most the largest group's stamps of the class), each fold with an exact 100-per-class selection set drawn from whole groups outside the fold (the other stamps of a selection group are the fold's `unused`); leaked Train stamps are in no fold. At most 10 folds (`fold_of` is one digit per stamp). `write_splits` / `read_splits` (structure checks: sizes, disjointness, ranges, positive integers, the grouping block, and `check_group_integrity`: no group in two folds, in a fold's selection and training, or in both screen halves; `screen_excluded_train` consistent) / `verify_splits(splits, prepared_dir, group_ids_file=None)` (dataset identity by source and label SHA-256 and sizes, not the directory name; group integrity; the stored groups equal a fresh grouping; class balance; fold stratification within the grouped tolerance; `excluded_train` equal to a fresh leakage check). `ProtocolSplits.locate` maps pool indices to Train and Validation indices; `ProtocolSplits.screen_training_excluded()` |
+| `audit` | `leakage_audit(prepared_dir, radius_arcsec=1.5, group_ids_file=None)` (CLI `leakage-audit`): groups all three splits together and reports the groups within each split and per split pair by class, the Validation and Test rows with a Train alert within the radius (or the same id), and the byte duplicates, as a JSON-ready dict; `format_audit` prints it |
+| `predictions` | `Predictions(probabilities, labels, index, n_classes=5)` (task 3.2: `n_classes` generalises the column count; 5 by default, so phase 2 is unchanged; the benchmarks pass 6 and index by `candid`), `save_predictions` / `load_predictions` (`.npz`, `allow_pickle=False`), `check_paired`, `ensemble` (mean probabilities per stamp), `seed_mean_correct` |
+| `stats` | `mcnemar` (exact, integer arithmetic), `paired_bootstrap` (percentile CI of variant − baseline, stratified by class, metric `accuracy` or `balanced_accuracy`, own `default_rng(seed)`, memory-bounded blocks), `paired_bootstrap_macro_f1(pred_baseline, pred_variant, labels, n_classes)` (task 3.2: the same paired, class-stratified resampling for macro-F1; each resample recounts every run's confusion matrix as one matrix product of item multiplicities with (run, true, predicted) indicator columns; observed = mean-over-runs macro-F1 difference, the report passes one row per side, the seed-ensemble argmax; identical sides give exactly [0, 0]; `BootstrapCI.metric` is now `IntervalMetric`), `minimum_detectable_effect(n, discordant= \| rate=)` (2.80·SE, paired or unpaired), `balanced_accuracy`, `adoption_decision` (superiority: `adopt` only if the CI is above 0), `non_inferiority_decision(interval, margin=0.005)` (`adopt` if the CI lower bound is above −margin, `worse` if the CI is below it; `check_margin` refuses margins outside (0, 0.05], a likely points-for-fraction mistake), `screen_decision` (`drop` at 4 points or more, never adopt) |
+| `split_runs` | Task 2.5-infra. `SplitRequest(file, fold)` (`fold=None`: the screen); `open_split_run(request, prepared_dir)` reads the file, refuses a fold it does not have (`ConfigError`) and runs `verify_splits` on the prepared data (a wrong fingerprint is a `SplitsError`); `SplitRun.parts()` gives `RunParts` (training, selection, evaluation as sorted pool indices, and `evaluation_index`: pool indices for a fold, Validation indices for the screen) and checks that they are pairwise disjoint and hold no excluded stamp; `SplitRun.describe()` is `metrics.json["protocol"]` (mode, fold, splits file and SHA-256, part sizes, `grouping`); the screen trains on Train minus `ProtocolSplits.screen_training_excluded()`; `SplitRun.identity()` (splits SHA-256, mode, fold) is stored in every checkpoint and checked on resume. `file_sha256` |
+| `compare` | `compare_variants(baseline_dirs, variant_dirs, stage)`: loads each run's `metrics.json` and predictions file, refuses repeated seeds, runs on different data (`data.source.sha256`: a normal run's `index` is `arange(N)`, so the data identity and the labels are what show two runs saw the same stamps), unpaired runs and mixed machines or float32 precisions (unless allowed), reports McNemar on the seed ensembles and the bootstrap, always as REPORT; it points split runs to `--splits`. `screen_comparison` / `cv_comparison(..., rule="superiority"\|"non-inferiority", margin)`: the decision helpers, which check that the predictions cover exactly the screen's decision half or each fold's evaluation part (so the CV bootstrap is paired by pool index); `CVResult` holds the per-fold and pooled balanced accuracies, the CI, McNemar on the seed ensembles and the decision. `compare_decision(baseline_dirs, variant_dirs, splits_file, rule, margin)` (CLI `compare-variants --splits`): loads split runs (`load_split_run`), checks the splits file's SHA-256, one mode, one data source and machine, the same (fold, seed) cells on both sides and every fold, then applies `cv_comparison` (verdict `ADOPT` / `NOT ADOPTED`) or `screen_comparison` (`KEEP` / `DROP`; `--rule` refused) |
+| `alerts` | Task 3.2. `AlertTable` (sorted by `candid`: `oid`, `candid`, `jd`, `label`, `label_names`, `group`, `group_key` `"oid"` or `"group"`), `AlertTable.from_rows` (checks: valid ids, unique positive `candid`, finite positive `jd`, labels in range), `sha256` (canonical rows by `candid`, the group only with a `group` column), `rows_of(candids)`; `read_alert_table(csv, label_names=BENCHMARK_LABEL_NAMES)` (untrusted input: `csv` module and a schema, errors name the line; extra columns ignored), `write_alert_table`; `label_conflicts` (groups with two labels); `first_stamps(table, rows)` (earliest `jd`, then smaller `candid`, per `oid`). `BENCHMARK_LABEL_NAMES` = R5's classes (the phase-2 five), `RJ23_LABEL_NAMES` = the five + `Satellite` |
+| `grouping` | Task 3.2, on per-row arrays of any group ids (never builds groups): `group_rows` (ids, label, size, conflicts), `assign_groups` (per class, `default_rng([seed, stream, class])` shuffle, then largest-deficit assignment; refuses a class that cannot give every part a group), `grouped_split` (refuse or drop conflicting groups), `grouped_halves` (50/50 selection/decision, own stream), `check_stratified` (no group in two parts; per class and part, within `+g` / `−(k−1)g` of the target), `stratification_bound`, `shared_groups` / `assert_no_shared_groups(..., allowed=CROSS_BENCHMARK_ALLOWED)` (the cross-benchmark rule: by default the plan's matrix, Train/Train and Validation/Test pairs allowed, Train with the other's Validation or Test refused; `allowed=()` refuses all nine; returns the shared-count matrix) |
+| `object_splits` | Task 3.2. `make_object_splits(table, seed, fractions=(0.6, 0.2, 0.2), on_conflict="refuse"\|"drop")`: `grouped_split` by `table.group`, then `grouped_halves` of Validation; `ObjectSplits` (table identity, group key, label names, seed, fractions, conflicts, sorted group ids per split and half, class counts per part), `split_of` / `half_of` / `rows(table, part)`; `write_object_splits` / `read_object_splits` (structure: valid sorted ids, disjoint splits and halves, halves inside Validation) / `verify_object_splits(splits, table)` (fingerprint, group key, label names, conflicts, coverage, the bound, the counts). CLI `make-object-splits` |
+| `benchmark_metrics` | Task 3.2, numpy only: `confusion_counts`, `confusion_percent` (rows to 100; an empty row stays zeros), `macro_f1`, `macro_f1_from_counts` (stacked `(..., C, C)`), `reweighted_counts(counts, reference)` (prior reweighting), `benchmark_metrics(labels, predicted, label_names, reference_counts=None)` → `BenchmarkMetrics` (accuracy, macro P/R/F1, `ClassScores` per class, counts, percent, reweighted macro P and F1; `as_dict`). Zero-division rule: 0/0 → 0, and classes absent from labels and predictions are left out of the macro means (`None` per class), as torchmetrics. `RJ23_CLASS_COUNTS`, `rj23_reference(label_names)` (the default reference: only proportions matter) |
+| `bench_report` | Task 3.2. `load_benchmark_run` (the run contract: `seed`, `machine`, `benchmark.splits_sha256`, `predictions.<stage>.file` with `index` = `candid`; aligned to the split's rows, which it must cover exactly with the table's labels), `benchmark_report(run_dirs, splits_file, alerts_file, baseline_dirs=(), stage="test", reference_counts=None)` → lines: per view (all alerts, first stamp) and side, macro-F1/P/R and accuracy mean ± std over seeds, the seed-ensemble macro-F1, the prior-reweighted macro-F1, per-class scores with alerts, objects and the recall MDE (on objects), the % confusion matrix; with a baseline, the ensembles' macro-F1 bootstrap CI and McNemar; always `REPORT`. CLI `bench-report` |
 
-- **Stored splits:** `configs/splits/td_ztf_stamp_17_06_20_red-002.json` (seed 0, made with
-  `make-splits` on the real data). On `red`: one duplicate, Train 2995 (Bogus) =
-  Validation 115 (SN); folds of about 40,365 training / 500 selection / 10,215 evaluation
-  stamps.
+- **Phase 3** (task 3.2): the benchmark modules above (`alerts`, `grouping`,
+  `object_splits`, `benchmark_metrics`, `bench_report`) are built and tested on synthetic
+  alert tables; the real ones come from task 3.1. No object-splits file is committed
+  yet. Rules: `docs/evaluation-protocol.md`, "Phase 3 benchmark metrics"; choices: ADR 0008.
+- **Stored splits:** `configs/splits/td_ztf_stamp_17_06_20_red-002-grouped.json` (format
+  version 2, seed 0, 1.5", made with `make-splits` on the real data; the file of every 2.5
+  decision) and `configs/splits/td_ztf_stamp_17_06_20_red-002.json` (version 1, not
+  grouped; kept for the runs made on it). On `red`: one duplicate, Train 2995 (Bogus) =
+  Validation 115 (SN); 49,717 pool groups (663 of two or more stamps); 107 Train alerts
+  grouped with Validation leave the screen's training; folds of about 40,365 training /
+  500 selection / 10,216 evaluation stamps, no unused stamps.
 - Randomness: the splits and the bootstrap use their own seeded generators, independent of
   `seed_run`, so a training seed never moves a split and a comparison is reproducible on
   its own (an exception to the "Randomness" convention above, for data definitions and

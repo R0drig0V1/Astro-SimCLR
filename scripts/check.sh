@@ -11,4 +11,8 @@ cd "$(dirname "$0")/.."
 uv run --locked ruff check .
 uv run --locked ruff format --check .
 uv run --locked mypy
-uv run --locked pytest
+# Tests run in parallel (pytest-xdist, one process per CPU; PYTEST_XDIST_AUTO_NUM_WORKERS
+# caps it). The suite is parallel-safe: every test writes under tmp_path, session fixtures
+# are built per process, and it passes in reverse order. Coverage is combined across the
+# processes. -rs prints the reason of every skipped test. A plain `uv run pytest` stays serial.
+uv run --locked pytest -n auto -rs

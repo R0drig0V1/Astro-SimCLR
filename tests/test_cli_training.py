@@ -261,6 +261,7 @@ def test_metrics_record_the_protocol_fields(runs: dict[str, Path]) -> None:
     assert machine["device"] == "cpu" and machine["gpu"] is None
     assert machine["torch"] == torch.__version__ and machine["cuda"] == torch.version.cuda
     assert {"platform", "processor", "python", "cudnn"} <= set(machine)
+    assert machine["fp32_precision"] == "ieee"  # ADR 0010: the default, recorded
     for stage, split in (("val", "Validation"), ("test", "Test")):
         evaluation = metrics["evaluation"][stage]
         counts = evaluation["confusion_counts"]

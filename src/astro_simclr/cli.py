@@ -22,17 +22,33 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
 - ``compare-reference RUN_DIR... --ref R1|R2|R3|R4|CD21 [--oracle-report FILE]``
   (:mod:`astro_simclr.reference`): exit 0 for PASS or REPORT, 1 for FAIL;
 - protocol (task 2.3, :mod:`astro_simclr.protocol`): ``make-splits`` writes the stored
-  decision splits of a prepared dataset; ``compare-variants --baseline RUN... --variant
-  RUN...`` reports McNemar on the seed ensembles and the paired bootstrap (always exit 0:
-  a report, never a decision). With ``--splits FILE`` (task 2.5-infra) it decides on split
-  runs (``train-supervised --splits FILE --fold K | --screen``): CV runs exit 0 for ADOPT
-  and 1 for NOT ADOPTED (``--rule superiority|non-inferiority``, ``--margin``), screen
-  runs 0 for KEEP and 1 for DROP;
+  decision splits of a prepared dataset (format version 2: grouped by object, by position
+  within ``--radius-arcsec`` or by ``--group-ids``); ``leakage-audit PREPARED_DIR`` reports
+  the objects shared across splits (always exit 0 on readable data);
+  ``compare-variants --baseline RUN... --variant RUN...`` reports McNemar on the seed
+  ensembles and the paired bootstrap (always exit 0: a report, never a decision). With
+  ``--splits FILE`` (task 2.5-infra) it decides on split runs (``train-supervised --splits
+  FILE --fold K | --screen``): CV runs exit 0 for ADOPT and 1 for NOT ADOPTED (``--rule
+  superiority|non-inferiority``, ``--margin``), screen runs 0 for KEEP and 1 for DROP;
+- phase-3 benchmarks (task 3.2, :mod:`astro_simclr.protocol.object_splits`,
+  :mod:`astro_simclr.protocol.bench_report`): ``make-object-splits ALERTS.csv --out FILE``
+  writes object-grouped, class-stratified Train/Validation/Test splits of an alert table;
+  ``bench-report RUN... --splits FILE --alerts ALERTS.csv [--baseline RUN...]`` prints
+  macro-F1 (± std over seeds), per class and on the first-stamp view, and with a baseline
+  the paired bootstrap CI of the macro-F1 difference and McNemar (always exit 0: a report);
 - ``preflight`` (:mod:`astro_simclr.preflight`): exit 0 if no step failed, else 1.
 - M1 oracle (task 2.2b, :mod:`astro_simclr.oracle`): ``fetch-m1`` downloads M1 at the
   pinned commit (SHA-256 checked) into a local cache and converts it to ``.npz``;
   ``m1-oracle --data-dir DIR --out DIR`` runs the port-equivalence and data-path checks
   and writes ``m1_oracle.json`` and ``m1_val_curve.csv``: exit 0 if both passed, else 1.
+- raw alerts (task 3.1, :mod:`astro_simclr.alerts`): ``fetch-alerts --dataset NAME --split
+  S`` resolves the split's rows on ALeRCE, downloads and verifies their raw alerts into
+  ``--out`` (default ``dataset/raw/NAME``), resumable with ``--resume``, or rebuilds the
+  index offline with ``--from-snapshot DIR``. Exit 0 when the run ends. SIGTERM, SIGHUP
+  and Ctrl-C stop it after the current row and commit the batch (exit 128 + the signal
+  number); a second signal forces the exit. ``alerts-summary RAW_DIR`` prints the counts per
+  class and status, the acceptance and the duplicated candids: exit 0 if every split
+  shown reaches the acceptance, else 1.
 
 The heavy modules (torch, Lightning) are imported inside the handlers, so ``show-config``
 and ``--help`` stay fast. A :class:`~astro_simclr.data.DataError` (bad, truncated or missing
@@ -497,7 +513,12 @@ def _make_splits(args: argparse.Namespace) -> int:
 
     if args.out.exists() and not args.overwrite:
         raise ConfigError(f"{args.out} already exists; pass --overwrite to replace it")
-    splits = make_splits(args.data, seed=args.seed)
+    splits = make_splits(
+        args.data,
+        seed=args.seed,
+        radius_arcsec=args.radius_arcsec,
+        group_ids_file=args.group_ids,
+    )
     write_splits(splits, args.out)
     for dup in splits.duplicates:
         sys.stdout.write(
@@ -506,16 +527,123 @@ def _make_splits(args: argparse.Namespace) -> int:
             f"{dup['features_equal']}\n"
         )
     sizes = ", ".join(
-        f"fold {f.fold}: {f.training.size}/{f.selection.size}/{f.evaluation.size}"
+        f"fold {f.fold}: {f.training.size}/{f.selection.size}/{f.evaluation.size}/{f.unused.size}"
         for f in splits.folds
+    )
+    grouping = splits.grouping
+    assert grouping is not None  # noqa: S101 - make_splits always groups
+    how = (
+        f'position within {grouping.radius_arcsec}"'
+        if grouping.radius_arcsec is not None
+        else f"external ids ({args.group_ids})"
     )
     sys.stdout.write(
         f"excluded from Train: {list(splits.excluded_train)}\n"
+        f"grouping: {how}; {grouping.n_groups} groups over the pool, {len(grouping.multi())} "
+        f"with 2+ stamps\n"
         f"screen: {splits.screen.selection.size} selection / {splits.screen.decision.size} "
-        f"decision Validation stamps\n"
-        f"cv (training/selection/evaluation): {sizes}\n"
-        f"wrote {args.out}\n"
+        f"decision Validation stamps; {len(splits.screen_excluded_train)} Train stamps grouped "
+        f"with Validation leave the screen's training\n"
     )
+    if splits.screen_fallback is not None:
+        sys.stdout.write(f"screen fallback: {splits.screen_fallback}\n")
+    sys.stdout.write(f"cv (training/selection/evaluation/unused): {sizes}\nwrote {args.out}\n")
+    return 0
+
+
+def _leakage_audit(args: argparse.Namespace) -> int:
+    from astro_simclr.protocol.audit import format_audit, leakage_audit
+
+    report = leakage_audit(
+        args.data, radius_arcsec=args.radius_arcsec, group_ids_file=args.group_ids
+    )
+    if args.json:
+        sys.stdout.write(json.dumps(report, indent=2) + "\n")
+    else:
+        sys.stdout.write("\n".join(format_audit(report)) + "\n")
+    return 0
+
+
+def _positive_float(text: str) -> float:
+    """An argparse type: a finite float above 0."""
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {text!r}") from None
+    if not 0 < value < float("inf"):
+        raise argparse.ArgumentTypeError(f"must be a positive number, got {text}")
+    return value
+
+
+def _add_grouping_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--radius-arcsec",
+        type=_positive_float,
+        default=1.5,
+        metavar="R",
+        help='group alerts within R arcseconds of each other (default 1.5")',
+    )
+    parser.add_argument(
+        "--group-ids",
+        type=Path,
+        metavar="FILE",
+        help="group by external ids instead (an oid column): a .npz with one array per "
+        "split (Train, Validation; Test for leakage-audit)",
+    )
+
+
+def _make_object_splits(args: argparse.Namespace) -> int:
+    from astro_simclr.protocol.alerts import read_alert_table
+    from astro_simclr.protocol.object_splits import (
+        HALF_NAMES,
+        SPLIT_NAMES,
+        make_object_splits,
+        write_object_splits,
+    )
+
+    if args.out.exists() and not args.overwrite:
+        raise ConfigError(f"{args.out} already exists; pass --overwrite to replace it")
+    names = [n.strip() for n in args.labels.split(",") if n.strip()]
+    table = read_alert_table(args.alerts, names)
+    splits = make_object_splits(
+        table,
+        seed=args.seed,
+        fractions=args.fractions,
+        on_conflict="drop" if args.drop_conflicts else "refuse",
+        name=args.alerts.name,
+    )
+    write_object_splits(splits, args.out)
+    for conflict in splits.conflicts:
+        sys.stdout.write(f"dropped {conflict.group}: labels {', '.join(conflict.labels)}\n")
+    for part in (*SPLIT_NAMES, *HALF_NAMES):
+        counts = splits.counts[part]
+        per_class = ", ".join(
+            f"{name} {a}/{g}"
+            for name, a, g in zip(names, counts["alerts"], counts["groups"], strict=True)
+        )
+        sys.stdout.write(
+            f"{part}: {sum(counts['alerts'])} alerts of {sum(counts['groups'])} groups "
+            f"({splits.group_key}; alerts/groups: {per_class})\n"
+        )
+    sys.stdout.write(f"wrote {args.out}\n")
+    return 0
+
+
+def _bench_report(args: argparse.Namespace) -> int:
+    from astro_simclr.protocol.bench_report import benchmark_report
+
+    lines = benchmark_report(
+        args.run_dirs,
+        args.splits,
+        args.alerts,
+        baseline_dirs=args.baseline or (),
+        stage=args.split,
+        reference_counts=args.reference_counts,
+        n_boot=args.n_boot,
+        seed=args.seed,
+        allow_mixed_machines=args.allow_mixed_machines,
+    )
+    sys.stdout.write("\n".join(lines) + "\n")
     return 0
 
 
@@ -655,7 +783,10 @@ def _add_protocol_commands(
     variants.add_argument(
         "--allow-mixed-machines",
         action="store_true",
-        help="compare runs from different machines or builds (the plan forbids it)",
+        help=(
+            "compare runs from different machines, builds or float32 precisions "
+            "(the plan forbids it)"
+        ),
     )
     variants.set_defaults(handler=_compare_variants)
 
@@ -663,15 +794,105 @@ def _add_protocol_commands(
         "make-splits",
         help="write the stored decision splits (screen, 5-fold CV) of a prepared dataset",
         description="Find the stamps duplicated across splits (removed from Train only), "
-        "then draw the 250/250 screen of Validation and the stratified 5-fold CV on Train + "
-        "Validation, each fold with its own 100-per-class selection set; write them as "
-        "JSON (docs/evaluation-protocol.md).",
+        "group the alerts of one object (by position within --radius-arcsec, or by "
+        "--group-ids), then draw the grouped 250/250 screen of Validation and the "
+        "stratified group 5-fold CV on Train + Validation, each fold with its own "
+        "100-per-class selection set; write them as JSON, format version 2 "
+        "(docs/evaluation-protocol.md).",
     )
     splits.add_argument("data", type=Path, metavar="PREPARED_DIR")
     splits.add_argument("--out", type=Path, required=True, metavar="FILE")
     splits.add_argument("--seed", type=int, default=0, metavar="N")
+    _add_grouping_arguments(splits)
     splits.add_argument("--overwrite", action="store_true")
     splits.set_defaults(handler=_make_splits)
+    _add_benchmark_commands(commands)
+
+
+def _add_benchmark_commands(
+    commands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    from astro_simclr.protocol.alerts import BENCHMARK_LABEL_NAMES
+
+    objects = commands.add_parser(
+        "make-object-splits",
+        help="write object-grouped, class-stratified Train/Validation/Test splits (phase 3)",
+        description="Read an alert table (CSV with oid, candid, jd, label, and optionally "
+        "group) and assign whole groups (the oid, or the group column) to Train, Validation "
+        "and Test (default 60/20/20 of each class's alerts), so that no group is in two "
+        "splits, and split Validation into grouped selection and decision halves; write "
+        "them as JSON with the table's fingerprint "
+        "(docs/evaluation-protocol.md, Phase 3 benchmark metrics).",
+    )
+    objects.add_argument("alerts", type=Path, metavar="ALERTS_CSV")
+    objects.add_argument("--out", type=Path, required=True, metavar="FILE")
+    objects.add_argument("--seed", type=int, default=0, metavar="N")
+    objects.add_argument(
+        "--fractions",
+        type=float,
+        nargs=3,
+        default=[0.6, 0.2, 0.2],
+        metavar=("TRAIN", "VAL", "TEST"),
+    )
+    objects.add_argument(
+        "--labels",
+        default=",".join(BENCHMARK_LABEL_NAMES),
+        metavar="NAMES",
+        help="the class names, comma-separated, in label order (default: %(default)s)",
+    )
+    objects.add_argument(
+        "--drop-conflicts",
+        action="store_true",
+        help="leave out groups whose alerts have different labels (default: refuse them)",
+    )
+    objects.add_argument("--overwrite", action="store_true")
+    objects.set_defaults(handler=_make_object_splits)
+
+    report = commands.add_parser(
+        "bench-report",
+        help="report macro-F1 of benchmark runs (per class, first stamp; phase 3)",
+        description="Read benchmark runs (one per seed) with per-alert predictions, check "
+        "them against the object splits and the alert table, and print macro-F1, macro "
+        "precision and recall (mean ± std over seeds), per class and the confusion matrix "
+        "(%% of each true class), the prior-reweighted macro-F1 and the per-class minimum "
+        "detectable effect, on all alerts and on each object's first stamp. With "
+        "--baseline: the paired class-stratified bootstrap CI of the macro-F1 difference "
+        "of the seed ensembles and McNemar on them. Always a report (exit 0).",
+    )
+    report.add_argument("run_dirs", type=Path, nargs="+", metavar="RUN_DIR")
+    report.add_argument("--splits", type=Path, required=True, metavar="FILE")
+    report.add_argument("--alerts", type=Path, required=True, metavar="ALERTS_CSV")
+    report.add_argument("--baseline", type=Path, nargs="+", metavar="RUN_DIR")
+    report.add_argument("--split", choices=["test", "val"], default="test")
+    report.add_argument(
+        "--reference-counts",
+        type=float,
+        nargs="+",
+        metavar="N",
+        help="per-class reference counts (label order) of the prior-reweighted macro-F1; "
+        "default: RJ23's class counts, when every class is one of RJ23's",
+    )
+    report.add_argument("--n-boot", type=int, default=10_000, metavar="N")
+    report.add_argument("--seed", type=int, default=0, metavar="N", help="bootstrap seed")
+    report.add_argument(
+        "--allow-mixed-machines",
+        action="store_true",
+        help="report runs from different machines or builds together",
+    )
+    report.set_defaults(handler=_bench_report)
+
+    audit = commands.add_parser(
+        "leakage-audit",
+        help="report the objects a prepared dataset shares across its splits",
+        description="Group the alerts of all three splits by position (or by --group-ids) "
+        "and print the groups within each split and per split pair, by class, and the "
+        "Validation and Test rows that share a position with a Train row; also the "
+        "byte-identical stamps. A report: always exits 0 on readable data.",
+    )
+    audit.add_argument("data", type=Path, metavar="PREPARED_DIR")
+    _add_grouping_arguments(audit)
+    audit.add_argument("--json", action="store_true", help="print the report as JSON")
+    audit.set_defaults(handler=_leakage_audit)
 
 
 def _fetch(args: argparse.Namespace) -> M1Files:
@@ -778,6 +999,195 @@ def _add_oracle_commands(commands: argparse._SubParsersAction[argparse.ArgumentP
     oracle.set_defaults(handler=_m1_oracle)
 
 
+def _fetch_alerts(args: argparse.Namespace) -> int:
+    import signal
+
+    from astro_simclr.alerts.alerce import AlerceClient, make_client
+    from astro_simclr.alerts.fetch import fetch_alerts
+    from astro_simclr.alerts.snapshot import Recorder
+    from astro_simclr.alerts.store import (
+        Snapshot,
+        duplicates,
+        format_duplicates,
+        format_summary,
+        summarize,
+    )
+
+    settings = settings_from_args(args)
+    for flag, value, ok in (
+        ("--rate", args.rate, args.rate > 0),
+        ("--limit", args.limit, args.limit is None or args.limit >= 1),
+        ("--batch-size", args.batch_size, args.batch_size >= 1),
+        ("--cooldown", args.cooldown, args.cooldown >= 0),
+    ):
+        if not ok:
+            raise ConfigError(f"{flag} is out of range: {value}")
+    data_dir: Path = settings.data_dir if args.data_dir is None else args.data_dir
+    out: Path = Path("dataset/raw") / args.dataset if args.out is None else args.out
+    if args.from_snapshot is not None:
+        snapshot_dir: Path = args.from_snapshot / args.split
+        if snapshot_dir.resolve() == (out / args.split).resolve():
+            raise ConfigError("--from-snapshot must differ from --out")
+        client = AlerceClient(Recorder(Snapshot(snapshot_dir).fetch))
+        cooldown = 0.0
+    else:
+        client = make_client(args.rate)
+        cooldown = args.cooldown
+
+    def report(position: int, total: int, line: object) -> None:
+        from astro_simclr.alerts.store import IndexRow
+        from astro_simclr.data.schema import LABEL_NAMES
+
+        assert isinstance(line, IndexRow)  # noqa: S101 - the progress callback's contract
+        where = f"{line.oid}:{line.candid}" if line.oid else ""
+        sys.stderr.write(
+            f"[{position}/{total}] row {line.row} {LABEL_NAMES[line.label]} {line.status} "
+            f"{where} {line.requests} req {line.seconds:.1f} s\n"
+        )
+
+    stopping: list[int] = []
+
+    def on_signal(signum: int, _frame: object) -> None:
+        # The first signal asks the run to stop between rows, so a commit is never cut;
+        # a second one forces the exit (the finally still commits the batch).
+        if stopping:
+            raise KeyboardInterrupt
+        stopping.append(signum)
+        sys.stderr.write(f"astro-simclr: signal {signum}: stopping after the current row\n")
+
+    handled = [getattr(signal, s) for s in ("SIGTERM", "SIGHUP", "SIGINT") if hasattr(signal, s)]
+    previous = {sig: signal.signal(sig, on_signal) for sig in handled}
+    try:
+        run = fetch_alerts(
+            data_dir / args.dataset,
+            args.split,
+            out,
+            client=client,
+            limit=args.limit,
+            resume=args.resume,
+            batch_size=args.batch_size,
+            cooldown=cooldown,
+            progress=None if args.quiet else report,
+            stop=lambda: bool(stopping),
+        )
+    finally:
+        for sig, handler in previous.items():
+            # None means a handler not installed from Python: fall back to the default.
+            signal.signal(sig, signal.SIG_DFL if handler is None else handler)
+    per = run.seconds / run.attempted if run.attempted else 0.0
+    sys.stdout.write(
+        f"attempted {run.attempted} rows ({run.skipped} already done), {run.requests} "
+        f"requests, {run.seconds:.1f} s ({per:.2f} s per row), {run.cooldowns} cooldowns\n"
+    )
+    sys.stdout.write(format_summary(summarize(run.split_dir)))
+    sys.stdout.write(format_duplicates(duplicates([run.split_dir])))
+    return 128 + stopping[0] if stopping else 0
+
+
+def _alerts_summary(args: argparse.Namespace) -> int:
+    from astro_simclr.alerts.store import (
+        META_NAME,
+        duplicates,
+        format_duplicates,
+        format_summary,
+        summarize,
+    )
+    from astro_simclr.data.schema import SPLITS, DataError
+
+    raw: Path = args.raw_dir
+    splits: list[str] = args.split or [s for s in SPLITS if (raw / s / META_NAME).is_file()]
+    if not splits:
+        raise DataError(f"{raw}: no fetch-alerts run (no <split>/{META_NAME})")
+    summaries = [summarize(raw / split) for split in splits]
+    found = duplicates(raw / split for split in splits)
+    if args.json:
+        payload = {
+            "splits": [s.to_json() for s in summaries],
+            "duplicates": {str(c): owners for c, owners in found.items()},
+        }
+        sys.stdout.write(json.dumps(payload, indent=2) + "\n")
+    else:
+        sys.stdout.write("\n".join(format_summary(s) for s in summaries))
+        sys.stdout.write(format_duplicates(found))
+    return 0 if all(s.accepted() for s in summaries) else EXIT_DATA
+
+
+def _add_alert_commands(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    from astro_simclr.data.schema import SPLITS
+
+    fetch = commands.add_parser(
+        "fetch-alerts",
+        help="recover the raw ZTF alerts of a prepared split from ALeRCE (resumable)",
+        description="For each row of the split, find its alert on ALeRCE from the "
+        "de-standardised ra, dec, magpsf and sigmapsf, download the avro, check that "
+        "ALeRCE's min-max of the raw cutouts equals the stored float32 stamp (<= 1e-6), "
+        "and store the raw cutouts, the candidate record and every raw response under "
+        "OUT/SPLIT (docs/data.md, 'Raw alerts'). One rate limit over all hosts, retries "
+        "with backoff on timeouts, 5xx and 429. Needs prepare-data --images float32.",
+    )
+    add_settings_arguments(fetch)
+    fetch.add_argument(
+        "--data-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="the directory of prepared datasets (default: the data_dir setting)",
+    )
+    fetch.add_argument("--dataset", required=True, metavar="NAME", help="prepared dataset name")
+    fetch.add_argument("--split", required=True, choices=SPLITS)
+    fetch.add_argument(
+        "--out", type=Path, default=None, metavar="DIR", help="default: dataset/raw/NAME"
+    )
+    fetch.add_argument(
+        "--rate", type=float, default=1.5, metavar="R", help="requests per second (default 1.5)"
+    )
+    fetch.add_argument("--limit", type=int, default=None, metavar="N", help="rows to attempt")
+    fetch.add_argument(
+        "--resume",
+        action="store_true",
+        help="continue the run in OUT/SPLIT: skip finished rows, retry http_error ones",
+    )
+    fetch.add_argument(
+        "--batch-size",
+        type=int,
+        default=100,
+        metavar="N",
+        help="rows per committed shard (a hard kill loses at most one batch; default 100)",
+    )
+    fetch.add_argument(
+        "--cooldown",
+        type=float,
+        default=300.0,
+        metavar="S",
+        help="pause after 3 consecutive http_error rows (default 300 s; 0 disables)",
+    )
+    fetch.add_argument(
+        "--from-snapshot",
+        type=Path,
+        default=None,
+        metavar="RAW_DIR",
+        help="rebuild offline from the raw responses stored in RAW_DIR/SPLIT (no network)",
+    )
+    fetch.add_argument("--quiet", action="store_true", help="no per-row progress on stderr")
+    fetch.set_defaults(handler=_fetch_alerts)
+
+    summary = commands.add_parser(
+        "alerts-summary",
+        help="counts per class and status of a fetch-alerts store, and the acceptance",
+        description="Print, per split, the counts per class and status, the miss groups "
+        "(not found, ambiguous, timeout, mismatch), the recovery per class against the "
+        "98%% acceptance, the CCD-edge (non-63x63) alerts and the cost; then the candids "
+        "stored for several rows (within or across splits). Exit 0 if every split shown "
+        "reaches the acceptance, else 1.",
+    )
+    summary.add_argument("raw_dir", type=Path, metavar="RAW_DIR")
+    summary.add_argument(
+        "--split", action="append", choices=SPLITS, help="repeatable (default: every split)"
+    )
+    summary.add_argument("--json", action="store_true")
+    summary.set_defaults(handler=_alerts_summary)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level parser with every subcommand."""
     parser = argparse.ArgumentParser(
@@ -796,6 +1206,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_training_commands(commands)
     _add_check_commands(commands)
     _add_oracle_commands(commands)
+    _add_alert_commands(commands)
     return parser
 
 

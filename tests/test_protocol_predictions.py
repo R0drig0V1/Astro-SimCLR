@@ -71,3 +71,18 @@ def test_check_paired() -> None:
         check_paired([a, predictions([0, 1], [0, 1], index=[1, 2])])
     with pytest.raises(ValueError, match="labels"):
         ensemble([a, predictions([1, 1], [0, 1])])
+
+
+def test_n_classes(tmp_path: Path) -> None:
+    """Five classes by default (phase 2); the benchmarks pass six."""
+    six = Predictions(np.full((2, 6), 1 / 6, np.float32), np.zeros(2, np.int64), np.arange(2), 6)
+    path = tmp_path / "six.npz"
+    save_predictions(six, path)
+    assert load_predictions(path, n_classes=6).n_classes == 6
+    with pytest.raises(DataError, match=r"probabilities \(N, 5\)"):
+        load_predictions(path)
+    assert ensemble([six, six]).n_classes == 6
+    with pytest.raises(ValueError, match="6 classes, run 0 5"):
+        check_paired([predictions([0, 0], [0, 0], index=[0, 1]), six])
+    with pytest.raises(ValueError, match="N > 0"):
+        Predictions(np.zeros((2, 1), np.float32), np.zeros(2, np.int64), np.arange(2), 1)

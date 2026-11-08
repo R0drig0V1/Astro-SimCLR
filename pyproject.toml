@@ -3,13 +3,14 @@ name = "astro-simclr"
 version = "0.1.0"
 description = "SimCLR and supervised contrastive learning on ZTF astronomical event stamps"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
     { name = "Rodrigo Vidal" },
 ]
 dependencies = [
+    "fastavro[snappy]>=1.13.1",
     "lightning>=2,<3",
     "matplotlib>=3.11.2",
     "numpy>=2.5.4",
@@ -45,6 +46,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "pre-commit>=4.7.0",
     "types-pyyaml>=6.0.12.20261103",
+    "pytest-xdist>=3.8.0",
 ]
 
 [build-system]
@@ -86,21 +88,10 @@ explicit = true
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
-# Legacy research code, linted again as it is refactored into src/astro_simclr/.
+target-version = "py313"
+# Not linted: the 2021 notebooks and saved results, and the characterization generators, which
+# run the retired legacy code (git tag legacy-final) verbatim in isolated environments.
 extend-exclude = [
-    "fine_tuning.py",
-    "hyperparams_ce.py",
-    "hyperparams_ce_resnet.py",
-    "hyperparams_clr.py",
-    "iter_ce_resnet.py",
-    "iter_ce_stamp.py",
-    "iter_clr.py",
-    "linear_classifier.py",
-    "visualization_embedded.py",
-    "losses/",
-    "models/",
-    "utils/",
     "jupyter_examples/",
     "results/",
     "scripts/characterize/",
@@ -118,7 +109,7 @@ select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF", "C90"]
 max-complexity = 10
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.13"
 strict = true
 files = ["src", "tests"]
 

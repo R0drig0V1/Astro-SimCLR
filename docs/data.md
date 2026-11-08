@@ -1,6 +1,8 @@
 <!-- Data files of the project: schemas, provenance and workflow. Code: src/astro_simclr/data/
      (docs/architecture.md, section `data`). Checked against the real files on 2026-11-07;
-     the float input and feature sections on 2026-11-08 (task 2.1). -->
+     the float input and feature sections on 2026-11-08 (task 2.1); RJ23 inputs written
+     2026-11-08 (task 3.3); the raw alerts on 2026-11-08 (task 3.1); the raw-alert layout
+     added in task 3.1b (2026-11-08). -->
 # Data
 
 The ZTF stamp datasets are pickles, kept untracked in `dataset/` (`.gitignore`:
@@ -39,6 +41,9 @@ received files:
    al. 2021: 51,594 alerts, Validation and Test balanced at 100 per class).
 2. `..._red.pkl` removes duplicate stamps (L2 distance < 1e-5) within each split. Its 50,582
    Train stamps are all distinct. One Train stamp also appears in Validation or Test.
+   Distinct alerts of one object were kept: within 1.5", 24 Validation and 27 Test alerts
+   share a position with a Train alert, and Train has groups of up to 16 alerts
+   (`astro-simclr leakage-audit`; `docs/evaluation-protocol.md`, "Leakage").
 3. `..._sup_100.pkl` is `red`'s Train split balanced by oversampling. Duplicates are drawn
    at random to bring each class up to the largest one: 5 × 14,542 = 72,710 stamps, which
    matches the size of the truncated file.
@@ -162,6 +167,91 @@ read again and the stamps are paged in on demand: `red` takes 596 MB prepared, a
 pretraining set: 14–29 GB). The preflight (task 1.7) warns about pickles in the data
 directory that do not fit in RAM, and checks the RAM for the prepared arrays.
 
+## Raw-alert layout (task 3.1b)
+
+Phase 3 works from **raw** alert cutouts (task 3.1 downloads them) with its own label sets
+(R5's five classes, RJ23's six, any later one), and draws object-grouped splits (task 3.2).
+The `raw-alerts` kind holds such a dataset as **one pool of rows, without splits**:
+
+```
+DIR/<name>/
+    meta.json      format astro-simclr-prepared, version 3, kind raw-alerts
+    cutouts.npy    float32 (N, 63, 63, 3)  science, reference, difference; raw, NaN and inf kept
+    index.npy      structured (N,)         one row per cutout (fields below)
+    features.npy   float64 (N, 23)         optional: CD21's 23 features, not standardised
+```
+
+| Field | dtype | Rule (checked by the writer and the loader) |
+|---|---|---|
+| `oid` | `<U16` | ZTF object id; letters, digits, `_`, `-`, `.` (task 3.2's alert-table rule) |
+| `candid` | `<i8` | alert candidate id; > 0, **unique** |
+| `jd` | `<f8` | Julian date of the alert; finite and > 0 |
+| `fid` | `<i8` | filter: 1 (g), 2 (r), 3 (i) |
+| `ra`, `dec` | `<f8` | degrees; ra in [0, 360), dec in [−90, 90] |
+| `label` | `<i8` | class index into `meta.json["schema"]["label_names"]`, in `0..N−1` |
+| `label_source` | `<U64` | where the label comes from (`cd21`, `zenodo-4279623`, `tns`, `visual`, ...); never an ALeRCE classifier output |
+| `source_dataset`, `source_row` | `<U64`, `<i8` | the table the row was built from and its row there (≥ 0) |
+
+Row `i` of `index.npy` (and of `features.npy`) describes cutout `i`. The phase-3 protocol
+(task 3.2, ADR 0008) names alerts by `candid` and groups them by `oid`:
+`protocol.alerts.alert_table_from_raw(data)` gives its alert table straight from the
+index (no CSV round trip; the `oid`, `candid` and `jd` rules above are its rules), and
+`RawAlerts.rows_of(candids)` maps the alerts of a split back to rows. `meta.json` records
+the label names (any N ≥ 2, unique), the schema (stamp shape, channel names, the index
+fields, the feature names or `null`), the source (provenance: the fetch run, the label
+table and their hashes), the row and class counts, and each file's dtype, shape and
+SHA-256.
+
+**Features** (plan 3.1b: the phase-2 models are evaluated on R5). `features.npy` holds the
+23 alert features M1 reads (`raw_alerts.CD21_FEATURES`: the 26 of
+[the classifier files](#classifier-files) minus `rb`, `distnr`, `magnr`, in the order of
+`M1_FEATURE_NORM_STATS`), in CD21's definitions (its Table A1, with ALeRCE's −999
+sentinels clipped) but **not standardised**: `(x − mean) / std` with
+`M1_FEATURE_NORM_STATS` gives a phase-2 model's input ([below](#features-and-m1s-normalisation)).
+NaN marks a field the alert lacks, and the evaluation decides how to fill it; ±inf is
+refused. The file is optional (`features=None`), and its presence is recorded in the
+schema, so a layout either has it on every row or not at all.
+
+- **Where its rows come from:** task 3.1's store ([Raw alerts](#raw-alerts), `fetch-alerts`)
+  keeps the downloaded cutouts of each prepared split as append-only shards with their
+  candidate records and raw responses. A `raw-alerts` layout is a frozen, labelled view
+  built from that store and the other label sources (task 3.5), through the builder below;
+  it is the format training and evaluation read, never the store itself.
+- **Building it:** `astro_simclr.data.raw_alerts.write_raw_alerts(dest, cutouts, index,
+  label_names, source, *, features=None)` (Python only, no CLI yet). `index` is a structured array or one
+  array per field (`{c: df[c].to_numpy() for c in df}` for a `pandas` frame); integers are
+  never cast from floats, and a string longer than its field is refused instead of
+  truncated. The writer keeps the row order, builds `.<name>.partial` and renames it, and
+  writes no timestamp, so the same input gives the same bytes. Non-63×63 cutouts cannot be
+  stored: task 3.5 drops them first.
+- **Reading it:** `load_raw_alerts(path)` memory-maps the cutouts, reads the index and
+  refuses a malformed layout (wrong dtype or shape, a label out of range, a duplicated
+  `candid`, any rule of the table above, an infinite feature, counts that disagree with
+  `meta.json`). The cutout values are not checked: NaN and inf are what raw alerts hold.
+  `verify_raw_alerts(path)` re-hashes every file; `astro-simclr inspect-data DIR` does both and prints the counts per
+  class and per `label_source`. `label_names_of(path)` reads only the label names, which
+  is how a run builds an N-class classifier before it loads the data
+  (`docs/architecture.md`, section `models`, "N classes").
+- **The phase-2 readers refuse it** by name (`read_meta`, `load_prepared`: "open it with
+  `load_raw_alerts`"), and the preflight leaves it out of its data manifest.
+
+**Why a structured `.npy` for the index**, rather than CSV or Parquet: numpy reads it with
+`allow_pickle=False` (a dtype of fixed-width strings and numbers has no object field, so the
+file cannot carry a pickle); the dtype and shape sit in the header and are checked before
+any value is used; floats round-trip bit for bit (`jd` needs 15+ significant digits, which
+a CSV writer must be told to keep); it memory-maps and hashes like the cutouts; and it adds
+no dependency. The cost is fixed-width strings, which the writer checks. A CSV export is
+the human-readable view for review or for a committed frozen index (ADR 0012).
+
+**No invalid-pixel mask is stored.** RJ23's mask is 1 where a raw pixel is NaN or ±inf, a
+pure function of the cutouts; a stored copy could only disagree with them. RJ23's input
+path (task 3.3) derives it, together with the |x|-min-p99 normalisation.
+
+**What is in git (ADR 0012):** no cutouts, arrays or raw responses, ever (`.gitignore`
+ignores `*.npy`); the per-row index, its alert-table CSV and the object-splits files (they
+list the label set's `oid`s) only after a governance decision by the user; until then the
+SHA-256 of each frozen version, of its alert table and of its splits, and the rebuild code.
+
 ## Float input path
 
 The paper's model (Carrasco-Davis et al. 2021; M1 of phase 2) reads a 21×21 centre crop of
@@ -239,6 +329,68 @@ float_crops(..., context=True)` concatenates it to the crops (6 channels, about 
 for `red`). Only the float input path has it: `context` with `paper_input: uint8` is an
 error.
 
+## RJ23 inputs
+
+Phase 3 (task 3.3) reproduces the input of Reyes-Jainaga et al. 2023 (RJ23,
+arXiv:2304.13080) from **raw** cutouts: `(N, 63, 63, 3)` floats, channels science,
+reference, difference, NaN and ±inf kept (the raw-alert kind of task 3.1b will store them;
+the CD21 pickles cannot be used, their stamps are already min-max normalised).
+`astro_simclr.data.rj23_input` is a numpy-only reimplementation, from the paper and the
+description of RJ23's MIT code (`alercebroker/multiscale_stamps`, `src/data_loader.py`);
+the open points are settled in ADR 0009.
+
+**Normalisation and mask** (`normalise`, `invalid_mask`, `channel_statistics`), per stamp
+and channel on the full 63×63, before any crop or pooling:
+
+- `(x − min|x|) / (p99|x| − min|x| + 1e-8)`, clipped to [−2, 2]. The statistics skip NaN,
+  ±inf and `|x| > 1e10`; p99 is numpy's linear percentile (`np.nanpercentile`). The centre
+  is `min|x|`, not 0, so zero is preserved only when some pixel is 0, and a constant
+  negative channel saturates at −2.
+- The invalid pixels become 0; a channel with no pixel left for the statistics is all 0.
+- The mask is 1.0 on invalid pixels. **`large_values`** decides about `|x| > 1e10`:
+  `"paper"` (default) masks and zeroes them; `"code"` (RJ23's code) only leaves them out of
+  the statistics, then normalises and clips them, unmasked.
+- Output `(N, 63, 63, 6)` float32, channels `sci, ref, diff, m_sci, m_ref, m_diff`.
+
+**Views** (`rj23_views(stamps, views, *, large_values, chunk_size)` from raw cutouts, or
+`full_view` / `cropped_view` / `lowres_view` / `multiscale_view` from the normalised
+stamps); all channels last, float32:
+
+| View | Shape | Built as |
+|---|---|---|
+| `full` | 63×63×6 | the normalised stamp |
+| `cropped` | 16×16×6 | rows and columns 24:40 |
+| `lowres` | 16×16×6 | **one** 4×4, stride-4 average pooling, TF `'same'` padding |
+| `multiscale` | 8×8×24 | 8×8 crops at 1″ (28:36 of 63), 2″ (12:20 of 32), 4″ (4:12 of 16), 8″ (all of 8) |
+
+- TF `'same'` pooling (`tf_same_avg_pool`): output `⌈n / k⌉`, padding `⌊total / 2⌋`
+  before and the rest after (on 63: one pixel at the end), each output the mean of the
+  window's valid pixels. It equals torch's `avg_pool2d(..., ceil_mode=True)` when TF pads
+  at most one pixel (tested), not otherwise (62 by 4).
+- The multi-scale view pools iteratively by 2×2 after the normalisation (63 → 32 → 16 → 8),
+  masks included (fractional at coarse scales). Channels are scale-major: `6s : 6s + 6`
+  is scale 1″, 2″, 4″, 8″ for s = 0..3 (fields of view 8″, 16″, 32″, 63″).
+- The crops start at `⌈(n − size) / 2⌉`, so they are centred on pixel 31.5 while the
+  source is at 31: in every crop the source pixel sits at local (7, 7) of 16 or (3, 3) of 8.
+  A rotation or flip of the stamp therefore moves the crop window by one pixel, and the
+  pooled views change in their last row or column; the full view, the normalisation and
+  the mask commute exactly with the 8 rotations and flips.
+
+**Position** (`unit_sphere(ra, dec)`, degrees): `(cos ra cos dec, sin ra cos dec,
+sin dec)`, `(N, 3)` float32; RJ23 use it instead of CD21's 23 features.
+
+**Models.** `astro_simclr.rj23_model` (task 3.4, ADR 0013) takes each view channels first
+with the position: `build_rj23_classifier(view)(x_img, x_pos)` → logits.
+
+**Layout and memory.** `channels_first` gives `(N, C, H, W)` for torch
+(`torch.from_numpy` takes it as is); the module never imports torch. Chunks of
+`chunk_size` stamps (default 1000) bound the float64 intermediates (peak about 0.7 GB for
+1000 stamps with all four views, measured); results do not depend on the chunk size. Per
+stamp the float32 views take 95 KB (full) and 6 KB each (cropped, low-res, multi-scale).
+
+C25 (Carvajal et al. 2025) use the same 6-channel stamps. Their FFT channel is not built:
+C25's satellite labels cannot be rebuilt from public data (plan review round 2).
+
 ## Features and M1's normalisation
 
 The stored features are standardised. `astro-simclr check-features DIR [--json]` checks
@@ -258,6 +410,162 @@ below, and `isdiffpos` is exactly {0, 1}. A std wrong in the sixth digit would a
 observations for later tasks: the Train means of the stored features (except `isdiffpos`)
 are up to 3e-4 in absolute value, not 0 (M1's Train is the set before the 12 duplicates
 were removed), and `non_detections` reaches −190 in Train (ALeRCE does not clip it at 0).
+
+## Raw alerts (task 3.1)
+
+The stored stamps are normalised: per channel, min-max over 63×63, then NaN → 0. The raw
+alerts behind them are recovered from ALeRCE's public services by `astro-simclr
+fetch-alerts` (code: `src/astro_simclr/alerts/`, ADR 0011). They keep the real NaN and
+saturation masks, and the full candidate record. Phase 3 needs them for RJ23/C25 inputs,
+the dataset reconstruction and the object-level splits. Phase 2 needs them for row C1 and
+the fake-SN follow-ups. A pretraining corpus needs their `candid`s as its leakage
+exclusion list.
+
+### Method and provenance
+
+The method comes from the integrator's probe of 2026-11-08: 9 of 10 probe stamps
+recovered, with no flip or rotation. For each row of a prepared split:
+
+1. De-standardise `ra`, `dec`, `magpsf` and `sigmapsf` with M1's statistics
+   ([above](#features-and-m1s-normalisation)).
+2. `GET https://api.alerce.online/ztf/v1/objects/?ra=..&dec=..&radius=1.5`. Keep the
+   trailing slash: without it the server redirects.
+   - No object at all: **`ghost_candidate`**. RJ23's `build_dataset.py` calls some CD21
+     Bogus "ghost bogus": objects that are not in ALeRCE's database, whose stamps exist
+     only in CD21's files.
+3. `GET /ztf/v1/objects/{oid}/detections` for every object in the cone. Match a detection
+   when `|Δmagpsf| ≤ 1e-4` and `|Δsigmapsf| ≤ 1e-4`. `candid` arrives as a string,
+   `isdiffpos` as ±1, and there is no `jd` or `drb`: those come from the avro.
+4. **Ties.** `jd` is not a stored feature, so an AGN or VS with hundreds of detections can
+   tie. Every matching `candid` is downloaded (at most 16; more is `ambiguous` without
+   downloading), and the stamp check decides.
+5. `GET https://avro.alerce.online/get_avro?oid=..&candid=..` returns the whole alert:
+   about 50 KB, snappy codec, the candidate record, the previous candidates, and the
+   three gzipped FITS cutouts. It replaces three `get_stamp` FITS requests, and it gives
+   `jd`, `drb`, `xpos` and `ypos`.
+6. **Stamp check:** ALeRCE's min-max of the raw cutouts must equal the stored
+   `images_f32` row, max |Δ| ≤ 1e-6.
+   - The normalisation is per channel over 63×63, no epsilon, NaN → 0:
+     `crop_then_normalise(raw, crop=63, nan_approximation=False)`.
+   - A cutout cut at a CCD edge (smaller than 63×63) is padded with NaN by
+     `repair_non_squared_stamp`, from the candidate's `xpos`/`ypos`, before the check.
+
+Statuses: `ok` (one candidate passes; stored), `mismatch` (downloaded, none passes; the
+closest is recorded, not stored), `ghost_candidate`, `no_object` (objects in the cone, none
+with a detection), `no_detection_match`, `ambiguous` (several candidates pass, or more than
+16 tie, or a miss when the cone search has an unread second page), `bad_alert` (no
+candidate is a readable alert), and `http_error`. `http_error` is a timeout, 5xx or 429
+still failing after the retries, or malformed JSON (these are transient), or a final 4xx. Only `http_error` is retried, by the next
+`--resume`. Ghosts are final: no retry beyond the transport's backoff, and no wider
+tolerance.
+
+**Acceptance.**
+- Every class recovers at least 98 % of its **non-ghost** rows as `ok`.
+- The misses are reported in groups: not found, ambiguous, timeout, mismatch. Ghosts are
+  counted per class apart.
+- No stored row fails the stamp check: only `ok` rows are stored.
+- Non-63×63 (CCD-edge) alerts are counted apart.
+- `alerts-summary RAW_DIR` prints all of this, and exits 1 until the acceptance is met.
+
+### Store layout
+
+```
+dataset/raw/<dataset>/<split>/
+    fetch.json        format astro-simclr-raw-alerts v1; the prepared dataset and its
+                      source SHA-256; split, size, class counts; endpoints; tolerances
+    index.csv         one line per attempt, append-only; the last line of a row wins
+    shard-00000.npz   one committed batch (100 rows by default), np.savez_compressed:
+                        rows, candid   int64 (n,)              the ok rows only
+                        cutouts        float32 (n, 63, 63, 3)  science, template,
+                                                               difference; raw, NaN kept
+                        candidates     uint8                   JSON list of the candidate
+                                                               records (scalar fields)
+                        responses      uint8                   JSON list: url, kind,
+                                                               retrieved_at (UTC),
+                                                               sha256, offset, size
+                        bodies         uint8                   the raw response bytes
+```
+
+Each index line holds the row, its label and its status.
+- **Search:** the de-standardised targets (`target_ra`, `target_dec`, `target_magpsf`,
+  `target_sigmapsf`; for a ghost, the only position on record, for later position groups),
+  the objects in the cone, and every matching `oid:candid`.
+- **The chosen alert:** its candidate fields (`oid`, `candid`, `jd`, `fid`, `magpsf`,
+  `sigmapsf`, `isdiffpos`, `rb`, `drb`, `ra`, `dec`), the raw shape, the NaN count and the
+  check's max |Δ|.
+- **Provenance and cost:** the shard of its batch, the responses it used
+  (`kind:sha256`), and the requests and seconds it cost.
+
+**Snapshot.** Every raw response is kept byte for byte: the cone-search JSON, the full
+detection list of each object (needed later to pick a random or the first alert per
+object), and every downloaded avro.
+- So the index can be rebuilt offline: `fetch-alerts ... --from-snapshot RAW_DIR --out
+  OTHER` re-decides every row from the stored bytes, with no network.
+- Cone searches and detection lists are cached in memory by URL, because rows share
+  objects (about 1,392 rows of `red` share a position).
+
+**Why npz shards and a CSV index.**
+- The run lasts 1–2 days and must survive interruptions. A batch is committed as one
+  shard, written to a temporary file, fsynced and renamed; only then are its index lines
+  appended and fsynced. An index line therefore never names a missing shard.
+- The directory is fsynced after the rename, and `fetch.json` is written atomically.
+- A crash in between leaves an orphan shard that no line references. A truncated last
+  index line is dropped, and text fields never contain a newline.
+- On `--resume`, an `ok` row whose shard is missing is fetched again.
+- The shards load with `allow_pickle=False`, since the records are JSON text in uint8
+  arrays.
+- CSV needs no new dependency. One file per batch keeps the file count near 500 for `red`.
+
+`dataset/` is untracked (`.gitignore`), and the raw alerts must not be committed either.
+They are ZTF public alerts, but they are retrieved from ALeRCE's service and keyed to our
+non-public labelled set.
+
+**Size and cost**, from the smoke run below:
+- about 94 KB per row, so about 4.9 GB for `red`'s 51,582 rows;
+- about 3.1 requests per row, so about 160k requests.
+- The run is sequential and **latency-bound**: 1.29 s per request on average at
+  `--rate 1`, more than the 1 s interval, so the limiter rarely waited. At the smoke run's
+  4.06 s per row, `red` takes about 58 h, and a higher `--rate` shortens that only where
+  the latency is below the interval. The latency from the GPU machine may differ.
+
+### Running it (GPU machine, WSL2, unattended)
+
+```bash
+astro-simclr fetch-alerts --data-dir DATA --dataset td_ztf_stamp_17_06_20_red-002 \
+    --split Train --out dataset/raw/td_ztf_stamp_17_06_20_red-002 --rate 1.5 --quiet
+# after any stop, or to retry the http_error rows:
+astro-simclr fetch-alerts ... --resume --quiet
+astro-simclr alerts-summary dataset/raw/td_ztf_stamp_17_06_20_red-002
+```
+
+- The prepared layout needs `images_f32.npy` (`prepare-data --images float32`).
+- One rate limit covers both hosts; first attempts and retries go through it alike.
+- Timeouts, 5xx and 429 are retried 5 times with backoff 2, 4, 8 and 16 s, capped at 60 s.
+  A numeric `Retry-After` wins over the cap, up to 600 s. The API sends no rate-limit
+  headers, so the throttling is ours.
+- Each response must arrive in full within 300 s (the socket timeout of 60 s is per
+  read). Redirects are followed only to `https://`.
+- After 3 transient `http_error` rows in a row the run pauses for `--cooldown` seconds
+  (default 300). A final 4xx does not count toward that streak.
+- SIGTERM, SIGHUP (a closed ssh session) and Ctrl-C stop the run after the current row and
+  commit the batch (exit 128 + the signal number), so a signal never cuts a commit. A
+  second signal forces the exit. A hard kill loses at most one batch.
+- A failed commit (a full disk, say) is not retried, and its responses stay pending.
+  Resume after fixing the cause.
+- Memory: the response cache is bounded at 256 MB.
+- Rows are visited round-robin over the classes, so a partial run covers them evenly.
+- The `User-Agent` is generic (`astro-simclr/<version> (research; raw alert retrieval)`).
+
+### Smoke run (2026-11-08)
+
+Run on `red-002` Validation with `--limit 50 --rate 1`, from the M4, at 50 rows (10 per
+class):
+- 47 `ok`, 3 `ghost_candidate` (all Bogus: rows 402, 405 and 408), and no mismatch,
+  not-found, ambiguous or timeout;
+- max |Δ| 1.2e-7 over the `ok` rows, re-checked from the store; 3 of them have NaN pixels;
+- no tie and no CCD-edge cutout;
+- 157 requests, 203 s: 4.06 s per alert;
+- `--from-snapshot` rebuilt the same 50 statuses offline in 0.9 s.
 
 ## Workflow and manifest
 

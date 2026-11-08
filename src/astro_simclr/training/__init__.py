@@ -17,8 +17,8 @@ Submodules (``docs/architecture.md``, section "training", has the design):
 - plan rows C5 and C6: :mod:`~astro_simclr.training.class_augment` (the paper model's
   class-aware training augmentation; ADR 0006).
 
-A run is: ``seed_run(settings)``, build the module and its data module,
-``build_callbacks(settings, Module.MONITORABLE, dirpath=...)``,
+A run is: ``apply_fp32_precision(settings)`` (ADR 0010), ``seed_run(settings)``, build
+the module and its data module, ``build_callbacks(settings, Module.MONITORABLE, dirpath=...)``,
 ``build_trainer(settings, callbacks=...)``, then ``trainer.fit(module, datamodule)``.
 Importing this package imports Lightning; the CLI imports it inside its handlers.
 """
@@ -32,7 +32,12 @@ from astro_simclr.training.modules import (
     SupervisedCEModule,
     SupervisedCEResNetModule,
 )
-from astro_simclr.training.runs import build_callbacks, build_trainer, seed_run
+from astro_simclr.training.runs import (
+    apply_fp32_precision,
+    build_callbacks,
+    build_trainer,
+    seed_run,
+)
 
 __all__ = [
     "ClassifierDataModule",
@@ -43,6 +48,7 @@ __all__ = [
     "SimCLRModule",
     "SupervisedCEModule",
     "SupervisedCEResNetModule",
+    "apply_fp32_precision",
     "build_callbacks",
     "build_trainer",
     "seed_run",

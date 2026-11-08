@@ -55,7 +55,7 @@ import torch
 from lightning.pytorch.callbacks import Callback
 
 from astro_simclr.config import ConfigError, load_settings
-from astro_simclr.data.prepared import is_prepared, read_meta
+from astro_simclr.data.prepared import RAW_ALERTS_KIND, is_prepared, layout_kind, read_meta
 from astro_simclr.data.schema import DataError
 from astro_simclr.hparams import LABEL_FRACTION_DATASETS
 
@@ -427,10 +427,18 @@ def _dataset_bytes(path: Path) -> int:
 
 
 def prepared_dirs(data_dir: Path) -> list[Path]:
-    """The prepared layouts directly under ``data_dir``, sorted by name."""
+    """The prepared split layouts directly under ``data_dir``, sorted by name.
+
+    ``raw-alerts`` layouts (phase 3) are left out: the preflight's steps and its manifest
+    read the splits of the phase-2 layouts, which they do not have.
+    """
     if not data_dir.is_dir():
         return []
-    return sorted(path for path in data_dir.iterdir() if is_prepared(path))
+    return sorted(
+        path
+        for path in data_dir.iterdir()
+        if is_prepared(path) and layout_kind(path) != RAW_ALERTS_KIND
+    )
 
 
 def check_resources(data_dir: Path, output_dir: Path) -> StepResult:

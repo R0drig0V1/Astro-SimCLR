@@ -60,21 +60,34 @@ def _check_labels(y_pred: torch.Tensor, y_true: torch.Tensor) -> None:
 
 
 def classification_metrics(
-    y_pred: torch.Tensor, y_true: torch.Tensor, *, num_classes: int = N_CLASSES
+    y_pred: torch.Tensor,
+    y_true: torch.Tensor,
+    *,
+    num_classes: int = N_CLASSES,
+    validate_args: bool = True,
 ) -> dict[str, torch.Tensor]:
     """Micro accuracy, macro precision and macro recall of the labels ``y_pred``.
 
     Returns ``{"accuracy": ..., "precision": ..., "recall": ...}``, each a 0-d float tensor
-    on the inputs' device.
+    on the inputs' device. ``validate_args=False`` skips torchmetrics' checks of the label
+    values (dtype and range; extra kernels and a host sync on a GPU) and gives the same
+    numbers; only for labels known to be in ``[0, num_classes)``, such as argmaxes. The
+    shape check below always runs.
 
     Raises:
         ValueError: if the inputs are not non-empty 1-D tensors of the same shape.
     """
     _check_labels(y_pred, y_true)
     return {
-        "accuracy": multiclass_accuracy(y_pred, y_true, num_classes, average="micro"),
-        "precision": multiclass_precision(y_pred, y_true, num_classes, average="macro"),
-        "recall": multiclass_recall(y_pred, y_true, num_classes, average="macro"),
+        "accuracy": multiclass_accuracy(
+            y_pred, y_true, num_classes, average="micro", validate_args=validate_args
+        ),
+        "precision": multiclass_precision(
+            y_pred, y_true, num_classes, average="macro", validate_args=validate_args
+        ),
+        "recall": multiclass_recall(
+            y_pred, y_true, num_classes, average="macro", validate_args=validate_args
+        ),
     }
 
 

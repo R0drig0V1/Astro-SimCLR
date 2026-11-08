@@ -43,7 +43,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from astro_simclr.models import N_CLASSES, N_FEATURES
+from astro_simclr.models import N_CLASSES, N_FEATURES, check_n_classes
 
 __all__ = [
     "PAPER_CROP",
@@ -103,7 +103,8 @@ class PaperStampClassifier(nn.Module):
     """ALeRCE's stamp classifier: ``DeepHitsWithFeatures``, ``DeepHitsExtraLayer`` without features.
 
     ``forward(x_img, x_feat)`` takes 21x21 crops (N, 3, 21, 21) and, with features, the 23
-    alert features (N, 23); it returns (N, 5) logits:
+    alert features (N, 23); it returns (N, ``n_classes``) logits (5, CD21's classes, by
+    default; an N-class dataset passes its own count, task 3.1b):
 
     1. the 4 rotations of the batch (``torch.rot90``, counter-clockwise like
        ``tf.image.rot90``) go through the trunk as one batch of 4N:
@@ -112,7 +113,7 @@ class PaperStampClassifier(nn.Module):
        a dropout layer (one per rotation, before the mean);
     2. the mean over the 4 rotations;
     3. with features: ``bn_features`` on the features, concatenated (64 + 23 = 87);
-    4. fc2 to 64, ReLU, dropout; fc3 to 64, ReLU, dropout; ``logits`` to 5.
+    4. fc2 to 64, ReLU, dropout; fc3 to 64, ReLU, dropout; ``logits`` to ``n_classes``.
 
     Every convolution and fc1-fc3 is followed by a ReLU. Facts of M1 this reproduces
     (verified against its meta graph and checkpoint; ``docs/phases/02-stamp-classifier.md``):
@@ -147,10 +148,10 @@ class PaperStampClassifier(nn.Module):
       trained with rot90 augmentation).
 
     Raises:
-        ValueError: at construction, if ``drop_rate`` is not in [0, 1) or ``in_channels``
-            is not positive; in ``forward``, if the images are not
-            (N, ``in_channels``, 21, 21), or with features if ``x_feat`` is missing or not
-            (N, 23).
+        ValueError: at construction, if ``drop_rate`` is not in [0, 1), ``in_channels``
+            is not positive or ``n_classes`` is not an integer >= 2; in ``forward``, if the
+            images are not (N, ``in_channels``, 21, 21), or with features if ``x_feat`` is
+            missing or not (N, 23).
     """
 
     def __init__(
@@ -161,12 +162,14 @@ class PaperStampClassifier(nn.Module):
         drop_rate: float = PAPER_DROP_RATE,
         in_channels: int = PAPER_IN_CHANNELS,
         rotation_mean: bool = True,
+        n_classes: int = N_CLASSES,
     ) -> None:
         super().__init__()
         if not 0 <= drop_rate < 1:
             raise ValueError(f"drop_rate must be in [0, 1), got {drop_rate}")
         if in_channels < 1:
             raise ValueError(f"in_channels must be >= 1, got {in_channels}")
+        check_n_classes(n_classes)
         self.with_features = with_features
         self.dropout_active = dropout_active
         self.in_channels = in_channels
@@ -190,7 +193,7 @@ class PaperStampClassifier(nn.Module):
         self.drop2 = nn.Dropout(drop_rate)
         self.fc3 = nn.Linear(_HIDDEN, _HIDDEN)
         self.drop3 = nn.Dropout(drop_rate)
-        self.logits = nn.Linear(_HIDDEN, N_CLASSES)
+        self.logits = nn.Linear(_HIDDEN, n_classes)
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
@@ -225,7 +228,7 @@ class PaperStampClassifier(nn.Module):
         return self._dropout(self.drop1, x)
 
     def forward(self, x_img: torch.Tensor, x_feat: torch.Tensor | None = None) -> torch.Tensor:
-        """Crops (N, ``in_channels``, 21, 21) and, with features, ``x_feat`` (N, 23) -> (N, 5).
+        """Crops (N, ``in_channels``, 21, 21) and, with features, ``x_feat`` (N, 23) -> logits.
 
         Without features, ``x_feat`` is ignored.
         """
@@ -239,7 +242,7 @@ class PaperStampClassifier(nn.Module):
         return self._head(h, x_feat)
 
     def _head(self, h: torch.Tensor, x_feat: torch.Tensor | None) -> torch.Tensor:
-        """The 64-d image representation and the features -> (N, 5) logits."""
+        """The 64-d image representation and the features -> (N, n_classes) logits."""
         n = h.shape[0]
         if self.bn_features is not None:
             if x_feat is None or tuple(x_feat.shape) != (n, N_FEATURES):
