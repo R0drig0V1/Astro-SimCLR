@@ -75,7 +75,8 @@ files read with `allow_pickle=False`. Comparisons pair runs stamp by stamp throu
   is exactly `max_steps`, and no best checkpoint is kept. The CV fold scores, the
   predictions files and the manifest's run are then those final weights; the result keys
   keep their names (`val_acc_best`, `selection_acc_best`, ...) and `metrics.json["selection"]`
-  says which weights they are. It goes with `lr_schedule: cosine` (a fixed anneal over
+  says which weights they are; `report-phase2`'s replication tables print its `scored_step`
+  (not the validation-best `best_step`), and the run registry records it as `scored_step`. It goes with `lr_schedule: cosine` (a fixed anneal over
   `max_steps`) and `ema_decay`, the D3 recipe; the hypothesis registered for it: mean
   balanced accuracy at least the baseline minus 0.1 points, a fold-to-fold std at least
   20 % smaller, and a lower ECE.

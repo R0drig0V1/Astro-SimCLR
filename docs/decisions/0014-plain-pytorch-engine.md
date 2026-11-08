@@ -6,7 +6,8 @@
 - **Implemented by:** the contracts in `src/astro_simclr/engine/` (`task.py`, `policies.py`,
   `checkpoint.py`, `device.py`, `data.py`, `randomness.py`); the loop itself in task 4.1
   (`loop.py`, `precision.py`, `scalars.py`, `record.py`; amendment below), the config in
-  4.2, the data tiers in 4.3, the tasks in 4.6 (`src/astro_simclr/tasks/`; amendment below)
+  4.2, the data tiers in 4.3, the tasks in 4.6 (`src/astro_simclr/tasks/`; amendment below),
+  `Task.after_step` in plan row D3 (amendment below)
 - **Amended by:** ADR 0018 (the data tiers, task 4.3: section 3's `pinned` tier pins the
   staging buffers, not the dataset; the shuffle granularity; the stream definition)
 - **Checked by:** `tests/test_engine_contracts.py` (the contracts, and the Lightning
@@ -217,7 +218,8 @@ Frozen now; 4.1-4.3 implement against them. A change after B0 is an amendment of
 
 - **`Task`** (`task.py`): `module` (what the loop moves, switches between modes and
   checkpoints), `make_optimizer()` (once, after the move), `train_step(batch, step)` (the
-  0-d loss with its graph; `step` = steps done before), `eval_step(batch) -> EvalOutput`
+  0-d loss with its graph; `step` = steps done before), `after_step(step)` (after the
+  optimizer step; amendment of plan row D3), `eval_step(batch) -> EvalOutput`
   (detached batch mean loss, probabilities, labels), `state()` / `load_state()` (task state
   outside `module.state_dict()`). The loop owns the modes, `zero_grad`, the backward, the
   step and the no-grad contexts (C2, C3). `mean_of_batch_losses` is the monitored value.
@@ -429,3 +431,31 @@ settled here:
    `steps + 1` steps (`engine.fit` gained an `on_step` hook for the timer), estimated from
    its initial horizon (a lower bound). `--synthetic` prepares the 100 % file with float32
    stamps. R1-R4 still run on Lightning: their modules are not ported (plan 4.6, "Cut").
+
+## Amendment: plan row D3, `Task.after_step` (2026-11-08)
+
+Plan row D3 (the paper classifier's weight EMA and per-step learning-rate schedule;
+`training.ema`, `training.lr_schedule`) needs work after each update that is neither the
+loss nor the optimizer's: a scheduler step and an EMA update. Section 2's `Task` gains one
+method, the only change to the interface:
+
+- **`after_step(step: int) -> None`**, called by the loop right after `optimizer.step()`
+  of every training step, before that step's validation (if one is due) and before
+  `steps_done` is incremented. `step` is the same value `train_step` received: the number
+  of optimizer steps done **before** this one (0 after the first step), never a counter the
+  task keeps. A task with nothing to do there implements it as a no-op (the toy task of
+  `tests/test_engine_loop.py`, `PaperTask` with every D3 flag off), so a run without D3
+  is unchanged.
+- **Lightning's counterpart**, which the 4.7(a) gate holds bit for bit equal: the
+  `LambdaLR` with `interval: "step"` (stepped after each optimizer step) and
+  `PaperClassifierModule.on_train_batch_end`, which updates the EMA with
+  `step = global_step - 1` (Lightning has already counted the step there). Both run
+  before Lightning's validation of the step, as on the plain loop.
+- **State.** What `after_step` changes lives in the checkpoint like everything else: the
+  EMA is a submodule (`model`), the scheduler's state is `Task.state()` (`task`), restored
+  in section 2's resume order (`optimizer`, then `task`). A task without a scheduler keeps
+  an empty task state.
+- C2 (the step order) reads: forward, `zero_grad(set_to_none=True)`, backward,
+  `optimizer.step()`, `after_step(step)`. Checked by `tests/test_engine_loop.py` (called
+  once per step with the steps done before it) and by the D3 cases of
+  `tests/test_engine_differential.py`, which fail on either engine without it.

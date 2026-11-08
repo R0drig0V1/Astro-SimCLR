@@ -13,8 +13,8 @@ with ``compare-reference`` or ``compare-variants``.
 which holds the arm's run directories at any depth (``DIR/<arm>/.../metrics.json``):
 
 - ``replication``: the CD21 replication (``results/phase2/replication``: ``with-features``
-  and ``no-features``). Per arm, a table per seed (best step, validation and test accuracy
-  of the selected checkpoint, SN test recall, s/step, test ECE) with mean ± std (ddof =
+  and ``no-features``). Per arm, a table per seed (the scored step, validation and test
+  accuracy of the scored weights, SN test recall, s/step, test ECE) with mean ± std (ddof =
   1); then the
   CD21 gate on all the runs together (``compare-reference --ref CD21``, with the M1 oracle
   report: ``--oracle-report``, default ``m1_oracle.json`` in the directory).
@@ -350,6 +350,19 @@ def _test_ece(run_dir: Path, metrics: Mapping[str, Any]) -> float | None:
         return None
 
 
+def _scored_step(metrics: Mapping[str, Any]) -> object:
+    """The step of the weights the run's scores are of (plan row D3).
+
+    ``metrics["selection"]["scored_step"]`` when the run records it (the last step under
+    ``checkpoint_selection: final``), else ``best_step``: before D3 every run scored its
+    best validation's weights.
+    """
+    selection = metrics.get("selection")
+    if isinstance(selection, Mapping) and "scored_step" in selection:
+        return selection["scored_step"]
+    return metrics.get("best_step")
+
+
 def _replication_arm(arm: Arm) -> list[str]:
     runs = sorted(
         ((path, load_run(path)) for path in arm.runs), key=lambda item: _seed_key(item[1]["seed"])
@@ -367,12 +380,12 @@ def _replication_arm(arm: Arm) -> list[str]:
         for key, value in values.items():
             if value is not None:
                 columns[key].append(value)
-        step = run.get("best_step")
-        best_step = f"{step:,}" if isinstance(step, int) and not isinstance(step, bool) else _DASH
+        step = _scored_step(run)
+        scored = f"{step:,}" if isinstance(step, int) and not isinstance(step, bool) else _DASH
         rows.append(
             [
                 run.get("seed"),
-                best_step,
+                scored,
                 _num(values["val"], 3),
                 _num(values["test"], 3),
                 _num(values["sn"], 3),
@@ -393,9 +406,9 @@ def _replication_arm(arm: Arm) -> list[str]:
     )
     header = [
         "Seed",
-        "best_step",
-        "val_acc_best",
-        "test (at best)",
+        "scored step",
+        "val acc (scored)",
+        "test (scored)",
         "SN test recall",
         "s/step",
         "test ECE",

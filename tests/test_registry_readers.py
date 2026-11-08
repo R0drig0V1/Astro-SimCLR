@@ -255,4 +255,9 @@ def test_metrics_summary_skips_what_is_not_a_finite_number() -> None:
         }
     )
     assert summary == {"val.accuracy": 0.5, "val.ece": 0.25, "last_step": 7.0}
+    # A run that records its scored weights' step (plan row D3) keeps it too.
+    assert metrics_summary({"best_step": 3, "selection": {"scored_step": 9}}) == {
+        "best_step": 3.0,
+        "scored_step": 9.0,
+    }
     assert metrics_summary({}) == {}

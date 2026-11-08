@@ -29,6 +29,8 @@ from astro_simclr.engine.loop import _Fit
 from astro_simclr.experiments import run_command
 from astro_simclr.losses import P_stamps_loss
 from astro_simclr.protocol.calibration import expected_calibration_error
+from astro_simclr.protocol.phase2_report import _replication_arm, find_arms
+from astro_simclr.registry.readers import metrics_summary
 from astro_simclr.tasks.paper import PaperNet, build_paper_task, paper_inputs
 from astro_simclr.tasks.plain import _sources, run_plain
 from astro_simclr.tasks.results import StageOutput, evaluation_entry
@@ -499,3 +501,22 @@ def test_best_val_loss_selection_keeps_choosing_on_validation(
         assert not np.array_equal(
             _test_probabilities(tmp_path / "b"), _test_probabilities(tmp_path / "f")
         )
+
+
+def test_reports_show_the_scored_step_of_a_final_run(
+    classifier_f32_dir: Path, tmp_path: Path
+) -> None:
+    # A final run's scores are the last step's weights: the replication table and the
+    # registry must say so, not print the validation-best step next to them.
+    root = tmp_path / "replication"
+    out = root / "d3" / "seed-0"
+    metrics = run_plain("train-supervised", _settings(classifier_f32_dir, out, max_steps=30, **_D3))
+    assert metrics["best_step"] != metrics["last_step"] == 30  # they differ in this run
+    (arm,) = find_arms(root)
+    table = "\n".join(_replication_arm(arm))
+    assert "| Seed | scored step | val acc (scored) | test (scored) |" in table
+    assert "| 0 | 30 | " in table
+    assert f"| 0 | {metrics['best_step']} | " not in table
+    summary = metrics_summary(metrics)
+    assert summary["scored_step"] == 30.0
+    assert summary["best_step"] == float(metrics["best_step"])

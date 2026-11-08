@@ -14,7 +14,11 @@ nothing. It is a **secondary** metric of the phase-2 comparisons (never a decisi
 (``tasks.results.evaluation_entry``, both engines), and ``compare-variants`` and
 ``report-phase2`` report it per run from the predictions files.
 
-Computed in float64 on the stored float32 probabilities. Nothing here imports torch.
+Computed in float64 on the stored float32 probabilities. The right-closed rule is exact
+in float64 only: it applies to the stored value, not to its decimal intent. A confidence
+meant to be on an edge, such as 0.2 = 3/15, is stored as ``float32(0.2) =
+0.2000000030...``, just above the float64 edge, so it lands in ``(3/15, 4/15]`` rather
+than ``(2/15, 3/15]``. Nothing here imports torch.
 """
 
 from __future__ import annotations

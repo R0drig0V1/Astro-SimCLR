@@ -167,8 +167,11 @@ def metrics_summary(metrics: Mapping[str, Any]) -> dict[str, float]:
 
     ``<stage>.accuracy``, ``<stage>.balanced_accuracy`` and ``<stage>.macro_f1`` for each
     stage of ``evaluation`` (``val``, ``test``; a split run's evaluation part), then
-    ``monitor_best``, ``best_step``, ``last_step`` and ``seconds_per_step`` (from
-    ``timing``). Missing or non-finite values are left out.
+    ``monitor_best``, ``best_step`` (the best validation's step), ``scored_step`` (the step
+    of the scored weights, ``metrics["selection"]``: the last step under
+    ``checkpoint_selection: final``, plan row D3; only for runs that record it),
+    ``last_step`` and ``seconds_per_step`` (from ``timing``). Missing or non-finite values
+    are left out.
     """
     out: dict[str, float] = {}
     evaluation = metrics.get("evaluation")
@@ -181,9 +184,11 @@ def metrics_summary(metrics: Mapping[str, Any]) -> dict[str, float]:
                 if value is not None:
                     out[f"{stage}.{key}"] = value
     timing = metrics.get("timing")
+    selection = metrics.get("selection")
     top = {
         "monitor_best": metrics.get("monitor_best"),
         "best_step": metrics.get("best_step"),
+        "scored_step": selection.get("scored_step") if isinstance(selection, Mapping) else None,
         "last_step": metrics.get("last_step"),
         "seconds_per_step": timing.get("seconds_per_step") if isinstance(timing, Mapping) else None,
     }
