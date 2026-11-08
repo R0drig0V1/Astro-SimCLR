@@ -1,0 +1,144 @@
+{
+  "passed": true,
+  "checks": {
+    "port_equivalence": {
+      "passed": true,
+      "n": 500,
+      "max_abs_logit_diff": 1.5717855406660597e-06,
+      "tolerance": 0.0001,
+      "argmax_agreement": 1.0
+    },
+    "data_path": {
+      "passed": true,
+      "correct": 475,
+      "n": 500,
+      "accuracy": 0.95,
+      "expected_correct": 475,
+      "correct_tolerance": 2,
+      "correct_passed": true,
+      "exact": true,
+      "loss": -0.06161668663347358,
+      "expected_loss": -0.0616,
+      "loss_tolerance": 0.005,
+      "loss_passed": true,
+      "recall": {
+        "AGN": 0.94,
+        "SN": 0.93,
+        "VS": 0.97,
+        "Asteroid": 0.96,
+        "Bogus": 0.95
+      }
+    }
+  },
+  "nan_approximation": {
+    "approximated": {
+      "n": 41,
+      "correct": 41,
+      "accuracy": 1.0,
+      "indices": [
+        107,
+        116,
+        167,
+        168,
+        229,
+        238,
+        245,
+        253,
+        256,
+        260,
+        314,
+        316,
+        355,
+        381,
+        400,
+        402,
+        405,
+        408,
+        410,
+        412,
+        420,
+        427,
+        429,
+        430,
+        431,
+        432,
+        435,
+        436,
+        440,
+        461,
+        462,
+        464,
+        468,
+        472,
+        473,
+        476,
+        479,
+        484,
+        485,
+        489,
+        495
+      ]
+    },
+    "others": {
+      "n": 459,
+      "correct": 434,
+      "accuracy": 0.9455337690631809
+    },
+    "test_approximated": 34
+  },
+  "test": {
+    "n": 500,
+    "correct": 468,
+    "accuracy": 0.936,
+    "loss": -0.04390821528278974,
+    "recall": {
+      "AGN": 0.92,
+      "SN": 0.86,
+      "VS": 0.98,
+      "Asteroid": 0.96,
+      "Bogus": 0.96
+    }
+  },
+  "diagnostics_validation": {
+    "no_nan_approximation": {
+      "correct": 474,
+      "accuracy": 0.948,
+      "delta_accuracy": -0.002,
+      "loss": -0.06168947442405761
+    },
+    "uint8_21_padded": {
+      "correct": 464,
+      "accuracy": 0.928,
+      "delta_accuracy": -0.022,
+      "loss": -0.022774861152441497
+    },
+    "uint8_27": {
+      "correct": 455,
+      "accuracy": 0.91,
+      "delta_accuracy": -0.04,
+      "loss": 0.0052980403891057445
+    }
+  },
+  "m1": {
+    "repository": "alercebroker/pipeline",
+    "commit": "a3705acb58ce2e45c1f9b240b824c51260295a99",
+    "val_curve": {
+      "n_evaluations": 3000,
+      "last_step": 29990,
+      "best_step": 4780,
+      "best_val_loss": -0.061565447598695755,
+      "best_val_accuracy": 0.949999988079071,
+      "peak_val_accuracy": 0.9539999961853027,
+      "peak_val_accuracy_step": 3120
+    }
+  },
+  "data": {
+    "name": "td_ztf_stamp_17_06_20_red-002.pkl",
+    "sha256": "48f50ca503b58ba9fe07ab4f923bfcf5d39f3d45326258ba28c8336fdbeebb75"
+  },
+  "versions": {
+    "astro_simclr": "0.1.0",
+    "torch": "2.14.1",
+    "numpy": "2.5.4"
+  }
+}

@@ -16,6 +16,7 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping)
  │                                          datamodules ──► data (prepared layout) + augmentations
  ├──► reference (compare-reference: the gates of R1-R4 and CD21)
  ├──► protocol (make-splits, compare-variants: the phase-2 evaluation protocol) ──► data
+ ├──► oracle (fetch-m1, m1-oracle: the published M1 vs our input path) ──► paper_model, data
  └──► preflight ──► experiments, data (inspection, manifest)
 ```
 
@@ -130,6 +131,8 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   --baseline RUN... --variant RUN... [--split test|val] [--n-boot N] [--seed S]
   [--allow-mixed-machines]` (task 2.3, see `protocol`); `compare-variants` always exits 0
   (a report).
+- `fetch-m1` and `m1-oracle --data-dir DIR [--out DIR]` (task 2.2b, see `oracle`): exit
+  0 if the oracle passed, else 1.
 - `preflight (--synthetic | --data-dir DIR) [--accelerator cuda] [--runs R1,R2,R3,R4]
   [--set ...]` (see `preflight`): exit 0 if no step failed, else 1.
   `scripts/gpu-preflight.sh` is a thin `uv run --no-sync` wrapper.
@@ -401,6 +404,80 @@ dropout_active=False, drop_rate=0.5)`, ALeRCE's `DeepHitsWithFeatures` (without 
 - Layer names map to M1's variable scopes (table in the module docstring) for the 2.2b
   weight mapping: HWIO → OIHW, dense kernels transposed, `fc1` rows permuted from TF's
   (h, w, c) flatten to (c, h, w).
+
+## `oracle` (task 2.2b)
+
+`src/astro_simclr/oracle/`: the published model M1 of Carrasco-Davis et al. 2021 as a
+no-GPU check that our input path and `PaperStampClassifier` reproduce it. No TensorFlow,
+and no ALeRCE code or weights in the repository (the pipeline repository has no LICENSE).
+
+- **`tf_files`**: pure-Python readers of the two TF1 formats M1 uses. `read_bundle(index,
+  data, prefix=...)` reads a tensor-bundle V2 checkpoint (`model.index`, a LevelDB-style
+  table, plus its single data shard) into float32 arrays in TF's layout; it checks the
+  table magic, that blocks are uncompressed, one little-endian shard, `DT_FLOAT`, `size ==
+  4 * prod(shape)` and every block's and tensor's masked CRC32C, and raises `TFFormatError`
+  otherwise. `read_scalar_events(buf)` reads the `simple_value` scalars of a TF event file
+  (TFRecord, both CRCs checked), by tag, with their steps.
+- **`m1`**: the pinned files (`M1_COMMIT` = `alercebroker/pipeline@a3705ac`, `M1_DIR`, and
+  `M1_FILES`: path, size and SHA-256 of `model.index`, `model.data-00000-of-00001` and the
+  validation event log). `fetch_m1(cache_dir, source_dir=None)` downloads them (only
+  `https://` or `file://`), or copies them from `source_dir`, verifies size and SHA-256,
+  and writes `CACHE/m1_weights.npz`: the 22 `network/` variables (the Adam slots are
+  dropped) under their TF names, plus a `provenance` JSON string; it loads with
+  `allow_pickle=False`. The cache defaults to `$XDG_CACHE_HOME/astro-simclr/m1/a3705ac`
+  (`~/.cache/...`): outside the repository, never committed. A verified cached file is not
+  downloaded again.
+- **The weight mapping**, `to_state_dict(weights)` and `load_m1_model(weights)` (strict
+  `load_state_dict`, eval mode): HWIO → OIHW; dense `(in, out)` → `(out, in)`; fc1's input
+  rows permuted from TF's `(h, w, c)` flatten of the 6×6×64 map to torch's `(c, h, w)`
+  (`kernel.reshape(6, 6, 64, 64).transpose(3, 2, 0, 1)`); the feature BN's gamma, beta and
+  moving statistics (M1's are 0 and 1) with `num_batches_tracked = 0`; biases unchanged.
+  `tf_shapes(with_features)` lists the expected names and shapes (441,075 trainable
+  parameters with features, 439,557 without; tested).
+- **`numpy_forward(weights, images, features, pad=3)`**: the independent reference of the
+  port check: M1's forward pass in float64 NumPy, NHWC, on the raw TF-layout weights (no
+  transposes): the 4 rotations `np.rot90(k)` stacked on the batch axis, zero padding,
+  convolutions as sums of shifted matrix products with TF's symmetric "same" padding (odd
+  kernels only), 2×2 max-pools, the `(h, w, c)` flatten, the mean over rotations, the BN in
+  inference form, fc2, fc3, logits. `pad=0` takes 27×27 crops (the uint8 diagnostic).
+- **`run`**: `run_m1_oracle(data_dir, weights, curve=None)` returns the report; `write_report`,
+  `read_val_curve` and `write_curve` (CSV `step,val_loss,val_accuracy`, float32 values in
+  their shortest form). The two checks, on the 500 `red` Validation stamps:
+  1. *port equivalence*: torch vs `numpy_forward` on the same float-path crops,
+     `max |Δlogit| <= 1e-4` and 100 % argmax agreement;
+  2. *data path*: M1 through `crop_split` (NaN approximation on): correct stamps within ±2
+     of 475 **and** the selection loss within ±0.005 of −0.0616. `selection_loss` is the
+     training loss `P_stamps_loss(0.5)` averaged as TF did: the mean of batch-64 means in
+     file order (the last batch, of 52, counts as one), the definition of 2.2a.
+
+  The report's top-level `passed` is both checks; `compare-reference --ref CD21
+  --oracle-report FILE` reads it (`reference.read_oracle_report`). It also holds the
+  stamps the NaN approximation touches (indices and accuracy) apart from the others; M1's
+  **test** accuracy, loss and per-class recall (archived, never a decision input); the
+  diagnostics **on Validation only**: NaN approximation off, uint8 21×21 crops padded to
+  27 (2.2a's interim input) and uint8 27×27 crops of real pixels (phase 1's input; through
+  `numpy_forward`, since the torch model takes 21×21), each with its accuracy change; the
+  summary of M1's validation curve; data and package versions.
+- **CLI:** `fetch-m1 [--cache-dir DIR] [--source-dir DIR]` and `m1-oracle --data-dir DIR
+  [--out DIR] [--cache-dir DIR] [--source-dir DIR]`, which writes `OUT/m1_oracle.json` and
+  `OUT/m1_val_curve.csv` and exits 0 if both checks passed, 1 otherwise (or on a fetch or
+  data error). The committed results are in `results/phase2/replication/` (derived numbers
+  only), from:
+
+  ```bash
+  uv run astro-simclr m1-oracle --data-dir dataset/prepared/td_ztf_stamp_17_06_20_red-002 \
+      --out results/phase2/replication
+  ```
+
+- **Result on `red` (2026-11-08, Mac M4, CPU, torch 2.14.1):** passed. Port: max |Δlogit|
+  1.6e-6, argmax 500/500. Data path: **475/500 (exact)**, loss −0.06162 (M1's log:
+  −0.06157 at iteration 4,780). 41 Validation stamps are touched by the NaN approximation,
+  all 41 correct (434/459 for the others); 34 in Test. M1's test accuracy is **0.936**
+  (468/500; SN recall 0.86). Validation diagnostics: NaN approximation off 0.948 (−0.002),
+  uint8 21 padded 0.928 (−0.022), uint8 27 0.910 (−0.040).
+- Tests (`tests/test_oracle_*.py`) use synthetic checkpoints and event files written by
+  `tests/_tf_writer.py` (from the format description, with knobs that break one property at
+  a time), random M1-shaped weights, `file://` downloads and the synthetic prepared data.
 
 ## `optim` (task 1.5)
 
