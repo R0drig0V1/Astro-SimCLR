@@ -86,6 +86,12 @@ _CARRASCO2021: Final[Mapping[str, object]] = {
     "group_fields": None,
     "context": "none",
     "rot90_augment": False,
+    # Class-aware augmentation (plan rows C5 and C6; ADR 0006): off. Listed for the same
+    # reason, so that an augmented run is recorded as a deviation.
+    "aug_noise": 0.0,
+    "aug_feature_jitter": 0.0,
+    "synthetic_bogus": 0.0,
+    "aug_min_r2": 0.5,
 }
 
 #: Preset name -> the settings it sets (``train-supervised`` only).

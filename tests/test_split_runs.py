@@ -26,6 +26,7 @@ from astro_simclr import experiments
 from astro_simclr.cli import main
 from astro_simclr.config import ConfigError, Settings
 from astro_simclr.data import prepare
+from astro_simclr.data.schema import LABEL_NAMES
 from astro_simclr.data.synthetic import CLASSIFIER_FILES, make_synthetic
 from astro_simclr.models import N_FEATURES
 from astro_simclr.paper_model import PAPER_CROP
@@ -40,6 +41,7 @@ from astro_simclr.protocol.splits import (
     write_splits,
 )
 from astro_simclr.protocol.stats import balanced_accuracy
+from astro_simclr.training.class_augment import stamp_fits
 from astro_simclr.training.device_data import (
     DeviceTensorDataModule,
     TensorSplit,
@@ -410,6 +412,16 @@ def test_screen_run_roles(cv_data: tuple[Path, Path, ProtocolSplits], tmp_path: 
     assert decision.tolist() == (splits.n_train + splits.screen.decision).tolist()
 
 
+#: C5 and C6 on a p4 model (ADR 0006); R^2 0 so that the random synthetic stamps qualify.
+_AUGMENT: dict[str, Any] = {
+    "paper_arch": "p4",
+    "aug_noise": 1.0,
+    "aug_feature_jitter": 0.1,
+    "synthetic_bogus": 0.25,
+    "aug_min_r2": 0.0,
+}
+
+
 class _CopyLast(Callback):
     """At step ``step``, copy ``last.ckpt`` (written at an earlier step) to ``dst``."""
 
@@ -563,8 +575,9 @@ def test_resume_of_the_same_fold_continues(
     [
         ({"paper_arch": "p4", "context": "avgpool63"}, {"fold": 1}),
         ({"paper_arch": "p4m", "group_fields": 2, "rot90_augment": True}, {}),
+        (_AUGMENT, {"fold": 3}),
     ],
-    ids=["p4-context-fold", "p4m-screen"],
+    ids=["p4-context-fold", "p4m-screen", "p4-augment-fold"],
 )
 def test_variant_split_runs(
     cv_data: tuple[Path, Path, ProtocolSplits],
@@ -576,6 +589,7 @@ def test_variant_split_runs(
     # carry the 6-channel context through protocol_splits, gathered by pool index.
     prepared, path, _ = cv_data
     images: dict[str, np.ndarray] = {}
+    fits: dict[str, Any] = {}
 
     class _Images(Callback):
         def on_train_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
@@ -583,6 +597,7 @@ def test_variant_split_runs(
             assert isinstance(datamodule, DeviceTensorDataModule)
             for name in ("Train", "Validation", "Test"):
                 images[name] = datamodule._split(name).images.cpu().numpy()
+                fits[name] = datamodule._split(name).fits
 
     request = SplitRequest(path, split.get("fold"))  # fold None: the screen
     settings = _settings(prepared, tmp_path, **changes)
@@ -605,3 +620,39 @@ def test_variant_split_runs(
         np.testing.assert_array_equal(images[name], table[part])
     predictions = load_predictions(tmp_path / metrics["predictions"]["evaluation"]["file"])
     assert np.array_equal(predictions.index, parts.evaluation_index)
+    # C5 / C6 (ADR 0006): the fits are those of the fold's own training part, only.
+    assert fits["Validation"] is None and fits["Test"] is None
+    if changes is _AUGMENT:
+        expected = stamp_fits(table[parts.training])
+        np.testing.assert_array_equal(fits["Train"].cpu().numpy(), expected)
+        assert set(metrics["paper_data"]["class_augment"]["excluded"]) == set(LABEL_NAMES)
+    else:
+        assert fits["Train"] is None
+
+
+def test_augmented_resume_is_exact(
+    cv_data: tuple[Path, Path, ProtocolSplits], tmp_path: Path
+) -> None:
+    # The C5 / C6 draws are a function of [seed, global_step]: a resumed fold run repeats
+    # them, so its predictions match the uninterrupted run's.
+    prepared, path, _ = cv_data
+    whole, mid = tmp_path / "whole", tmp_path / "mid.ckpt"
+    whole_metrics = experiments.run_command(
+        "train-supervised",
+        _settings(prepared, whole, max_steps=6, **_AUGMENT),
+        split=SplitRequest(path, 2),
+        callbacks=[_CopyLast(3, whole / "checkpoints" / "last.ckpt", mid)],
+        progress_bar=False,
+    )
+    resumed = tmp_path / "resumed"
+    metrics = experiments.run_command(
+        "train-supervised",
+        _settings(prepared, resumed, max_steps=6, **_AUGMENT),
+        resume=str(mid),
+        split=SplitRequest(path, 2),
+        progress_bar=False,
+    )
+    assert metrics["last_step"] == whole_metrics["last_step"] == 6
+    first = load_predictions(resumed / "predictions_evaluation.npz")
+    second = load_predictions(whole / "predictions_evaluation.npz")
+    np.testing.assert_allclose(first.probabilities, second.probabilities, atol=1e-6)

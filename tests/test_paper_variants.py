@@ -64,6 +64,11 @@ _FLAG_DEFAULTS: dict[str, object] = {
     "group_fields": None,
     "context": "none",
     "rot90_augment": False,
+    # Plan rows C5 and C6 (ADR 0006).
+    "aug_noise": 0.0,
+    "aug_feature_jitter": 0.0,
+    "synthetic_bogus": 0.0,
+    "aug_min_r2": 0.5,
 }
 
 

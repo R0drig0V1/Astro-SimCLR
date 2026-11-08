@@ -43,7 +43,10 @@ sample standard deviation (ddof=1), as in the legacy tables.
 Each run's resolved config is also compared with the distinguishing settings of its
 reference config (``Reference.expected``: dataset, features, model, optimizer, protocol);
 a difference is printed as a WARN line, not a failure (a deliberate variation may be
-compared on purpose), so an R4 run given as R1 does not pass silently.
+compared on purpose), so an R4 run given as R1 does not pass silently. A key missing from a
+run's config (a run written before that setting existed) reads as the setting's default,
+the behaviour the run had: the 2.5 flags (ADR 0005, ADR 0006) default to the faithful model,
+so the replication runs of task 2.4 no longer warn about them.
 
 Every gate also prints a WARN line when the runs come from different machines or builds
 (``metrics.json["machine"]``, :func:`machine_signature`): the runs of one comparison use
@@ -63,7 +66,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Literal
 
-from astro_simclr.config import ConfigError
+from astro_simclr.config import ConfigError, Settings, settings_to_plain
 from astro_simclr.hparams import LABEL_FRACTION_DATASETS
 from astro_simclr.presets import CARRASCO2021_PRESET, PRESETS
 
@@ -385,9 +388,10 @@ def _check_runs(reference: Reference, runs: Sequence[dict[str, Any]]) -> None:
 
 def _config_differences(reference: Reference, runs: Sequence[dict[str, Any]]) -> list[str]:
     lines = []
+    defaults = settings_to_plain(Settings())
     for run in runs:
         expected = reference.expected.get(run.get("command", ""), {})
-        config = run.get("config", {})
+        config = {**defaults, **run.get("config", {})}
         different = [
             f"{key}={config.get(key)!r} (expected {value!r})"
             for key, value in expected.items()

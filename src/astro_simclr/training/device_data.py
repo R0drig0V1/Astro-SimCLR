@@ -9,7 +9,9 @@ gathered there by index: no worker processes, no host-to-device copy per step.
   the 63x63 context channels (task 2.5-models), the 23 kept features and the int64 labels.
 - :class:`DeviceTensorDataModule`: takes the splits (a mapping, or a callable that builds
   them, called once in ``setup``) and yields ``(crops, features, one-hot labels)`` batches,
-  the batch format of ``ClassifierModule``:
+  the batch format of ``ClassifierModule``; when the Train split carries ``fits`` (the
+  ``class_augment.stamp_fits`` that C5 / C6 need, plan 2.5-input/training), its batches
+  have them as a fourth element, gathered with the rest:
 
   - **Train:** :func:`tiling.tile_indices` (ALeRCE's class balance), then the unbroken
     shuffled stream of :class:`tiling.PermutationStream`. An epoch is one pass length,
@@ -82,6 +84,7 @@ from astro_simclr.models import N_FEATURES
 from astro_simclr.paper_model import PAPER_CROP
 from astro_simclr.protocol.leakage import train_keep_indices
 from astro_simclr.protocol.split_runs import RunParts
+from astro_simclr.training.class_augment import FIT_COLUMNS
 from astro_simclr.training.tiling import PermutationStream, tile_indices
 
 __all__ = [
@@ -104,6 +107,8 @@ IMAGE_CHANNELS = (3, 6)
 
 #: (crops, features, one-hot labels), as ``ClassifierModule`` expects.
 Batch = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+#: A training batch: a :data:`Batch`, plus the stamp fits when the Train split has them.
+TrainBatch = Batch | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
 _TRAIN, _VALIDATION, _TEST = SPLITS
 
 
@@ -116,6 +121,9 @@ class TensorSplit:
             context channels (:data:`IMAGE_CHANNELS`).
         features: float32 (N, 23), the kept alert features.
         labels: int64 (N,), values in ``range(5)``.
+        fits: float32 (N, 6) ``class_augment.stamp_fits`` of the crops, or None (the
+            default). Only a training split that C5 / C6 augment carries them; the
+            training batches then have a fourth element (:class:`DeviceTensorDataModule`).
 
     Raises:
         ValueError: if a dtype or shape is wrong, the lengths differ, N is 0 or a label is
@@ -125,6 +133,7 @@ class TensorSplit:
     images: npt.NDArray[np.float32]
     features: npt.NDArray[np.float32]
     labels: npt.NDArray[np.int64]
+    fits: npt.NDArray[np.float32] | None = None
 
     def __post_init__(self) -> None:
         """Check dtypes, shapes, lengths and label values."""
@@ -148,6 +157,14 @@ class TensorSplit:
                     f"got {array.dtype} {array.shape}"
                 )
                 raise ValueError(msg)
+        if self.fits is not None and (
+            self.fits.dtype != np.float32 or self.fits.shape != (n, len(FIT_COLUMNS))
+        ):
+            msg = (
+                f"TensorSplit.fits must be float32 ({n}, {len(FIT_COLUMNS)}), "
+                f"got {self.fits.dtype} {self.fits.shape}"
+            )
+            raise ValueError(msg)
         if n == 0:
             raise ValueError("TensorSplit is empty")
         if self.labels.min() < 0 or self.labels.max() >= len(LABEL_NAMES):
@@ -163,21 +180,25 @@ class _DeviceSplit:
     images: torch.Tensor
     features: torch.Tensor
     one_hot: torch.Tensor
+    fits: torch.Tensor | None = None
 
     @classmethod
     def of(cls, split: TensorSplit, device: torch.device) -> _DeviceSplit:
         labels = torch.from_numpy(np.ascontiguousarray(split.labels))
+        fits = None if split.fits is None else torch.from_numpy(split.fits).to(device)
         return cls(
             images=torch.from_numpy(np.ascontiguousarray(split.images)).to(device),
             features=torch.from_numpy(np.ascontiguousarray(split.features)).to(device),
             one_hot=torch.nn.functional.one_hot(labels, num_classes=len(LABEL_NAMES)).to(device),
+            fits=fits,
         )
 
     def __len__(self) -> int:
         return int(self.images.shape[0])
 
-    def gather(self, index: torch.Tensor) -> Batch:
-        return self.images[index], self.features[index], self.one_hot[index]
+    def gather(self, index: torch.Tensor) -> TrainBatch:
+        batch = (self.images[index], self.features[index], self.one_hot[index])
+        return batch if self.fits is None else (*batch, self.fits[index])
 
 
 class _StreamLoader:
@@ -220,7 +241,7 @@ class _StreamLoader:
         parts = [self._pass(index)[start:stop] for index, start, stop in self._stream.span(batch)]
         return parts[0] if len(parts) == 1 else torch.cat(parts)
 
-    def __iter__(self) -> Iterator[Batch]:
+    def __iter__(self) -> Iterator[TrainBatch]:
         start = self._position()
         end = (start // len(self) + 1) * len(self)
         for batch in range(start, end):
@@ -508,7 +529,8 @@ def without_train_indices(
     """``splits`` with the Train stamps ``excluded`` removed; Validation and Test unchanged.
 
     The kept Train stamps stay in file order, so the tiling and the stream are those of the
-    reduced split (the plan, task 2.3: the leaked stamp leaves Train only).
+    reduced split (the plan, task 2.3: the leaked stamp leaves Train only). Train's ``fits``, if
+    any, follow its stamps.
 
     Raises:
         ValueError: if an excluded index is outside the Train split.
@@ -519,6 +541,7 @@ def without_train_indices(
         images=np.ascontiguousarray(train.images[keep]),
         features=np.ascontiguousarray(train.features[keep]),
         labels=np.ascontiguousarray(train.labels[keep]),
+        fits=None if train.fits is None else np.ascontiguousarray(train.fits[keep]),
     )
     return {**splits, _TRAIN: reduced}
 
@@ -532,7 +555,8 @@ def protocol_splits(
     index of Train stamp ``i`` is ``i``) and ``Validation`` (pool index ``n_train + j``).
     Returns ``Train`` = ``parts.training`` (the only stamps trained on; the data module
     tiles them), ``Validation`` = ``parts.selection`` and ``Test`` = ``parts.evaluation``,
-    each in pool order, which for the screen halves is Validation file order.
+    each in pool order, which for the screen halves is Validation file order. The roles
+    have no ``fits``: they are computed on the run's Train role afterwards.
 
     Raises:
         DataError: if Train does not have ``n_train`` stamps (the splits belong to other

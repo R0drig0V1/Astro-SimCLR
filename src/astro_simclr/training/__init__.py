@@ -13,7 +13,9 @@ Submodules (``docs/architecture.md``, section "training", has the design):
 - task 2.2a, the ``carrasco2021`` schedule: :mod:`~astro_simclr.training.tiling` (class
   balance and the shuffled batch stream), :mod:`~astro_simclr.training.device_data`
   (``DeviceTensorDataModule``) and :mod:`~astro_simclr.training.schedule`
-  (``HorizonCallback``); ``modules.PaperClassifierModule``.
+  (``HorizonCallback``); ``modules.PaperClassifierModule``;
+- plan rows C5 and C6: :mod:`~astro_simclr.training.class_augment` (the paper model's
+  class-aware training augmentation; ADR 0006).
 
 A run is: ``seed_run(settings)``, build the module and its data module,
 ``build_callbacks(settings, Module.MONITORABLE, dirpath=...)``,

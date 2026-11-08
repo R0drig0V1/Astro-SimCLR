@@ -116,6 +116,16 @@ of one run.
   | `group_fields` | null | `p4` / `p4m`: fields of conv1-conv2 (conv3-conv5 twice); null is `32 // \|G\|` (8 / 4). An error with `rot4` / `single` |
   | `context` | `none` | `avgpool63`: the 63×63 stamp average-pooled to 21×21 as 3 more channels (B1'); needs `paper_input: float32` |
   | `rot90_augment` | false | rotate each training stamp by a random multiple of 90° (seeded by `seed` and the step) |
+- **Plan rows C5 and C6** (the paper model's class-aware training augmentation;
+  `training.class_augment`, ADR 0006). Off by default, listed in the presets like the
+  2.5-models flags:
+
+  | Field | Default | Meaning |
+  |---|---|---|
+  | `aug_noise` | 0.0 | C5: the largest background-noise scale (in units of each crop channel's background sigma) added to the science and template; the difference follows. ≥ 0; needs `paper_input: float32` |
+  | `aug_feature_jitter` | 0.0 | C5: Gaussian jitter sigma (standardised units) on the continuous features; the discrete ones never change. ≥ 0; needs `with_features` |
+  | `synthetic_bogus` | 0.0 | C6: fraction of each training batch replaced by synthetic hot-pixel Bogus, in [0, 1); needs `paper_input: float32` and `context: none` |
+  | `aug_min_r2` | 0.5 | C5 / C6: stamps whose `diff ~ a·sci + b·tmpl + c` fit has a lower R² are not noised nor used as C6 sources; in [0, 1] |
 
   `experiments` rejects a changed one with another `supervised_model` (`ConfigError`).
 - `load_settings(path, overrides, defaults=...)`: `defaults` (a subcommand's legacy
@@ -815,9 +825,12 @@ stream positions `[64b, 64b + 64)`, pass `j` the permutation of
 documented exception to "randomness comes from `seed_everything`", and what makes a
 mid-epoch resume exact. TF's random numbers are not reproduced.
 
-**Device data** (`device_data.py`). `TensorSplit(images, features, labels)`: float32
-(N, 3, 21, 21) (or (N, 6, 21, 21) with the 63×63 context of task 2.5-models), float32
-(N, 23), int64 (N,), validated. `DeviceTensorDataModule(source,
+**Device data** (`device_data.py`). `TensorSplit(images, features, labels, fits=None)`:
+float32 (N, 3, 21, 21) (or (N, 6, 21, 21) with the 63×63 context of task 2.5-models),
+float32 (N, 23), int64 (N,), and optionally the float32 (N, 6) `class_augment.stamp_fits`
+of the crops (C5 / C6), validated. `without_train_indices` keeps Train's fits with its
+stamps; `protocol_splits` builds roles without fits. When the Train split has fits, its
+training batches carry them as a fourth element (validation and test never do). `DeviceTensorDataModule(source,
 batch_size=64, eval_batch_size=64, seed=0, balance=True)` takes the three splits (a mapping,
 or a callable resolved once at the first `setup`), moves them once to
 `trainer.strategy.root_device` (CPU without a Trainer) and yields `(crops, features,
@@ -896,7 +909,71 @@ why torch's placement is kept. Task 2.5-models adds `paper_arch="rot4"`,
 `group_fields=None`, `context="none"` (the model from `paper_variants.build_paper_model`)
 and `rot90_augment=False`, `augment_seed=0`: with augmentation, `training_step` rotates
 each stamp by `k·90°`, `k` from `numpy.random.default_rng([augment_seed, global_step])`
-(device-independent, exact on resume); validation and test are not augmented.
+(device-independent, exact on resume); validation and test are not augmented. Plan rows
+C5 and C6 add `aug_noise`, `aug_feature_jitter`, `synthetic_bogus` and `aug_min_r2` (all
+off by default; see "Class-aware augmentation" below).
+
+### Class-aware augmentation (plan rows C5 and C6)
+
+`src/astro_simclr/training/class_augment.py`; decisions in ADR 0006. Training only, in
+`PaperClassifierModule.training_step`, on the device-resident batch, after the rotation of
+`rot90_augment`: C6, then C5's noise on the rows C6 did not replace, then the feature jitter
+on every row. Validation and test are never augmented.
+
+- **The difference is computed, not augmented.** `stamp_fits(images)` fits, per crop and in
+  float64, `diff ~ a·sci + b·tmpl + c` (least squares over the 441 pixels, a
+  pseudo-inverse), its R², and the background sigmas of the science and the template
+  (1.4826 × the MAD of the two-pixel border, masked pixels left out): float32 (N, 6),
+  `FIT_COLUMNS`. `experiments._build_paper` computes them once on the run's Train role
+  (the fold's training part in a split run) when `aug_noise` or `synthetic_bogus` is on, and
+  records `fit_exclusions` (the share of each class below `aug_min_r2`) in
+  `metrics.json["paper_data"]["class_augment"]`. On `red` Train the median R² is 0.77–0.95
+  per class and `sign(a)` agrees with `isdiffpos` for 98–99.6 % of the stamps. Any change
+  `dsci`, `dtmpl` moves the difference by `a·dsci + b·dtmpl` (`perturb`), with no
+  independent term.
+- **C5, noise** (`noise_augment`): for the rows with R² ≥ `aug_min_r2`, `dsci` and `dtmpl`
+  are N(0, (u·`aug_noise`·σ)²) per pixel, with `u ~ U(0, 1)` per channel and σ that crop
+  channel's background sigma; then `renormalise`: ALeRCE's per-channel min-max without
+  epsilon over the unmasked pixels, NaN → 0. Masked pixels (`masked_pixels`: the exact zeros
+  of a channel with several, the former NaNs) stay 0 and out of the min/max. Other rows and
+  the context channels are returned bit for bit.
+- **C5, feature jitter** (`jitter_features`): N(0, `aug_feature_jitter`²) on the 19
+  continuous kept features; `DISCRETE_FEATURES` (`isdiffpos`; the integer counts
+  `ndethist`, `ncovhist`, `non_detections`) never change.
+- **C6, synthetic hot-pixel Bogus** (`synthetic_bogus`): `round(fraction·B)` rows, taken in
+  a random order among the possible sources: positive alerts only (`a > 0`, `b < 0`; a hot
+  pixel in the science cannot trigger a negative alert, and an `a < 0` source would give a
+  central dip that no real difference has), not SN (the weakest class keeps its rows),
+  R² ≥ `aug_min_r2`, σ_sci > 0, no masked pixel. The feature donor is a real positive-alert
+  Bogus row of the batch (none: nothing is replaced). Each becomes: template unchanged;
+  science `−(b/a)·tmpl + n + spike`
+  (the static sky the relation implies, `n` Gaussian of the source science's σ, the spike
+  10–50 σ); difference `a·(n + spike) + c`; then the min-max; label Bogus; the donor's
+  features. `spike_patterns`: one pixel at the centre, or (probability 0.5) a 2-pixel
+  horizontal or vertical line, second pixel 0.25–1 of the peak.
+- **The spike is sharper than any PSF**: `moment_fwhm` (the pixel second moments less 1/12,
+  as a circular Gaussian FWHM) gives at most 0.48 px for a spike (0.96 px along a line),
+  against `MIN_PSF_FWHM_PX` = 1.19 px, the smallest FWHM of a pixel-integrated Gaussian
+  fitted to the difference of every Asteroid and SN of `red` Train
+  (`scripts/inspect_class_augment.py`; the report and the sample grids are in
+  `results/phase2/class-augment/`).
+- **Randomness**: one NumPy generator per augmentation, `augment_rng(seed, step, stream)` =
+  `default_rng([seed, global_step, stream])`, streams 1 (noise), 2 (jitter), 3 (synthetic);
+  every draw has a fixed size per batch. Device-independent, exact on resume, and
+  `rot90_augment`'s `[seed, step]` draws are unchanged.
+
+**Tested** (`tests/test_class_augment.py`, `tests/test_split_runs.py`): the fit recovers
+known `a, b, c`; the computed difference equals `a·sci + b·tmpl + c` before the min-max;
+`renormalise` equals the float path's min-max; augmented crops have per-channel min 0 and
+max 1 with masked pixels at 0; low-R² rows, skipped rows and the context are untouched; the
+discrete features are untouched; synthetic rows are Bogus, with the spike as the science's
+maximum, at most 2 pixels above half of it, the same spike as a central peak of the
+difference (positive centre z for every replaced row), a positive-alert donor, and never a
+negative-alert or SN source; no sources or no donors replace nothing; every spike is
+below `MIN_PSF_FWHM_PX`; defaults off are bit-identical with or without fits; evaluation is
+not augmented; the settings' checks; the preset deviations; a p4 run on every accelerator;
+an augmented fold run (fits equal to those of the fold's training part) and its exact
+resume.
 
 **Tested:** the tiling example and exact balance; the stream against the concatenated
 permutations; batches against the tiled stream, on the CPU; eval file order; validation at
@@ -931,7 +1008,9 @@ Decisions and provenance: ADR 0003.
   `adam_betas: paper`, `nan_approximation: false`, `paper_input: uint8`).
 - Task 2.5-models adds `paper_arch: rot4`, `group_fields: null`, `context: none` and
   `rot90_augment: false` to both presets (the defaults, so the faithful settings are
-  unchanged), so that a variant run is reported as a deviation, not as faithful.
+  unchanged), so that a variant run is reported as a deviation, not as faithful. Plan rows
+  C5 and C6 add `aug_noise: 0.0`, `aug_feature_jitter: 0.0`, `synthetic_bogus: 0.0` and
+  `aug_min_r2: 0.5` the same way (ADR 0006).
 - `preset_for(settings)`: the preset of a `carrasco2021`-schedule run (by `with_features`),
   else `None`. `preset_report(settings)`: `name`, `faithful` (no preset key changed),
   `deviations` (key → `{value, preset}`) and `diagnostics` (the flags turned on), written
@@ -1030,7 +1109,8 @@ with `max_epochs=-1`, `max_steps`, `val_check_interval=val_every_n_steps`,
 and at the end. The outputs and metrics are the same files. Every run's
 metrics add `best_step` (the `global_step` stored in `best.ckpt`) and `last_step`;
 `carrasco2021` adds `horizon` (the final one), `paper_data` (`input`, `crop`,
-`nan_approximation`, `excluded_train`, `n_train`, `n_tiled`) and `preset`
+`nan_approximation`, `excluded_train`, `n_train`, `n_tiled`, and with C5 / C6
+`class_augment`: `min_r2` and each class's share below it) and `preset`
 (`presets.preset_report`: `name`, `faithful`, `deviations`, `diagnostics`). A resumed
 `carrasco2021` run is exact: the data stream is a function of the step, and the horizon
 and best weights come back from `last.ckpt`.
@@ -1061,7 +1141,9 @@ checked (command, `supervised_model`, no duplicate seed) and `val_acc_best` aggr
   `meta.json` into `metrics.json`).
 - Every run's config is compared with the distinguishing settings of its reference config
   (`Reference.expected`, tested against `configs/reference/`); differences print WARN
-  lines, so an R4 run given as R1 is flagged.
+  lines, so an R4 run given as R1 is flagged. A key missing from a run's config (written
+  before the setting existed) reads as its `Settings` default, so the task 2.4 runs, which
+  predate the 2.5 flags, do not warn about them.
 - **R4:** report only. R1 also prints the Carrasco-Davis et al. 2021 figures as context.
 - **CD21 (task 2.3), two-tier gate of the paper replication**, on the with-features runs'
   `test_acc_at_best` (the without-features runs are compared with 0.883 ± 0.006 and only
