@@ -1,19 +1,24 @@
-"""Tests of scripts/check-lock.sh: the machine-wide check lock and the pytest worker cap.
+"""Tests of scripts/check-lock.sh: the machine-wide check lock, its FIFO queue and the pytest
+worker cap.
 
-scripts/check.sh sources the library; these tests source it in a fresh bash with the lock
-directory moved under ``tmp_path``, so they never touch the real lock (which the running
-check may hold) and stay parallel-safe. The environment is scrubbed of the variables the
+scripts/check.sh sources the library; these tests source it (or run its ``run`` command) in
+a fresh bash with the lock directory, hence the waiter directory next to it, moved under
+``tmp_path``, so they never touch the real lock (which the running check may hold) and stay
+parallel-safe. The environment is scrubbed of the variables the
 running check exports (ASTRO_SIMCLR_CHECK_LOCK_HELD, PYTEST_XDIST_AUTO_NUM_WORKERS).
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -45,6 +50,13 @@ def _bash(script: str, lock: Path, **extra: str) -> subprocess.CompletedProcess[
         timeout=60,
         check=False,
     )
+
+
+# A process started with SIGINT ignored (`pytest &` from a non-interactive shell) passes
+# the ignore on, and bash cannot trap a signal ignored at its start.
+INT_IGNORED = pytest.mark.skipif(
+    signal.getsignal(signal.SIGINT) == signal.SIG_IGN, reason="SIGINT ignored by the parent"
+)
 
 
 def _dead_pid() -> int:
@@ -142,7 +154,7 @@ def test_a_waiter_takes_the_lock_once_the_holder_dies(tmp_path: Path) -> None:
         holder.kill()
         waiter.kill()
     assert stdout.strip() == "owned=1"
-    assert f"waiting for {lock} (pid={holder.pid}" in stderr
+    assert f"waiting for {lock}, place 1 of 1 (pid={holder.pid}" in stderr
 
 
 def test_a_check_inside_the_holder_does_not_wait(tmp_path: Path) -> None:
@@ -171,7 +183,13 @@ def test_release_leaves_a_lock_retaken_by_another_check(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("ending", "code"), [("exit 3", 3), ("false", 1), ("kill -TERM $$", 143), ("kill -INT $$", 130)]
+    ("ending", "code"),
+    [
+        ("exit 3", 3),
+        ("false", 1),
+        ("kill -TERM $$", 143),
+        pytest.param("kill -INT $$", 130, marks=INT_IGNORED),
+    ],
 )
 def test_the_traps_release_the_lock_on_every_exit(tmp_path: Path, ending: str, code: int) -> None:
     lock = tmp_path / "check.lock.d"
@@ -205,3 +223,300 @@ def test_pytest_workers_are_capped(
 def test_pytest_workers_on_this_machine_are_at_most_four(tmp_path: Path) -> None:
     out = _bash("check_pytest_workers", tmp_path / "lock.d")
     assert 1 <= int(out.stdout) <= 4
+
+
+# The FIFO queue (module header of check-lock.sh): waiter files, oldest live waiter first.
+
+TICKET = re.compile(r"^\d{13}\.\d{6}\.\d{10}$")
+
+
+def _spawn(script: str, lock: Path) -> subprocess.Popen[str]:
+    return subprocess.Popen(  # noqa: S603 (bash on the test's own scripts)
+        [str(BASH), "-c", f'source "{LIBRARY}"\n{script}'],
+        env=_env(lock),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _waiters(lock: Path, *, hidden: bool = False) -> list[str]:
+    """The registered waiter names; with ``hidden``, also the dot files being written."""
+    directory = lock.parent / "check.waiters"
+    if not directory.is_dir():
+        return []
+    return sorted(p.name for p in directory.iterdir() if hidden or not p.name.startswith("."))
+
+
+def _until(condition: Callable[[], bool], timeout: float = 20.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition():
+        if time.monotonic() > deadline:
+            raise AssertionError("condition not reached")
+        time.sleep(0.05)
+
+
+def _until_waiters(lock: Path, count: int) -> None:
+    _until(lambda: len(_waiters(lock)) == count)
+
+
+def _held_by_a_live_process(lock: Path) -> subprocess.Popen[bytes]:
+    lock.mkdir()
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    (lock / "owner").write_text(f"pid={holder.pid}\nhost={socket.gethostname()}\n")
+    return holder
+
+
+def test_the_ticket_has_a_fixed_width_and_sorts_by_time_then_pid(tmp_path: Path) -> None:
+    out = _bash("check_lock_ticket 7; check_lock_ticket 123456; check_lock_ticket 5", tmp_path)
+    tickets = out.stdout.split()
+    assert len(tickets) == 3 and all(TICKET.match(ticket) for ticket in tickets), tickets
+    assert tickets[0].endswith(".0000000007") and tickets[1].endswith(".0000123456")
+    assert sorted(tickets) == tickets  # later tickets sort after, whatever the pid
+
+
+@pytest.mark.parametrize("count", [2, 3])
+def test_waiters_take_the_lock_in_arrival_order(tmp_path: Path, count: int) -> None:
+    lock = tmp_path / "check.lock.d"
+    order = tmp_path / "order"
+    holder = _held_by_a_live_process(lock)
+    waiters = []
+    try:
+        for index in range(count):
+            # Each one registers before the next starts: arrival order is the index.
+            waiters.append(
+                _spawn(
+                    f"check_lock_install_traps; check_lock_acquire; echo {index} >> '{order}';"
+                    " sleep 1.2; check_lock_release",
+                    lock,
+                )
+            )
+            _until_waiters(lock, index + 1)
+        shutil.rmtree(lock)  # the holder releases: all of them race for the lock
+        for waiter in waiters:
+            assert waiter.wait(timeout=60) == 0, waiter.stderr.read() if waiter.stderr else ""
+    finally:
+        holder.kill()
+        for waiter in waiters:
+            waiter.kill()
+    assert order.read_text().split() == [str(index) for index in range(count)]
+    assert _waiters(lock, hidden=True) == [] and not lock.exists()
+
+
+def test_a_younger_waiter_does_not_take_a_free_lock(tmp_path: Path) -> None:
+    lock = tmp_path / "check.lock.d"
+    queue = tmp_path / "check.waiters"
+    queue.mkdir()
+    # An older live waiter (this pytest process; no pstart recorded) that has not yet
+    # seen the lock free: the younger one must leave the lock to it.
+    (queue / f"0000000000001.000000.0000000001-mc-sddp-{os.getpid()}").write_text("")
+    out = _bash(
+        'check_lock_register astro-simclr test; check_lock_is_first || echo "behind";'
+        ' echo "place=$CHECK_LOCK_POSITION of $CHECK_LOCK_QUEUE"; check_lock_unregister',
+        lock,
+    )
+    assert out.stdout.split() == ["behind", "place=2", "of", "2"]
+    assert not lock.exists() and len(_waiters(lock)) == 1
+
+
+@pytest.mark.parametrize("reused", [False, True])
+def test_a_dead_waiter_is_skipped_and_removed(tmp_path: Path, reused: bool) -> None:
+    lock = tmp_path / "check.lock.d"
+    queue = tmp_path / "check.waiters"
+    queue.mkdir()
+    if reused:  # a live pid that started at another time: the pid was reused
+        pid, content = os.getpid(), "pid={pid}\npstart=Thu Jan  1 00:00:00 1970\n"
+    else:
+        pid, content = _dead_pid(), "pid={pid}\n"
+    dead = queue / f"0000000000001.000000.{pid:010d}-mc-sddp-{pid}"
+    dead.write_text(content.format(pid=pid))
+    out = _bash('check_lock_acquire; echo "owned=$CHECK_LOCK_OWNED"', lock)
+    assert out.returncode == 0 and out.stdout.strip() == "owned=1", out.stderr
+    assert "removed the file of a dead waiter" in out.stderr
+    assert not dead.exists()
+
+
+def test_a_waiter_of_another_host_is_not_probed(tmp_path: Path) -> None:
+    lock = tmp_path / "check.lock.d"
+    queue = tmp_path / "check.waiters"
+    queue.mkdir()
+    pid = _dead_pid()
+    (queue / f"0000000000001.000000.{pid:010d}-mc-sddp-{pid}").write_text(
+        f"pid={pid}\nhost=another-machine\n"
+    )
+    out = _bash("check_lock_register astro-simclr test; check_lock_is_first || echo behind", lock)
+    assert out.stdout.strip() == "behind"
+
+
+def test_the_waiter_file_is_removed_once_the_lock_is_taken(tmp_path: Path) -> None:
+    lock = tmp_path / "check.lock.d"
+    out = _bash(
+        'check_lock_acquire; ls "$ASTRO_SIMCLR_CHECK_LOCK_WAITERS"; echo "owned=$CHECK_LOCK_OWNED"',
+        lock,
+    )
+    assert out.returncode == 0 and out.stdout.split() == ["owned=1"], out.stderr
+    assert lock.is_dir()
+
+
+@pytest.mark.parametrize(
+    ("sig", "code"), [(signal.SIGTERM, 143), pytest.param(signal.SIGINT, 130, marks=INT_IGNORED)]
+)
+def test_a_killed_waiter_removes_its_file(tmp_path: Path, sig: signal.Signals, code: int) -> None:
+    lock = tmp_path / "check.lock.d"
+    holder = _held_by_a_live_process(lock)
+    waiter = _spawn("check_lock_install_traps; check_lock_acquire; echo acquired", lock)
+    try:
+        _until_waiters(lock, 1)
+        name = _waiters(lock)[0]
+        assert re.match(rf"^\d{{13}}\.\d{{6}}\.{waiter.pid:010d}-astro-simclr-{waiter.pid}$", name)
+        waiter.send_signal(sig)
+        assert waiter.wait(timeout=20) == code
+    finally:
+        holder.kill()
+        waiter.kill()
+    assert _waiters(lock, hidden=True) == []
+    assert (lock / "owner").read_text().startswith(f"pid={holder.pid}\n")  # not ours to remove
+
+
+def test_a_foreign_plain_mkdir_holder_is_respected(tmp_path: Path) -> None:
+    # MC-SDDP's plain mkdir loop (or a by-hand lock): no owner file, no waiter file.
+    lock = tmp_path / "check.lock.d"
+    lock.mkdir()
+    waiter = _spawn('check_lock_acquire; echo "owned=$CHECK_LOCK_OWNED"', lock)
+    try:
+        time.sleep(2.5)
+        assert waiter.poll() is None and lock.is_dir()  # still waiting, lock untouched
+        lock.rmdir()
+        stdout, stderr = waiter.communicate(timeout=30)
+    finally:
+        waiter.kill()
+    assert stdout.strip() == "owned=1"
+    assert "no owner file" in stderr
+
+
+def test_a_check_inside_the_holder_registers_no_waiter(tmp_path: Path) -> None:
+    lock = tmp_path / "check.lock.d"
+    nested = f'bash -c \'source "{LIBRARY}"; check_lock_acquire; echo "owned=$CHECK_LOCK_OWNED"\''
+    out = _bash(
+        f'check_lock_acquire; {nested}; ls "$ASTRO_SIMCLR_CHECK_LOCK_WAITERS"; '
+        f'unset ASTRO_SIMCLR_CHECK_LOCK_HELD; {nested}; ls "$ASTRO_SIMCLR_CHECK_LOCK_WAITERS"',
+        lock,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.split() == ["owned=0", "owned=0"]  # by HELD, then by the owner pid
+
+
+def _run(lock: Path, *args: str, **extra: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603 (bash on the test's own scripts)
+        [str(BASH), str(LIBRARY), *args],
+        env=_env(lock, **extra),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("code", [0, 1, 7])
+def test_run_returns_the_command_exit_code_and_releases(tmp_path: Path, code: int) -> None:
+    lock = tmp_path / "check.lock.d"
+    out = _run(
+        lock,
+        "run",
+        "--project",
+        "mc-sddp",
+        "--",
+        "bash",
+        "-c",
+        'cat "$ASTRO_SIMCLR_CHECK_LOCK_DIR/owner"; exit "$0"',
+        str(code),
+    )
+    assert out.returncode == code, out.stderr
+    owner = dict(line.split("=", 1) for line in out.stdout.splitlines())
+    assert owner["project"] == "mc-sddp" and owner["host"] == socket.gethostname()
+    assert owner["command"].startswith("bash -c ") and set(owner) >= {"pid", "started"}
+    assert not lock.exists() and _waiters(lock, hidden=True) == []
+
+
+def test_run_inside_run_does_not_wait_for_itself(tmp_path: Path) -> None:
+    lock = tmp_path / "check.lock.d"
+    out = _run(lock, "run", "--project=outer", "--", str(BASH), str(LIBRARY), "run",
+               "--project", "inner", "--", "true")  # fmt: skip
+    assert out.returncode == 0, out.stderr
+    assert not lock.exists()
+
+
+def test_run_is_disabled_with_the_lock(tmp_path: Path) -> None:
+    lock = tmp_path / "check.lock.d"
+    lock.mkdir()  # held: a disabled lock runs the command at once
+    out = _run(lock, "run", "--project", "x", "--", "true", ASTRO_SIMCLR_CHECK_LOCK="0")
+    assert out.returncode == 0 and lock.is_dir() and _waiters(lock, hidden=True) == []
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        [],
+        ["check"],
+        ["run", "--", "true"],  # no project
+        ["run", "--project", "a/b", "--", "true"],  # not a file-name-safe project
+        ["run", "--project", "x", "--"],  # no command
+        ["run", "--project"],
+        ["run", "--bogus"],
+    ],
+)
+def test_run_usage_errors_exit_2(tmp_path: Path, args: list[str]) -> None:
+    out = _run(tmp_path / "check.lock.d", *args)
+    assert out.returncode == 2 and "usage:" in out.stderr
+    assert _waiters(tmp_path / "check.lock.d", hidden=True) == []
+
+
+@pytest.mark.parametrize("args", [["--help"], ["run", "--help"]])
+def test_run_help(tmp_path: Path, args: list[str]) -> None:
+    out = _run(tmp_path / "check.lock.d", *args)
+    assert out.returncode == 0 and "usage:" in out.stderr
+
+
+def test_stray_files_are_ignored_and_dead_partial_files_removed(tmp_path: Path) -> None:
+    lock = tmp_path / "check.lock.d"
+    queue = tmp_path / "check.waiters"
+    queue.mkdir()
+    stray = queue / "0-not-a-ticket"  # sorts first, but must not head the queue
+    stray.write_text("")
+    partial = queue / f".tmp.{_dead_pid()}"  # a waiter killed with SIGKILL mid-register
+    partial.write_text("pid=")
+    out = _bash('check_lock_acquire; echo "owned=$CHECK_LOCK_OWNED"', lock)
+    assert out.returncode == 0 and out.stdout.strip() == "owned=1", out.stderr
+    assert stray.exists() and not partial.exists()
+
+
+def test_a_waiter_is_alive_whatever_the_reader_time_zone(tmp_path: Path) -> None:
+    out = _bash(
+        "export TZ=Asia/Tokyo; check_lock_register astro-simclr test;"
+        ' export TZ=America/Santiago; check_lock_waiter_alive "$CHECK_LOCK_WAITER" && echo alive',
+        tmp_path / "check.lock.d",
+    )
+    assert out.stdout.strip() == "alive", out.stderr
+
+
+def test_a_lock_taken_without_its_owner_file_is_released(tmp_path: Path) -> None:
+    # A signal (or a failed write) between the mkdir and the owner file: nobody would break
+    # a lock without an owner file, so the holder's trap must remove it.
+    lock = tmp_path / "check.lock.d"
+    out = _bash(
+        'mkdir "$ASTRO_SIMCLR_CHECK_LOCK_DIR"; CHECK_LOCK_OWNED=1; CHECK_LOCK_OWNER_WRITTEN=0;'
+        " check_lock_release",
+        lock,
+    )
+    assert out.returncode == 0 and not lock.exists()
+
+
+def test_break_leaves_a_lock_retaken_after_it_was_judged_stale(tmp_path: Path) -> None:
+    # Two waiters judged the same lock stale; the first broke it and took a fresh one, so
+    # the second must not remove the fresh lock.
+    lock = tmp_path / "check.lock.d"
+    lock.mkdir()
+    (lock / "owner").write_text(f"pid={os.getpid()}\n")
+    out = _bash(f'check_lock_break "$ASTRO_SIMCLR_CHECK_LOCK_DIR" "pid={_dead_pid()}"', lock)
+    assert out.returncode == 0 and (lock / "owner").read_text() == f"pid={os.getpid()}\n"
+    assert not list(tmp_path.glob("*.stale.*"))

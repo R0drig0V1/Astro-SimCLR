@@ -31,10 +31,10 @@ configs/runs/       nested configs for `astro-simclr run` (task 4.2; ADR 0017)
 docs/        architecture.md (one section per module), phases/ (the plan), decisions/
              (ADRs), plan-reviews/, evaluation-protocol.md (phase-2 rules), data.md
 scripts/     characterize/ (fixture generators; legacy code via the legacy-final tag),
-             check.sh (all checks), check-lock.sh (its machine lock and worker cap),
-             check-torch-wheels.sh (ADR 0001 lock assertions), gpu-preflight.sh (wraps
-             `astro-simclr preflight`), integrator.sh; optional worktree-setup.sh,
-             verify-reset.sh
+             check.sh (all checks), check-lock.sh (its FIFO machine lock and worker cap;
+             `run` for other projects), check-torch-wheels.sh (ADR 0001 lock assertions),
+             gpu-preflight.sh (wraps `astro-simclr preflight`), integrator.sh; optional
+             worktree-setup.sh, verify-reset.sh
 .claude/     settings.json (enables the multi-agent-herdr plugin), multi-agent-herdr.json
              (base branch, integrator name `integrator-astro-simclr`), prompts/integrator.md
 ```
@@ -80,6 +80,13 @@ uvx copier@9.19.1 update           # pull python-template improvements (clean tr
   (`PYTEST_XDIST_AUTO_NUM_WORKERS` overrides). Run it directly, never inside a by-hand
   `until mkdir ...` lock (it would wait for its own parent); a lock whose owner pid is dead is
   broken, one held by an ancestor is reused. `ASTRO_SIMCLR_CHECK_LOCK=0` disables it (CI).
+  The lock is **FIFO** (ADR 0021 amendment): each waiter registers
+  `~/.cache/mc-sddp/check.waiters/<ticket>-<project>-<pid>` (ticket: `%020.6f` epoch, `.`,
+  `%010d` pid; a byte-wise sort is the arrival order) and only the oldest live waiter may
+  `mkdir` the lock; files of dead pids are dropped by any waiter. Other projects take their
+  turn with `<this repo>/scripts/check-lock.sh run --project NAME -- COMMAND...` (writes the
+  owner file, runs COMMAND, releases, returns its exit code). A plain `mkdir` holder is still
+  respected, but it jumps the queue.
 - **Code rules:** new code goes in `src/astro_simclr/` with tests, passing ruff, mypy strict
   and coverage. `extend-exclude` holds only `jupyter_examples/`, `results/` and
   `scripts/characterize/`; never widen the exclusions or lower the thresholds without a

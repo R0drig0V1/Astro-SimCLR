@@ -6,6 +6,8 @@
   `quality.yml`, `quality-workflows.yml`, `quality-dependencies.yml`
 - **Checked by:** actionlint and zizmor (run locally on this change, and by
   `quality-workflows.yml` on every later change under `.github/`)
+- **Amended by:** chore `check-fifo` (2026-11-08): the machine-wide lock that the local gate
+  runs behind is first come, first served (amendment below)
 
 ## Context
 
@@ -80,3 +82,66 @@ already passed:
   chain; native paths filters cost nothing.
 - **CI on a schedule only:** a broken `main` could stay unnoticed for days on Linux too;
   ubuntu on each code push is the cheap part.
+
+## Amendment: chore `check-fifo`, a fair machine-wide check lock (2026-11-08)
+
+**Context.** This ADR makes the integrator's local `verify-merge.sh` (which runs
+`scripts/check.sh`) the pull-request gate, so the gate's throughput is the throughput of
+the developer's Mac. That Mac is shared with MC-SDDP: one full check at a time, behind the
+`mkdir` lock `~/.cache/mc-sddp/check.lock.d` that `scripts/check-lock.sh` takes (stale
+owners of dead pids broken, re-entrance for a check inside the holder). Each side polled
+the lock on its own (Astro every 15 s, MC-SDDP every 30 s), so the faster poller retook it
+back to back: on 2026-11-08 MC-SDDP waited more than an hour.
+
+**Decision** (the convention agreed with MC-SDDP's integrator):
+
+1. **Waiter files.** Before polling, a waiter registers
+   `~/.cache/mc-sddp/check.waiters/<ticket>-<project>-<pid>`, ticket
+   `<epoch %020.6f>.<pid %010d>` (microseconds from perl's `Time::HiRes`, else python3, else
+   whole seconds; macOS `date` has no `%N`). The fixed width makes a byte-wise (`LC_ALL=C`)
+   sort of the names the arrival order, and the pid breaks ties. The file is written aside
+   (a dot file, which readers skip) and renamed into place; it records `pid`, `host`,
+   `project`, `command`, `registered` and `pstart` (the process start time, `ps -o lstart` in
+   UTC, so readers in other time zones read the same text). The ticket is drawn last, just
+   before the rename. Names that do not follow the pattern are ignored, so a stray file
+   cannot head the queue forever.
+2. **Only the oldest live waiter may `mkdir` the lock.** A waiter file whose pid is not
+   running on this host, or runs with another start time (a reused pid; checked only when
+   `pstart` is recorded), is dead: any waiter removes it. A file of another host is never
+   probed. Any waiter may still break a stale lock; the poll is 5 s (was 15 s), since a freed
+   lock now waits for one process only.
+3. **Cleanup.** A waiter removes its file as soon as it holds the lock, and on exit, error,
+   INT or TERM through `check_lock_install_traps` (the poll sleeps in the background, so a
+   signal is handled at once). Only SIGKILL leaves a file, which the next waiter drops.
+4. **Compatibility.** A holder that writes no waiter file (MC-SDDP's plain `mkdir` loop, a
+   lock without an owner file) is respected as before, and the stale-owner rule is
+   unchanged. Re-entrance (an ancestor holds the lock, or `ASTRO_SIMCLR_CHECK_LOCK_HELD`
+   names one) skips the queue and registers nothing. `ASTRO_SIMCLR_CHECK_LOCK=0` (and GitHub
+   Actions) disables lock and queue. Two fixes to the existing lock come with it: the holder
+   owns the lock from its `mkdir` on (a signal before the owner file is written used to
+   leave an owner-less lock that nobody breaks), and the owner file is written aside and
+   renamed; `check_lock_break` compares the renamed lock with the owner text it judged
+   stale, not with a fresh read (two waiters judging the same stale lock could remove the
+   new lock the first of them took).
+5. **Entry point for other projects:** `scripts/check-lock.sh run --project NAME --
+   COMMAND...` queues, takes the lock, writes the owner file (`pid`, `host`, `project`,
+   `command`, `started`), runs COMMAND, releases the lock and exits with COMMAND's code (2 on
+   a usage error). MC-SDDP's integrate loop calls it from this repository's main worktree;
+   `check.sh` keeps sourcing the same file.
+
+**Consequences.** The queue is fair only among processes that use it: until MC-SDDP moves
+from its own `mkdir` loop to `run` (or to the same waiter files), it can still take a freed
+lock ahead of the oldest Astro waiter, but it can no longer be starved by Astro's faster
+poll once it queues. A waiter whose pid is reused by a long-lived process without a
+recorded `pstart` (another implementation of the convention) blocks the queue until that
+process exits; `pstart` closes that hole for files written by `check-lock.sh`. Covered by
+`tests/test_check_lock.py` (arrival order of two and three waiters, dead and reused-pid
+waiters, stray files, the reader's time zone, cleanup on lock and on SIGTERM/SIGINT, an
+owner-less lock of our own, a re-taken stale lock, a plain `mkdir` holder, re-entrance,
+`run`). A TERM sent while the command under the lock runs is handled when it ends (bash
+defers traps during a foreground child): the lock covers the work.
+
+**Alternatives.** `flock(1)` queues fairly but is not on macOS by default and would not
+interoperate with MC-SDDP's `mkdir` loop. A single queue file appended under the lock needs
+a second lock to edit it; one file per waiter needs none (create, rename and unlink are
+atomic).
