@@ -636,3 +636,63 @@ def test_rj23_mid_run_resume_agrees_with_an_uninterrupted_lightning_run(
     )
     assert again["timing"]["steps"] == 0
     assert again["schedule"] == metrics["schedule"] and again["keep"] == metrics["keep"]
+
+
+class _CopyLastAt(_PlainProbe):
+    """Copy ``ckpt/last.pt`` (written just before) to ``dst / f"{step}.pt"`` at each step."""
+
+    def __init__(self, steps: set[int], src: Path, dst: Path) -> None:
+        super().__init__()
+        self.steps, self.src, self.dst = steps, src, dst
+
+    def __call__(self, record: Validation, task: Task) -> None:
+        super().__call__(record, task)
+        if record.steps_done in self.steps:
+            self.dst.mkdir(parents=True, exist_ok=True)
+            shutil.copy(self.src, self.dst / f"{record.steps_done}.pt")
+
+
+def test_rj23_resumes_around_a_patience_stop_agree_with_lightning(
+    rj23_data: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """Resumed two validations, one validation and zero steps before a patience stop.
+
+    The patience count and the best are rebuilt from the checkpoint's history and policy
+    state: a wrong wait would stop the resumed run early or late, a lost best would keep
+    other weights (or count a non-improvement as one).
+    """
+    data_dir, splits = rj23_data
+    settings = _rj23_settings(data_dir, tmp_path / "lightning", "rj23-lowres")
+    request = RJ23Request(splits)
+    lightning = _RJ23LightningProbe()
+    expected = run_rj23(settings, request, callbacks=[lightning], progress_bar=False)
+    assert expected["schedule"]["stopped_by"] == "patience"
+    steps = [step for step, _, _ in lightning.validations]
+    stop = steps[-1]
+    resume_at = steps[-3:]  # two validations before the stop, one, and the stop itself
+    assert resume_at[0] > 0  # last.pt is never written at step 0
+    # The best precedes the earliest resume point, so each resume must restore it.
+    assert expected["best_step"] <= resume_at[0]
+    whole, saved = tmp_path / "whole", tmp_path / "saved"
+    run_plain(
+        "train-supervised",
+        settings.replace(output_dir=whole),
+        rj23=request,
+        on_validation=_CopyLastAt(set(resume_at), whole / "ckpt" / "last.pt", saved),
+    )
+    for step in resume_at:
+        resumed = tmp_path / f"resumed-{step}"
+        probe = _PlainProbe()
+        metrics = run_plain(
+            "train-supervised",
+            settings.replace(output_dir=resumed),
+            rj23=request,
+            resume=str(saved / f"{step}.pt"),
+            on_validation=probe,
+        )
+        later = [v for v in lightning.validations if v[0] > step]
+        _assert_same_validations(later, probe.validations)
+        assert metrics["timing"]["steps"] == stop - step, step
+        assert metrics["schedule"]["stopped_by"] == "patience", step
+        assert {**_rj23_computed(metrics), "resumed_from": False} == _rj23_computed(expected)
+        _assert_same_outputs(settings.output_dir, resumed)

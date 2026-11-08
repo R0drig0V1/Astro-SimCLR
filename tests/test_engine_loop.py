@@ -16,7 +16,7 @@ import math
 import os
 import random
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +37,7 @@ from astro_simclr.engine import (
     DevicePolicy,
     EarlyStop,
     EvalOutput,
+    FitResult,
     Horizon,
     IdentityState,
     Monitor,
@@ -374,11 +375,13 @@ def test_at_start_score_and_stop_rule(tmp_path: Path) -> None:
     task, result = _fit(tmp_path, schedule=_rj23_like(rule), score=_accuracy)
     # Step 0 (before any step), then the grid; the rule stopped at the third value.
     assert [v.steps_done for v in result.validations] == [0, 4, 8]
-    assert result.validations[0].train_loss is None and result.validations[0].epoch == -1
+    assert result.validations[0].train_loss is None and result.validations[0].epoch == 0
     assert result.stopped_early and result.last_step == 8
     assert [step for step, _ in rule.calls] == [0, 4, 8]
     assert rule.calls[-1][1] == result.history == tuple(v.value for v in result.validations)
     assert all(0.0 <= value <= 1.0 for value in result.history)  # the score, not a loss
+    # The step-0 validation's epoch is 0 (Lightning's current_epoch), in scalars.jsonl too.
+    assert read_scalars(tmp_path / "scalars.jsonl")[0]["epoch"] == 0
     assert task.trained_steps == list(range(8))
     # last.pt after the step-4 and step-8 validations (never at step 0), with the history.
     last = load_checkpoint(tmp_path / "ckpt" / "last.pt")
@@ -779,3 +782,21 @@ def test_recorded_ends_failed_or_cancelled(
     with pytest.raises(error), recorded(record):
         raise error
     assert read_manifest(tmp_path).status == status
+
+
+def test_a_step_0_best_is_in_epoch_0_and_no_step_is_epoch_minus_1() -> None:
+    result = FitResult(
+        last_step=0,
+        horizon=0,
+        best_step=0,
+        best_score=0.5,
+        batches_per_pass=4,
+        stopped_early=True,
+        validations=(),
+        resumed_from=None,
+        steps=0,
+        fit_seconds=0.0,
+    )
+    assert (result.best_epoch, result.last_epoch) == (0, -1)
+    assert replace(result, best_step=4, last_step=5).best_epoch == 0
+    assert replace(result, best_step=5, last_step=5).last_epoch == 1
