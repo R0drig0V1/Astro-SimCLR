@@ -369,7 +369,7 @@ M1 oracle passed. About 26 minutes per run (0.050 s per step). The best steps (4
 one outlier at 18.9k) match M1's best near 4.8k. No diagnostic was needed, so the list
 below stays unused. Archived in `results/phase2/replication/` (PR #19).
 
-**Known defect:** `compare-reference` warns `paper_arch=None (expected 'rot4')` and the same for `context` and `rot90_augment` on runs made before task 2.5-models. A missing key should read as its faithful default. The verdict is not affected.
+**Fixed defect (PR #20):** `compare-reference` warned `paper_arch=None (expected 'rot4')` and the same for `context` and `rot90_augment` on runs made before task 2.5-models. A missing key should read as its faithful default. The verdict is not affected.
 
 **Result (without features, advisory; same machine, main @ 695ed93):** test 0.870 / 0.870 /
 0.872 / 0.888 / 0.862, so **0.8724 ± 0.0095** against the paper's 0.883 ± 0.006
@@ -469,6 +469,8 @@ replication's **validation** confusion matrix (2026-11-08):
 Stamps of other classes are **never relabelled** as Bogus by adding an artefact: an SN with a
 cosmic ray is still an SN. Later idea: fake SN injected on real host galaxies (the surveys'
 standard technique), aimed at SN → Asteroid.
+
+**C5/C6 implemented** (PR #20, ADR 0006): flags `aug_noise`, `aug_feature_jitter`, `synthetic_bogus` and `aug_min_r2`; the difference is recomputed from the per-stamp fit `diff ≈ a·sci + b·tmpl + c`; C6 sources are positive alerts, never SN.
 
 **User decision (2026-11-08):** C5 and C6 run alongside the architecture line, not only if
 it plateaus.
