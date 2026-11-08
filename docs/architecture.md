@@ -78,11 +78,24 @@ tensors of shape (3, size, size) with values k/255 in [0, 1]. The datasets (1.2)
 only on this protocol, never on a concrete transform.
 
 - `get_augmentation(name, size)` builds a `PipelineAugmentation` from the registry
-  `AUGMENTATIONS`, keyed by the legacy names: `simclr` (`SimCLR_augmentation`), `simclr2`
-  (`SimCLR_augmentation_v2`), `astro7` / `astro8` (`Astro_augmentation_v7` / `_v8`),
-  `rotation_v3` (`Rotation_v3`) and `without_aug` (`Resize_img`: centre crop, the
-  validation/test transform). Each converts the stamp to a PIL image and runs the legacy
-  torchvision pipeline in the legacy order; `pair` calls `view` twice, first view first.
+  `AUGMENTATIONS`. The registry names say what each pipeline does; the legacy names are
+  accepted as aliases (`LEGACY_ALIASES`, resolved by `resolve_augmentation_name`), because
+  `results/hparams_best_*.yaml` and the legacy entry points use them. The built object
+  carries the registry name.
+
+  | Name | Legacy alias (class) | Pipeline |
+  |---|---|---|
+  | `simclr` | `simclr` (`SimCLR_augmentation`) | random resized crop, colour jitter, grey, blur |
+  | `simclr_centered` | `simclr2` (`SimCLR_augmentation_v2`) | centred crop, flip, jitter, grey, blur, random 90° rotation |
+  | `astro_perspective` | `astro7` (`Astro_augmentation_v7`) | rotation, centred crop, perspective, flip, jitter, blur |
+  | `astro_perspective_gray` | `astro8` (`Astro_augmentation_v8`) | `astro_perspective` plus random grey |
+  | `rotate_flip` | `rotation_v3` (`Rotation_v3`) | rotation, centre crop, flip |
+  | `center_crop` | `without_aug` (`Resize_img`) | centre crop only: the validation/test transform |
+
+  Each converts the stamp to a PIL image and runs the legacy torchvision pipeline in the
+  legacy order; `pair` calls `view` twice, first view first. No new name equals a legacy
+  name of a different transform (for example `rotation` and `astro` are deferred legacy
+  variants).
 - The 33 other legacy names (`DEFERRED_AUGMENTATIONS`, mostly albumentations/OpenCV
   variants) raise `DeferredAugmentationError`; any other name raises
   `UnknownAugmentationError` listing the valid names (both are `ValueError`s).
@@ -94,6 +107,8 @@ only on this protocol, never on a concrete transform.
   by Lightning's `pl_worker_init_function`, which the Trainer injects (a DataLoader built
   outside a Trainer must pass it as `worker_init_fn`). Same seed → identical batches, with
   0 or more workers (tested with 0 and 2).
+- **Naming change:** registry names are descriptive; the legacy names keep working as
+  aliases, so no config needs to change.
 - **Characterization:** `tests/fixtures/augmentations/legacy_views.npz`, from
   `scripts/characterize/augmentations/generate.py` (legacy classes, sizes 27 and 63). The
   port must match it pixel for pixel, except for rare off-by-one levels after the blur's

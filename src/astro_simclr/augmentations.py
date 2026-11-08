@@ -6,11 +6,28 @@ same stamp (contrastive datasets). The datasets (task 1.2) depend only on the pr
 never on a concrete transform.
 
 The registry holds exact ports of the six legacy transforms that phase 1 uses
-(``utils/transformations.py``, selected by name in ``utils/training.py``): ``simclr``,
-``simclr2``, ``astro7``, ``astro8``, ``rotation_v3`` and ``without_aug``. Each one converts
-the stamp to a PIL image and runs the same torchvision pipeline, in the same order, as the
-legacy class (the legacy datasets ran ``img_float2int`` → ``ToPILImage`` → transform).
-Every other legacy name is deferred and raises :class:`DeferredAugmentationError`.
+(``utils/transformations.py``, selected by name in ``utils/training.py``), under names that
+say what they do; the legacy names stay valid as aliases, because the legacy configs
+(``results/hparams_best_*.yaml``) use them:
+
+=========================  ===============  ===========================================
+name                       legacy alias     pipeline
+=========================  ===============  ===========================================
+``simclr``                 ``simclr``       random resized crop, colour jitter, grey,
+                                            blur (the SimCLR paper's, without flip)
+``simclr_centered``        ``simclr2``      ``simclr`` with a centred crop, a flip and
+                                            a random 90-degree rotation
+``astro_perspective``      ``astro7``       rotation, centred crop, perspective, flip,
+                                            colour jitter, blur
+``astro_perspective_gray`` ``astro8``       ``astro_perspective`` plus random grey
+``rotate_flip``            ``rotation_v3``  rotation, centre crop, flip
+``center_crop``            ``without_aug``  centre crop only (deterministic)
+=========================  ===============  ===========================================
+
+Each one converts the stamp to a PIL image and runs the same torchvision pipeline, in the
+same order, as the legacy class (the legacy datasets ran ``img_float2int`` →
+``ToPILImage`` → transform). Every other legacy name is deferred and raises
+:class:`DeferredAugmentationError`.
 
 Randomness is not passed in: the transforms draw from the global generators (torchvision
 from torch, :class:`RandomResizedCenterCrop` from Python ``random``, :class:`GaussianBlur`
@@ -37,6 +54,7 @@ from torchvision.transforms import functional as tvf
 __all__ = [
     "AUGMENTATIONS",
     "DEFERRED_AUGMENTATIONS",
+    "LEGACY_ALIASES",
     "Augmentation",
     "DeferredAugmentationError",
     "GaussianBlur",
@@ -46,6 +64,7 @@ __all__ = [
     "Stamp",
     "UnknownAugmentationError",
     "get_augmentation",
+    "resolve_augmentation_name",
 ]
 
 #: A stamp as stored by the datasets: uint8, shape (H, W, 3) (science, template, difference).
@@ -216,7 +235,7 @@ def _blur(size: int) -> transforms.RandomApply:
     return transforms.RandomApply([GaussianBlur(kernel_size=int(0.1 * size))], p=0.5)
 
 
-def _simclr(size: int) -> list[Callable[..., object]]:
+def _simclr_crop(size: int) -> list[Callable[..., object]]:
     # Legacy SimCLR_augmentation.
     return [
         transforms.RandomResizedCrop(scale=(0.08, 1.0), size=size),
@@ -227,7 +246,7 @@ def _simclr(size: int) -> list[Callable[..., object]]:
     ]
 
 
-def _simclr2(size: int) -> list[Callable[..., object]]:
+def _simclr_centered(size: int) -> list[Callable[..., object]]:
     # Legacy SimCLR_augmentation_v2.
     return [
         RandomResizedCenterCrop(scale=(0.08, 1.0), size=size),
@@ -240,7 +259,7 @@ def _simclr2(size: int) -> list[Callable[..., object]]:
     ]
 
 
-def _astro7(size: int) -> list[Callable[..., object]]:
+def _astro_perspective(size: int) -> list[Callable[..., object]]:
     # Legacy Astro_augmentation_v7.
     return [
         transforms.RandomRotation(180, expand=False),
@@ -253,8 +272,8 @@ def _astro7(size: int) -> list[Callable[..., object]]:
     ]
 
 
-def _astro8(size: int) -> list[Callable[..., object]]:
-    # Legacy Astro_augmentation_v8: astro7 plus RandomGrayscale before the blur.
+def _astro_perspective_gray(size: int) -> list[Callable[..., object]]:
+    # Legacy Astro_augmentation_v8: astro_perspective plus RandomGrayscale before the blur.
     return [
         transforms.RandomRotation(180, expand=False),
         RandomResizedCenterCrop(scale=(0.18, 0.5), size=size),
@@ -267,7 +286,7 @@ def _astro8(size: int) -> list[Callable[..., object]]:
     ]
 
 
-def _rotation_v3(size: int) -> list[Callable[..., object]]:
+def _rotate_flip(size: int) -> list[Callable[..., object]]:
     # Legacy Rotation_v3.
     return [
         transforms.RandomRotation(180, expand=False),
@@ -277,19 +296,32 @@ def _rotation_v3(size: int) -> list[Callable[..., object]]:
     ]
 
 
-def _without_aug(size: int) -> list[Callable[..., object]]:
+def _center_crop(size: int) -> list[Callable[..., object]]:
     # Legacy Resize_img (the classifiers' `without_aug`, and every validation/test set).
     return [transforms.CenterCrop(size=size), transforms.ToTensor()]
 
 
-#: Legacy name → pipeline builder (crop size → list of transforms) of the ported transforms.
+#: Name → pipeline builder (crop size → list of transforms) of the ported transforms. The
+#: names say what each pipeline does; the opaque legacy names are accepted as aliases
+#: (:data:`LEGACY_ALIASES`).
 AUGMENTATIONS: dict[str, Callable[[int], list[Callable[..., object]]]] = {
-    "simclr": _simclr,
-    "simclr2": _simclr2,
-    "astro7": _astro7,
-    "astro8": _astro8,
-    "rotation_v3": _rotation_v3,
-    "without_aug": _without_aug,
+    "simclr": _simclr_crop,
+    "simclr_centered": _simclr_centered,
+    "astro_perspective": _astro_perspective,
+    "astro_perspective_gray": _astro_perspective_gray,
+    "rotate_flip": _rotate_flip,
+    "center_crop": _center_crop,
+}
+
+#: Legacy name (``utils/training.py``, ``results/hparams_best_*.yaml``) → registry name.
+#: ``simclr`` keeps its name: it is the paper's augmentation.
+LEGACY_ALIASES: dict[str, str] = {
+    "simclr": "simclr",
+    "simclr2": "simclr_centered",
+    "astro7": "astro_perspective",
+    "astro8": "astro_perspective_gray",
+    "rotation_v3": "rotate_flip",
+    "without_aug": "center_crop",
 }
 
 #: Legacy names (``utils/training.py``) that are not ported in phase 1. Most need
@@ -341,25 +373,45 @@ class DeferredAugmentationError(UnknownAugmentationError):
     """The name is a legacy augmentation that phase 1 does not port."""
 
 
-def get_augmentation(name: str, size: int) -> PipelineAugmentation:
-    """Build the augmentation registered under the legacy ``name`` for ``size`` px crops.
+def resolve_augmentation_name(name: str) -> str:
+    """Return the registry name for ``name``, which may be a legacy alias.
 
     Raises:
         DeferredAugmentationError: ``name`` is a legacy augmentation not ported yet.
-        UnknownAugmentationError: ``name`` is not a legacy augmentation at all; the message
-            lists the valid names.
-        ValueError: ``size`` is not a positive integer.
+        UnknownAugmentationError: ``name`` is neither a registry name nor a legacy name;
+            the message lists the valid names.
     """
+    if name in AUGMENTATIONS:
+        return name
+    if name in LEGACY_ALIASES:
+        return LEGACY_ALIASES[name]
     if name in DEFERRED_AUGMENTATIONS:
         msg = (
             f"augmentation {name!r} is a legacy variant deferred to a later phase; "
-            f"phase 1 ports only {sorted(AUGMENTATIONS)}"
+            f"phase 1 ports only {sorted(AUGMENTATIONS)} "
+            f"(legacy aliases: {sorted(set(LEGACY_ALIASES) - set(AUGMENTATIONS))})"
         )
         raise DeferredAugmentationError(msg)
-    if name not in AUGMENTATIONS:
-        msg = f"unknown augmentation {name!r}; valid names: {sorted(AUGMENTATIONS)}"
-        raise UnknownAugmentationError(msg)
+    msg = (
+        f"unknown augmentation {name!r}; valid names: {sorted(AUGMENTATIONS)}, "
+        f"or the legacy aliases {sorted(set(LEGACY_ALIASES) - set(AUGMENTATIONS))}"
+    )
+    raise UnknownAugmentationError(msg)
+
+
+def get_augmentation(name: str, size: int) -> PipelineAugmentation:
+    """Build the augmentation ``name`` (a registry name or a legacy alias) for ``size`` px.
+
+    The returned augmentation carries the registry name, so a legacy alias and its new name
+    give the same object.
+
+    Raises:
+        DeferredAugmentationError: ``name`` is a legacy augmentation not ported yet.
+        UnknownAugmentationError: ``name`` is not known at all.
+        ValueError: ``size`` is not a positive integer.
+    """
+    canonical = resolve_augmentation_name(name)
     if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
         msg = f"size must be a positive integer, got {size!r}"
         raise ValueError(msg)
-    return PipelineAugmentation(name, transforms.Compose(AUGMENTATIONS[name](size)))
+    return PipelineAugmentation(canonical, transforms.Compose(AUGMENTATIONS[canonical](size)))
