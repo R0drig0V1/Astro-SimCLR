@@ -267,7 +267,7 @@ except the manual runs, and the phase-1 portability rule applies to all of them.
   - The best validation loss occurs before iteration 10,000, with validation accuracy
     ≥ 0.94 near the best.
 
-### 2.3 Evaluation protocol (now)
+### 2.3 Evaluation protocol (now) — done (PR #13, merged as 71980de, 2026-11-08). Real-data finding: `red` Train 2995 (labelled Bogus) is the same stamp as Validation 115 (labelled SN); excluded from Train only.
 
 - Every run reports:
   - **test** accuracy of the checkpoint selected on validation;
