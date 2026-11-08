@@ -1,138 +1,229 @@
-# Entrenamiento contrastivo con imágenes de eventos astronómicos
+# Astro-SimCLR
 
-Curso: El7006, primavera 2021
+A typed, tested research codebase for classifying ZTF alert stamps (science, template and
+difference cutouts plus alert features into AGN, SN, VS, Asteroid or Bogus), built on PyTorch.
 
+- **Replication of the ALeRCE stamp classifier** (Carrasco-Davis et al. 2021, "CD21"):
+  5 seeds of the `carrasco2021` preset reach **test 0.9428 ± 0.0041** against the paper's
+  **0.941 ± 0.004**, so the gate reads **`CD21: PASS (faithful)`**. An oracle loads the
+  published M1 checkpoint into our model and checks the input path and the port (475/500
+  Validation correct, as expected; max |Δlogit| 1.6e-6). Archive and provenance:
+  [`results/phase2/replication/`](results/phase2/replication/README.md).
+- **Architecture and augmentation research** on top of the replication, decided under a
+  pre-registered [evaluation protocol](docs/evaluation-protocol.md): single-pass p4 / p4m
+  group-equivariant CNNs, the 63″ context channels, class-aware augmentation (noise,
+  synthetic hot-pixel Bogus) and transient flux rescaling.
+- **Raw-alert infrastructure and benchmarks** (phase 3): verified retrieval of the raw
+  alerts behind the labelled stamps (`fetch-alerts`), RJ23 input functions, macro-F1
+  benchmark metrics, object-grouped splits, and an object-level 5-class benchmark (R5)
+  being built from public sources only.
+- **Self-supervised pretraining** (SimCLR, Chen et al. 2020; supervised contrastive, Khosla
+  et al. 2020) is the next line, on a large unlabelled corpus of raw ZTF alerts.
 
-## Descripción
+History: the repository began as a 2021 course project on SimCLR for ZTF stamps.
+That code was retired from the tree and stays readable at the git tag `legacy-final`.
 
-Actualmente los modelos supervisados basados en redes neuronales han tenido
-un gran apogeo en las tareas de clasificación, detección, segmentación, entre otras
-aplicaciones. A pesar de esto se requieren grandes volúmenes de datos para poder entrenar
-estos modelos, lo que limita su uso práctico. En los últimos años los modelos no supervisados y
-semi supervisados han presentado grandes avances alcanzando la performance de los
-modelos supervisados utilizando una fracción de las etiquetas que estos utilizan.
-Este proyecto busca explorar la utilización de SimCLR (Chen et al, 2020) un modelo en el
-estado del arte en aprendizaje contrastivo y que estableció un gran avance en el aprendizaje no
-supervisado. SimCLR es un modelo no supervisado que busca crear distintas aumentaciones
-para una misma imágen y maximizar su similaridad, y a su vez maximizar la disimilaridad de
-imágenes distintas. En este proyecto además se quiere estudiar su versión supervisada,
-llamémoslo S-SimCLR (Khosla et al, 2020), en la que extiende el concepto de similaridad a
-imágenes de la misma clase. Para evaluar qué tan bueno es este aprendizaje no supervisado
-se entrena un clasificador lineal al final del embedding aprendido.
-Este modelo no supervisado se busca aplicar en datos reales, imágenes de eventos
-astronómicos obtenidos del proyecto Zwicky Transient Facility (ZTF). Esta investigación tiene
-un impacto directo en el campo de la astroinformática y puede ser de utilidad para el broker
-ALeRCE (http://alerce.science/) que busca automatizar la clasificación de eventos astronómicos
-que serán obtenidos por el observatorio Vera C. Rubin construido en el Norte de Chile.
+## Status
 
-Este proyecto busca responder algunas preguntas como:
+| Phase | Plan | State |
+|---|---|---|
+| 1. Runnable, tested package | [01-runnable-package.md](docs/phases/01-runnable-package.md) | done; cloud GPU runbook (1.9a) left |
+| 2. Replicate and improve the stamp classifier | [02-stamp-classifier.md](docs/phases/02-stamp-classifier.md) | replication passed; improvements (2.5) running |
+| 3. Raw-alert infrastructure and the R5 benchmark | [03-newer-benchmarks.md](docs/phases/03-newer-benchmarks.md) | in progress |
+| 4. Training platform (plain PyTorch, local run registry) | [04-training-platform.md](docs/phases/04-training-platform.md) | reviewed; first tasks dispatchable |
+| Next: self-supervised pretraining | [roadmap](docs/phases/README.md) | not started |
 
-* ¿Cómo afecta el desbalance en SimCLR?
-* ¿S-SimCLR entrenado de forma balanceada tiene mucho mejor perfomance que SimCLR?
-* ¿Las aumentaciones utilizadas en SimCLR son igual de útiles en datasets astronómicos?
+The [roadmap](docs/phases/README.md) is the authority on what is done and what runs now.
 
+## Install
 
-## Requirements
+Requires [uv](https://docs.astral.sh/uv/); it installs Python 3.12 and the exact versions of
+`uv.lock`.
 
-The environment is managed by [uv](https://docs.astral.sh/uv/) (see [Development](#development)).
-The original 2021 research code (root scripts, `utils/`, `models/`, `losses/`) and its conda
-environment (`env.yml`) were retired from the tree; they stay readable at the git tag
-`legacy-final`:
+```bash
+uv sync --locked                 # PyPI torch: MPS on macOS, CUDA 13 on Linux (driver >= 580, Turing or newer)
+uv sync --locked --extra cpu     # no GPU (what CI uses)
+uv sync --locked --extra cu126   # GPU older than Turing (e.g. GTX 1050), or driver < 580
+uv run astro-simclr --help       # the command line
+```
+
+After installing an extra, skip uv's automatic re-sync, which would put the default build
+back: set `UV_NO_SYNC=1` or use `uv run --no-sync`. The driver and compute-capability table
+(Blackwell needs the default build) is in
+[ADR 0001](docs/decisions/0001-torch-wheels-and-accelerators.md); on Windows use WSL2.
+
+On a GPU machine, check the build and run a dry training before real work:
+
+```bash
+scripts/gpu-preflight.sh --synthetic        # CUDA and the torch build, no real data needed
+scripts/gpu-preflight.sh --data-dir DIR     # also the prepared data and its manifest
+```
+
+The preflight names the right `uv sync` command when the installed build does not fit the GPU.
+
+## Quickstart
+
+### 1. Data
+
+The ZTF stamp datasets (the CD21 pickles) are **not public** and are not in this
+repository. [docs/data.md](docs/data.md) has the files, their SHA-256, schemas and
+provenance. Training never reads the pickles: convert each one once.
+
+```bash
+uv run astro-simclr inspect-data dataset/td_ztf_stamp_17_06_20_red-002.pkl   # schema, counts, SHA-256
+uv run astro-simclr prepare-data dataset/td_ztf_stamp_17_06_20_red-002.pkl \
+    --images float32 --out dataset/prepared   # float32 stamps: the paper's input path needs them
+```
+
+Without the data, `astro-simclr make-synthetic --out DIR --n-per-split N --seed S` writes
+synthetic stand-ins with the same layout.
+
+### 2. Reproduce the replication
+
+```bash
+# The M1 oracle (no GPU): downloads M1 pinned by commit and SHA-256, outside the repository
+uv run astro-simclr m1-oracle --data-dir dataset/prepared/td_ztf_stamp_17_06_20_red-002 --out OUT
+
+# 5 seeds of the paper preset (about 25 min each on a GTX 1050)
+for s in 0 1 2 3 4; do
+  uv run --no-sync astro-simclr train-supervised --preset carrasco2021 --accelerator cuda \
+      --data-dir dataset/prepared --seed $s --output-dir runs/replication/with-features/seed-$s
+done
+
+# The gate (CPU is enough; reads the metrics.json files). Exit 0 for PASS or REPORT, 1 for FAIL
+uv run astro-simclr compare-reference runs/replication/with-features/seed-{0..4} \
+    --ref CD21 --oracle-report OUT/m1_oracle.json
+```
+
+The archived runs reproduce the published verdict without a GPU:
+
+```bash
+R=results/phase2/replication
+uv run astro-simclr compare-reference $R/with-features/seed-{0..4} \
+    --ref CD21 --oracle-report $R/m1_oracle.json
+```
+
+`--preset carrasco2021-no-features` is the advisory without-features line (test
+0.8724 ± 0.0095 against the paper's 0.883 ± 0.006; `CD21: REPORT`). Training is not bitwise
+deterministic, so a rerun gives close but not identical numbers.
+
+### 3. Compare a variant on the stored splits
+
+Decisions use split runs, which never load Test. The stored, object-grouped splits are in
+`configs/splits/`; one arm per flag, same seeds and machine on both sides:
+
+```bash
+SPLITS=configs/splits/td_ztf_stamp_17_06_20_red-002-grouped.json
+TRAIN="uv run --no-sync astro-simclr train-supervised --preset carrasco2021 --data-dir dataset/prepared --splits $SPLITS"
+
+for k in 0 1 2 3 4; do            # 5-fold CV x 2 seeds per arm
+  for s in 0 1; do
+    $TRAIN --fold $k --seed $s --output-dir runs/cv/base/fold$k-seed$s
+    $TRAIN --fold $k --seed $s --output-dir runs/cv/p4/fold$k-seed$s --set paper_arch=p4
+  done
+done
+uv run astro-simclr compare-variants --splits $SPLITS \
+    --baseline runs/cv/base/fold* --variant runs/cv/p4/fold* \
+    --rule non-inferiority        # efficiency rows; the default rule is superiority
+```
+
+`--screen` instead of `--fold K` runs the cheap 250/250 screen, which can only drop an arm.
+Both are described in [docs/evaluation-protocol.md](docs/evaluation-protocol.md)
+("Running a decision end to end").
+
+### 4. Raw alerts
+
+`fetch-alerts` (task 3.1) recovers the raw alerts behind a prepared split from ALeRCE's
+public services. It checks each one against the stored stamp and keeps the raw cutouts with
+their real NaN masks, the candidate record and every raw response. Runs are resumable, and
+the store can be rebuilt offline with `--from-snapshot`.
+
+```bash
+uv run astro-simclr fetch-alerts --data-dir dataset/prepared --dataset td_ztf_stamp_17_06_20_red-002 \
+    --split Train --out dataset/raw/td_ztf_stamp_17_06_20_red-002 --rate 1.5 --quiet
+uv run astro-simclr fetch-alerts ... --resume --quiet        # after any stop
+uv run astro-simclr alerts-summary dataset/raw/td_ztf_stamp_17_06_20_red-002
+```
+
+The method, the timings and the store layout are in [docs/data.md](docs/data.md) ("Raw
+alerts") and [ADR 0011](docs/decisions/0011-raw-alert-store.md). The other phase-3 tools are
+`make-object-splits`, `bench-report` and `leakage-audit`.
+
+## Repository map
+
+```
+src/astro_simclr/   the package: data, models (paper model, p4/p4m variants), losses,
+                    augmentations, training, protocol (splits, gates, comparisons), oracle, CLI
+tests/              pytest suite (branch coverage >= 80 %)
+configs/reference/  R1-R4 legacy reference-run configs, with provenance
+configs/splits/     stored phase-2 decision splits (make-splits)
+results/            phase2/ (replication archive, augmentation inspections); 2021 tuning results
+docs/               architecture.md (one section per module), data.md, evaluation-protocol.md,
+                    phases/ (the plan), decisions/ (ADRs), plan-reviews/
+scripts/            check.sh, gpu-preflight.sh, check-torch-wheels.sh, inspection scripts,
+                    characterize/ (legacy fixture generators)
+jupyter_examples/   2021 exploratory notebooks (they import the legacy code)
+```
+
+Module responsibilities: [docs/architecture.md](docs/architecture.md). Design decisions:
+[docs/decisions/](docs/decisions/README.md). The 2021 code (root scripts, `utils/`,
+`models/`, `losses/`, `env.yml`) is at the tag `legacy-final`:
 
 ```bash
 git fetch origin tag legacy-final        # once, if the tag is not local
 git show legacy-final:utils/training.py  # read one legacy file
-git show legacy-final:env.yml            # the legacy conda environment
-git worktree add ../Astro-SimCLR-legacy legacy-final   # the whole legacy tree
+git worktree add ../Astro-SimCLR-legacy legacy-final   # the whole tree (to run the notebooks)
 ```
 
-The notebooks in `jupyter_examples/` import the legacy code, so run them from such a
-checkout of the tag.
+## Evaluation rules
+
+Test metrics are never a decision input: they are computed, archived and reported once per
+pre-registered comparison. Every keep/drop decision comes from validation stamps that did
+not select the checkpoint, from the M1 oracle, or from cross-validation on Train +
+Validation, using the stored split files in `configs/splits/` (their SHA-256 is checked).
+The decision splits are grouped by object, because some Validation and Test alerts share a position
+with a Train alert (24 and 27 of 500). Comparisons pair predictions stamp by stamp
+(McNemar, paired bootstrap) and never mix machines or builds. The full rules, the
+replication gate and the power note: [docs/evaluation-protocol.md](docs/evaluation-protocol.md).
+
+## Citing and licences
+
+This repository is under the [MIT licence](LICENSE). If you use it, cite the work it
+replicates and builds on:
+
+- Carrasco-Davis, R. et al. 2021, "Alert Classification for the ALeRCE Broker System: The
+  Real-time Stamp Classifier", AJ 162, 231 (arXiv:2008.03309).
+- Reyes-Jainaga, I. et al. 2023, ApJL (arXiv:2304.13080): the RJ23 protocol and inputs.
+- Cohen, T. and Welling, M. 2016, "Group Equivariant Convolutional Networks", ICML
+  (arXiv:1602.07576): the p4 / p4m layers.
+- Chen, T. et al. 2020, "A Simple Framework for Contrastive Learning of Visual
+  Representations", ICML (arXiv:2002.05709): SimCLR.
+- Khosla, P. et al. 2020, "Supervised Contrastive Learning", NeurIPS (arXiv:2004.11362).
+
+**No ALeRCE code or weights are included.** The model and input path are reimplemented.
+`fetch-m1` downloads the M1 checkpoint at use time, pinned by commit and SHA-256, into a
+cache outside the repository, and nothing downloaded is unpickled. The ZTF stamp datasets
+are not redistributed.
 
 ## Development
 
-Requires [uv](https://docs.astral.sh/uv/). uv installs the Python of `.python-version`
-(3.12) and the exact tool versions of `uv.lock`.
-
 ```bash
-uv sync --locked             # create .venv with the project and its dev tools
-scripts/check.sh             # everything CI checks: ruff, ruff format, mypy, pytest + coverage
-uv run astro-simclr --help   # the command line: data, training, comparisons, preflight
-uv run ruff format . && uv run ruff check --fix .   # fix formatting and most lint findings
-uv run pre-commit install    # optional: ruff on every commit
+scripts/check.sh                 # ruff, ruff format, mypy strict, pytest + coverage: "green"
+UV_NO_SYNC=1 scripts/check.sh    # the same with a torch extra installed
+uv run ruff format . && uv run ruff check --fix .
+scripts/check-torch-wheels.sh    # after touching the torch pins, extras or indexes
 ```
 
-`scripts/check.sh` is the single definition of "green": CI runs exactly that script.
-It runs the tests in parallel, one process per CPU (`PYTEST_XDIST_AUTO_NUM_WORKERS=N` caps
-it); `uv run pytest` alone runs them in one process.
+`scripts/check.sh` is the single definition of green; CI runs exactly that script. It runs
+the tests in parallel, one process per CPU (`PYTEST_XDIST_AUTO_NUM_WORKERS=N` caps it). GitHub
+workflows also run zizmor, actionlint, gitleaks, pip-audit, CodeQL and Scorecard; security
+reports go through [SECURITY.md](SECURITY.md). The scaffolding comes from
+[python-template](https://github.com/R0drig0V1/python-template) (`uvx copier@9.19.1 update`
+on a clean tree).
 
-### Torch build per machine
-
-`uv sync --locked` installs PyPI torch: MPS on macOS, CUDA 13 on Linux (NVIDIA driver
->= 580 and a Turing or newer GPU). Elsewhere pick an extra, and from then on skip the
-automatic re-sync, which would put the default build back
-([ADR 0001](docs/decisions/0001-torch-wheels-and-accelerators.md), rule 6, has the full
-driver and compute-capability table; on Windows use WSL2):
-
-```bash
-uv sync --locked --extra cpu      # no GPU (what CI uses)
-uv sync --locked --extra cu126    # GPU older than Turing (e.g. GTX 1050), or driver < 580
-UV_NO_SYNC=1 scripts/check.sh     # or: uv run --no-sync astro-simclr ...
-scripts/gpu-preflight.sh --synthetic   # GPU machine: checks the build, then a dry run
-scripts/check-torch-wheels.sh     # after touching the torch pins, extras or indexes
-```
-
-The preflight names the right `uv sync` command when the installed build does not fit the
-GPU. The reference runs of phase 1 are in `configs/reference/` (R1-R4, with their
-provenance); `astro-simclr compare-reference` judges their results.
-
-Package layout and module responsibilities: [docs/architecture.md](docs/architecture.md).
-How phase-2 results are measured and compared: [docs/evaluation-protocol.md](docs/evaluation-protocol.md).
-
-## Checks
-
-| Check | What it catches | Where |
-|---|---|---|
-| ruff (`E,F,W,I,B,UP,S,SIM,RUF,C90`) | bugs, imports, outdated syntax, Bandit security rules, complexity > 10 | `scripts/check.sh`, CI |
-| ruff format | formatting | `scripts/check.sh`, CI |
-| mypy `strict` | type errors in `src/` and `tests/` | `scripts/check.sh`, CI |
-| pytest + coverage (branch, >= 80%), in parallel (pytest-xdist) | regressions, untested code | `scripts/check.sh`, CI |
-| torch-wheel assertions | the lock no longer matches ADR 0001 (extras, labels, `nvidia-*`) | `scripts/check-torch-wheels.sh`, CI |
-| zizmor, actionlint | insecure or broken GitHub workflows | `quality.yml` |
-| gitleaks | secrets committed anywhere in the history | `quality.yml` |
-| pip-audit | known vulnerabilities in any `uv.lock` package (also weekly) | `quality.yml` |
-| CodeQL (Python, Actions) | security vulnerabilities (Security tab) | `codeql.yml` |
-| OpenSSF Scorecard | supply-chain posture (score only) | `scorecard.yml` |
-| Dependabot | outdated dependencies and actions (7-day cooldown) | `dependabot.yml` |
-
-Thresholds live in `pyproject.toml` (`[tool.ruff.lint.mccabe]`, `[tool.coverage.report]`).
-Lower them only with a reason in the same pull request.
-
-## After creating the GitHub repository
-
-Some protections are repository settings, not files. Turn them on once (needs `gh` as an
-admin; `--dry-run` prints the calls):
-
-```bash
-scripts/setup-github.sh
-```
-
-It enables Dependabot alerts and security updates and requires actions pinned to a commit SHA, and private vulnerability reporting (SECURITY.md relies on
-it). Secret scanning and push protection are on by default for public repositories; keep
-CodeQL *default* setup off (`codeql.yml` is the advanced setup).
-
-## Updating from the template
-
-Generated from [python-template](https://github.com/R0drig0V1/python-template) with Copier.
-`uvx copier update` (on a clean working tree) brings later template changes (new checks,
-newer pinned actions) and asks before overwriting what you changed.
-
-## Manual bumps
-
-Dependabot updates `uv.lock` and the actions. By hand: the actionlint and gitleaks versions
-and sha256 in `.github/workflows/quality.yml` (from each release's checksums file), and the
-`version:` inputs of `setup-uv` and `zizmor-action`.
-
-## License
-
-[MIT](LICENSE).
+Work is planned in [docs/phases/](docs/phases/README.md) and done by several Claude agents in
+parallel, each in its own git worktree, with one integrator merging verified pull requests
+into `main` ([CLAUDE.md](CLAUDE.md), "Multi-agent workflow"). To contribute: branch from
+`main`, put new code in `src/astro_simclr/` with tests and docstrings, update the matching
+`docs/` page in the same change, add an ADR for decisions that are hard to reverse, keep
+`scripts/check.sh` green, and open a pull request against `main` using Conventional Commits.
