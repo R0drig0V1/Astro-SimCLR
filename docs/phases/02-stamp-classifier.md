@@ -371,6 +371,26 @@ re-run there first (budgeted).
 | B4 | Width / depth (filters ×1.5–2; one more conv block) | Capacity |
 | B5 | Residual blocks; global-average pooling instead of fc1 | A modern inductive bias, fewer parameters |
 | B6 | Rotation averaging before the activation | A different invariance point |
+| B7 | **Single-pass p4 group-equivariant CNN** (same geometry 27→24→12→6; 8/16 p4 fields = 32/64 maps; fc1 as a 6×6 p4 conv to 64 fields, then the mean over orientations) | Replaces the 4-pass rotation mean: exact invariance, **4× fewer MACs** (53 M vs 211 M), 228,531 parameters (vs 441,075), ~3–4× the throughput |
+| B2′ | **Single-pass p4m** (4/8 fields): exact D4 invariance | The cheap version of B2 (the 8-copy version costs ~2× A) |
+| B1′ | **p4 trunk + 63″ context:** the 63×63 stamp average-pooled to 21×21 as 3 more channels (+1.7 % MACs) | More context for SN hosts; fits the 4 GB GTX 1050 |
+
+**Efficiency rows (B7, B2′, B1′) need a non-inferiority rule**, because the superiority rule
+of 2.3 cannot adopt a change that is only "as good". Adopt when the lower bound of the
+paired-bootstrap 95 % CI of the CV balanced-accuracy difference is above −0.5 points, and
+report MACs and throughput (on the deployment CPU: x86 with ONNX Runtime) next to it.
+
+Control arms:
+- **single-pass + rot90 augmentation** (is exact invariance needed?);
+- **p4 16/32** at about A's cost (separates the inductive bias from capacity).
+
+Every invariant configuration gets a unit test: max |Δlogit| < 1e-5 under rot90, and under
+flips for p4m. Geometry (padding, pooling parity) can silently break G-CNN invariance.
+
+These rows come from the architecture exploration of 2026-11-08 (prototypes and a
+validation-only screen on the uint8 path; all candidates reached 0.915–0.925 there,
+within noise). The prototypes are hand-written p4/p4m layers that run as plain `conv2d`
+(MPS-compatible, no escnn dependency).
 
 **2.5-input/training: data and training changes.**
 
