@@ -371,6 +371,44 @@ Task 3.3 adds RJ23's input path on raw cutouts (`docs/data.md`, "RJ23 inputs"; A
 - numpy only (a test checks that importing it does not import torch); not wired into a
   data module yet: that waits for task 3.1b's `raw-alerts` kind.
 
+Task 3.1b adds the `raw-alerts` kind (`docs/data.md`, "Raw-alert layout"; ADR 0012):
+
+```
+fetcher (3.1): cutouts + per-row table [+ features] ──write_raw_alerts──► DIR/<name>/*.npy + meta.json
+                                                                                  │
+                                  RawAlerts ◄──load_raw_alerts (mmap, no pickle)───┘
+   (cutouts, index, label_names, features; n_classes)
+       ├──► protocol.alerts.alert_table_from_raw ──► object splits, benchmark report (3.2)
+       └──► rows_of(split candids) ──► 3.3 input path ──► N-class model
+```
+
+- `raw_alerts`: `INDEX_DTYPE` (the per-row structured dtype), `make_index` (columns → the
+  table, with kind and width checks, never a silent cast or truncation), `write_raw_alerts`
+  (the builder; atomic and deterministic like `write_prepared`; optional `features`, the 23
+  `CD21_FEATURES` not standardised), `load_raw_alerts` → `RawAlerts` (cutouts and features
+  memory-mapped, the index read and checked: dtypes, shapes, label range, unique `candid`,
+  field ranges, counts; `rows_of(candids)`), `verify_raw_alerts` (SHA-256),
+  `label_names_of` (the label names from `meta.json` alone) and `check_label_names`. The
+  `_*_problem` functions hold the rules, and both the writer and the loader call them, so
+  the writer never writes what the loader refuses. No split and no mask is stored: the
+  splits are task 3.2's (by `oid` group, ADR 0008), the mask a function of the cutouts.
+- `protocol.alerts.alert_table_from_raw(data, group=None)`: task 3.2's `AlertTable` from a
+  loaded layout. The index's `oid` character set, `candid` and `jd` rules are the
+  table's, so every stored row is accepted (tested).
+- Task 3.3's `rj23_input.rj23_views(data.cutouts[rows])` and
+  `unit_sphere(data.index["ra"][rows], data.index["dec"][rows])` read a loaded layout as
+  it is (tested); a data module that feeds them to the RJ23 models is task 3.4's.
+- `prepared`: `read_meta_file` reads `meta.json` of either kind (format check only),
+  `layout_kind` returns its kind without raising, and `read_meta` / `load_prepared` refuse
+  a `raw-alerts` layout with a message naming `load_raw_alerts`. Versions 1 and 2 are
+  unchanged, and the writer still writes version 2.
+- `inspection`: `summarize` dispatches on the kind; a `raw-alerts` summary has the row
+  count, both files, the counts per class (under the layout's own names) and per
+  `label_source`. `preflight.prepared_dirs` leaves `raw-alerts` layouts out (its steps and
+  manifest read splits).
+- `synthetic.synthetic_raw_alerts(label_names, n_per_class, seed)`: raw-count cutouts with
+  NaN corners and inf pixels and a valid per-row table, for tests and for the fetcher's.
+
 The CLI imports these modules inside its handlers, so `show-config` does not import them;
 `data/__init__.py` does not re-export the torch datasets.
 
@@ -434,7 +472,7 @@ legacy initial weights.
 |---|---|---|
 | `StampEncoder(k)` | `Stamp_encoder` (`stamp<k>`) | widths `int(32k)`/`2·int(32k)`, 5×5 kernels, `out_features = int(128k)`, mean of the 4 rotations after ReLU |
 | `PStampsEncoder(k=1.0)` | `P_stamps_net_SimCLR_v2` from `b357b43^` (`pstamps`) | 3×3 kernels, `fc1` without bias, rotation mean through `bn1` |
-| `StampClassifier(drop_rate, with_features)` | `Stamp_classifier` | Carrasco-Davis et al. 2021; 23 features through `bn1`, 5 logits |
+| `StampClassifier(drop_rate, with_features, n_classes=5)` | `Stamp_classifier` | Carrasco-Davis et al. 2021; 23 features through `bn1`, `n_classes` logits |
 | `SimCLRNet(encoder, input_size, projection_size)` | `CLR` | 3-layer projector on `h / ‖h‖`; returns `(h_i, h_j, z_i, z_j)` |
 | `LinearClassifier`, `ThreeLayerClassifier` | `Linear_classifier`, `Three_layers_classifier` | heads; `LinearClassifier` keeps the `model.` key prefix |
 | `Identity` | `Identity` | alias of `torch.nn.Identity` |
@@ -448,6 +486,32 @@ the legacy `SimCLR`. Names: `stamp<k>` (any positive `k`, e.g. `stamp1`, `stamp0
 `pstamps`, `resnet18`, `resnet34`, `resnet50`, `resnet152` (torchvision, no pretrained
 weights, `fc` replaced by `Identity`). `out_features` is what the encoder declares: the
 stamp encoders' `out_features`, the ResNets' `fc.in_features`.
+
+**N classes (task 3.1b).** `N_CLASSES = 5` (CD21's AGN, SN, VS, Asteroid, Bogus) is now the
+*default* class count, not a constant of the networks. Every classifier takes
+`n_classes`, checked by `check_n_classes` (an integer ≥ 2), and only its last layer
+depends on it:
+
+- the networks: `StampClassifier`, `paper_model.PaperStampClassifier`,
+  `paper_variants.PaperHead` / `GroupStampClassifier` / `build_paper_model`;
+- the Lightning modules: `ClassifierModule` (it sizes the metrics and the confusion
+  matrices), `SupervisedCEModule`, `PaperClassifierModule`, `SupervisedCEResNetModule`,
+  `LinearEvalModule`, `FineTuneModule`;
+- the data: `device_data.TensorSplit.n_classes` (the one-hot width and the label range;
+  `DeviceTensorDataModule` refuses splits that disagree), `protocol.predictions`
+  (`Predictions` takes any K ≥ 2 columns, `load_predictions(path, n_classes=5)` checks the
+  count, `check_paired` refuses runs with different counts).
+
+An N-class run reads the count from its dataset, `len(data.raw_alerts.label_names_of(path))`,
+and passes it down. **The phase-2 path is byte-identical:** with the default, the layers
+are built in the same order and draw the same weights, and the modules record `n_classes`
+in their hyperparameters only when it is not 5, so `hparams.yaml` and checkpoints are what
+they were (`tests/test_n_classes.py` pins the seeded weights, the hyperparameter names and
+the bytes of a predictions file, computed before the parameter existed). CD21-specific code
+stays 5-class: `schema.LABEL_NAMES`, the pickle loader and the split layouts, the protocol's
+splits and leakage, the M1 oracle, the CLI's metrics, and C6 (`synthetic_bogus` needs
+`n_classes=5`, it draws from CD21's Bogus and Asteroid). The training CLI does not build
+N-class runs yet: RJ23's input path and models are tasks 3.3 and 3.4.
 
 **Input size.** The stamp networks accept only (N, 3, 27, 27): `fc1` is sized for that
 crop. Anything else raises `ValueError` naming the expected shape. The ResNets accept 27
