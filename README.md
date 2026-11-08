@@ -58,7 +58,7 @@ Requires [uv](https://docs.astral.sh/uv/). uv installs the Python of `.python-ve
 ```bash
 uv sync --locked             # create .venv with the project and its dev tools
 scripts/check.sh             # everything CI checks: ruff, ruff format, mypy, pytest + coverage
-uv run astro-simclr --help   # the command line: data, training, compare-reference, preflight
+uv run astro-simclr --help   # the command line: data, training, comparisons, preflight
 uv run ruff format . && uv run ruff check --fix .   # fix formatting and most lint findings
 uv run pre-commit install    # optional: ruff on every commit
 ```
@@ -86,6 +86,7 @@ GPU. The reference runs of phase 1 are in `configs/reference/` (R1-R4, with thei
 provenance); `astro-simclr compare-reference` judges their results.
 
 Package layout and module responsibilities: [docs/architecture.md](docs/architecture.md).
+How phase-2 results are measured and compared: [docs/evaluation-protocol.md](docs/evaluation-protocol.md).
 
 ## Checks
 

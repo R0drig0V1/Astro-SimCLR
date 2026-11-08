@@ -1,4 +1,4 @@
-"""Tests of ``compare-reference``: the pass rule, the gates of R1-R4 and the exit codes."""
+"""Tests of ``compare-reference``: the pass rule, the gates of R1-R4 and CD21, the exit codes."""
 
 from __future__ import annotations
 
@@ -210,6 +210,150 @@ def test_input_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Non
 
 
 def test_every_reference_is_defined() -> None:
-    assert sorted(REFERENCES) == ["R1", "R2", "R3", "R4"]
+    assert sorted(REFERENCES) == ["CD21", "R1", "R2", "R3", "R4"]
     assert REFERENCES["R1"].mean == 0.9496
     assert REFERENCES["R2"].n == 3
+
+
+# --- CD21: the two-tier gate of the paper replication (task 2.3) ---------------------------
+
+MACHINE = {"device": "cuda", "gpu": "NVIDIA GeForce GTX 1050", "torch": "2.14.0", "cuda": "12.6"}
+
+
+def _cd21(
+    root: Path,
+    tests: list[float],
+    *,
+    vals: list[float] | None = None,
+    sn: list[float] | None = None,
+    with_features: bool = True,
+    prefix: str = "f",
+    machine: dict[str, object] | None = None,
+) -> list[Path]:
+    runs = []
+    for seed, test in enumerate(tests):
+        out = _run(
+            root,
+            f"{prefix}{seed}",
+            seed=seed,
+            val=(vals or [0.95] * len(tests))[seed],
+            test=test,
+            model="paper_stamp_classifier",
+            evaluation={"test": {"recall_per_class": {"SN": (sn or [0.87] * len(tests))[seed]}}},
+            machine=machine or MACHINE,
+            best_step=4780,
+        )
+        metrics = json.loads((out / "metrics.json").read_text())
+        metrics["config"]["with_features"] = with_features
+        (out / "metrics.json").write_text(json.dumps(metrics))
+        runs.append(out)
+    return runs
+
+
+def _oracle(root: Path, passed: object) -> Path:
+    path = root / "oracle.json"
+    path.write_text(json.dumps({"passed": passed, "port_equivalence": {"max_abs_logit": 1e-6}}))
+    return path
+
+
+def test_cd21_faithful_needs_the_oracle(tmp_path: Path) -> None:
+    runs = _cd21(tmp_path, [0.940, 0.944, 0.942, 0.946, 0.943])  # mean 0.943
+    comparison = compare_reference("CD21", runs, oracle_report=_oracle(tmp_path, True))
+    text = "\n".join(comparison.lines)
+    assert (comparison.result, comparison.tier) == ("PASS", "faithful")
+    assert text.endswith("CD21: PASS (faithful)")
+    assert "ddof=0" in text and "about 0.0045 with ddof=1" in text
+    assert "best_step: [4780, 4780, 4780, 4780, 4780]" in text
+    without = compare_reference("CD21", runs)
+    assert (without.result, without.tier) == ("PASS", "acceptable")
+    assert "faithful needs the M1 oracle" in "\n".join(without.lines)
+    failed = compare_reference("CD21", runs, oracle_report=_oracle(tmp_path, False))
+    assert failed.tier == "acceptable"
+    assert "M1 oracle: FAILED" in "\n".join(failed.lines)
+
+
+def test_cd21_tiers_and_boundaries(tmp_path: Path) -> None:
+    oracle = _oracle(tmp_path, True)
+    # |0.946 - 0.941| = 0.005 exactly (float noise rounded): still faithful.
+    edge = _cd21(tmp_path, [0.946] * 5, prefix="edge")
+    assert compare_reference("CD21", edge, oracle_report=oracle).tier == "faithful"
+    acceptable = _cd21(tmp_path, [0.949] * 5, prefix="acc")
+    assert compare_reference("CD21", acceptable, oracle_report=oracle).tier == "acceptable"
+    low = _cd21(tmp_path, [0.930] * 5, prefix="low")
+    assert compare_reference("CD21", low, oracle_report=oracle).result == "FAIL"
+    assert main(["compare-reference", *map(str, low), "--ref", "CD21"]) == 1
+
+
+def test_cd21_needs_sn_recall_and_validation(tmp_path: Path) -> None:
+    oracle = _oracle(tmp_path, True)
+    sn = _cd21(tmp_path, [0.941] * 5, sn=[0.82] * 5, prefix="sn")
+    comparison = compare_reference("CD21", sn, oracle_report=oracle)
+    assert comparison.result == "FAIL"
+    assert "SN test recall: 0.8200" in "\n".join(comparison.lines)
+    assert compare_reference("CD21", _cd21(tmp_path, [0.941] * 5, sn=[0.91] * 5, prefix="sn2")).tier
+    val = _cd21(tmp_path, [0.941] * 5, vals=[0.938] * 5, prefix="val")
+    assert compare_reference("CD21", val, oracle_report=oracle).result == "FAIL"
+    old = _run(tmp_path, "old", test=0.941, model="paper_stamp_classifier")  # before 2.3
+    comparison = compare_reference("CD21", [old])
+    assert comparison.result == "FAIL"
+    assert "written since task 2.3" in "\n".join(comparison.lines)
+
+
+def test_cd21_needs_the_paper_model(tmp_path: Path) -> None:
+    legacy = _run(tmp_path, "legacy", test=0.941)  # stamp_classifier, the phase-1 port
+    with pytest.raises(ConfigError, match="paper_stamp_classifier"):
+        compare_reference("CD21", [legacy])
+    lines = compare_reference("CD21", _cd21(tmp_path, [0.941] * 5)).lines
+    assert any("schedule=None (expected 'carrasco2021')" in line for line in lines)
+
+
+def test_cd21_is_defined_on_five_seeds(tmp_path: Path) -> None:
+    three = _cd21(tmp_path, [0.941] * 3)
+    comparison = compare_reference("CD21", three, oracle_report=_oracle(tmp_path, True))
+    assert (comparison.result, comparison.tier) == ("REPORT", None)
+    assert "it would be PASS (faithful)" in "\n".join(comparison.lines)
+    one = _cd21(tmp_path, [0.90], prefix="one")
+    assert "it would be FAIL" in "\n".join(compare_reference("CD21", one).lines)
+
+
+def test_cd21_without_features_is_advisory(tmp_path: Path) -> None:
+    without = _cd21(tmp_path, [0.880, 0.885, 0.884, 0.878, 0.890], with_features=False, prefix="n")
+    only = compare_reference("CD21", without)
+    text = "\n".join(only.lines)
+    assert only.result == "REPORT"
+    assert "without features (advisory, not gating)" in text and "0.883 ± 0.006" in text
+    # Both sets together: the same seeds are allowed, and only the with-features set gates.
+    both = compare_reference("CD21", [*_cd21(tmp_path, [0.941] * 5), *without])
+    assert (both.result, both.tier) == ("PASS", "acceptable")
+    broken = _cd21(tmp_path, [0.88], with_features=False, prefix="b")
+    metrics = json.loads((broken[0] / "metrics.json").read_text())
+    metrics["test_acc_at_best"] = None
+    (broken[0] / "metrics.json").write_text(json.dumps(metrics))
+    assert "missing or not finite" in "\n".join(compare_reference("CD21", broken).lines)
+
+
+def test_cd21_warns_on_mixed_machines(tmp_path: Path) -> None:
+    runs = _cd21(tmp_path, [0.941] * 4)
+    runs += _cd21(tmp_path, [0.941], prefix="m", machine={**MACHINE, "gpu": "RTX 5090"})
+    metrics = json.loads((runs[-1] / "metrics.json").read_text())
+    metrics["seed"] = 4
+    (runs[-1] / "metrics.json").write_text(json.dumps(metrics))
+    lines = compare_reference("CD21", runs).lines
+    assert any("different machines or builds" in line for line in lines)
+
+
+def test_oracle_report_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    runs = _cd21(tmp_path, [0.941] * 5)
+    with pytest.raises(ConfigError, match="boolean 'passed'"):
+        compare_reference("CD21", runs, oracle_report=_oracle(tmp_path, "yes"))
+    with pytest.raises(ConfigError, match="cannot read"):
+        compare_reference("CD21", runs, oracle_report=tmp_path / "missing.json")
+    (tmp_path / "bad.json").write_text("{")
+    with pytest.raises(ConfigError, match="invalid JSON"):
+        compare_reference("CD21", runs, oracle_report=tmp_path / "bad.json")
+    with pytest.raises(ConfigError, match="only used by CD21"):
+        compare_reference("R1", runs, oracle_report=_oracle(tmp_path, True))
+    oracle = str(_oracle(tmp_path, True))
+    argv = ["compare-reference", *map(str, runs), "--ref", "CD21", "--oracle-report", oracle]
+    assert main(argv) == 0
+    assert capsys.readouterr().out.rstrip().endswith("CD21: PASS (faithful)")

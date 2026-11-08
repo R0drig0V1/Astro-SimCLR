@@ -1,4 +1,4 @@
-"""``compare-reference``: judge the runs of a reference experiment (R1-R4) against its gate.
+"""``compare-reference``: judge the runs of a reference experiment (R1-R4, CD21) against its gate.
 
 The reference runs and their gates are defined in ``docs/phases/01-runnable-package.md``
 ("Reference runs" and "Definition of equivalent"). The metric is the best validation
@@ -20,13 +20,36 @@ sample standard deviation (ddof=1), as in the legacy tables.
   a validation accuracy above the majority-class baseline of its own Validation split (the
   class counts copied from ``meta.json`` into ``metrics.json``).
 - **R4 (report)**: printed only.
+- **CD21 (two-tier gate, phase 2, task 2.3)**: the paper replication against Carrasco-Davis
+  et al. 2021 (AJ 162, 231; arXiv:2008.03309), on the **test** accuracy of the checkpoint
+  selected on validation (``test_acc_at_best``), over the with-features runs. The runs
+  must use ``supervised_model: paper_stamp_classifier`` (task 2.2a), and a run without
+  ``schedule: carrasco2021`` gets a WARN line:
+  - *faithful*: ``|mean - 0.941| <= 0.005`` **and** the M1 oracle passed
+    (``--oracle-report FILE``: the JSON report of task 2.2b, whose top-level ``passed``
+    must be ``true``);
+  - *acceptable*: ``|mean - 0.941| <= 0.01``;
+  - both also need the mean SN test recall within ±0.04 of 0.87 and the mean
+    ``val_acc_best`` within ±0.01 of 0.950.
+
+  The paper's sigma = 0.004 is ``np.std`` (ddof=0, ALeRCE's tables), about 0.0045 at ddof=1;
+  both are printed for the runs. With sigma ≈ 0.0045 on both 5-run means, a perfect
+  replication misses the faithful tier about 8 % of the time, so the plan allows one
+  confirmatory 5-seed rerun (judged as its own set). The gate is defined on exactly 5
+  seeds: another count gives REPORT (provisional), never PASS. The without-features runs
+  (``with_features: false``) are compared with 0.883 ± 0.006 and only reported (advisory).
 
 Each run's resolved config is also compared with the distinguishing settings of its
 reference config (``Reference.expected``: dataset, features, model, optimizer, protocol);
 a difference is printed as a WARN line, not a failure (a deliberate variation may be
 compared on purpose), so an R4 run given as R1 does not pass silently.
 
-The result is ``PASS``, ``FAIL`` or ``REPORT``; :func:`exit_code` maps it to 0, 1, 0.
+Every gate also prints a WARN line when the runs come from different machines or builds
+(``metrics.json["machine"]``, :func:`machine_signature`): the runs of one comparison use
+the same machine and build (plan, phase 2, "Machines").
+
+The result is ``PASS`` (for CD21 with its tier), ``FAIL`` or ``REPORT``; :func:`exit_code`
+maps it to 0, 1, 0.
 """
 
 from __future__ import annotations
@@ -49,14 +72,38 @@ __all__ = [
     "compare_reference",
     "exit_code",
     "load_run",
+    "machine_signature",
     "pass_rule",
+    "read_oracle_report",
 ]
 
-Gate = Literal["pass_rule", "baseline", "report"]
+Gate = Literal["pass_rule", "baseline", "report", "two_tier"]
+Tier = Literal["faithful", "acceptable"]
 Result = Literal["PASS", "FAIL", "REPORT"]
 
 #: Smallest tolerance of the pass rule (one accuracy point).
 _MIN_TOLERANCE: Final = 0.01
+
+#: CD21 (Carrasco-Davis et al. 2021), with features: test accuracy, mean and std (np.std,
+#: ddof=0) of 5 runs on the balanced 100-per-class test set.
+CD21_TEST_MEAN: Final = 0.941
+CD21_TEST_STD: Final = 0.004
+#: The tolerances of the two tiers on |mean - CD21_TEST_MEAN|.
+CD21_FAITHFUL_TOLERANCE: Final = 0.005
+CD21_ACCEPTABLE_TOLERANCE: Final = 0.01
+#: SN recall on test (the paper's confusion matrix) and its tolerance.
+CD21_SN_RECALL: Final = 0.87
+CD21_SN_TOLERANCE: Final = 0.04
+#: Mean validation accuracy of the paper (0.950 ± 0.005) and its tolerance.
+CD21_VAL_MEAN: Final = 0.950
+CD21_VAL_TOLERANCE: Final = 0.01
+#: Without features (advisory): test accuracy mean and std (ddof=0).
+CD21_NO_FEATURES_MEAN: Final = 0.883
+CD21_NO_FEATURES_STD: Final = 0.006
+#: The gate is defined on this many seeds.
+CD21_SEEDS: Final = 5
+#: Rounding of differences compared with a tolerance (0.946 - 0.941 is 0.0050000000000001).
+_DIGITS: Final = 12
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +126,8 @@ class Reference:
     note: str = ""
     #: Per command, settings of the reference config a run should have (WARN otherwise).
     expected: dict[str, dict[str, object]] = field(default_factory=dict)
+    #: Runs with and without features are separate sets (a seed may appear in both).
+    split_by_features: bool = False
 
 
 #: The distinguishing settings of ``configs/reference/R1.yaml`` (R4 differs in two).
@@ -173,6 +222,26 @@ REFERENCES: Final[dict[str, Reference]] = {
             }
         },
     ),
+    "CD21": Reference(
+        "CD21",
+        "Carrasco-Davis et al. 2021 stamp classifier, paper replication (test accuracy)",
+        ("train-supervised",),
+        "two_tier",
+        supervised_model="paper_stamp_classifier",
+        mean=CD21_TEST_MEAN,
+        std=CD21_TEST_STD,
+        n=CD21_SEEDS,
+        source="Carrasco-Davis et al. 2021, AJ 162, 231 (arXiv:2008.03309), std with ddof=0",
+        note="a perfect replication misses the faithful tier about 8 % of the time; one "
+        "confirmatory 5-seed rerun is allowed (plan, task 2.3)",
+        expected={
+            "train-supervised": {
+                "dataset": LABEL_FRACTION_DATASETS[100],
+                "schedule": "carrasco2021",
+            }
+        },
+        split_by_features=True,
+    ),
 }
 
 
@@ -182,6 +251,8 @@ class Comparison:
 
     result: Result
     lines: list[str] = field(default_factory=list)
+    #: The CD21 tier of a PASS (``None`` otherwise).
+    tier: Tier | None = None
 
 
 def load_run(run_dir: Path) -> dict[str, Any]:
@@ -201,6 +272,36 @@ def load_run(run_dir: Path) -> dict[str, Any]:
         raise ConfigError(f"{path}: not a metrics object")
     data["_path"] = str(run_dir)
     return data
+
+
+def machine_signature(run: dict[str, Any]) -> tuple[object, ...] | None:
+    """What must match between runs of one comparison: device type, GPU, torch and CUDA.
+
+    Read from ``metrics.json["machine"]`` (written since task 2.3); ``None`` if absent.
+    """
+    machine = run.get("machine")
+    if not isinstance(machine, dict):
+        return None
+    return tuple(machine.get(key) for key in ("device", "gpu", "torch", "cuda"))
+
+
+def read_oracle_report(path: Path) -> bool:
+    """Whether the M1 oracle report at ``path`` (task 2.2b) says the oracle passed.
+
+    The report is a JSON object; its top-level ``passed`` must be a boolean.
+
+    Raises:
+        ConfigError: if the file cannot be read, is not JSON, or has no boolean ``passed``.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as err:
+        raise ConfigError(f"{path}: cannot read the oracle report ({err})") from None
+    except json.JSONDecodeError as err:
+        raise ConfigError(f"{path}: invalid JSON ({err})") from None
+    if not isinstance(data, dict) or not isinstance(data.get("passed"), bool):
+        raise ConfigError(f"{path}: an oracle report needs a top-level boolean 'passed'")
+    return bool(data["passed"])
 
 
 def _as_float(value: object) -> float | None:
@@ -266,7 +367,10 @@ def _check_runs(reference: Reference, runs: Sequence[dict[str, Any]]) -> None:
             )
     seen: dict[tuple[object, ...], str] = {}
     for run in runs:
-        key = (run.get("command"), run.get("config", {}).get("dataset"), run.get("seed"))
+        config = run.get("config", {})
+        key: tuple[object, ...] = (run.get("command"), config.get("dataset"), run.get("seed"))
+        if reference.split_by_features:
+            key = (*key, _with_features(run))
         if key in seen:
             raise ConfigError(
                 f"{run['_path']} and {seen[key]} are the same run (command, dataset, seed "
@@ -291,6 +395,18 @@ def _config_differences(reference: Reference, runs: Sequence[dict[str, Any]]) ->
                 + ", ".join(different)
             )
     return lines
+
+
+def _machine_warnings(runs: Sequence[dict[str, Any]]) -> list[str]:
+    signatures = {machine_signature(run) for run in runs} - {None}
+    if len(signatures) <= 1:
+        return []
+    detail = "; ".join(sorted(map(str, signatures)))
+    return [f"  WARN: the runs come from different machines or builds: {detail}"]
+
+
+def _with_features(run: dict[str, Any]) -> bool:
+    return run.get("config", {}).get("with_features") is not False
 
 
 def _accuracies(runs: Sequence[dict[str, Any]], key: str) -> list[float] | None:
@@ -321,6 +437,103 @@ def _gate_pass_rule(reference: Reference, runs: Sequence[dict[str, Any]], out: l
         f"  |difference| = {diff:.4f} {'<=' if passed else '>'} tolerance {tolerance:.4f} ({rule})"
     )
     return passed
+
+
+def _recalls(runs: Sequence[dict[str, Any]], stage: str, label: str) -> list[float] | None:
+    values: list[float] = []
+    for run in runs:
+        recall = run.get("evaluation", {}).get(stage, {}).get("recall_per_class", {})
+        value = _as_float(recall.get(label)) if isinstance(recall, dict) else None
+        if value is None:
+            return None
+        values.append(value)
+    return values
+
+
+def _within(value: float, target: float, tolerance: float) -> bool:
+    return round(abs(value - target), _DIGITS) <= tolerance
+
+
+def _spread(values: Sequence[float]) -> str:
+    """Mean, std with ddof=1 and with ddof=0 (the paper's convention)."""
+    mean = statistics.mean(values)
+    if len(values) == 1:
+        return f"{mean:.4f} (n=1)"
+    return (
+        f"{mean:.4f} ± {statistics.stdev(values):.4f} (ddof=1; "
+        f"{statistics.pstdev(values):.4f} with ddof=0, n={len(values)})"
+    )
+
+
+def _report_without_features(runs: Sequence[dict[str, Any]], out: list[str]) -> None:
+    if not runs:
+        return
+    values = _accuracies(runs, "test_acc_at_best")
+    if values is None:
+        out.append("  without features: test_acc_at_best is missing or not finite in some run")
+        return
+    diff = abs(statistics.mean(values) - CD21_NO_FEATURES_MEAN)
+    out.append(
+        f"  without features (advisory, not gating): test accuracy {_spread(values)}; paper "
+        f"{CD21_NO_FEATURES_MEAN:.3f} ± {CD21_NO_FEATURES_STD:.3f} (ddof=0); "
+        f"|difference| = {diff:.4f}"
+    )
+
+
+def _gate_two_tier(
+    runs: Sequence[dict[str, Any]], oracle: bool | None, out: list[str]
+) -> tuple[Result, Tier | None]:
+    with_features = [run for run in runs if _with_features(run)]
+    _report_without_features([run for run in runs if not _with_features(run)], out)
+    if not with_features:
+        out.append(
+            "  no run with features: nothing to gate (the without-features line is advisory)"
+        )
+        return "REPORT", None
+    tests = _accuracies(with_features, "test_acc_at_best")
+    vals = _accuracies(with_features, "val_acc_best")
+    sn = _recalls(with_features, "test", "SN")
+    if tests is None or vals is None or sn is None:
+        out.append(
+            "  FAIL: test_acc_at_best, val_acc_best or the SN test recall "
+            "(evaluation.test.recall_per_class, written since task 2.3) is missing or not finite"
+        )
+        return "FAIL", None
+    mean = statistics.mean(tests)
+    diff = round(abs(mean - CD21_TEST_MEAN), _DIGITS)
+    sn_ok = _within(statistics.mean(sn), CD21_SN_RECALL, CD21_SN_TOLERANCE)
+    val_ok = _within(statistics.mean(vals), CD21_VAL_MEAN, CD21_VAL_TOLERANCE)
+    out += [
+        f"  test accuracy: {_spread(tests)}",
+        f"  paper:         {CD21_TEST_MEAN:.3f} ± {CD21_TEST_STD:.3f} (ddof=0, n={CD21_SEEDS}; "
+        f"about {CD21_TEST_STD * math.sqrt(CD21_SEEDS / (CD21_SEEDS - 1)):.4f} with ddof=1)",
+        f"  |difference| = {diff:.4f} (faithful <= {CD21_FAITHFUL_TOLERANCE}, acceptable <= "
+        f"{CD21_ACCEPTABLE_TOLERANCE})",
+        f"  SN test recall: {_describe(sn)}; needs {CD21_SN_RECALL:.2f} ± {CD21_SN_TOLERANCE:.2f}"
+        f" -> {'ok' if sn_ok else 'OUT'}",
+        f"  val_acc_best:   {_describe(vals)}; needs {CD21_VAL_MEAN:.3f} ± "
+        f"{CD21_VAL_TOLERANCE:.2f} -> {'ok' if val_ok else 'OUT'}",
+        "  M1 oracle: "
+        + {True: "passed", False: "FAILED", None: "no report given (--oracle-report)"}[oracle],
+    ]
+    best_steps = [run.get("best_step") for run in with_features if "best_step" in run]
+    if best_steps:
+        out.append(f"  best_step: {best_steps}")
+    tier: Tier | None = None
+    if sn_ok and val_ok and diff <= CD21_FAITHFUL_TOLERANCE and oracle is True:
+        tier = "faithful"
+    elif sn_ok and val_ok and diff <= CD21_ACCEPTABLE_TOLERANCE:
+        tier = "acceptable"
+        if diff <= CD21_FAITHFUL_TOLERANCE:
+            out.append("  faithful needs the M1 oracle to have passed")
+    if len(tests) != CD21_SEEDS:
+        verdict = "FAIL" if tier is None else f"PASS ({tier})"
+        out.append(
+            f"  provisional: the gate is defined on {CD21_SEEDS} seeds, got {len(tests)}; "
+            f"with these runs it would be {verdict}"
+        )
+        return "REPORT", None
+    return ("FAIL", None) if tier is None else ("PASS", tier)
 
 
 def _baseline(run: dict[str, Any]) -> float | None:
@@ -397,20 +610,38 @@ def _gate_baseline(runs: Sequence[dict[str, Any]], out: list[str]) -> bool:
     return passed
 
 
-def compare_reference(name: str, run_dirs: Sequence[Path]) -> Comparison:
+def compare_reference(
+    name: str, run_dirs: Sequence[Path], *, oracle_report: Path | None = None
+) -> Comparison:
     """Load the runs in ``run_dirs`` and apply the gate of reference ``name``.
 
+    ``oracle_report`` is the M1 oracle report, used by CD21 only (its faithful tier).
+
     Raises:
-        ConfigError: for an unknown reference, an unreadable run, a run of the wrong kind
-            (command or model) or two runs with the same seed.
+        ConfigError: for an unknown reference, an unreadable run or oracle report, a run of
+            the wrong kind (command or model), two runs with the same seed, or an oracle
+            report given to another reference than CD21.
     """
     if name not in REFERENCES:
         raise ConfigError(f"unknown reference {name!r}; valid: {', '.join(REFERENCES)}")
     reference = REFERENCES[name]
+    if oracle_report is not None and reference.gate != "two_tier":
+        raise ConfigError(f"--oracle-report is only used by CD21, not by {name}")
     runs = [load_run(path) for path in run_dirs]
     _check_runs(reference, runs)
-    lines = [f"{reference.name}: {reference.description}", *_config_differences(reference, runs)]
+    lines = [
+        f"{reference.name}: {reference.description}",
+        *_config_differences(reference, runs),
+        *_machine_warnings(runs),
+    ]
     result: Result
+    if reference.gate == "two_tier":
+        oracle = None if oracle_report is None else read_oracle_report(oracle_report)
+        result, tier = _gate_two_tier(runs, oracle, lines)
+        if reference.note:
+            lines.append(f"  note: {reference.note}")
+        lines.append(f"{reference.name}: {result}" + (f" ({tier})" if tier else ""))
+        return Comparison(result, lines, tier)
     if reference.gate == "pass_rule":
         result = "PASS" if _gate_pass_rule(reference, runs, lines) else "FAIL"
     elif reference.gate == "baseline":
