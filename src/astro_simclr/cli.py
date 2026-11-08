@@ -36,6 +36,11 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   ``bench-report RUN... --splits FILE --alerts ALERTS.csv [--baseline RUN...]`` prints
   macro-F1 (± std over seeds), per class and on the first-stamp view, and with a baseline
   the paired bootstrap CI of the macro-F1 difference and McNemar (always exit 0: a report);
+- ``report-phase2 [--replication DIR] [--screen DIR --screen-splits FILE] [--cv DIR
+  --cv-splits FILE]`` (task 2.6, :mod:`astro_simclr.protocol.phase2_report`) writes the
+  phase-2 results report (``docs/results-phase2.md``) as markdown from run directories:
+  the replication and its CD21 gate, the screen and CV decisions, per-class recall,
+  confusion matrices, throughput and provenance (always exit 0: a report);
 - ``preflight`` (:mod:`astro_simclr.preflight`): exit 0 if no step failed, else 1.
 - the run registry (task A2, :mod:`astro_simclr.registry`): ``runs reindex [ROOT ...]``,
   ``runs ls``, ``runs show KEY`` and ``runs compare SPEC`` (by experiment spec); exit 1
@@ -652,6 +657,42 @@ def _bench_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _report_phase2(args: argparse.Namespace) -> int:
+    from astro_simclr.data.files import atomic_write_bytes
+    from astro_simclr.protocol.phase2_report import ReportInputs, build_report
+    from astro_simclr.protocol.stats import NON_INFERIORITY_MARGIN
+    from astro_simclr.registry.home import RegistryError, registry_path
+
+    registry = args.registry
+    if registry == Path():  # --registry without a file: the default registry
+        try:
+            registry = registry_path()
+        except RegistryError as err:
+            raise ConfigError(str(err)) from None
+    inputs = ReportInputs(
+        replication=args.replication,
+        oracle_report=args.oracle_report,
+        screen=args.screen,
+        screen_splits=args.screen_splits,
+        cv=args.cv,
+        cv_splits=args.cv_splits,
+        baseline_arm=args.baseline_arm,
+        non_inferiority=frozenset(args.non_inferiority),
+        margin=NON_INFERIORITY_MARGIN if args.margin is None else args.margin,
+        registry=registry,
+        n_boot=args.n_boot,
+        seed=args.seed,
+        allow_mixed_machines=args.allow_mixed_machines,
+    )
+    text = build_report(inputs)
+    if args.out is None:
+        sys.stdout.write(text)
+    else:
+        atomic_write_bytes(args.out, text.encode("utf-8"))
+        sys.stderr.write(f"wrote {args.out}\n")
+    return 0
+
+
 def _preflight(args: argparse.Namespace) -> int:
     from astro_simclr.preflight import run_preflight
 
@@ -736,6 +777,74 @@ def _add_check_commands(commands: argparse._SubParsersAction[argparse.ArgumentPa
         help="settings applied to every dry run (e.g. num_workers=0)",
     )
     preflight.set_defaults(handler=_preflight)
+
+
+def _add_report_phase2(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    report = commands.add_parser(
+        "report-phase2",
+        help="write the phase-2 results report (docs/results-phase2.md) from run directories",
+        description="Build the phase-2 results report as deterministic markdown from run "
+        "directories. Each input directory holds one subdirectory per arm with its runs "
+        "(DIR/<arm>/.../metrics.json). --replication: per-seed tables and the CD21 gate "
+        "(compare-reference). --screen with --screen-splits: every arm against the baseline "
+        "arm by the screen rule (compare-variants --splits). --cv with --cv-splits: balanced "
+        "accuracy per run, per fold and pooled, the paired bootstrap CI, the superiority and "
+        "non-inferiority verdicts, McNemar, the per-class recall and the confusion matrices. "
+        "Then the s/step of every arm (flagged when measured under concurrency) and the "
+        "provenance. Always a report (exit 0).",
+    )
+    report.add_argument("--replication", type=Path, metavar="DIR")
+    report.add_argument(
+        "--oracle-report",
+        type=Path,
+        metavar="FILE",
+        help="the M1 oracle report of the CD21 gate (default: DIR/m1_oracle.json, if present)",
+    )
+    report.add_argument("--screen", type=Path, metavar="DIR")
+    report.add_argument("--screen-splits", type=Path, metavar="FILE")
+    report.add_argument("--cv", type=Path, metavar="DIR")
+    report.add_argument("--cv-splits", type=Path, metavar="FILE")
+    report.add_argument(
+        "--baseline-arm",
+        default="rot4",
+        metavar="NAME",
+        help="the arm the screen and CV arms are compared with (default rot4)",
+    )
+    report.add_argument(
+        "--non-inferiority",
+        nargs="+",
+        default=[],
+        metavar="ARM",
+        help="CV arms whose pre-registered rule is non-inferiority (the efficiency rows)",
+    )
+    report.add_argument(
+        "--margin",
+        type=float,
+        default=None,
+        metavar="FRACTION",
+        help="the non-inferiority margin, a fraction of balanced accuracy (default 0.005)",
+    )
+    report.add_argument(
+        "--registry",
+        type=Path,
+        nargs="?",
+        const=Path(),
+        default=None,
+        metavar="FILE",
+        help="check the runs against a run registry (default file: "
+        "$ASTRO_SIMCLR_HOME/registry.sqlite)",
+    )
+    report.add_argument("--n-boot", type=int, default=10_000, metavar="N")
+    report.add_argument("--seed", type=int, default=0, metavar="N", help="bootstrap seed")
+    report.add_argument(
+        "--allow-mixed-machines",
+        action="store_true",
+        help="compare runs from different machines, builds, precisions or engines",
+    )
+    report.add_argument(
+        "--out", type=Path, default=None, metavar="FILE", help="write here (default: stdout)"
+    )
+    report.set_defaults(handler=_report_phase2)
 
 
 def _add_protocol_commands(
@@ -885,6 +994,7 @@ def _add_benchmark_commands(
         help="report runs from different machines, builds, precisions or engines together",
     )
     report.set_defaults(handler=_bench_report)
+    _add_report_phase2(commands)
 
     audit = commands.add_parser(
         "leakage-audit",
