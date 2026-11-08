@@ -59,7 +59,8 @@ Facts that constrain the design (verified with uv 0.11 on toy projects; plan rev
    | < 580 | `uv sync --locked --extra cu126` |
    | no GPU | `uv sync --locked --extra cpu` |
 
-7. **CI** runs `uv sync --locked --extra cpu`, checks that no `nvidia-*` package is
+7. **CI** (on `ubuntu-latest` x86_64 and, since task 1.6, `macos-latest` arm64) runs
+   `uv sync --locked --extra cpu`, checks that no `nvidia-*` package is
    installed, runs `scripts/check-torch-wheels.sh` and then `scripts/check.sh` with
    `UV_NO_SYNC=1`. The assertion script checks exact strings (dry-runs, no download):
    - the default `uv export --locked` pins `torch==X` with no `+` label (what pip-audit

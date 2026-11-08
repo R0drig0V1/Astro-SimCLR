@@ -1,8 +1,8 @@
-# Continuous integration: the torch-wheel assertions of ADR 0001
-# (scripts/check-torch-wheels.sh), then the same checks as scripts/check.sh (ruff, mypy,
-# pytest with coverage), on every pull request and on main. CI installs the CPU torch build
-# (`--extra cpu`): the default Linux build is CUDA 13 and would download ~3 GB of nvidia-*
-# wheels that no test uses.
+# Continuous integration, on ubuntu-latest (x86_64) and macos-latest (arm64): the
+# torch-wheel assertions of ADR 0001 (scripts/check-torch-wheels.sh), then the same checks
+# as scripts/check.sh (ruff, mypy, pytest with coverage), on every pull request and on main.
+# CI installs the CPU torch build (`--extra cpu`) on both: the default Linux build is CUDA 13
+# and would download ~3 GB of nvidia-* wheels that no test uses.
 name: CI
 
 on:
@@ -19,8 +19,15 @@ concurrency:
 
 jobs:
   check:
-    name: Lint, types, tests
-    runs-on: ubuntu-latest
+    # The portability rule of the plan: the same code and tests on x86_64 Linux and arm64
+    # macOS, both with the CPU torch build (MPS is not available on the macOS runners, so
+    # the MPS/CUDA test variants skip there).
+    name: Lint, types, tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
