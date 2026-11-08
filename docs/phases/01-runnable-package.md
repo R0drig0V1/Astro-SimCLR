@@ -338,6 +338,9 @@ This design was verified with uv 0.11 on toy projects (plan review, round 2).
   `rotation_v3` and `without_aug`. These are the names the active entry points and R1–R4
   use, and all of them are pure torchvision. They go behind a registry keyed by the legacy
   names. Every other name fails with an error that says it is deferred.
+  (Update 2026-11-07, PR #6, requested by the user: the registry uses descriptive names
+  `simclr`, `simclr_centered`, `astro_perspective`, `astro_perspective_gray`,
+  `rotate_flip` and `center_crop`, and the legacy names stay valid as aliases.)
 - Randomness comes from `seed_everything(seed, workers=True)`. No generator plumbing in
   the transforms.
 - Port LARS to `src/astro_simclr/optim.py`:
