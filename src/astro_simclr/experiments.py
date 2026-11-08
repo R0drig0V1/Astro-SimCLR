@@ -19,8 +19,14 @@ run is:
 6. classifiers: ``validate`` and ``test`` on the best checkpoint, then the metrics JSON and
    the confusion-matrix figures.
 
+Around the fit, the run's ``manifest.json`` (``runs.record``; plan task A1, ADR 0015):
+``queued`` then ``running`` once the Trainer exists (its device names the machine class),
+then ``finished`` after ``metrics.json`` is written, ``failed`` on an exception, or
+``cancelled`` on Ctrl-C. A run refused before that (a bad name, missing data) writes none.
+
 Everything a run writes is under ``settings.output_dir``::
 
+    OUT/manifest.json             the run id, attempt, provenance and status (runs.manifest)
     OUT/checkpoints/best.ckpt     the selected epoch (monitor, mode from the metric)
     OUT/checkpoints/last.ckpt     the latest epoch (what --resume continues from)
     OUT/lightning_logs/version_N  TensorBoard logs and the Lightning hparams.yaml
@@ -30,11 +36,13 @@ Everything a run writes is under ``settings.output_dir``::
                                           (split runs: confusion_matrix_{selection,
                                           evaluation}.png, predictions_evaluation.npz)
 
-``metrics.json`` holds the command, the seed, the selected (``best_epoch``, 0-based) and
+``metrics.json`` holds the command, the seed, ``run`` (run id, attempt and config hash, as
+in the manifest), the selected (``best_epoch``, 0-based) and
 last epoch and global step (``best_step``, ``last_step``), the monitored value at the
 best epoch, the package/torch/Lightning versions, the machine (``machine``: device type,
-GPU name, torch, CUDA and cuDNN versions, platform, the effective float32 precision; task
-2.3 and ADR 0010: runs of one comparison must share it), the data (prepared directory,
+GPU name, torch, CUDA and cuDNN versions, platform, the effective float32 precision and
+the engine, ``lightning``; task 2.3, ADR 0010 and task A1: runs of one comparison must
+share it), the data (prepared directory,
 source SHA-256 and the class counts of ``meta.json``) and the resolved settings.
 Classifiers add ``val_acc_best`` (micro accuracy on Validation at the best checkpoint: with
 the default monitor ``accuracy_val`` this is the best validation accuracy over epochs, the
@@ -118,6 +126,7 @@ from astro_simclr.presets import preset_report
 from astro_simclr.protocol.leakage import find_duplicates, train_exclusions
 from astro_simclr.protocol.predictions import Predictions, predictions_file, save_predictions
 from astro_simclr.protocol.split_runs import SplitRequest, SplitRun, open_split_run
+from astro_simclr.runs.record import start_run
 from astro_simclr.training.class_augment import DEFAULT_MIN_R2, fit_exclusions, stamp_fits
 from astro_simclr.training.datamodules import ClassifierDataModule, ContrastiveDataModule
 from astro_simclr.training.device_data import (
@@ -155,6 +164,7 @@ from astro_simclr.training.schedule import HorizonCallback
 __all__ = [
     "BEST_CHECKPOINT",
     "CHECKPOINT_DIR",
+    "ENGINE",
     "LAST_CHECKPOINT",
     "METRICS_FILE",
     "PAPER_STAMP_CLASSIFIER",
@@ -163,6 +173,7 @@ __all__ = [
     "dataset_path",
     "load_pretrained",
     "paper_module",
+    "pretrained_checkpoint",
     "resolve_resume",
     "run_command",
 ]
@@ -175,6 +186,9 @@ BEST_CHECKPOINT: Final = "best.ckpt"
 LAST_CHECKPOINT: Final = "last.ckpt"
 #: The metrics JSON of a run.
 METRICS_FILE: Final = "metrics.json"
+#: The engine of every run of this module (``runs.manifest``; plan task A1). The plain
+#: PyTorch engine of phase 4 will record ``plain``.
+ENGINE: Final = "lightning"
 #: ``train-supervised`` model names that are not ResNets.
 _STAMP_CLASSIFIER: Final = "stamp_classifier"
 #: ``train-supervised`` model of the ``carrasco2021`` schedule (task 2.2a).
@@ -259,6 +273,17 @@ def resolve_resume(resume: str | None, output_dir: Path) -> Path | None:
     return path
 
 
+def pretrained_checkpoint(path: Path | None) -> Path | None:
+    """The checkpoint file ``--pretrained PATH`` names: ``PATH`` itself, or for a pretrain
+    run directory its ``checkpoints/best.ckpt``; ``None`` without ``--pretrained``.
+
+    The file may not exist (``load_pretrained`` reports that).
+    """
+    if path is None:
+        return None
+    return path / CHECKPOINT_DIR / BEST_CHECKPOINT if path.is_dir() else path
+
+
 def load_pretrained(path: Path | None) -> SimCLRModule:
     """Load the pretrained SimCLR module of ``linear-eval`` / ``fine-tune``, on the CPU.
 
@@ -267,10 +292,9 @@ def load_pretrained(path: Path | None) -> SimCLRModule:
     Raises:
         ConfigError: if ``path`` is unset, missing, or not a SimCLR checkpoint.
     """
+    path = pretrained_checkpoint(path)
     if path is None:
         raise ConfigError("this command needs the pretrain checkpoint: --pretrained PATH")
-    if path.is_dir():
-        path = path / CHECKPOINT_DIR / BEST_CHECKPOINT
     if not path.is_file():
         raise ConfigError(f"pretrained checkpoint {path}: no such file")
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
@@ -516,8 +540,15 @@ def _build_paper(
         eval_batch_size=settings.eval_batch_size,
         seed=settings.seed,
         run_identity=None if split_run is None else split_run.identity(),
+        # Augmented runs plan each step on the host, ahead of the step (ADR 0006, "Prefetch").
+        planner=module.augment_plan if module.augmenting and _PREFETCH else None,
     )
     return module, datamodule, info
+
+
+#: Plan the training augmentation in the loader (True) or in the step (False: the in-step
+#: path, with host round trips; the same bits; kept for the equivalence test).
+_PREFETCH = True
 
 
 def _with_train_fits(
@@ -677,6 +708,7 @@ def _machine(trainer: L.Trainer) -> dict[str, Any]:
         "platform": platform.platform(),
         "processor": platform.machine(),
         "python": platform.python_version(),
+        "engine": ENGINE,
         **fp32_precision_record(device),
     }
 
@@ -969,6 +1001,37 @@ class _FitTimer(Callback):
         return {"fit_seconds": self.seconds, "steps": self.steps, "seconds_per_step": per_step}
 
 
+def _add_results(
+    metrics: dict[str, Any],
+    command: str,
+    settings: Settings,
+    trainer: L.Trainer,
+    built: tuple[L.LightningModule, L.LightningDataModule, _BestCheckpoint],
+    paper_data: dict[str, Any] | None,
+    split_run: SplitRun | None,
+) -> None:
+    """Add what follows the fit to ``metrics``: the horizon, the paper data and preset, the
+    split, and the classifier results (or a pretrain run's encoder)."""
+    module, datamodule, checkpoint = built
+    if isinstance(checkpoint, HorizonCallback):
+        metrics["horizon"] = checkpoint.horizon
+    if paper_data is not None and isinstance(datamodule, DeviceTensorDataModule):
+        tiled = datamodule.tiled_indices
+        paper_data["n_tiled"] = None if tiled is None else len(tiled)
+        metrics["paper_data"] = paper_data
+        metrics["preset"] = preset_report(settings)
+    if split_run is not None:
+        metrics["protocol"] = split_run.describe()
+    if isinstance(module, ClassifierModule):
+        best = checkpoint.best_model_path
+        out = settings.output_dir
+        metrics.update(
+            _classifier_results(command, trainer, module, datamodule, best, out, split_run)
+        )
+    else:
+        metrics["pretrained_encoder"] = settings.encoder_name
+
+
 def run_command(
     command: str,
     settings: Settings,
@@ -1032,28 +1095,32 @@ def run_command(
         checkpoint, trainer = _carrasco2021_trainer(settings, monitorable, extra, progress_bar)
     else:
         checkpoint, trainer = _epochs_trainer(settings, monitorable, extra, progress_bar)
-    trainer.fit(module, datamodule=datamodule, ckpt_path=ckpt_path)
-    metrics = _base_metrics(command, settings, trainer, checkpoint, data)
-    metrics["resumed_from"] = None if ckpt_path is None else str(ckpt_path)
-    metrics["timing"] = timer.report()
-    if isinstance(checkpoint, HorizonCallback):
-        metrics["horizon"] = checkpoint.horizon
-    if paper_data is not None and isinstance(datamodule, DeviceTensorDataModule):
-        tiled = datamodule.tiled_indices
-        paper_data["n_tiled"] = None if tiled is None else len(tiled)
-        metrics["paper_data"] = paper_data
-        metrics["preset"] = preset_report(settings)
-    if split_run is not None:
-        metrics["protocol"] = split_run.describe()
-    if isinstance(module, ClassifierModule):
-        metrics.update(
-            _classifier_results(
-                command, trainer, module, datamodule, checkpoint.best_model_path, out, split_run
-            )
-        )
-    else:
-        metrics["pretrained_encoder"] = settings.encoder_name
-    cleaned = cast(dict[str, Any], _finite(metrics))
-    text = json.dumps(cleaned, indent=2, allow_nan=False) + "\n"
-    (out / METRICS_FILE).write_text(text, encoding="utf-8")
+    record = start_run(
+        command,
+        settings,
+        data=data,
+        machine=_machine(trainer),
+        split=split,
+        pretrained_file=pretrained_checkpoint(settings.pretrained),
+        resumed=ckpt_path is not None,
+    )
+    try:
+        trainer.fit(module, datamodule=datamodule, ckpt_path=ckpt_path)
+        metrics = _base_metrics(command, settings, trainer, checkpoint, data)
+        metrics["run"] = record.summary()
+        metrics["resumed_from"] = None if ckpt_path is None else str(ckpt_path)
+        metrics["timing"] = timer.report()
+        built = (module, datamodule, checkpoint)
+        _add_results(metrics, command, settings, trainer, built, paper_data, split_run)
+        cleaned = cast(dict[str, Any], _finite(metrics))
+        text = json.dumps(cleaned, indent=2, allow_nan=False) + "\n"
+        (out / METRICS_FILE).write_text(text, encoding="utf-8")
+    except (KeyboardInterrupt, SystemExit):
+        # Lightning turns a Ctrl-C during the fit into SystemExit.
+        record.end("cancelled")
+        raise
+    except BaseException:
+        record.end("failed")
+        raise
+    record.end("finished")
     return cleaned
