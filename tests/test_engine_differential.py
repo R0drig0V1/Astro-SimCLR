@@ -29,6 +29,18 @@ The second half ports the semantics of the three Lightning-bound resume tests (A
 C10) to the plain runner: ``test_resume_from_mid_epoch_last_checkpoint``,
 ``test_resume_at_the_horizon_still_writes_best`` and ``test_augmented_resume_is_exact``
 (here bit-exact, where the Lightning test allows ``atol=1e-6``).
+
+The third half is the ``rj23`` schedule (task 3.4b): ``training.rj23.run_rj23`` against
+``tasks.plain.run_plain`` (``tasks.rj23.run_rj23_plain``) on a synthetic 5-class
+``raw-alerts`` layout, for each scenario, both protocols (the replication on the whole
+Validation, the decision run on the selection half), ``rj23_bn_position``, ``rj23_keep``, a
+stop by patience and one at the cap, and a mid-run resume of the plain engine. The same
+bit-for-bit checks: the initial weights, every validation (step 0 included: its step, its
+macro-F1 and the weights), ``metrics.json`` (the schedule's record and both keeps'
+evaluations), every predictions file (both keeps) and the manifests. The training batches
+are compared too: each of Lightning's equals the plain source's batch of that step, and
+its labels are the classes drawn from ``host_generator(seed, step, 10)``, the
+class-uniform stream's reserved number.
 """
 
 from __future__ import annotations
@@ -37,32 +49,38 @@ import json
 import pickle
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import lightning as L
 import numpy as np
 import pytest
 import torch
+from _rj23_support import DATASET, rj23_layout
 from _training_support import ACCELERATORS
 from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.trainer.states import TrainerFn
 
-from astro_simclr.config import Settings
+from astro_simclr.config import Settings, settings_from_mapping
 from astro_simclr.data import prepare
 from astro_simclr.data.synthetic import CLASSIFIER_FILES, make_synthetic
 from astro_simclr.engine import (
     Task,
     Validation,
+    host_generator,
     load_best,
     load_checkpoint,
     read_scalars,
     seed_everything,
 )
 from astro_simclr.experiments import run_command
+from astro_simclr.presets import PRESETS
 from astro_simclr.protocol.split_runs import SplitRequest
 from astro_simclr.protocol.splits import make_splits, write_splits
+from astro_simclr.rj23_regime import STREAM, ClassUniformStream
 from astro_simclr.tasks.paper import build_paper_task
 from astro_simclr.tasks.plain import run_plain
+from astro_simclr.tasks.rj23 import DevicePart, RJ23Request, RJ23Task, RJ23TrainSource, rj23_inputs
+from astro_simclr.training.rj23 import RJ23ScheduleCallback, run_rj23
 
 _SCHEDULE: dict[str, Any] = {
     "schedule": "carrasco2021",
@@ -414,3 +432,207 @@ def test_augmented_resume_is_exact(split_data: tuple[Path, Path], tmp_path: Path
         np.load(resumed / "predictions_evaluation.npz") as right,
     ):
         assert np.array_equal(left["probabilities"], right["probabilities"])
+
+
+# --- the rj23 schedule (task 3.4b) ------------------------------------------------------
+
+#: A short RJ23 regime: validation every 2 steps from step 0, patience 2, a 40-step cap.
+_RJ23: dict[str, Any] = {
+    "val_every_n_steps": 2,
+    "max_steps": 40,
+    "patience": 2,
+    "batch_size": 16,
+    "eval_batch_size": 8,
+    "checkpoint_every_n_steps": 2,
+    "deterministic": True,
+    "progress_bar_refresh_rate": 0,
+}
+
+#: (preset, changes, protocol, expected stop reason): each scenario, both protocols, the
+#: sensitivity flags and both ways to stop.
+_RJ23_CASES: list[Any] = [
+    pytest.param("rj23-lowres", {}, "replication", "patience", id="lowres"),
+    pytest.param("rj23-multiscale", {}, "decision", "patience", id="multiscale-decision"),
+    pytest.param(
+        "rj23-full",
+        {"rj23_bn_position": "before_concat", "rj23_keep": "best"},
+        "replication",
+        "patience",
+        id="full-bn-before-keep-best",
+    ),
+    pytest.param(
+        "rj23-cropped",
+        {"patience": 50, "max_steps": 8, "rj23_large_values": "code"},
+        "replication",
+        "cap",
+        id="cropped-capped",
+    ),
+]
+
+RJ23Validations = list[tuple[int, float, dict[str, torch.Tensor]]]
+
+
+@pytest.fixture(scope="module")
+def rj23_data(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
+    """(data directory, object splits) of a synthetic 5-class ``raw-alerts`` layout."""
+    return rj23_layout(tmp_path_factory.mktemp("diff_rj23"))
+
+
+def _rj23_settings(data_dir: Path, out: Path, preset: str, **changes: Any) -> Settings:
+    values: dict[str, Any] = {
+        **PRESETS[preset],
+        **_RJ23,
+        "dataset": DATASET,
+        "data_dir": data_dir,
+        "output_dir": out,
+        "accelerator": "cpu",
+        **changes,
+    }
+    return settings_from_mapping(values)
+
+
+class _RJ23LightningProbe(Callback):
+    """The Lightning RJ23 run: its initial weights, every validation and every batch.
+
+    Listed after the schedule callback, so each hook sees that callback's validation of
+    the step (its history has just grown).
+    """
+
+    def __init__(self) -> None:
+        self.initial: dict[str, torch.Tensor] | None = None
+        self.validations: RJ23Validations = []
+        self.batches: dict[int, tuple[torch.Tensor, ...]] = {}
+
+    @staticmethod
+    def _schedule(trainer: L.Trainer) -> RJ23ScheduleCallback:
+        callbacks = cast(Any, trainer).callbacks  # set by Lightning, untyped
+        return next(c for c in callbacks if isinstance(c, RJ23ScheduleCallback))
+
+    def _record(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        callback = self._schedule(trainer)
+        if len(callback.history) > len(self.validations):
+            step = callback.schedule.validation_step(len(callback.history) - 1)
+            model = cast(torch.nn.Module, pl_module.model)
+            self.validations.append((step, callback.history[-1], _cpu_state(model)))
+
+    def on_fit_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        self.initial = _cpu_state(cast(torch.nn.Module, pl_module.model))
+
+    def on_train_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        self._record(trainer, pl_module)
+
+    def on_train_batch_end(
+        self,
+        trainer: L.Trainer,
+        pl_module: L.LightningModule,
+        outputs: Any,
+        batch: Any,
+        batch_idx: int,
+    ) -> None:
+        # global_step is the steps done: this batch was stream batch global_step - 1.
+        self.batches[trainer.global_step - 1] = tuple(t.detach().cpu() for t in batch)
+        self._record(trainer, pl_module)
+
+
+def _rj23_computed(metrics: dict[str, Any]) -> dict[str, Any]:
+    """``_computed``, also without each keep's checkpoint file (each engine's own)."""
+    kept = _computed(metrics)
+    kept["keep"] = {
+        name: entry if name == "primary" else {k: v for k, v in entry.items() if k != "checkpoint"}
+        for name, entry in metrics["keep"].items()
+    }
+    return kept
+
+
+def _assert_same_batches(
+    settings: Settings, request: RJ23Request, batches: dict[int, tuple[torch.Tensor, ...]]
+) -> None:
+    """Lightning's batches are the plain source's, drawn on stream 10 (module docstring)."""
+    assert STREAM == 10
+    inputs = rj23_inputs(settings, request)
+    train = inputs.parts[inputs.plan.train]
+    n_classes = inputs.data.n_classes
+    stream = ClassUniformStream(
+        train.labels, settings.batch_size, settings.seed, n_classes=n_classes
+    )
+    source = RJ23TrainSource(DevicePart.of(train, "cpu"), stream, inputs.identity)
+    assert batches and sorted(batches) == list(range(len(batches)))
+    for step, lightning in batches.items():
+        plain = source.batch(step)
+        assert all(torch.equal(left, right) for left, right in zip(lightning, plain, strict=True))
+        # Each item's class is the stream's first draw: rng.integers(n_classes, size).
+        drawn = host_generator(settings.seed, step, 10).integers(0, n_classes, settings.batch_size)
+        assert np.array_equal(plain[2].numpy(), drawn), step
+
+
+@pytest.mark.parametrize(("preset", "changes", "mode", "reason"), _RJ23_CASES)
+def test_engines_agree_on_rj23(
+    preset: str,
+    changes: dict[str, Any],
+    mode: Any,
+    reason: str,
+    rj23_data: tuple[Path, Path],
+    tmp_path: Path,
+) -> None:
+    data_dir, splits = rj23_data
+    settings = _rj23_settings(data_dir, tmp_path / "lightning", preset, **changes)
+    request = RJ23Request(splits, mode)
+    lightning = _RJ23LightningProbe()
+    expected = run_rj23(settings, request, callbacks=[lightning], progress_bar=False)
+    probe = _PlainProbe()
+    plain = settings.replace(output_dir=tmp_path / "plain")
+    metrics = run_plain("train-supervised", plain, rj23=request, on_validation=probe)
+
+    seed_everything(settings.seed)
+    initial = _cpu_state(RJ23Task(settings, 5).module)
+    assert lightning.initial is not None
+    _assert_same_states(lightning.initial, initial)
+    assert probe.validations[0][0] == 0  # the initial weights are validated
+    _assert_same_validations(lightning.validations, probe.validations)
+    _assert_same_batches(settings, request, lightning.batches)
+    assert _rj23_computed(metrics) == _rj23_computed(expected)
+    assert metrics["schedule"]["stopped_by"] == reason
+    assert metrics["machine"]["engine"] == "plain"
+    _assert_same_outputs(settings.output_dir, plain.output_dir)
+
+
+def test_rj23_mid_run_resume_agrees_with_an_uninterrupted_lightning_run(
+    rj23_data: tuple[Path, Path], tmp_path: Path
+) -> None:
+    data_dir, splits = rj23_data
+    changes = {"patience": 50, "max_steps": 8}
+    settings = _rj23_settings(data_dir, tmp_path / "lightning", "rj23-lowres", **changes)
+    request = RJ23Request(splits)
+    lightning = _RJ23LightningProbe()
+    expected = run_rj23(settings, request, callbacks=[lightning], progress_bar=False)
+    whole, resumed = tmp_path / "whole", tmp_path / "resumed"
+    saved = tmp_path / "mid" / "last.pt"
+    run_plain(
+        "train-supervised",
+        settings.replace(output_dir=whole),
+        rj23=request,
+        on_validation=_CopyLast(4, whole / "ckpt" / "last.pt", saved),
+    )
+    assert load_checkpoint(saved)["policy"]["history"] == [
+        v for _, v, _ in lightning.validations[:3]
+    ]
+    probe = _PlainProbe()
+    metrics = run_plain(
+        "train-supervised",
+        settings.replace(output_dir=resumed),
+        rj23=request,
+        resume=str(saved),
+        on_validation=probe,
+    )
+    _assert_same_validations([v for v in lightning.validations if v[0] > 4], probe.validations)
+    assert metrics["resumed_from"] == str(saved)
+    assert metrics["timing"]["steps"] == 4
+    assert {**_rj23_computed(metrics), "resumed_from": False} == _rj23_computed(expected)
+    _assert_same_outputs(settings.output_dir, resumed)
+
+    # A resume of the finished run trains nothing and reports the same results.
+    again = run_plain(
+        "train-supervised", settings.replace(output_dir=resumed), rj23=request, resume="auto"
+    )
+    assert again["timing"]["steps"] == 0
+    assert again["schedule"] == metrics["schedule"] and again["keep"] == metrics["keep"]

@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 from _queue_support import init_repo, spec_text
+from _rj23_support import DATASET, rj23_layout
 
 from astro_simclr import experiments
 from astro_simclr.queue import job as job_module
@@ -171,6 +172,52 @@ def test_a_plain_spec_trains_on_the_plain_engine(
         dataclasses.replace(spec, engine="lightning"), Cell.parse(CELL), settings, repo_root=repo
     )
     assert lightning.run_id != manifest.run_id
+
+
+RJ23_SPEC = """\
+format: astro-simclr-experiment-spec
+version: 1
+name: rj23-demo
+command: train-supervised
+preset: rj23-lowres
+settings:
+  dataset: {dataset}
+  accelerator: cpu
+  val_every_n_steps: 2
+  max_steps: 6
+  patience: 50
+  batch_size: 8
+  eval_batch_size: 8
+  checkpoint_every_n_steps: 2
+arms:
+  baseline: {{}}
+seeds: [0]
+splits: {{file: configs/splits/objects.json, {mode}: true}}
+machine:
+  class: cpu-test
+engine: plain
+"""
+
+
+@pytest.mark.parametrize("mode", ["screen", "whole"])
+def test_a_queued_rj23_cell_runs_on_the_plain_engine(tmp_path: Path, mode: str) -> None:
+    """An rj23 arm: the object splits go in an RJ23Request (decision or replication)."""
+    data, objects = rj23_layout(tmp_path / "layout")
+    root = tmp_path / "rj23-worktree"
+    init_repo(root, {"configs/splits/objects.json": objects.read_text()})
+    spec_file = _spec(tmp_path, RJ23_SPEC.format(dataset=DATASET, mode=mode))
+    document = expand(spec_file, data_dir=data, repo_root=root)
+    cells = document["cells"]
+    assert isinstance(cells, list) and len(cells) == 1
+    key = f"baseline/s0/{mode}"
+    assert cells[0]["cell"] == key
+    run_dir = tmp_path / "runs" / mode
+    assert run_cell(spec_file, key, attempt=2, run_dir=run_dir, data_dir=data, repo_root=root) == 0
+    manifest = read_manifest(run_dir)
+    assert (manifest.status, manifest.engine, manifest.attempt) == ("finished", "plain", 2)
+    assert manifest.identity.split == mode and manifest.identity.machine_class == "cpu-test"
+    assert manifest.run_id == cells[0]["run_id"]
+    assert (run_dir / "ckpt" / "last.pt").is_file() and (run_dir / JOB_RESULT_FILE).is_file()
 
 
 def test_a_crashed_attempt_resumes(tmp_path: Path, data_dir: Path, repo: Path) -> None:

@@ -197,6 +197,11 @@ uv run astro-simclr train-supervised --preset rj23-multiscale --splits SPLITS.js
 uv run astro-simclr bench-report OUT/rj23-ms/seed-* --splits SPLITS.json --alerts ALERTS.csv
 ```
 
+The same run trains on the plain engine (no Lightning; bit for bit the same results, and an
+exact resume) from a nested config with `runtime.engine: plain`, e.g. `uv run astro-simclr
+run RJ23.yaml --splits SPLITS.json --set runtime.engine=plain` with `preset: rj23-multiscale`
+in `RJ23.yaml`.
+
 ### 5. The SimCLR pilot (phase 5, task 5.0b)
 
 `simclr-pilot` pretrains SimCLR (ResNet-18 with a CIFAR stem, NT-Xent in paper mode, LARS)
@@ -226,10 +231,21 @@ uv run astro-simclr plan-archive-nights --seed 0 --out plan.json     # nights an
 curl -sf https://ztf.uw.edu/alerts/public/ztf_public_20200925.tar.gz \
   | uv run astro-simclr ingest-archive - --night 20200925 --out DIR --exclude exclude_oids.txt
 uv run astro-simclr archive-summary DIR --verify
+uv run astro-simclr build-corpus-index DIR --out index.npz --cd21 dataset/prepared/td_ztf_stamp_17_06_20_red-002
+uv run astro-simclr simclr-pilot index.npz --splits configs/splits/td_ztf_stamp_17_06_20_red-002-grouped.json \
+  --output-dir runs/corpus-pilot --device cuda    # --tier memmap by default
 ```
 
+`build-corpus-index` (task 5.1) builds the index that pretraining reads. It drops:
+- listed `candid`s and `oid`s;
+- every row within 1.5″ of any CD21 alert;
+- the objects with a pixel copy of a CD21 stamp;
+- all but one alert per `oid`.
+
+It records the counts per rule and the SHA-256 of every exclusion input.
+
 The rules, the layout and the budget are in [docs/data.md](docs/data.md) ("Archive
-corpus") and [ADR 0019](docs/decisions/0019-archive-corpus.md).
+corpus", "Corpus index") and [ADR 0019](docs/decisions/0019-archive-corpus.md).
 
 ## Repository map
 

@@ -13,7 +13,8 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   command's legacy one, the file, the dotted overrides, then the flat ones on the flat
   view), lower it to the flat settings and train it on ``runtime.engine``: ``lightning``
   (``run_command``, the default) or ``plain`` (``tasks.plain.run_plain``, task 4.6: the paper
-  classifier on ``carrasco2021``, without Lightning). A flat file needs ``--command``;
+  classifier on ``carrasco2021``, and RJ23's on ``rj23`` since task 3.4b, without
+  Lightning). A flat file needs ``--command``;
   ``--show`` prints the resolved config and its config hash without training; ``--resume``
   and ``--splits FILE --fold K | --screen`` as below. The four training subcommands are its
   aliases until task 4.8;
@@ -43,6 +44,11 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   ``--splits FILE`` (task 2.5-infra) it decides on split runs (``train-supervised --splits
   FILE --fold K | --screen``): CV runs exit 0 for ADOPT and 1 for NOT ADOPTED (``--rule
   superiority|non-inferiority``, ``--margin``), screen runs 0 for KEEP and 1 for DROP;
+- ``ensemble-eval RUN_DIR... --splits FILE --fold K | --screen [--tta rot4|d4|d4_shift]
+  [--test] --out JSON [--overwrite]`` (plan row D4, :mod:`astro_simclr.ensemble_eval`): the members'
+  balanced accuracies, their mean and the seed ensemble's, with test-time augmentation
+  (:mod:`astro_simclr.tta`), on stored split runs without retraining; the JSON is a run for
+  ``compare-variants --splits`` (exit 0 when written);
 - phase-3 benchmarks (task 3.2, :mod:`astro_simclr.protocol.object_splits`,
   :mod:`astro_simclr.protocol.bench_report`): ``make-object-splits ALERTS.csv --out FILE``
   writes object-grouped, class-stratified Train/Validation/Test splits of an alert table;
@@ -97,6 +103,10 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   per-night counts and the objects (with ``--verify``, every night is loaded and hashed: a
   bad one exits 1); ``plan-archive-nights`` prints the seeded night sampling plan's size
   estimate and writes the plan with ``--out FILE``. None of them downloads anything.
+  ``build-corpus-index DIR --out FILE --cd21 LAYOUT`` (task 5.1,
+  :mod:`astro_simclr.archive.commands`) applies the exclusion union (listed candids and
+  oids, 1.5" of any CD21 alert, near-duplicate stamps) and one alert per oid, and writes
+  the index that ``simclr-pilot`` reads (exit 0).
 
 The heavy modules (torch, Lightning) are imported inside the handlers, so ``show-config``
 and ``--help`` stay fast. A :class:`~astro_simclr.data.DataError` (bad, truncated or missing
@@ -122,6 +132,7 @@ from typing import TYPE_CHECKING, Final
 
 import yaml
 
+from astro_simclr.archive.commands import add_corpus_index_command
 from astro_simclr.config import (
     ACCELERATORS,
     RJ23,
@@ -141,7 +152,7 @@ from astro_simclr.simclr.commands import add_simclr_commands
 if TYPE_CHECKING:
     from astro_simclr.oracle.m1 import M1Files
     from astro_simclr.protocol.split_runs import SplitRequest
-    from astro_simclr.training.rj23 import RJ23Request
+    from astro_simclr.tasks.rj23 import RJ23Request
 
 __all__ = [
     "add_settings_arguments",
@@ -408,7 +419,7 @@ def _rj23_request(args: argparse.Namespace) -> RJ23Request:
     Raises:
         ConfigError: without ``--splits``, or with ``--fold`` (object splits have no folds).
     """
-    from astro_simclr.training.rj23 import RJ23Request
+    from astro_simclr.tasks.rj23 import RJ23Request
 
     file: Path | None = getattr(args, "splits", None)
     if file is None:
@@ -430,26 +441,25 @@ def _execute(
     """Run ``command`` with ``settings`` on ``engine`` and print its summary.
 
     ``lightning``: ``experiments.run_command``; ``plain``: ``tasks.plain.run_plain`` (task
-    4.6, ADR 0014), which never imports Lightning. ``schedule: rj23`` goes to
-    ``training.rj23.run_rj23`` (its ``--splits`` is the object splits), on Lightning only
-    for now: its policy objects are engine-free (``rj23_regime``), its plain adapter is a
-    follow-up (``tasks.plain``).
+    4.6, ADR 0014), which never imports Lightning. ``schedule: rj23`` (its ``--splits`` is
+    the object splits) goes to ``training.rj23.run_rj23`` on Lightning and to
+    ``tasks.plain.run_plain`` (``tasks.rj23.run_rj23_plain``) on the plain engine.
 
     Raises:
-        ConfigError: for ``schedule: rj23`` on the plain engine, or ``--alerts`` outside it.
+        ConfigError: for ``--alerts`` outside ``schedule: rj23``.
     """
     from astro_simclr.runs.layout import METRICS_FILE
 
     if settings.schedule == RJ23:
-        if engine != "lightning":
-            msg = (
-                f"schedule {RJ23} trains on runtime.engine lightning only (the plain "
-                "adapter of rj23_regime is a follow-up)"
-            )
-            raise ConfigError(msg)
-        from astro_simclr.training.rj23 import run_rj23
+        request = _rj23_request(args)
+        if engine == "plain":
+            from astro_simclr.tasks.plain import run_plain
 
-        metrics = run_rj23(settings, _rj23_request(args), resume=args.resume)
+            metrics = run_plain(command, settings, resume=args.resume, rj23=request)
+        else:
+            from astro_simclr.training.rj23 import run_rj23
+
+            metrics = run_rj23(settings, request, resume=args.resume)
         evaluation = metrics["evaluation"]
         scores = ", ".join(
             f"{stage} macro-F1 {e['macro_f1']:.4f}" for stage, e in evaluation.items()
@@ -513,7 +523,7 @@ def _add_run_command(commands: argparse._SubParsersAction[argparse.ArgumentParse
         "command's legacy one), the file, --set section.key=value, then --set key=value on "
         "the flat view. A flat settings file needs --command. The model decides the "
         "training command; runtime.engine picks the loop: lightning (the default) or plain "
-        "(the paper classifier on carrasco2021 only; task 4.6).",
+        "(the paper classifier on carrasco2021, task 4.6, and RJ23's on rj23, task 3.4b).",
     )
     run.add_argument("config_file", type=Path, metavar="CONFIG", help="nested or flat YAML")
     run.add_argument(
@@ -1102,7 +1112,76 @@ def _add_protocol_commands(
     _add_grouping_arguments(splits)
     splits.add_argument("--overwrite", action="store_true")
     splits.set_defaults(handler=_make_splits)
+    _add_ensemble_eval(commands)
     _add_benchmark_commands(commands)
+
+
+#: ``ensemble-eval --tta`` choices (``tta.TTA_MODES``; spelled out so ``--help`` needs no torch).
+TTA_CHOICES: Final = ("rot4", "d4", "d4_shift")
+
+
+def _ensemble_eval(args: argparse.Namespace) -> int:
+    from astro_simclr.ensemble_eval import ensemble_eval
+
+    report = ensemble_eval(
+        args.run_dirs,
+        args.splits,
+        fold=None if args.screen else args.fold,
+        tta=args.tta,
+        test=args.test,
+        out=args.out,
+        data=args.data,
+        accelerator=args.accelerator,
+        overwrite=args.overwrite,
+    )
+    sys.stdout.write("\n".join(report.lines) + "\n")
+    return 0
+
+
+def _add_ensemble_eval(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    sub = commands.add_parser(
+        "ensemble-eval",
+        help="seed ensemble and test-time augmentation of stored split runs (plan row D4)",
+        description="Load the selected weights of finished runs of one arm (same config, "
+        "engine, data and machine; one per seed) trained on --splits FILE --fold K (or "
+        "--screen), evaluate each on the part's evaluation stamps with the test-time "
+        "augmentation --tta (rot4: the model's own evaluation, the default; d4: the 8 "
+        "dihedral views; d4_shift: d4 x the 9 crop offsets of 0 or 1 px), and report each "
+        "member's balanced accuracy, their mean and the ensemble's (mean of the softmax "
+        "probabilities). --out FILE.json and its predictions are read by compare-variants "
+        "--splits as one run. Test is evaluated only with --test (a report, never a "
+        "decision input; docs/evaluation-protocol.md).",
+    )
+    sub.add_argument("run_dirs", type=Path, nargs="+", metavar="RUN_DIR")
+    sub.add_argument("--splits", type=Path, required=True, metavar="FILE")
+    part = sub.add_mutually_exclusive_group(required=True)
+    part.add_argument("--fold", type=int, metavar="K", help="the runs' CV fold")
+    part.add_argument("--screen", action="store_true", help="the runs are screen runs")
+    sub.add_argument("--tta", choices=TTA_CHOICES, default="rot4", help="default rot4")
+    sub.add_argument(
+        "--test", action="store_true", help="also evaluate the Test split (a report only)"
+    )
+    sub.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        metavar="JSON",
+        help="the report (never inside a run directory); its predictions go next to it",
+    )
+    sub.add_argument("--overwrite", action="store_true", help="replace an existing --out")
+    sub.add_argument(
+        "--data",
+        type=Path,
+        metavar="PREPARED_DIR",
+        help="the prepared dataset (default: the runs' data_dir/dataset; its hash is checked)",
+    )
+    sub.add_argument(
+        "--accelerator",
+        choices=["cpu", "cuda", "mps", "gpu", "auto"],
+        default=None,
+        help="the evaluation device (default: the one the runs trained on)",
+    )
+    sub.set_defaults(handler=_ensemble_eval)
 
 
 def _add_benchmark_commands(
@@ -1760,6 +1839,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_oracle_commands(commands)
     _add_alert_commands(commands)
     _add_archive_commands(commands)
+    add_corpus_index_command(commands)
     add_runs_command(commands)
     from astro_simclr.queue.cli import add_queue_commands, add_spec_commands
 

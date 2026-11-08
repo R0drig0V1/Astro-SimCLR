@@ -106,7 +106,9 @@ a git SHA, and sync for the registry (A2), which shares the spec format.
 - A queued run differs from a hand-launched one only in the attempt and machine class it is
   given; its manifest and `metrics.json` are those of `run_command`, or of `run_plain` for
   a spec with `engine: plain` (the spec's engine is a run-id component, as
-  `runtime.engine` is for a nested config, ADR 0017).
+  `runtime.engine` is for a nested config, ADR 0017). An `rj23` arm is queued on the
+  plain engine only, with its object splits as `screen: true` (a decision run) or
+  `whole: true` (a replication, split part `whole`).
 - A spec whose `machine.class` differs from the device's default class gives run ids that a
   hand-launched run on that device would not match: name the default class
   (`cuda-nvidia-geforce-gtx-1050`) unless a different class is meant.

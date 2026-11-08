@@ -2,7 +2,10 @@
 
 :func:`run_plain` is ``experiments.run_command`` for the path the plain engine trains today,
 ``train-supervised`` of the paper classifier on the ``carrasco2021`` schedule (every 2.5
-flag, split runs, ``fp32_precision``), without Lightning. It refuses what ``run_command``
+flag, split runs, ``fp32_precision``), without Lightning. ``schedule: rj23`` (RJ23's
+classifiers, task 3.4b) is ``training.rj23.run_rj23``'s counterpart,
+``tasks.rj23.run_rj23_plain``, which ``run_plain`` dispatches to with the run's
+``RJ23Request`` (object splits, mode, alert table). It refuses what ``run_command``
 refuses (``tasks.common``), trains with :func:`astro_simclr.engine.fit` and writes the same
 outputs, so a plain run and a Lightning run of one config are compared file by file:
 
@@ -27,9 +30,8 @@ policy and another stream. Because the run id holds the config, a resume cannot 
 run by raising ``max_steps`` (Lightning allows it): that is a new run.
 
 **Not on the plain engine yet:** the legacy commands and models (frozen at
-``lightning-final``, plan 4.6), phase 3's ``rj23`` schedule (a follow-up), and
-``limit_train_batches`` / ``limit_val_batches`` (Lightning's dry-run limits: a plain dry run
-sets ``max_steps``).
+``lightning-final``, plan 4.6), and ``limit_train_batches`` / ``limit_val_batches``
+(Lightning's dry-run limits: a plain dry run sets ``max_steps``).
 """
 
 from __future__ import annotations
@@ -42,7 +44,14 @@ from typing import IO, Any, Final, Literal, cast
 
 import torch
 
-from astro_simclr.config import CARRASCO2021, ConfigError, Settings, settings_to_plain
+from astro_simclr.config import (
+    CARRASCO2021,
+    RJ23,
+    RJ23_MODEL,
+    ConfigError,
+    Settings,
+    settings_to_plain,
+)
 from astro_simclr.data.schema import DataError
 from astro_simclr.engine import (
     Dataset,
@@ -77,13 +86,20 @@ from astro_simclr.tasks.common import (
     check_schedule,
     check_split,
     dataset_path,
-    refuse_rj23,
 )
 from astro_simclr.tasks.paper import build_paper_task, check_paper_task, paper_inputs
 from astro_simclr.tasks.results import StageOutput, classifier_results, data_info, finite
+from astro_simclr.tasks.rj23 import RJ23Request, run_rj23_plain
 from astro_simclr.training.tensor_splits import TensorSplit
 
-__all__ = ["ENGINE", "plain_machine", "resolve_accelerator", "resolve_plain_resume", "run_plain"]
+__all__ = [
+    "ENGINE",
+    "check_plain_runtime",
+    "plain_machine",
+    "resolve_accelerator",
+    "resolve_plain_resume",
+    "run_plain",
+]
 
 #: The engine this module trains on (``manifest.json``, ``metrics.json["machine"]``).
 ENGINE: Final = "plain"
@@ -140,22 +156,13 @@ def plain_machine(device: torch.device) -> dict[str, Any]:
     return machine_record(device)
 
 
-def _check_plain(command: str, settings: Settings) -> None:
-    """What the plain engine trains (module docstring).
+def check_plain_runtime(settings: Settings) -> None:
+    """What the plain engine runs on: one device and no Lightning dry-run limit.
 
     Raises:
-        ConfigError: for another command, model or schedule, ``devices`` other than 1, or a
-            Lightning dry-run limit.
+        ConfigError: for ``devices`` other than 1, or ``limit_train_batches`` /
+            ``limit_val_batches``.
     """
-    paper = command == "train-supervised" and settings.supervised_model == PAPER_STAMP_CLASSIFIER
-    if not paper or settings.schedule != CARRASCO2021:
-        msg = (
-            f"the plain engine trains train-supervised with supervised_model="
-            f"{PAPER_STAMP_CLASSIFIER} on schedule {CARRASCO2021} (task 4.6); got {command} "
-            f"with {settings.supervised_model} on {settings.schedule}: use runtime.engine "
-            "lightning"
-        )
-        raise ConfigError(msg)
     if settings.devices != 1:
         raise ConfigError(f"the plain engine trains on one device, got devices={settings.devices}")
     limits = [n for n in ("limit_train_batches", "limit_val_batches") if getattr(settings, n)]
@@ -165,6 +172,26 @@ def _check_plain(command: str, settings: Settings) -> None:
             "(set max_steps, val_every_n_steps and horizon_increment for a short run)"
         )
         raise ConfigError(msg)
+
+
+def _check_plain(command: str, settings: Settings) -> None:
+    """What the plain engine trains on this path (module docstring).
+
+    Raises:
+        ConfigError: for another command, model or schedule, ``devices`` other than 1, or a
+            Lightning dry-run limit.
+    """
+    paper = command == "train-supervised" and settings.supervised_model == PAPER_STAMP_CLASSIFIER
+    if not paper or settings.schedule != CARRASCO2021:
+        msg = (
+            f"the plain engine trains train-supervised with supervised_model="
+            f"{PAPER_STAMP_CLASSIFIER} on schedule {CARRASCO2021} (task 4.6) or with "
+            f"supervised_model={RJ23_MODEL} on schedule {RJ23} (task 3.4b); got {command} "
+            f"with {settings.supervised_model} on {settings.schedule}: use runtime.engine "
+            "lightning"
+        )
+        raise ConfigError(msg)
+    check_plain_runtime(settings)
 
 
 def schedule_of(settings: Settings) -> Schedule:
@@ -273,12 +300,41 @@ def _metrics(
     return metrics
 
 
+def _rj23_request(
+    command: str, settings: Settings, split: SplitRequest | None, rj23: RJ23Request | None
+) -> RJ23Request:
+    """The request of an ``rj23`` run (its object splits travel in it, not in ``split``).
+
+    Raises:
+        ConfigError: for a request without ``schedule: rj23``, another command, an ``rj23``
+            run without a request, or with ``split``.
+    """
+    if settings.schedule != RJ23:
+        raise ConfigError(f"an RJ23 request needs schedule={RJ23}, got {settings.schedule}")
+    if command != "train-supervised" or settings.supervised_model != RJ23_MODEL:
+        msg = (
+            f"schedule {RJ23} trains train-supervised with supervised_model={RJ23_MODEL}, "
+            f"got {command} with {settings.supervised_model}"
+        )
+        raise ConfigError(msg)
+    if rj23 is None:
+        msg = (
+            f"schedule {RJ23} needs its object splits (--splits OBJECT_SPLITS): "
+            "pass rj23=RJ23Request(SPLITS)"
+        )
+        raise ConfigError(msg)
+    if split is not None:
+        raise ConfigError(f"schedule {RJ23} takes its splits in the RJ23 request, not split")
+    return rj23
+
+
 def run_plain(
     command: str,
     settings: Settings,
     *,
     resume: str | None = None,
     split: SplitRequest | None = None,
+    rj23: RJ23Request | None = None,
     on_step: Callable[[int], None] | None = None,
     on_validation: Callable[[Validation, Task], None] | None = None,
     progress: IO[str] | None = None,
@@ -287,21 +343,35 @@ def run_plain(
     """Run ``command`` with ``settings`` on the plain engine; return the metrics (module docstring).
 
     ``resume`` is ``None``, ``"auto"`` or a ``ckpt/last.pt`` path; ``split`` makes it a split
-    run. ``on_step`` / ``on_validation`` / ``progress`` are :func:`astro_simclr.engine.fit`'s
-    (the preflight's timer, the tests' probes, one line per validation). The metrics are
-    also written to ``output_dir/metrics.json``. ``queued`` is a queued run's fixed attempt,
-    machine class and run id (``runs.record``, "Queued runs"; task A3's ``spec run-cell``).
+    run. ``rj23`` is the request of a ``schedule: rj23`` run (required there, refused
+    elsewhere), which :func:`~astro_simclr.tasks.rj23.run_rj23_plain` trains. ``on_step`` /
+    ``on_validation`` / ``progress`` are :func:`astro_simclr.engine.fit`'s (the preflight's
+    timer, the tests' probes, one line per validation). The metrics are also written to
+    ``output_dir/metrics.json``. ``queued`` is a queued run's fixed attempt, machine class
+    and run id (``runs.record``, "Queued runs"; task A3's ``spec run-cell``), on either
+    schedule.
 
     Raises:
         AcceleratorError: if the accelerator is not available.
         ConfigError: on an invalid name, a config the plain engine does not train
             (module docstring), the paper model's schedule rules, a split run of another
-            command, a missing ``--resume`` checkpoint, or a checkpoint the engine refuses
-            (another run, policy or monitor, a Lightning checkpoint).
+            command, an ``rj23`` run without its request (or with ``split``), a request
+            without ``schedule: rj23``, a missing ``--resume`` checkpoint, or a checkpoint
+            the engine refuses (another run, policy or monitor, a Lightning checkpoint).
         DataError: if the dataset is missing or invalid, has no float32 stamps, a splits
             file does not belong to it, or a checkpoint is of another stream.
     """
-    refuse_rj23(settings)
+    if settings.schedule == RJ23 or rj23 is not None:
+        request = _rj23_request(command, settings, split, rj23)
+        return run_rj23_plain(
+            settings,
+            request,
+            resume=resume,
+            on_step=on_step,
+            on_validation=on_validation,
+            progress=progress,
+            queued=queued,
+        )
     check_accelerator(settings.accelerator)
     check_names(settings)
     _check_plain(command, settings)

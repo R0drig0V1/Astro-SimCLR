@@ -21,7 +21,9 @@ no shell, no interpolated string (ADR 0026).
      once (a requeue after the job ended but before the worker recorded it); a
      ``failed`` or ``cancelled`` one, or one of another run id or attempt, is refused;
   4. on the spec's ``engine``, ``experiments.run_command`` (``lightning``) or
-     ``tasks.plain.run_plain`` (``plain``), with ``resume="auto"`` and
+     ``tasks.plain.run_plain`` (``plain``; for an ``rj23`` arm with an ``RJ23Request`` of
+     the object splits, a decision run for ``screen``, a replication for ``whole``), with
+     ``resume="auto"`` and
      ``queued=QueueAttempt(N, spec machine class)``: a fresh start, or the continuation of
      ``checkpoints/last.ckpt`` (``ckpt/last.pt`` on the plain engine). Either writes the
      manifest (task A1, ``runs.record``): ``queued -> running``, then
@@ -57,11 +59,12 @@ from pathlib import Path
 from types import FrameType
 from typing import Final
 
-from astro_simclr.config import Settings
+from astro_simclr.config import RJ23, Settings
 from astro_simclr.data.files import atomic_write_bytes, sha256_file
 from astro_simclr.data.prepared import is_prepared
 from astro_simclr.data.schema import DataError
 from astro_simclr.runs.identity import (
+    SCREEN,
     RunIdentity,
     data_sha256,
     git_state,
@@ -253,16 +256,25 @@ def _train(
     from astro_simclr.runs.record import QueueAttempt
 
     split = None
+    rj23 = None
     if spec.splits is not None and cell.split is not None:
-        fold = cell.split if isinstance(cell.split, int) else None
-        split = SplitRequest(repo_root / spec.splits.file, fold)
+        file = repo_root / spec.splits.file
+        if settings.schedule == RJ23:
+            from astro_simclr.tasks.rj23 import RJ23Request
+
+            # The object splits travel in the request (runs.spec, "The rj23 schedule").
+            rj23 = RJ23Request(file, "decision" if cell.split == SCREEN else "replication")
+        else:
+            split = SplitRequest(file, cell.split if isinstance(cell.split, int) else None)
     queued = QueueAttempt(attempt=attempt, machine_class=spec.machine_class, run_id=identity.run_id)
     try:
         with _signals_exit():
             if spec.engine == "plain":
                 from astro_simclr.tasks.plain import run_plain
 
-                run_plain(spec.command, settings, resume="auto", split=split, queued=queued)
+                run_plain(
+                    spec.command, settings, resume="auto", split=split, rj23=rj23, queued=queued
+                )
             else:
                 from astro_simclr.experiments import run_command
 

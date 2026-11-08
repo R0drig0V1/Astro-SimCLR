@@ -10,7 +10,7 @@ from _queue_support import SHA, spec_text
 
 from astro_simclr.cli import build_parser, training_settings
 from astro_simclr.runs.canonical import config_sha256
-from astro_simclr.runs.identity import SCREEN, Engine, run_identity
+from astro_simclr.runs.identity import SCREEN, WHOLE, Engine, run_identity
 from astro_simclr.runs.spec import (
     Cell,
     ExperimentSpec,
@@ -133,8 +133,49 @@ def test_the_engine_changes_run_ids_not_config_hashes() -> None:
     assert parse_spec(yaml.safe_dump(plain.to_plain())) == plain
 
 
+RJ23 = """\
+format: astro-simclr-experiment-spec
+version: 1
+name: rj23
+command: train-supervised
+preset: rj23-lowres
+arms: {base: {}}
+seeds: [0]
+splits: {file: configs/splits/objects.json, whole: true}
+machine: {class: cpu-test}
+engine: plain
+"""
+
+
+def test_rj23_arms_take_the_object_splits_as_screen_or_whole() -> None:
+    whole = parse_spec(RJ23)
+    assert whole.split_parts() == (WHOLE,) and whole.cells()[0].key == "base/s0/whole"
+    assert parse_spec(yaml.safe_dump(whole.to_plain())) == whole
+    screen = parse_spec(RJ23.replace("whole: true", "screen: true"))
+    assert screen.split_parts() == (SCREEN,) and screen.spec_id != whole.spec_id
+    ids = expected_run_ids(whole, data_sha256=SHA, splits_sha256="b" * 64)
+    assert len(ids) == 1
+    with pytest.raises(SpecError, match="engine: plain"):
+        parse_spec(RJ23.replace("engine: plain", "engine: lightning"))
+    with pytest.raises(SpecError, match="not folds"):
+        parse_spec(RJ23.replace("whole: true", "folds: [0]"))
+    with pytest.raises(SpecError, match="not folds"):
+        parse_spec(RJ23.replace("splits: {file: configs/splits/objects.json, whole: true}\n", ""))
+    with pytest.raises(SpecError, match="exactly one"):
+        parse_spec(RJ23.replace("whole: true", "whole: true, screen: true"))
+    with pytest.raises(SpecError, match="true or false"):
+        parse_spec(RJ23.replace("whole: true", "whole: 1"))
+    with pytest.raises(SpecError, match="for schedule rj23 only"):
+        parse_spec(FULL.replace("folds: [1, 0]", "whole: true"))
+
+
 def test_cell_keys() -> None:
-    for cell in (Cell("a", 0, None), Cell("a.b-c", 12, SCREEN), Cell("x", 3, 4)):
+    for cell in (
+        Cell("a", 0, None),
+        Cell("a.b-c", 12, SCREEN),
+        Cell("x", 3, 4),
+        Cell("w", 1, WHOLE),
+    ):
         assert Cell.parse(cell.key) == cell
     assert Cell("a", 0, None).key == "a/s0/all"
     with pytest.raises(SpecError):

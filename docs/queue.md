@@ -28,7 +28,7 @@ arms:                           # arm name -> overrides of the shared settings
 seeds: [0, 1, 2, 3, 4]
 splits:                         # optional; without it, the file's own Train/Validation/Test
   file: configs/splits/td_ztf_stamp_17_06_20_red-002-grouped.json
-  screen: true                  # or `folds: [0, 1, 2, 3, 4]`
+  screen: true                  # or `folds: [0, 1, 2, 3, 4]` (rj23: or `whole: true`)
 machine:
   class: cuda-nvidia-geforce-gtx-1050   # the run id's machine class
   extra: cu126                  # `uv sync --extra` on that machine (ADR 0001)
@@ -51,6 +51,13 @@ scratch: false                  # true: a dirty tree is allowed (never a result)
   only `train-supervised` of `paper_stamp_classifier` on the `carrasco2021` schedule, and
   has no `limit_train_batches` / `limit_val_batches` (a short run sets `max_steps`); a
   spec outside that fails when its first cell starts.
+- **rj23** (an arm whose settings resolve to `schedule: rj23`, for example `preset:
+  rj23-lowres`, on a `raw-alerts` layout): `splits.file` is the layout's object splits
+  (`make-object-splits`), with `screen: true` for a decision run or `whole: true` for a
+  replication on the whole Train (cells `<arm>/s<seed>/screen` or `/whole`), as `--screen`
+  or no `--screen` on the command line; CV folds are refused. The alert table is the
+  layout's own. It needs `engine: plain`: the queue does not drive Lightning's
+  `training.rj23.run_rj23`.
 
 ## The GPU machines
 

@@ -411,8 +411,8 @@ def test_run_rj23_needs_its_schedule_and_raw_alerts(
         run_rj23(Settings(), RJ23Request(splits))
     with pytest.raises(ConfigError, match=r"training\.rj23\.run_rj23"):
         run_command("train-supervised", _settings(data_dir, tmp_path / "x"))
-    # The plain engine's runner refuses it too (its rj23 adapter is a follow-up).
-    with pytest.raises(ConfigError, match=r"training\.rj23\.run_rj23"):
+    # The plain engine's runner trains it with its request only.
+    with pytest.raises(ConfigError, match="needs its object splits"):
         run_plain("train-supervised", _settings(data_dir, tmp_path / "p"))
     phase2 = _settings(classifier_dir.parent, tmp_path / "y", dataset=classifier_dir.name)
     with pytest.raises(DataError, match="raw-alerts"):
@@ -500,7 +500,7 @@ def test_cli_trains_an_rj23_scenario(
     assert "--alerts belongs to the rj23 schedule" in capsys.readouterr().err
 
 
-def test_run_trains_a_nested_rj23_config_on_lightning_only(
+def test_run_trains_a_nested_rj23_config_on_both_engines(
     layout: tuple[Path, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     data_dir, splits = layout
@@ -518,5 +518,9 @@ def test_run_trains_a_nested_rj23_config_on_lightning_only(
     assert "val macro-F1" in capsys.readouterr().out
     metrics = json.loads((tmp_path / "run" / "metrics.json").read_text())
     assert metrics["preset"]["name"] == "rj23-lowres"
-    assert main([*argv, "--set", "runtime.engine=plain"]) == 2
-    assert "runtime.engine lightning only" in capsys.readouterr().err
+    plain = ["--set", "runtime.engine=plain", "run.output_dir=" + str(tmp_path / "plain")]
+    assert main([*argv, *plain]) == 0
+    assert "val macro-F1" in capsys.readouterr().out
+    on_plain = json.loads((tmp_path / "plain" / "metrics.json").read_text())
+    assert on_plain["machine"]["engine"] == "plain"
+    assert on_plain["evaluation"] == metrics["evaluation"]

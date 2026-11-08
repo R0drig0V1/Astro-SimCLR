@@ -19,7 +19,7 @@ version 1 (:data:`SPEC_FORMAT`, :data:`SPEC_VERSION`)::
     seeds: [0, 1, 2]
     splits:                         # optional; without it a run uses the file's own splits
       file: configs/splits/td_ztf_stamp_17_06_20_red-002.json   # relative to the checkout
-      folds: [0, 1, 2, 3, 4]        # or `screen: true`
+      folds: [0, 1, 2, 3, 4]        # or `screen: true` (or, for rj23, `whole: true`)
     machine:
       class: cuda-nvidia-geforce-gtx-1050   # the run id's machine class (ADR 0015, rule 7)
       extra: cu126                  # the `uv sync --extra` of that machine (ADR 0001); optional
@@ -33,6 +33,15 @@ the cell's seed and the runner's ``data_dir`` and ``output_dir``. ``seed``, ``da
 ``output_dir`` and ``pretrained`` cannot be set in a spec (:data:`RESERVED_KEYS`): the
 first three belong to the cell and the runner, and a pretrained checkpoint has no
 machine-independent name yet (phase 5).
+
+**The rj23 schedule** (task 3.4b; on the plain engine since #62). An arm whose settings
+resolve to ``schedule: rj23`` trains RJ23's protocol on a ``raw-alerts`` layout, and its
+``splits.file`` is the layout's object splits (``make-object-splits``), never CV folds:
+``screen: true`` is a decision run (split part ``screen``), ``whole: true`` a replication
+run on the whole Train (split part ``whole``), as ``--screen`` / no ``--screen`` on the
+command line. The alert table is the layout's own. Such a spec needs ``engine: plain``
+(the queue does not drive Lightning's ``training.rj23.run_rj23``); ``whole: true`` is
+refused for any other schedule.
 
 **Engine.** ``engine`` is the training loop of every cell: ``lightning``
 (``experiments.run_command``) or ``plain`` (``tasks.plain.run_plain``, which trains only the
@@ -65,12 +74,13 @@ from typing import Final, cast
 
 import yaml
 
-from astro_simclr.config import ConfigError, Settings, settings_from_mapping
+from astro_simclr.config import RJ23, ConfigError, Settings, settings_from_mapping
 from astro_simclr.hparams import COMMAND_DEFAULTS
 from astro_simclr.runs.canonical import CanonicalError, canonical_json, config_sha256, sha256_text
 from astro_simclr.runs.identity import (
     ENGINES,
     SCREEN,
+    WHOLE,
     Engine,
     IdentityError,
     SplitPart,
@@ -115,7 +125,7 @@ _TOP_KEYS: Final = frozenset(
 _REQUIRED: Final = ("format", "version", "name", "command", "arms", "seeds", "machine")
 _SLUG = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _EXTRA = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
-_CELL = re.compile(r"(?P<arm>[a-z0-9][a-z0-9._-]*)/s(?P<seed>\d+)/(?P<split>f\d+|screen|all)")
+_CELL = re.compile(r"(?P<arm>[a-z0-9][a-z0-9._-]*)/s(?P<seed>\d+)/(?P<split>f\d+|screen|whole|all)")
 
 
 class SpecError(ConfigError):
@@ -171,17 +181,20 @@ class SpecSplits:
     """The stored splits file of a spec's split runs, and its folds (``None``: the screen).
 
     ``file`` is relative to the checkout the runs are made from (``configs/splits/``).
+    ``whole`` (``folds`` is then ``None``): an rj23 replication on the object splits' whole
+    Train, split part ``whole`` (module docstring).
     """
 
     file: Path
     folds: tuple[int, ...] | None
+    whole: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class Cell:
     """One run of a spec: an arm (its name), a seed and a split part.
 
-    ``split`` is a fold, ``"screen"`` or ``None`` (``runs.identity.SplitPart``).
+    ``split`` is a fold, ``"screen"``, ``"whole"`` or ``None`` (``runs.identity.SplitPart``).
     """
 
     arm: str
@@ -190,8 +203,9 @@ class Cell:
 
     @property
     def key(self) -> str:
-        """The cell as text: ``<arm>/s<seed>/<f<fold>|screen|all>`` (:meth:`parse`)."""
-        part = "all" if self.split is None else SCREEN if self.split == SCREEN else f"f{self.split}"
+        """The cell as text: ``<arm>/s<seed>/<f<fold>|screen|whole|all>`` (:meth:`parse`)."""
+        split = self.split
+        part = "all" if split is None else split if isinstance(split, str) else f"f{split}"
         return f"{self.arm}/s{self.seed}/{part}"
 
     @classmethod
@@ -203,9 +217,17 @@ class Cell:
         """
         match = _CELL.fullmatch(key)
         if match is None:
-            raise SpecError(f"cell {key!r} is not of the form ARM/sSEED/fFOLD|screen|all")
+            raise SpecError(f"cell {key!r} is not of the form ARM/sSEED/fFOLD|screen|whole|all")
         part = match["split"]
-        split: SplitPart = None if part == "all" else SCREEN if part == SCREEN else int(part[1:])
+        split: SplitPart = (
+            None
+            if part == "all"
+            else SCREEN
+            if part == SCREEN
+            else WHOLE
+            if part == WHOLE
+            else int(part[1:])
+        )
         return cls(match["arm"], int(match["seed"]), split)
 
     def __lt__(self, other: object) -> bool:
@@ -216,7 +238,8 @@ class Cell:
 
 
 def _sort_key(cell: Cell) -> tuple[str, int, int, int]:
-    rank = 0 if cell.split is None else 1 if cell.split == SCREEN else 2
+    split = cell.split
+    rank = 0 if split is None else 1 if split == SCREEN else 2 if split == WHOLE else 3
     return (cell.arm, cell.seed, rank, cell.split if isinstance(cell.split, int) else -1)
 
 
@@ -241,7 +264,9 @@ class ExperimentSpec:
         splits: dict[str, object] | None = None
         if self.splits is not None:
             splits = {"file": self.splits.file.as_posix()}
-            if self.splits.folds is None:
+            if self.splits.whole:
+                splits["whole"] = True
+            elif self.splits.folds is None:
                 splits["screen"] = True
             else:
                 splits["folds"] = list(self.splits.folds)
@@ -280,6 +305,8 @@ class ExperimentSpec:
         """The split part of each run of an arm and seed: the folds, the screen, or none."""
         if self.splits is None:
             return (None,)
+        if self.splits.whole:
+            return (WHOLE,)
         if self.splits.folds is None:
             return (SCREEN,)
         return self.splits.folds
@@ -351,7 +378,7 @@ def _parse_splits(value: object) -> SpecSplits | None:
     if value is None:
         return None
     splits = _as_mapping(value, "splits")
-    unknown = sorted(set(splits) - {"file", "folds", "screen"})
+    unknown = sorted(set(splits) - {"file", "folds", "screen", "whole"})
     if unknown:
         raise SpecError(f"splits: unknown keys {', '.join(unknown)}")
     file = splits.get("file")
@@ -362,13 +389,20 @@ def _parse_splits(value: object) -> SpecSplits | None:
         or ".." in Path(file).parts
     ):
         raise SpecError(f"splits.file must be a path inside the checkout, got {file!r}")
-    screen, folds = splits.get("screen", False), splits.get("folds")
-    if screen is not True and screen is not False:
-        raise SpecError(f"splits.screen must be true or false, got {screen!r}")
-    if screen == (folds is not None):
-        raise SpecError("splits needs exactly one of `folds: [...]` and `screen: true`")
+    screen, whole, folds = (
+        splits.get("screen", False),
+        splits.get("whole", False),
+        splits.get("folds"),
+    )
+    for name, flag in (("screen", screen), ("whole", whole)):
+        if flag is not True and flag is not False:
+            raise SpecError(f"splits.{name} must be true or false, got {flag!r}")
+    if [screen, whole, folds is not None].count(True) != 1:
+        raise SpecError(
+            "splits needs exactly one of `folds: [...]`, `screen: true` and `whole: true`"
+        )
     if folds is None:
-        return SpecSplits(Path(file), None)
+        return SpecSplits(Path(file), None, whole=whole is True)
     if not isinstance(folds, list) or not folds:
         raise SpecError(f"splits.folds must be a non-empty list, got {folds!r}")
     checked = tuple(_seed(fold) for fold in folds)
@@ -448,8 +482,25 @@ def _from_plain(data: Mapping[str, object]) -> ExperimentSpec:
         engine=engine,
     )
     for arm in spec.arms:  # every arm must resolve before anything is queued
-        spec.arm_settings(arm, spec.seeds[0])
+        _check_schedule(spec, arm.name, spec.arm_settings(arm, spec.seeds[0]))
     return spec
+
+
+def _check_schedule(spec: ExperimentSpec, arm: str, settings: Settings) -> None:
+    """An rj23 arm's splits and engine; ``whole`` only for rj23 (module docstring)."""
+    splits = spec.splits
+    if settings.schedule != RJ23:
+        if splits is not None and splits.whole:
+            raise SpecError(f"arm {arm}: splits.whole is for schedule {RJ23} only")
+        return
+    if splits is None or splits.folds is not None:
+        msg = (
+            f"arm {arm}: schedule {RJ23} needs its object splits with `screen: true` (a "
+            "decision run) or `whole: true` (a replication), not folds"
+        )
+        raise SpecError(msg)
+    if spec.engine != "plain":
+        raise SpecError(f"arm {arm}: schedule {RJ23} is queued on `engine: plain` only")
 
 
 def parse_spec(text: str) -> ExperimentSpec:

@@ -15,7 +15,14 @@ Submodules (``docs/data.md`` "Archive corpus" has the layout and the commands,
 - :mod:`~astro_simclr.archive.layout`: the per-night shards, written atomically, and the
   corpus index (one alert per object);
 - :mod:`~astro_simclr.archive.ingest`: the resumable ingest;
-- :mod:`~astro_simclr.archive.plan`: the seeded night sampling plan and its size estimate.
+- :mod:`~astro_simclr.archive.plan`: the seeded night sampling plan and its size estimate;
+- :mod:`~astro_simclr.archive.corpus_index`: the corpus index of task 5.1, the exclusion
+  union (listed candids and oids, 1.5" of any CD21 alert, near-duplicate stamps) and one
+  alert per object, with the SHA-256 of every exclusion input;
+- :mod:`~astro_simclr.archive.near_duplicates`: the pixel check against the CD21 stamps;
+- :mod:`~astro_simclr.archive.reader`: the indexed stamps, memory-mapped from the night
+  shards and normalised like the stored stamps (what ``simclr-pilot`` reads);
+- :mod:`~astro_simclr.archive.commands`: the ``build-corpus-index`` subcommand.
 
 The tarballs are untrusted: nothing is extracted to disk, every alert goes through the
 size-limited parser of :mod:`astro_simclr.alerts.parse`, and nothing is unpickled.
