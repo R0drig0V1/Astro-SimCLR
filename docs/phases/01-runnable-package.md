@@ -106,7 +106,7 @@ behaviour stays the default.
   row 10: AdamW, batch 45, lr 0.002495, β 0.0161, dropout 0.2, features, 5 repeats). It was
   measured under the tuning protocol of `hyperparams_ce.py` (max 220 epochs, patience 70,
   best validation epoch).
-- **CE ResNet-18:** 0.9027 ± 0.0099 (`summary_tuning_ce_resnet.csv` row 6, which matches
+- **CE ResNet-18:** 0.9027 ± 0.0099 over **3** repeats (`summary_tuning_ce_resnet.csv` row 6, which matches
   `hparams_best_ce_resnet.yaml`: rotation_v3, 63 px, no features).
 - **External reference (context, not a gate):** Carrasco-Davis et al. 2021 (AJ 162, 231,
   arXiv:2008.03309) is the ALeRCE stamp classifier on the same ZTF 5-class data (51,594
@@ -136,8 +136,9 @@ behaviour stays the default.
    over epochs (micro), as in the Ray Tune tables. σ is the sample standard deviation
    (ddof=1), as in the legacy tables.
    - **Full set (5 seeds):**
-     `|mean_new − mean_old| ≤ max(2·sqrt(σ_old²/5 + σ_new²/5), 0.01)`.
-   - **Minimal set (1 seed):** `|x − mean_old| ≤ max(2·σ_old·sqrt(1 + 1/5), 0.01)`.
+     `|mean_new − mean_old| ≤ max(2·sqrt(σ_old²/n_old + σ_new²/n_new), 0.01)`, with the true
+     legacy repeat count n_old (R1: 5; R2: 3, checked in task 1.7).
+   - **Minimal set (1 seed):** `|x − mean_old| ≤ max(2·σ_old·sqrt(1 + 1/n_old), 0.01)`.
    - Test accuracy at the best epoch is reported too.
    - `astro-simclr compare-reference` (task 1.7) computes all of this. SimCLR has no reference, so it gets
    a sanity bound (see [Reference runs](#reference-runs)) and its result becomes the first
