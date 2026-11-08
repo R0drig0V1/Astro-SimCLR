@@ -1,0 +1,36 @@
+# R2: CE ResNet-18, hparams_best_ce_resnet.yaml, 100 % labels.
+# Run: astro-simclr train-supervised --config configs/reference/R2.yaml --seed S
+#      --output-dir OUT/R2/seed-S   (full set: seeds 0-4; minimal set: seed 0)
+# Gate: astro-simclr compare-reference OUT/R2/seed-* --ref R2 (pass rule vs 0.9027 ± 0.0099,
+#       3 legacy trials).
+#
+# Provenance (docs/phases/01-runnable-package.md, "Reference runs"):
+# - hyperparameters: results/hparams_best_ce_resnet.yaml = results/summary_tuning_ce_resnet.csv
+#   row 6 (rotation_v3, 63 px, no features, AdamW, batch 30).
+# - protocol: hyperparams_ce_resnet.py (the tuning that produced the reference): EarlyStopping
+#   on accuracy_val, patience 70, min_delta 0.001, check_finite, divergence_threshold 0.1.
+#   Its max_epochs=220 call is commented out in the file; 220 is the plan's assumption.
+# - data: as R1 (td_ztf_stamp_17_06_20; stand-in td_ztf_stamp_17_06_20_red-002).
+# - 4 GB GPUs (GTX 1050): the preflight's dry run checks that batch 30 at 63 px fits.
+
+accelerator: cuda
+devices: 1
+num_workers: 4
+
+dataset: td_ztf_stamp_17_06_20
+supervised_model: resnet18
+image_size: 63
+with_features: false
+augmentation: rotation_v3
+batch_size: 30
+eval_batch_size: 100
+optimizer: AdamW
+lr: 0.0015313744573543094
+beta_loss: 0.001323714497724708
+
+max_epochs: 220
+patience: 70
+min_delta: 0.001
+monitor: accuracy_val
+check_finite: true
+divergence_threshold: 0.1

@@ -58,7 +58,7 @@ Requires [uv](https://docs.astral.sh/uv/). uv installs the Python of `.python-ve
 ```bash
 uv sync --locked             # create .venv with the project and its dev tools
 scripts/check.sh             # everything CI checks: ruff, ruff format, mypy, pytest + coverage
-uv run astro-simclr --help   # the command line (subcommands are added during phase 1)
+uv run astro-simclr --help   # the command line: data, training, compare-reference, preflight
 uv run ruff format . && uv run ruff check --fix .   # fix formatting and most lint findings
 uv run pre-commit install    # optional: ruff on every commit
 ```
@@ -68,14 +68,22 @@ uv run pre-commit install    # optional: ruff on every commit
 ### Torch build per machine
 
 `uv sync --locked` installs PyPI torch: MPS on macOS, CUDA 13 on Linux (NVIDIA driver
->= 580). Elsewhere pick an extra, and from then on skip the automatic re-sync, which would
-put the default build back ([ADR 0001](docs/decisions/0001-torch-wheels-and-accelerators.md)):
+>= 580 and a Turing or newer GPU). Elsewhere pick an extra, and from then on skip the
+automatic re-sync, which would put the default build back
+([ADR 0001](docs/decisions/0001-torch-wheels-and-accelerators.md), rule 6, has the full
+driver and compute-capability table; on Windows use WSL2):
 
 ```bash
-uv sync --locked --extra cpu      # no GPU (what CI uses); --extra cu126 if the driver is < 580
+uv sync --locked --extra cpu      # no GPU (what CI uses)
+uv sync --locked --extra cu126    # GPU older than Turing (e.g. GTX 1050), or driver < 580
 UV_NO_SYNC=1 scripts/check.sh     # or: uv run --no-sync astro-simclr ...
+scripts/gpu-preflight.sh --synthetic   # GPU machine: checks the build, then a dry run
 scripts/check-torch-wheels.sh     # after touching the torch pins, extras or indexes
 ```
+
+The preflight names the right `uv sync` command when the installed build does not fit the
+GPU. The reference runs of phase 1 are in `configs/reference/` (R1-R4, with their
+provenance); `astro-simclr compare-reference` judges their results.
 
 Package layout and module responsibilities: [docs/architecture.md](docs/architecture.md).
 

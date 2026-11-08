@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 import torch
 
-from astro_simclr.training.metrics import classification_metrics, confusion_matrix
+from astro_simclr.training.metrics import (
+    classification_metrics,
+    confusion_counts,
+    confusion_matrix,
+    macro_f1,
+)
 
 # Imbalanced and fixed: 10 samples of class 0, 2 of class 1, one each of classes 2 and 3,
 # none of class 4. The predictions get every class-0 sample right except one, and only one
@@ -59,3 +64,16 @@ def test_invalid_label_tensors_are_rejected(y_pred: torch.Tensor, y_true: torch.
         classification_metrics(y_pred, y_true)
     with pytest.raises(ValueError, match="1-D label tensors"):
         confusion_matrix(y_pred, y_true)
+
+
+def test_macro_f1_and_counts() -> None:
+    counts = confusion_counts(Y_PRED, Y_TRUE)
+    assert counts.dtype == torch.int64
+    assert counts.sum() == len(Y_TRUE)
+    assert counts[0].tolist() == [9, 1, 0, 0, 0]
+    # Per-class F1 over the classes present (4 is in neither): class 0: P 9/12, R 9/10;
+    # class 1: P 1/2, R 1/2; classes 2 and 3: 0.
+    f1_0 = 2 * (9 / 12) * (9 / 10) / (9 / 12 + 9 / 10)
+    assert macro_f1(Y_PRED, Y_TRUE) == pytest.approx((f1_0 + 0.5) / 4)
+    with pytest.raises(ValueError):
+        macro_f1(Y_PRED[:2], Y_TRUE)

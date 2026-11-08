@@ -8,12 +8,14 @@ legacy modules one task at a time; until a module is ported, its legacy file is 
 characterization oracle and stays excluded from ruff, mypy and coverage.
 
 ```
-cli ──► config
+cli ──► config, hparams (subcommand defaults, legacy key mapping)
  │
  ├──► data ──────► augmentations (protocol)      registry of transforms (1.5)
  │                                    ▲
- └──► training (Lightning 2) ──► models, losses, optim, metrics
-            datamodules ──► data (prepared layout) + augmentations
+ ├──► experiments (one training run) ──► training (Lightning 2) ──► models, losses, optim, metrics
+ │                                          datamodules ──► data (prepared layout) + augmentations
+ ├──► reference (compare-reference: the gates of R1-R4)
+ └──► preflight ──► experiments, data (inspection, manifest)
 ```
 
 Conventions shared by every module:
@@ -54,6 +56,28 @@ of one run.
   protocol defaults are the legacy classifier values (220 epochs, patience 40,
   `min_delta` 0.001, `accuracy_val`, eval batch 100).
 - Later tasks add their fields here (for example the NT-Xent denominator flag of 1.3).
+- **Task 1.7 fields** (flat, so every one can be `--set`): EarlyStopping `check_finite`
+  (default true, Lightning's default) and `divergence_threshold` (null: never; R1 uses
+  0.1); `limit_train_batches` / `limit_val_batches` (null: every batch; the dry mode sets
+  2); and the hyperparameters of the training subcommands. Each subcommand reads only its
+  own; the others are recorded in the run's metrics but unused:
+
+  | Field | Default | Read by |
+  |---|---|---|
+  | `dataset` | `td_ztf_stamp_17_06_20` (the run reads `data_dir/<dataset>`) | all four |
+  | `image_size`, `batch_size`, `lr`, `optimizer`, `augmentation` | 27, 45, 0.002495…, `AdamW`, `center_crop` | all four (`pretrain`: encoder lr and optimizer) |
+  | `beta_loss`, `drop_rate`, `with_features` | 0.01606…, 0.2, true | the classifiers (`drop_rate`: stamp classifier, fine-tuning head) |
+  | `supervised_model` | `stamp_classifier` (or `resnet18/34/50/152`) | `train-supervised` |
+  | `encoder_name`, `projection_dim`, `temperature`, `lars_legacy_trust_ratio` | `resnet18`, 300, 0.1791…, true | `pretrain` |
+  | `pretrained` | null (a checkpoint or a pretrain output directory) | `linear-eval`, `fine-tune` |
+  | `fine_tune_lr_factor` | 0.2 (legacy `fine_tuning.py`: `lr=0.2*hparams.lr`) | `fine-tune` |
+
+  The classifier defaults are `results/hparams_best_ce.yaml` with `AdamW` (the optimizer of
+  every tuned trial behind it; the plan's known defects). Optional fields accept `null`.
+- `load_settings(path, overrides, defaults=...)`: `defaults` (a subcommand's legacy
+  protocol) sits between the dataclass defaults and the file. `read_settings_file` reads a
+  YAML mapping without checking keys; `settings_to_plain` gives the plain (YAML/JSON) form
+  that `show-config` prints and the metrics JSON records.
 
 ## `cli` (task 1.1; subcommands from 1.2 and 1.7)
 
@@ -67,8 +91,24 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
 - `inspect-data PATH [--json]`, `make-synthetic --out DIR [--n-per-split N] [--seed S]`
   and `prepare-data PKL [--out DIR] [--overwrite]` (1.2; see the `data` section). Data
   errors print one `astro-simclr: error: ...` line and exit with 1.
-- Planned: `pretrain`,
-  `linear-eval`, `fine-tune`, `train-supervised`, `compare-reference`, `preflight` (1.7).
+- `--set` takes one or more `KEY=VALUE` items and may be repeated (`--set max_epochs=1
+  limit_train_batches=2`); put it after the positional arguments.
+- **Training (1.7):** `pretrain`, `linear-eval`, `fine-tune`, `train-supervised` (see
+  `experiments`). Each takes `--config`, `--set`, `--hparams FILE` (a legacy
+  `results/hparams_best_*.yaml`, see `hparams`), `--data-dir`, `--output-dir`, `--seed`,
+  `--accelerator`, `--resume PATH|auto`; `linear-eval` and `fine-tune` also `--pretrained
+  PATH`. Settings resolve as: `Settings` defaults → the subcommand's legacy protocol
+  (`hparams.COMMAND_DEFAULTS`) → `--hparams` → `--config` → `--set` → the explicit flags
+  (later wins; `cli.training_settings`). The legacy file comes before the config so that a
+  config can correct it (R1's `AdamW`). Dry mode: `--set max_epochs=1 limit_train_batches=2
+  limit_val_batches=2` (not `fast_dev_run`, which writes no checkpoint).
+- `compare-reference RUN_DIR... --ref R1|R2|R3|R4` (see `reference`): exit 0 for PASS or
+  REPORT, 1 for FAIL.
+- `preflight (--synthetic | --data-dir DIR) [--accelerator cuda] [--runs R1,R2,R3,R4]
+  [--set ...]` (see `preflight`): exit 0 if no step failed, else 1.
+  `scripts/gpu-preflight.sh` is a thin `uv run --no-sync` wrapper.
+- Exit codes: 0 success; 1 unusable data (`DataError`) or a failed gate/preflight; 2 invalid
+  settings or arguments, including an unavailable accelerator (`AcceleratorError`).
 
 ## `augmentations` (protocol in 1.1; transforms in 1.5)
 
@@ -364,7 +404,8 @@ legacy modules.
   on the progress bar. SimCLR logs `Loss_encoder/Train`, `loss_train_enc`, `lr`,
   `positive_mean`, `negative_mean`. The x-axis is now Lightning's global step, not the epoch.
 - Validation and test store the row-normalised confusion matrix (on the CPU) in
-  `module.confusion_matrices["val"|"test"]`, for the figures and metrics JSON of 1.7.
+  `module.confusion_matrices["val"|"test"]`, and the labels `(y_pred, y_true)` in
+  `module.predictions["val"|"test"]`, for the figures and metrics JSON of 1.7.
 - `MONITORABLE` (class attribute) lists what `Settings.monitor` may select:
   `accuracy_val`, `loss_val` for the classifiers, `loss_train_enc` for SimCLR (which has no
   validation loop). The protocol default `accuracy_val` therefore raises `ConfigError` for
@@ -391,7 +432,9 @@ torchmetrics ≥ 1 with `task="multiclass"`: `classification_metrics(y_pred, y_t
 every legacy accuracy is micro; tested on fixed, imbalanced predictions, also through a
 module's logged `accuracy_val`), macro precision and macro recall (classes absent from
 predictions and targets left out, as in torchmetrics 0.6); `confusion_matrix(y_pred,
-y_true)` uses `normalize="true"` (an empty row is zeros).
+y_true)` uses `normalize="true"` (an empty row is zeros). Added in 1.7 for the metrics JSON:
+`confusion_counts` (not normalised) and `macro_f1` (classes absent from predictions and
+targets left out, like precision and recall).
 
 **Data modules** (`datamodules.py`) build their datasets in `setup()` (legacy:
 `prepare_data()`, which runs on one process only), from a prepared layout directory,
@@ -422,8 +465,15 @@ memory-mapped:
   `settings.monitor` with `patience` and `min_delta` from the settings. `mode` comes from
   `MONITOR_MODES` (`accuracy_val` max; `loss_val`, `loss_train_enc` min); a monitor the
   module does not log raises `ConfigError`. Nothing hard-codes `accuracy_val`.
+- `build_last_checkpoint(dirpath)` (1.7): a second, monitor-less `ModelCheckpoint` that
+  writes `last.ckpt` every epoch, what `--resume` continues from. Not `save_last=True`:
+  since Lightning 2.6, `save_last` writes only in steps where the top-k checkpoint was also
+  written, so `last.ckpt` went stale after an epoch without improvement (found by the
+  resume test of 1.7). `build_callbacks` also passes `check_finite` and
+  `divergence_threshold` from the settings to EarlyStopping (1.7).
 - `build_trainer(settings, callbacks=..., logger=True, **overrides)`: `accelerator`,
-  `devices`, `max_epochs`, `deterministic` from the settings, `benchmark=not deterministic`
+  `devices`, `max_epochs`, `deterministic`, and (when set) `limit_train_batches` /
+  `limit_val_batches` from the settings, `benchmark=not deterministic`
   (legacy `True`), `default_root_dir=output_dir`. This is the only place a device is chosen.
 
 **Tests** run on the CPU everywhere and on MPS/CUDA when available
@@ -458,3 +508,115 @@ because spawned workers cost about 25 s on macOS.
 - **Kept, although odd:** `LinearEvalModule` passes `softmax(logits)` to `P_stamps_loss`,
   which applies its own softmax (legacy `Linear_classifier.prediction_target_loss`). Fixing
   it changes linear-evaluation results, so it is left to a later phase.
+
+## `hparams` (task 1.7)
+
+`src/astro_simclr/hparams.py`: what the training subcommands take from the legacy code.
+
+- `COMMAND_DEFAULTS`: per subcommand, the settings that differ from the `Settings`
+  defaults, so each subcommand's protocol is its legacy `iter_*.py` one. Only `pretrain`
+  differs (`iter_clr.py`: 400 epochs, patience 100, `min_delta` 0.002 on `loss_train_enc`,
+  `resnet18`, `simclr`, batch 450, LARS lr 1.258, dataset `td_ztf_stamp_simclr_300`); the
+  classifiers keep the `Settings` defaults (220 epochs, patience 40, `min_delta` 0.001 on
+  `accuracy_val`).
+- `load_legacy_hparams(path, command)` maps a `results/hparams_best_*.yaml` file to
+  settings through documented tables. A **classifier file** (`hparams_best_ce*.yaml`;
+  `CLASSIFIER_KEYS`, identity names) configures `train-supervised`, `linear-eval` and
+  `fine-tune`. A **SimCLR file** (`hparams_best_simclr.yaml`; `SIMCLR_KEYS`) is split:
+  `pretrain` takes `*_encoder`, `encoder_name`, `projection_dim`, `temperature`,
+  `augmentation`, `image_size`; `linear-eval` / `fine-tune` take `*_classifier`,
+  `beta_loss`, `with_features`, `image_size` (its `augmentation` is the *pretraining* one).
+  The keys of the other group are skipped and reported on stderr, never applied.
+- Errors (`ConfigError`): a key outside the table (the message lists the valid keys), a
+  file of the wrong kind for the subcommand, `method` other than `simclr` (SupCon is in the
+  backlog) and `balanced_batch: true` (no such argument in the current legacy module).
+  Augmentation names may be legacy aliases.
+
+## `experiments` (task 1.7)
+
+`src/astro_simclr/experiments.py`: `run_command(command, settings, resume=None,
+callbacks=(), progress_bar=True)` runs one training subcommand, for the CLI and the
+preflight alike:
+
+1. `check_accelerator`: `cuda` without `torch.cuda.is_available()` (or `mps`, `gpu`
+   without one) raises `AcceleratorError`, naming the torch build and the preflight, before
+   anything is built;
+2. `dataset_path`: `data_dir/<dataset>` must be a prepared layout (`DataError` says how to
+   prepare it);
+3. `seed_run` before any module is built (downstream: after loading the pretrained
+   checkpoint, so the head's initial weights do not depend on the loading path);
+4. the module and data module from the settings: `SimCLRModule` + `ContrastiveDataModule`,
+   or a classifier module + `ClassifierDataModule`. `linear-eval` / `fine-tune` load the
+   pretrain checkpoint (`load_pretrained`: a `.ckpt` or a pretrain output directory; its
+   hyperparameters must be SimCLR's, and `image_size` must equal the encoder's);
+   `fine-tune` trains with `lr * fine_tune_lr_factor`;
+5. `trainer.fit(ckpt_path=resume)` with EarlyStopping, `best.ckpt` (by monitor) and
+   `last.ckpt` (every epoch); `--resume auto` means `OUT/checkpoints/last.ckpt` if present;
+6. classifiers: `validate` and `test` on `best.ckpt`, then the figures and the metrics.
+
+Outputs, all under `output_dir`: `checkpoints/{best,last}.ckpt`,
+`lightning_logs/version_N/` (TensorBoard), `metrics.json`, and for the classifiers
+`confusion_matrix_{val,test}.png`. `metrics.json`: command, seed, `best_epoch` (0-based),
+`last_epoch`, monitor and `monitor_best`, versions, accelerator, the data (prepared path,
+source SHA-256, class counts per split from `meta.json`), the resolved `config`; the
+classifiers add `val_acc_best` (micro accuracy on Validation at the best checkpoint: with
+the monitor `accuracy_val`, the best validation accuracy over epochs, the metric of the
+legacy tables), `test_acc_at_best`, `val_macro_f1`, `test_macro_f1` and, per split, the
+normalised and count confusion matrices. Non-finite numbers are written as `null`.
+
+**Resume** restores the epoch counter, optimizer, LR schedule and the EarlyStopping /
+checkpoint state (tested: 2 + 2 epochs equal 4 in epoch, global step, lr and `wait_count`).
+It does not restore the global random generators, so the later epochs' augmentations and
+shuffling differ from an uninterrupted run.
+
+## `reference` (task 1.7)
+
+`src/astro_simclr/reference.py`, behind `compare-reference`. `REFERENCES` holds R1-R4
+(plan, "Reference runs"): the accepted commands, the gate and, for the pass rule, the legacy
+mean, sample std (ddof=1) and number of repeats. Each run directory's `metrics.json` is
+checked (command, `supervised_model`, no duplicate seed) and `val_acc_best` aggregated
+(mean, std with ddof=1, any n).
+
+- **R1, R2, pass rule:** one run: `|x - m_old| <= max(2 s_old sqrt(1 + 1/n_old), 0.01)`;
+  n >= 2: `|mean - m_old| <= max(2 sqrt(s_old²/n_old + s_new²/n), 0.01)`. The plan writes
+  `/5`; the code uses the real repeat counts: R1 0.9496 ± 0.002191 (n=5,
+  `summary_tuning_ce.csv` row 10), R2 0.902667 ± 0.009866 (**n=3**: the ResNet tuning ran 3
+  trials per configuration).
+- **R3, baseline:** pretrain runs need a finite selected loss; every linear-eval run needs
+  finite accuracies and a validation accuracy above the majority-class baseline of its own
+  Validation split (class counts copied from `meta.json` into `metrics.json`).
+- **R4:** report only. R1 also prints the Carrasco-Davis et al. 2021 figures as context.
+
+## `preflight` (task 1.7)
+
+`src/astro_simclr/preflight.py`, behind `astro-simclr preflight` and
+`scripts/gpu-preflight.sh`. Each step prints PASS, FAIL, WARN or SKIP; a failed step 1, or
+a failed step 2-4, stops it.
+
+1. **CUDA:** `nvidia-smi` (driver, compute capability; injectable for tests) →
+   `choose_torch_build`, the table of ADR 0001 rule 6 (capability < 7.5 → `cu126`;
+   Blackwell → default build with driver >= 580; else driver >= 580 → default, below →
+   `cu126`; `cu126` needs >= 525). Then the installed build: `torch.version.cuda` set, a
+   driver new enough for it, `torch.cuda.is_available()`, and `arch_supported(capability,
+   torch.cuda.get_arch_list())`. A mismatch prints the exact `uv sync` command. With
+   `--accelerator` other than `cuda` the step is a SKIP that still checks the accelerator.
+2. **Resources:** RAM (`MemAvailable`, or total memory where that is all the OS reports)
+   >= the largest prepared dataset's arrays (from `meta.json`) + 2 GiB; 2 GiB free disk
+   under the output directory. Pickles in the data directory only warn.
+3. **Data:** `inspect-data` (`summarize`) on every prepared directory: schema, `meta.json`,
+   hashes.
+4. **Manifest:** `data-manifest.json` in the data directory (per dataset: kind, source,
+   per-split counts and file SHA-256s). Written on the first run; later runs fail on a
+   missing or changed dataset and warn on a new one. Never written if step 3 failed.
+5. **Dry chain:** the configs of `configs/reference/` (R3 pretrain → R3 linear-eval and
+   fine-tune on that checkpoint → R1, R2, R4; `--runs` selects) through `run_command`, with
+   `max_epochs=1`, `limit_train_batches=steps+1`, `limit_val_batches=2`, at the reference
+   batch sizes (capped to the Train size), on the chosen accelerator, so a batch that does
+   not fit the GPU fails here. A dataset that is not prepared is a SKIP (WARN).
+6. **Throughput:** `ThroughputTimer` measures steps/s between consecutive batches of an
+   epoch (first batch untimed; the device is synchronised so the clock measures work), with
+   the real DataLoader. The estimate per run is `(n_train // batch) * max_epochs / rate`,
+   times 5 seeds (R1, R2) for the full set, with R3's linear evaluation summed over the 1,
+   10 and 100 % files; an upper bound, without validation time. With `--synthetic` (the
+   four synthetic files, `--n-per-split` 2400 by default, under the output directory) it
+   uses the real Train counts of `docs/data.md` (`REAL_TRAIN_COUNTS`).

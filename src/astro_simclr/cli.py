@@ -1,15 +1,29 @@
 """The ``astro-simclr`` command line (``[project.scripts]``).
 
-Phase 1 grows this one subcommand per task (``inspect-data``, ``pretrain``, ...). Each
-subcommand registers itself in :func:`build_parser` and reads its settings through
+Each subcommand registers itself in :func:`build_parser` and reads its settings through
 :func:`add_settings_arguments` / :func:`settings_from_args`, so that every command accepts
-the same ``--config FILE`` and ``--set key=value`` options. Subcommands: ``show-config``
-(the resolved settings), and the data commands of task 1.2: ``inspect-data``,
-``make-synthetic`` and ``prepare-data`` (see ``docs/data.md``).
+the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subcommands:
 
-The data modules are imported inside the handlers, so ``show-config`` and ``--help`` stay
-fast. A :class:`~astro_simclr.data.DataError` (bad, truncated or missing data) prints one
-``astro-simclr: error: ...`` line and exits with 1.
+- ``show-config``: the resolved settings;
+- data (task 1.2, ``docs/data.md``): ``inspect-data``, ``make-synthetic``, ``prepare-data``;
+- training (task 1.7, :mod:`astro_simclr.experiments`): ``pretrain``, ``linear-eval``,
+  ``fine-tune``, ``train-supervised``. Their settings resolve as: the ``Settings``
+  defaults, the subcommand's legacy protocol (``hparams.COMMAND_DEFAULTS``), ``--hparams``
+  (a legacy ``results/hparams_best_*.yaml``, through the mapping of
+  :mod:`astro_simclr.hparams`), ``--config``, ``--set``, then the explicit flags
+  (``--data-dir``, ``--output-dir``, ``--seed``, ``--accelerator``, ``--pretrained``);
+  later wins. The legacy file comes first so that a config can correct it (R1's AdamW);
+- ``compare-reference RUN_DIR... --ref R1|R2|R3|R4`` (:mod:`astro_simclr.reference`): exit
+  0 for PASS or REPORT, 1 for FAIL;
+- ``preflight`` (:mod:`astro_simclr.preflight`): exit 0 if no step failed, else 1.
+
+The heavy modules (torch, Lightning) are imported inside the handlers, so ``show-config``
+and ``--help`` stay fast. A :class:`~astro_simclr.data.DataError` (bad, truncated or missing
+data) prints one ``astro-simclr: error: ...`` line and exits with 1; invalid settings,
+arguments or an unavailable accelerator exit with 2.
+
+``--set`` takes one or more ``key=value`` items (and may be repeated), so put it after the
+positional arguments of a command, or end it with ``--``.
 
 :func:`main` takes ``argv`` explicitly so tests can call it in-process; it returns the exit
 code instead of calling ``sys.exit``.
@@ -18,7 +32,6 @@ code instead of calling ``sys.exit``.
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import json
 import sys
 from collections.abc import Sequence
@@ -27,9 +40,25 @@ from pathlib import Path
 
 import yaml
 
-from astro_simclr.config import ConfigError, Settings, load_settings
+from astro_simclr.config import (
+    ACCELERATORS,
+    ConfigError,
+    Settings,
+    load_settings,
+    parse_override,
+    read_settings_file,
+    settings_from_mapping,
+    settings_to_plain,
+)
+from astro_simclr.hparams import COMMAND_DEFAULTS, COMMANDS, load_legacy_hparams
 
-__all__ = ["add_settings_arguments", "build_parser", "main", "settings_from_args"]
+__all__ = [
+    "add_settings_arguments",
+    "build_parser",
+    "main",
+    "settings_from_args",
+    "training_settings",
+]
 
 #: Exit code for invalid settings or arguments (argparse also uses 2 for usage errors).
 EXIT_USAGE = 2
@@ -45,10 +74,11 @@ def add_settings_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--set",
         dest="overrides",
-        action="append",
+        action="extend",
+        nargs="+",
         default=[],
         metavar="KEY=VALUE",
-        help="override one setting; repeatable; VALUE is parsed as YAML",
+        help="override settings (one or more KEY=VALUE; repeatable); VALUE is parsed as YAML",
     )
 
 
@@ -66,11 +96,7 @@ def settings_from_args(args: argparse.Namespace) -> Settings:
 def _show_config(args: argparse.Namespace) -> int:
     settings = settings_from_args(args)
     # Paths are printed as strings so the output is itself a valid settings file.
-    plain = {
-        key: str(value) if isinstance(value, Path) else value
-        for key, value in dataclasses.asdict(settings).items()
-    }
-    sys.stdout.write(yaml.safe_dump(plain, sort_keys=False))
+    sys.stdout.write(yaml.safe_dump(settings_to_plain(settings), sort_keys=False))
     return 0
 
 
@@ -173,6 +199,182 @@ def _add_data_commands(commands: argparse._SubParsersAction[argparse.ArgumentPar
     prepare.set_defaults(handler=_prepare_data)
 
 
+def training_settings(command: str, args: argparse.Namespace) -> Settings:
+    """Resolve the settings of a training subcommand (the order is in the module docstring).
+
+    Keys of ``--hparams`` that belong to another subcommand are reported on stderr.
+
+    Raises:
+        ConfigError: if any source is invalid, or the legacy file does not map.
+    """
+    data: dict[str, object] = dict(COMMAND_DEFAULTS[command])
+    if args.hparams is not None:
+        legacy = load_legacy_hparams(args.hparams, command)
+        if legacy.skipped:
+            sys.stderr.write(
+                f"astro-simclr: note: {args.hparams}: not used by {command}: "
+                f"{', '.join(legacy.skipped)}\n"
+            )
+        data.update(legacy)
+    if args.config is not None:
+        data.update(read_settings_file(args.config))
+    for text in args.overrides:
+        key, value = parse_override(text)
+        data[key] = value
+    flags = {
+        "data_dir": args.data_dir,
+        "output_dir": args.output_dir,
+        "seed": args.seed,
+        "accelerator": args.accelerator,
+        "pretrained": getattr(args, "pretrained", None),
+    }
+    data.update({key: value for key, value in flags.items() if value is not None})
+    return settings_from_mapping(data)
+
+
+def _train(args: argparse.Namespace) -> int:
+    from astro_simclr.experiments import METRICS_FILE, run_command
+
+    command: str = args.command
+    settings = training_settings(command, args)
+    metrics = run_command(command, settings, resume=args.resume)
+    summary = ", ".join(
+        f"{key} {metrics[key]}"
+        for key in ("best_epoch", "monitor_best", "val_acc_best", "test_acc_at_best")
+        if key in metrics
+    )
+    sys.stdout.write(f"{command}: {summary}; wrote {settings.output_dir / METRICS_FILE}\n")
+    return 0
+
+
+_TRAINING_HELP = {
+    "pretrain": "SimCLR pretraining of an encoder (legacy iter_clr.py)",
+    "linear-eval": "linear evaluation of a pretrained encoder (legacy linear_classifier.py)",
+    "fine-tune": "fine-tuning of a pretrained encoder (legacy fine_tuning.py)",
+    "train-supervised": "supervised CE baseline: stamp classifier or ResNet (iter_ce_*.py)",
+}
+
+
+def _add_training_commands(
+    commands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    for command in COMMANDS:
+        sub = commands.add_parser(
+            command,
+            help=_TRAINING_HELP[command],
+            description=f"{_TRAINING_HELP[command]}. Writes checkpoints, metrics.json and "
+            "(classifiers) confusion-matrix figures under the output directory. Dry mode: "
+            "--set max_epochs=1 limit_train_batches=2 limit_val_batches=2.",
+        )
+        add_settings_arguments(sub)
+        sub.add_argument(
+            "--hparams",
+            type=Path,
+            metavar="FILE",
+            help="legacy results/hparams_best_*.yaml, mapped per subcommand (applied before "
+            "--config)",
+        )
+        sub.add_argument("--data-dir", metavar="DIR", help="parent of the prepared datasets")
+        sub.add_argument("--output-dir", metavar="DIR", help="where every output goes")
+        sub.add_argument("--seed", type=int, metavar="N", help="random seed")
+        sub.add_argument(
+            "--accelerator", choices=sorted(ACCELERATORS), help="cpu, cuda, mps, gpu or auto"
+        )
+        sub.add_argument(
+            "--resume",
+            metavar="PATH|auto",
+            help="continue from a checkpoint; auto: OUTPUT_DIR/checkpoints/last.ckpt if any",
+        )
+        if command in ("linear-eval", "fine-tune"):
+            sub.add_argument(
+                "--pretrained",
+                metavar="PATH",
+                help="the pretrain checkpoint, or a pretrain output directory",
+            )
+        sub.set_defaults(handler=_train)
+
+
+def _compare_reference(args: argparse.Namespace) -> int:
+    from astro_simclr.reference import compare_reference, exit_code
+
+    comparison = compare_reference(args.ref, args.run_dirs)
+    sys.stdout.write("\n".join(comparison.lines) + "\n")
+    return exit_code(comparison.result)
+
+
+def _preflight(args: argparse.Namespace) -> int:
+    from astro_simclr.preflight import run_preflight
+
+    runs = [name.strip() for name in args.runs.split(",") if name.strip()]
+    passed = run_preflight(
+        output_dir=args.output_dir,
+        data_dir=args.data_dir,
+        synthetic=args.synthetic,
+        accelerator=args.accelerator,
+        reference_dir=args.reference_dir,
+        runs=runs,
+        overrides=args.overrides,
+        n_per_split=args.n_per_split,
+        seed=args.seed,
+        steps=args.steps,
+    )
+    return 0 if passed else EXIT_DATA
+
+
+def _add_check_commands(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    compare = commands.add_parser(
+        "compare-reference",
+        help="judge reference runs against their gate (PASS, FAIL or REPORT)",
+        description="Aggregate the metrics.json of the given run directories (mean, std "
+        "with ddof=1) and apply the gate of the reference run: the pass rule (R1, R2), the "
+        "majority-class baseline (R3) or report only (R4). Exit 0 for PASS or REPORT, 1 "
+        "for FAIL.",
+    )
+    compare.add_argument("run_dirs", type=Path, nargs="+", metavar="RUN_DIR")
+    compare.add_argument("--ref", required=True, choices=["R1", "R2", "R3", "R4"])
+    compare.set_defaults(handler=_compare_reference)
+
+    preflight = commands.add_parser(
+        "preflight",
+        help="check that this machine can run the reference runs",
+        description="CUDA and torch build, RAM and disk, the data and its manifest, a dry "
+        "run of every reference config and the GPU-hour estimate. Exit 0 if no step "
+        "failed, else 1.",
+    )
+    source = preflight.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--synthetic", action="store_true", help="generate synthetic data and use it"
+    )
+    source.add_argument("--data-dir", type=Path, metavar="DIR", help="the prepared real data")
+    preflight.add_argument(
+        "--output-dir", type=Path, default=Path("outputs/preflight"), metavar="DIR"
+    )
+    preflight.add_argument(
+        "--accelerator", default="cuda", choices=sorted(ACCELERATORS), help="default: cuda"
+    )
+    preflight.add_argument(
+        "--reference-dir", type=Path, default=Path("configs/reference"), metavar="DIR"
+    )
+    preflight.add_argument(
+        "--runs", default="R1,R2,R3,R4", metavar="LIST", help="comma-separated (default: all)"
+    )
+    preflight.add_argument(
+        "--n-per-split", type=int, default=2400, metavar="N", help="synthetic stamps per split"
+    )
+    preflight.add_argument("--steps", type=int, default=20, metavar="N", help="timed steps")
+    preflight.add_argument("--seed", type=int, default=0, metavar="N")
+    preflight.add_argument(
+        "--set",
+        dest="overrides",
+        action="extend",
+        nargs="+",
+        default=[],
+        metavar="KEY=VALUE",
+        help="settings applied to every dry run (e.g. num_workers=0)",
+    )
+    preflight.set_defaults(handler=_preflight)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level parser with every subcommand."""
     parser = argparse.ArgumentParser(
@@ -188,6 +390,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_settings_arguments(show)
     show.set_defaults(handler=_show_config)
     _add_data_commands(commands)
+    _add_training_commands(commands)
+    _add_check_commands(commands)
     return parser
 
 

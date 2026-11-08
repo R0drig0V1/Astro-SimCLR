@@ -1,0 +1,31 @@
+# R4: CE stamp classifier, R1's config without features, 1 % labels (one seed).
+# Run: astro-simclr train-supervised --config configs/reference/R4.yaml --seed 0
+#      --output-dir OUT/R4/seed-0
+# Gate: astro-simclr compare-reference OUT/R4/seed-0 --ref R4 (report only: the comparison
+#       point for R3, which has the same feature setting).
+#
+# Provenance: R1.yaml (docs/phases/01-runnable-package.md, "Reference runs"), with
+# with_features false and the 1 % file td_ztf_stamp_17_06_20_sup_1 (complete, received).
+
+accelerator: cuda
+devices: 1
+num_workers: 4
+
+dataset: td_ztf_stamp_17_06_20_sup_1
+supervised_model: stamp_classifier
+image_size: 27
+with_features: false
+augmentation: without_aug
+batch_size: 45
+eval_batch_size: 100
+optimizer: AdamW
+lr: 0.002495379490073152
+beta_loss: 0.016063800410738464
+drop_rate: 0.2
+
+max_epochs: 220
+patience: 70
+min_delta: 0.001
+monitor: accuracy_val
+check_finite: true
+divergence_threshold: 0.1

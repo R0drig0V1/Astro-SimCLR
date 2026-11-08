@@ -5,10 +5,16 @@ training protocol in every entry point (max_epochs, EarlyStopping patience and m
 the checkpoint monitor, the eval batch size). Here they are one frozen dataclass,
 :class:`Settings`, so every run records exactly what it used.
 
-Resolution order (later wins): the dataclass defaults, the YAML file, the overrides. YAML is
-read with ``yaml.safe_load`` only (the legacy ``FullLoader`` can build arbitrary objects).
-Unknown keys and values of the wrong type are errors, never silently ignored: a typo in a
-reference config must not change an experiment.
+The fields are flat, so that any of them can be overridden with ``--set key=value``. Besides
+the hardware, paths and protocol, they hold the hyperparameters of the four training
+subcommands (task 1.7); each subcommand reads the fields it needs, and the others are
+recorded but unused (``docs/architecture.md``, section ``config``, lists which).
+
+Resolution order (later wins): the dataclass defaults, an optional ``defaults`` mapping (a
+subcommand's legacy protocol), the YAML file, the overrides. YAML is read with
+``yaml.safe_load`` only (the legacy ``FullLoader`` can build arbitrary objects). Unknown
+keys and values of the wrong type are errors, never silently ignored: a typo in a reference
+config must not change an experiment.
 """
 
 from __future__ import annotations
@@ -28,7 +34,9 @@ __all__ = [
     "Settings",
     "load_settings",
     "parse_override",
+    "read_settings_file",
     "settings_from_mapping",
+    "settings_to_plain",
 ]
 
 #: Accelerator names accepted by ``Settings.accelerator`` (the Lightning names this project
@@ -45,7 +53,10 @@ class Settings:
     """Hardware, paths, reproducibility, training protocol and loss options of one run.
 
     The protocol defaults are the legacy classifier values (``iter_ce_stamp.py``,
-    ``linear_classifier.py`` and ``fine_tuning.py``); pretraining configs override them.
+    ``linear_classifier.py`` and ``fine_tuning.py``); the ``pretrain`` subcommand replaces
+    them with the ``iter_clr.py`` values (``hparams.COMMAND_DEFAULTS``). The classifier
+    hyperparameter defaults are ``results/hparams_best_ce.yaml`` with ``AdamW`` (the
+    optimizer of every tuned trial behind it; the plan's known-defects table).
     """
 
     #: Lightning accelerator; see :data:`ACCELERATORS`. Reference configs set ``cuda`` so
@@ -78,6 +89,52 @@ class Settings:
     #: ``1 + sum_neg exp(s_neg)``, so that runs stay comparable with ``results/``; False uses
     #: the paper's ``exp(s_pos) + sum_neg exp(s_neg)`` (ADR 0002).
     nt_xent_legacy_denominator: bool = True
+    #: EarlyStopping ``check_finite``: stop when the monitored value becomes NaN or inf.
+    check_finite: bool = True
+    #: EarlyStopping ``divergence_threshold``: stop as soon as the monitored value is worse
+    #: than this (the legacy tuning protocol used 0.1 on ``accuracy_val``). None: never.
+    divergence_threshold: float | None = None
+    #: ``Trainer(limit_train_batches=...)``: an int is a number of batches per epoch, a float
+    #: a fraction. None: every batch. The dry mode sets 2.
+    limit_train_batches: int | float | None = None
+    #: ``Trainer(limit_val_batches=...)``, as ``limit_train_batches``.
+    limit_val_batches: int | float | None = None
+
+    # --- Data and model hyperparameters of the training subcommands (task 1.7) -------------
+
+    #: Prepared layout to train on: the directory ``data_dir/<dataset>`` (a pickle stem).
+    dataset: str = "td_ztf_stamp_17_06_20"
+    #: Side of the centre crop fed to the network (the stamp networks need 27).
+    image_size: int = 27
+    #: Training batch size (SimCLR: pairs per batch).
+    batch_size: int = 45
+    #: Learning rate (SimCLR: the encoder's base rate before the cosine schedule).
+    lr: float = 0.002495379490073152
+    #: Optimizer name: ``AdamW``, ``Adam``, ``SGD`` or ``LARS``.
+    optimizer: str = "AdamW"
+    #: Training augmentation: a registry name or a legacy alias (``augmentations``).
+    augmentation: str = "center_crop"
+    #: ``P_stamps_loss`` entropy weight of the classifiers.
+    beta_loss: float = 0.016063800410738464
+    #: Dropout of the stamp classifier and of the fine-tuning head.
+    drop_rate: float = 0.2
+    #: Concatenate the 23 alert features to the image representation.
+    with_features: bool = True
+    #: ``train-supervised`` network: ``stamp_classifier`` or a ResNet name.
+    supervised_model: str = "stamp_classifier"
+    #: ``pretrain`` encoder (``build_encoder`` names: ``stamp<k>``, ``pstamps``, ``resnet*``).
+    encoder_name: str = "resnet18"
+    #: ``pretrain`` projection-head output size.
+    projection_dim: int = 300
+    #: ``pretrain`` NT-Xent temperature.
+    temperature: float = 0.17910250439416514
+    #: LARS ``legacy_trust_ratio``: True keeps the legacy always-true ``.ge(0)`` test.
+    lars_legacy_trust_ratio: bool = True
+    #: ``linear-eval`` / ``fine-tune``: the pretrain checkpoint, or a pretrain run directory
+    #: (its ``checkpoints/best.ckpt``).
+    pretrained: Path | None = None
+    #: ``fine-tune`` trains with ``lr * fine_tune_lr_factor`` (legacy ``fine_tuning.py``: 0.2).
+    fine_tune_lr_factor: float = 0.2
 
     def __post_init__(self) -> None:
         """Check the values that a type alone cannot (ranges and names).
@@ -98,8 +155,24 @@ class Settings:
                 raise ConfigError(f"{name} must be >= 0, got {getattr(self, name)}")
         if self.min_delta < 0:
             raise ConfigError(f"min_delta must be >= 0, got {self.min_delta}")
-        if not self.monitor:
-            raise ConfigError("monitor must not be empty")
+        for name in ("monitor", "dataset", "optimizer", "augmentation", "encoder_name"):
+            if not getattr(self, name):
+                raise ConfigError(f"{name} must not be empty")
+        self._check_hyperparameters()
+
+    def _check_hyperparameters(self) -> None:
+        for name in ("image_size", "batch_size", "projection_dim"):
+            if getattr(self, name) < 1:
+                raise ConfigError(f"{name} must be >= 1, got {getattr(self, name)}")
+        for name in ("lr", "temperature", "fine_tune_lr_factor"):
+            if not getattr(self, name) > 0:
+                raise ConfigError(f"{name} must be > 0, got {getattr(self, name)}")
+        if not 0 <= self.drop_rate < 1:
+            raise ConfigError(f"drop_rate must be in [0, 1), got {self.drop_rate}")
+        for name in ("limit_train_batches", "limit_val_batches"):
+            value = getattr(self, name)
+            if value is not None and not value > 0:
+                raise ConfigError(f"{name} must be > 0, got {value}")
 
     def replace(self, **changes: Any) -> Settings:
         """Return a copy with ``changes`` applied, validated like :func:`settings_from_mapping`.
@@ -135,6 +208,12 @@ def _coerce_str(value: object) -> str:
     raise TypeError("a string")
 
 
+def _coerce_none(value: object) -> None:
+    if value is None:
+        return None
+    raise TypeError("null")
+
+
 def _coerce_path(value: object) -> Path:
     if isinstance(value, Path):
         return value
@@ -149,6 +228,7 @@ _COERCERS: dict[type, Callable[[object], Any]] = {
     bool: _coerce_bool,
     str: _coerce_str,
     Path: _coerce_path,
+    type(None): _coerce_none,
 }
 
 
@@ -212,28 +292,59 @@ def parse_override(text: str) -> tuple[str, object]:
     return key, value
 
 
-def load_settings(path: Path | None = None, overrides: Iterable[str] = ()) -> Settings:
+def read_settings_file(path: Path) -> dict[str, object]:
+    """Read a YAML settings file into a mapping, without checking the keys.
+
+    An empty file gives ``{}``.
+
+    Raises:
+        ConfigError: if the file cannot be read, is not valid YAML or is not a mapping with
+            string keys.
+    """
+    try:
+        loaded: object = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except OSError as err:
+        raise ConfigError(f"cannot read settings file {path}: {err}") from None
+    except yaml.YAMLError as err:
+        raise ConfigError(f"settings file {path} is not valid YAML: {err}") from None
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict) or not all(isinstance(k, str) for k in loaded):
+        raise ConfigError(f"settings file {path} must be a mapping of setting names")
+    return dict(loaded)
+
+
+def load_settings(
+    path: Path | None = None,
+    overrides: Iterable[str] = (),
+    *,
+    defaults: Mapping[str, object] | None = None,
+) -> Settings:
     """Resolve the settings of a run: defaults, then the YAML file ``path``, then ``overrides``.
 
-    An empty YAML file means "all defaults".
+    ``defaults`` (for example a subcommand's legacy protocol) sits between the dataclass
+    defaults and the file. An empty YAML file means "no change".
 
     Raises:
         ConfigError: if the file cannot be read, is not valid YAML, is not a mapping, or any
             key or value is invalid (see :func:`settings_from_mapping`).
     """
-    data: dict[str, object] = {}
+    data: dict[str, object] = dict(defaults or {})
     if path is not None:
-        try:
-            loaded: object = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except OSError as err:
-            raise ConfigError(f"cannot read settings file {path}: {err}") from None
-        except yaml.YAMLError as err:
-            raise ConfigError(f"settings file {path} is not valid YAML: {err}") from None
-        if loaded is not None:
-            if not isinstance(loaded, dict) or not all(isinstance(k, str) for k in loaded):
-                raise ConfigError(f"settings file {path} must be a mapping of setting names")
-            data.update(loaded)
+        data.update(read_settings_file(path))
     for text in overrides:
         key, value = parse_override(text)
         data[key] = value
     return settings_from_mapping(data)
+
+
+def settings_to_plain(settings: Settings) -> dict[str, object]:
+    """The settings as plain YAML/JSON values (paths as strings), in field order.
+
+    The result is itself a valid settings mapping: ``settings_from_mapping`` of it gives
+    ``settings`` back.
+    """
+    return {
+        key: str(value) if isinstance(value, Path) else value
+        for key, value in dataclasses.asdict(settings).items()
+    }

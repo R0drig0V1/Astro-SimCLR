@@ -142,7 +142,8 @@ float32 as the legacy code did.
 Training opens it with `np.load(allow_pickle=False, mmap_mode="r")`, so no pickle is ever
 read again and the stamps are paged in on demand: `red` takes 596 MB prepared, against
 2.49 GB as a pickle. `prepare-data` needs about the pickle's size in RAM (the
-pretraining set: 14–29 GB). The preflight (task 1.7) checks this before loading.
+pretraining set: 14–29 GB). The preflight (task 1.7) warns about pickles in the data
+directory that do not fit in RAM, and checks the RAM for the prepared arrays.
 
 ## Workflow and manifest
 
@@ -157,9 +158,12 @@ pretraining set: 14–29 GB). The preflight (task 1.7) checks this before loadin
    `meta.json`, so a prepared directory can always be traced to the exact pickle.
 4. **Check** the prepared directory: `astro-simclr inspect-data data/X` validates it
    against the schema and `meta.json`, and re-hashes every array file.
-5. **Manifest** (task 1.7): on the first real run, the preflight writes
-   `data-manifest.json` from the `inspect-data` summaries of the prepared directories
-   (source SHA-256, per-file hashes, counts). Later runs verify against it. The chain
+5. **Manifest** (task 1.7): on its first run on a data directory, `astro-simclr preflight
+   --data-dir DIR` writes `DIR/data-manifest.json`: per prepared dataset, its kind, source
+   (name, size, SHA-256) and, per split, the counts and the SHA-256 of every array file
+   (from `meta.json`, after `inspect-data` has re-hashed them). Later runs verify against
+   it: a missing or changed dataset fails, a new one warns (delete the manifest to record
+   the new set). The chain
    source hash → `meta.json` → manifest means a run can be traced to its data, and a
    changed or re-prepared file is noticed, without hashing the multi-GB pickles again.
 
