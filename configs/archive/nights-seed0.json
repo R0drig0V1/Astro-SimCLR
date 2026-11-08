@@ -1,0 +1,3395 @@
+{
+  "plan": {
+    "rule": "per year: k equal strata, 1 + spares distinct nights per stratum (primary, then spares) from numpy default_rng([seed, year]); then one pilot stratum per pilot year from the same generator",
+    "seed": 0,
+    "first": "2018-06-01",
+    "last": "2026-11-07",
+    "labelled_years": [
+      2018,
+      2019,
+      2020
+    ],
+    "h1_last_year": 2022,
+    "pilot_years": [
+      2018,
+      2020,
+      2024
+    ],
+    "labelled_per_year": 24,
+    "later_per_year": 8,
+    "spares": 2,
+    "archive_url": "https://ztf.uw.edu/alerts/public/",
+    "nights": [
+      {
+        "night": 20180601,
+        "year": 2018,
+        "stratum": 0,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180601.tar.gz"
+      },
+      {
+        "night": 20180603,
+        "year": 2018,
+        "stratum": 0,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180603.tar.gz"
+      },
+      {
+        "night": 20180605,
+        "year": 2018,
+        "stratum": 0,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180605.tar.gz"
+      },
+      {
+        "night": 20180612,
+        "year": 2018,
+        "stratum": 1,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180612.tar.gz"
+      },
+      {
+        "night": 20180613,
+        "year": 2018,
+        "stratum": 1,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180613.tar.gz"
+      },
+      {
+        "night": 20180614,
+        "year": 2018,
+        "stratum": 1,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180614.tar.gz"
+      },
+      {
+        "night": 20180618,
+        "year": 2018,
+        "stratum": 2,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180618.tar.gz"
+      },
+      {
+        "night": 20180620,
+        "year": 2018,
+        "stratum": 2,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180620.tar.gz"
+      },
+      {
+        "night": 20180624,
+        "year": 2018,
+        "stratum": 2,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180624.tar.gz"
+      },
+      {
+        "night": 20180627,
+        "year": 2018,
+        "stratum": 3,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180627.tar.gz"
+      },
+      {
+        "night": 20180630,
+        "year": 2018,
+        "stratum": 3,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180630.tar.gz"
+      },
+      {
+        "night": 20180704,
+        "year": 2018,
+        "stratum": 3,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180704.tar.gz"
+      },
+      {
+        "night": 20180707,
+        "year": 2018,
+        "stratum": 4,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180707.tar.gz"
+      },
+      {
+        "night": 20180708,
+        "year": 2018,
+        "stratum": 4,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180708.tar.gz"
+      },
+      {
+        "night": 20180713,
+        "year": 2018,
+        "stratum": 4,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180713.tar.gz"
+      },
+      {
+        "night": 20180715,
+        "year": 2018,
+        "stratum": 5,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180715.tar.gz"
+      },
+      {
+        "night": 20180716,
+        "year": 2018,
+        "stratum": 5,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180716.tar.gz"
+      },
+      {
+        "night": 20180718,
+        "year": 2018,
+        "stratum": 5,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180718.tar.gz"
+      },
+      {
+        "night": 20180727,
+        "year": 2018,
+        "stratum": 6,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180727.tar.gz"
+      },
+      {
+        "night": 20180728,
+        "year": 2018,
+        "stratum": 6,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180728.tar.gz"
+      },
+      {
+        "night": 20180729,
+        "year": 2018,
+        "stratum": 6,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180729.tar.gz"
+      },
+      {
+        "night": 20180804,
+        "year": 2018,
+        "stratum": 7,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180804.tar.gz"
+      },
+      {
+        "night": 20180805,
+        "year": 2018,
+        "stratum": 7,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180805.tar.gz"
+      },
+      {
+        "night": 20180807,
+        "year": 2018,
+        "stratum": 7,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180807.tar.gz"
+      },
+      {
+        "night": 20180811,
+        "year": 2018,
+        "stratum": 8,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180811.tar.gz"
+      },
+      {
+        "night": 20180813,
+        "year": 2018,
+        "stratum": 8,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180813.tar.gz"
+      },
+      {
+        "night": 20180814,
+        "year": 2018,
+        "stratum": 8,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180814.tar.gz"
+      },
+      {
+        "night": 20180821,
+        "year": 2018,
+        "stratum": 9,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180821.tar.gz"
+      },
+      {
+        "night": 20180822,
+        "year": 2018,
+        "stratum": 9,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180822.tar.gz"
+      },
+      {
+        "night": 20180826,
+        "year": 2018,
+        "stratum": 9,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180826.tar.gz"
+      },
+      {
+        "night": 20180829,
+        "year": 2018,
+        "stratum": 10,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180829.tar.gz"
+      },
+      {
+        "night": 20180830,
+        "year": 2018,
+        "stratum": 10,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180830.tar.gz"
+      },
+      {
+        "night": 20180901,
+        "year": 2018,
+        "stratum": 10,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180901.tar.gz"
+      },
+      {
+        "night": 20180911,
+        "year": 2018,
+        "stratum": 11,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180911.tar.gz"
+      },
+      {
+        "night": 20180914,
+        "year": 2018,
+        "stratum": 11,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180914.tar.gz"
+      },
+      {
+        "night": 20180915,
+        "year": 2018,
+        "stratum": 11,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180915.tar.gz"
+      },
+      {
+        "night": 20180919,
+        "year": 2018,
+        "stratum": 12,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180919.tar.gz"
+      },
+      {
+        "night": 20180920,
+        "year": 2018,
+        "stratum": 12,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180920.tar.gz"
+      },
+      {
+        "night": 20180922,
+        "year": 2018,
+        "stratum": 12,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180922.tar.gz"
+      },
+      {
+        "night": 20180925,
+        "year": 2018,
+        "stratum": 13,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180925.tar.gz"
+      },
+      {
+        "night": 20180928,
+        "year": 2018,
+        "stratum": 13,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180928.tar.gz"
+      },
+      {
+        "night": 20180929,
+        "year": 2018,
+        "stratum": 13,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20180929.tar.gz"
+      },
+      {
+        "night": 20181005,
+        "year": 2018,
+        "stratum": 14,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181005.tar.gz"
+      },
+      {
+        "night": 20181009,
+        "year": 2018,
+        "stratum": 14,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181009.tar.gz"
+      },
+      {
+        "night": 20181010,
+        "year": 2018,
+        "stratum": 14,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181010.tar.gz"
+      },
+      {
+        "night": 20181015,
+        "year": 2018,
+        "stratum": 15,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181015.tar.gz"
+      },
+      {
+        "night": 20181019,
+        "year": 2018,
+        "stratum": 15,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181019.tar.gz"
+      },
+      {
+        "night": 20181020,
+        "year": 2018,
+        "stratum": 15,
+        "role": "primary",
+        "use": "h1",
+        "pilot": true,
+        "tarball": "ztf_public_20181020.tar.gz"
+      },
+      {
+        "night": 20181022,
+        "year": 2018,
+        "stratum": 16,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181022.tar.gz"
+      },
+      {
+        "night": 20181023,
+        "year": 2018,
+        "stratum": 16,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181023.tar.gz"
+      },
+      {
+        "night": 20181027,
+        "year": 2018,
+        "stratum": 16,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181027.tar.gz"
+      },
+      {
+        "night": 20181101,
+        "year": 2018,
+        "stratum": 17,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181101.tar.gz"
+      },
+      {
+        "night": 20181103,
+        "year": 2018,
+        "stratum": 17,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181103.tar.gz"
+      },
+      {
+        "night": 20181105,
+        "year": 2018,
+        "stratum": 17,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181105.tar.gz"
+      },
+      {
+        "night": 20181109,
+        "year": 2018,
+        "stratum": 18,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181109.tar.gz"
+      },
+      {
+        "night": 20181113,
+        "year": 2018,
+        "stratum": 18,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181113.tar.gz"
+      },
+      {
+        "night": 20181115,
+        "year": 2018,
+        "stratum": 18,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181115.tar.gz"
+      },
+      {
+        "night": 20181117,
+        "year": 2018,
+        "stratum": 19,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181117.tar.gz"
+      },
+      {
+        "night": 20181122,
+        "year": 2018,
+        "stratum": 19,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181122.tar.gz"
+      },
+      {
+        "night": 20181123,
+        "year": 2018,
+        "stratum": 19,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181123.tar.gz"
+      },
+      {
+        "night": 20181126,
+        "year": 2018,
+        "stratum": 20,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181126.tar.gz"
+      },
+      {
+        "night": 20181128,
+        "year": 2018,
+        "stratum": 20,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181128.tar.gz"
+      },
+      {
+        "night": 20181202,
+        "year": 2018,
+        "stratum": 20,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181202.tar.gz"
+      },
+      {
+        "night": 20181209,
+        "year": 2018,
+        "stratum": 21,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181209.tar.gz"
+      },
+      {
+        "night": 20181210,
+        "year": 2018,
+        "stratum": 21,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181210.tar.gz"
+      },
+      {
+        "night": 20181212,
+        "year": 2018,
+        "stratum": 21,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181212.tar.gz"
+      },
+      {
+        "night": 20181214,
+        "year": 2018,
+        "stratum": 22,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181214.tar.gz"
+      },
+      {
+        "night": 20181219,
+        "year": 2018,
+        "stratum": 22,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181219.tar.gz"
+      },
+      {
+        "night": 20181221,
+        "year": 2018,
+        "stratum": 22,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181221.tar.gz"
+      },
+      {
+        "night": 20181224,
+        "year": 2018,
+        "stratum": 23,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181224.tar.gz"
+      },
+      {
+        "night": 20181229,
+        "year": 2018,
+        "stratum": 23,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181229.tar.gz"
+      },
+      {
+        "night": 20181231,
+        "year": 2018,
+        "stratum": 23,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20181231.tar.gz"
+      },
+      {
+        "night": 20190105,
+        "year": 2019,
+        "stratum": 0,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190105.tar.gz"
+      },
+      {
+        "night": 20190106,
+        "year": 2019,
+        "stratum": 0,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190106.tar.gz"
+      },
+      {
+        "night": 20190109,
+        "year": 2019,
+        "stratum": 0,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190109.tar.gz"
+      },
+      {
+        "night": 20190116,
+        "year": 2019,
+        "stratum": 1,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190116.tar.gz"
+      },
+      {
+        "night": 20190120,
+        "year": 2019,
+        "stratum": 1,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190120.tar.gz"
+      },
+      {
+        "night": 20190124,
+        "year": 2019,
+        "stratum": 1,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190124.tar.gz"
+      },
+      {
+        "night": 20190211,
+        "year": 2019,
+        "stratum": 2,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190211.tar.gz"
+      },
+      {
+        "night": 20190212,
+        "year": 2019,
+        "stratum": 2,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190212.tar.gz"
+      },
+      {
+        "night": 20190214,
+        "year": 2019,
+        "stratum": 2,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190214.tar.gz"
+      },
+      {
+        "night": 20190220,
+        "year": 2019,
+        "stratum": 3,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190220.tar.gz"
+      },
+      {
+        "night": 20190222,
+        "year": 2019,
+        "stratum": 3,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190222.tar.gz"
+      },
+      {
+        "night": 20190226,
+        "year": 2019,
+        "stratum": 3,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190226.tar.gz"
+      },
+      {
+        "night": 20190306,
+        "year": 2019,
+        "stratum": 4,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190306.tar.gz"
+      },
+      {
+        "night": 20190309,
+        "year": 2019,
+        "stratum": 4,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190309.tar.gz"
+      },
+      {
+        "night": 20190317,
+        "year": 2019,
+        "stratum": 4,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190317.tar.gz"
+      },
+      {
+        "night": 20190329,
+        "year": 2019,
+        "stratum": 5,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190329.tar.gz"
+      },
+      {
+        "night": 20190331,
+        "year": 2019,
+        "stratum": 5,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190331.tar.gz"
+      },
+      {
+        "night": 20190401,
+        "year": 2019,
+        "stratum": 5,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190401.tar.gz"
+      },
+      {
+        "night": 20190410,
+        "year": 2019,
+        "stratum": 6,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190410.tar.gz"
+      },
+      {
+        "night": 20190412,
+        "year": 2019,
+        "stratum": 6,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190412.tar.gz"
+      },
+      {
+        "night": 20190414,
+        "year": 2019,
+        "stratum": 6,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190414.tar.gz"
+      },
+      {
+        "night": 20190418,
+        "year": 2019,
+        "stratum": 7,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190418.tar.gz"
+      },
+      {
+        "night": 20190422,
+        "year": 2019,
+        "stratum": 7,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190422.tar.gz"
+      },
+      {
+        "night": 20190423,
+        "year": 2019,
+        "stratum": 7,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190423.tar.gz"
+      },
+      {
+        "night": 20190507,
+        "year": 2019,
+        "stratum": 8,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190507.tar.gz"
+      },
+      {
+        "night": 20190514,
+        "year": 2019,
+        "stratum": 8,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190514.tar.gz"
+      },
+      {
+        "night": 20190515,
+        "year": 2019,
+        "stratum": 8,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190515.tar.gz"
+      },
+      {
+        "night": 20190528,
+        "year": 2019,
+        "stratum": 9,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190528.tar.gz"
+      },
+      {
+        "night": 20190530,
+        "year": 2019,
+        "stratum": 9,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190530.tar.gz"
+      },
+      {
+        "night": 20190531,
+        "year": 2019,
+        "stratum": 9,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190531.tar.gz"
+      },
+      {
+        "night": 20190609,
+        "year": 2019,
+        "stratum": 10,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190609.tar.gz"
+      },
+      {
+        "night": 20190610,
+        "year": 2019,
+        "stratum": 10,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190610.tar.gz"
+      },
+      {
+        "night": 20190612,
+        "year": 2019,
+        "stratum": 10,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190612.tar.gz"
+      },
+      {
+        "night": 20190617,
+        "year": 2019,
+        "stratum": 11,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190617.tar.gz"
+      },
+      {
+        "night": 20190624,
+        "year": 2019,
+        "stratum": 11,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190624.tar.gz"
+      },
+      {
+        "night": 20190625,
+        "year": 2019,
+        "stratum": 11,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190625.tar.gz"
+      },
+      {
+        "night": 20190704,
+        "year": 2019,
+        "stratum": 12,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190704.tar.gz"
+      },
+      {
+        "night": 20190710,
+        "year": 2019,
+        "stratum": 12,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190710.tar.gz"
+      },
+      {
+        "night": 20190716,
+        "year": 2019,
+        "stratum": 12,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190716.tar.gz"
+      },
+      {
+        "night": 20190722,
+        "year": 2019,
+        "stratum": 13,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190722.tar.gz"
+      },
+      {
+        "night": 20190724,
+        "year": 2019,
+        "stratum": 13,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190724.tar.gz"
+      },
+      {
+        "night": 20190726,
+        "year": 2019,
+        "stratum": 13,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190726.tar.gz"
+      },
+      {
+        "night": 20190804,
+        "year": 2019,
+        "stratum": 14,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190804.tar.gz"
+      },
+      {
+        "night": 20190814,
+        "year": 2019,
+        "stratum": 14,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190814.tar.gz"
+      },
+      {
+        "night": 20190816,
+        "year": 2019,
+        "stratum": 14,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190816.tar.gz"
+      },
+      {
+        "night": 20190817,
+        "year": 2019,
+        "stratum": 15,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190817.tar.gz"
+      },
+      {
+        "night": 20190823,
+        "year": 2019,
+        "stratum": 15,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190823.tar.gz"
+      },
+      {
+        "night": 20190831,
+        "year": 2019,
+        "stratum": 15,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190831.tar.gz"
+      },
+      {
+        "night": 20190912,
+        "year": 2019,
+        "stratum": 16,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190912.tar.gz"
+      },
+      {
+        "night": 20190913,
+        "year": 2019,
+        "stratum": 16,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190913.tar.gz"
+      },
+      {
+        "night": 20190914,
+        "year": 2019,
+        "stratum": 16,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190914.tar.gz"
+      },
+      {
+        "night": 20190918,
+        "year": 2019,
+        "stratum": 17,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190918.tar.gz"
+      },
+      {
+        "night": 20190928,
+        "year": 2019,
+        "stratum": 17,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190928.tar.gz"
+      },
+      {
+        "night": 20190929,
+        "year": 2019,
+        "stratum": 17,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20190929.tar.gz"
+      },
+      {
+        "night": 20191009,
+        "year": 2019,
+        "stratum": 18,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20191009.tar.gz"
+      },
+      {
+        "night": 20191011,
+        "year": 2019,
+        "stratum": 18,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20191011.tar.gz"
+      },
+      {
+        "night": 20191012,
+        "year": 2019,
+        "stratum": 18,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20191012.tar.gz"
+      },
+      {
+        "night": 20191019,
+        "year": 2019,
+        "stratum": 19,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20191019.tar.gz"
+      },
+      {
+        "night": 20191023,
+        "year": 2019,
+        "stratum": 19,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20191023.tar.gz"
+      },
+      {
+        "night": 20191028,
+        "year": 2019,
+        "stratum": 19,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20191028.tar.gz"
+      },
+      {
+        "night": 20191104,
+        "year": 2019,
+        "stratum": 20,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20191104.tar.gz"
+      },
+      {
+        "night": 20191106,
+        "year": 2019,
+        "stratum": 20,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20191106.tar.gz"
+      },
+      {
+        "night": 20191111,
+        "year": 2019,
+        "stratum": 20,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20191111.tar.gz"
+      },
+      {
+        "night": 20191121,
+        "year": 2019,
+        "stratum": 21,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20191121.tar.gz"
+      },
+      {
+        "night": 20191125,
+        "year": 2019,
+        "stratum": 21,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20191125.tar.gz"
+      },
+      {
+        "night": 20191129,
+        "year": 2019,
+        "stratum": 21,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20191129.tar.gz"
+      },
+      {
+        "night": 20191201,
+        "year": 2019,
+        "stratum": 22,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20191201.tar.gz"
+      },
+      {
+        "night": 20191214,
+        "year": 2019,
+        "stratum": 22,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20191214.tar.gz"
+      },
+      {
+        "night": 20191215,
+        "year": 2019,
+        "stratum": 22,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20191215.tar.gz"
+      },
+      {
+        "night": 20191221,
+        "year": 2019,
+        "stratum": 23,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20191221.tar.gz"
+      },
+      {
+        "night": 20191225,
+        "year": 2019,
+        "stratum": 23,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20191225.tar.gz"
+      },
+      {
+        "night": 20191226,
+        "year": 2019,
+        "stratum": 23,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20191226.tar.gz"
+      },
+      {
+        "night": 20200103,
+        "year": 2020,
+        "stratum": 0,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200103.tar.gz"
+      },
+      {
+        "night": 20200106,
+        "year": 2020,
+        "stratum": 0,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200106.tar.gz"
+      },
+      {
+        "night": 20200115,
+        "year": 2020,
+        "stratum": 0,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200115.tar.gz"
+      },
+      {
+        "night": 20200125,
+        "year": 2020,
+        "stratum": 1,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200125.tar.gz"
+      },
+      {
+        "night": 20200126,
+        "year": 2020,
+        "stratum": 1,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200126.tar.gz"
+      },
+      {
+        "night": 20200130,
+        "year": 2020,
+        "stratum": 1,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200130.tar.gz"
+      },
+      {
+        "night": 20200203,
+        "year": 2020,
+        "stratum": 2,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200203.tar.gz"
+      },
+      {
+        "night": 20200204,
+        "year": 2020,
+        "stratum": 2,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200204.tar.gz"
+      },
+      {
+        "night": 20200210,
+        "year": 2020,
+        "stratum": 2,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200210.tar.gz"
+      },
+      {
+        "night": 20200219,
+        "year": 2020,
+        "stratum": 3,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200219.tar.gz"
+      },
+      {
+        "night": 20200220,
+        "year": 2020,
+        "stratum": 3,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200220.tar.gz"
+      },
+      {
+        "night": 20200228,
+        "year": 2020,
+        "stratum": 3,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200228.tar.gz"
+      },
+      {
+        "night": 20200304,
+        "year": 2020,
+        "stratum": 4,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200304.tar.gz"
+      },
+      {
+        "night": 20200306,
+        "year": 2020,
+        "stratum": 4,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200306.tar.gz"
+      },
+      {
+        "night": 20200307,
+        "year": 2020,
+        "stratum": 4,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200307.tar.gz"
+      },
+      {
+        "night": 20200323,
+        "year": 2020,
+        "stratum": 5,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200323.tar.gz"
+      },
+      {
+        "night": 20200326,
+        "year": 2020,
+        "stratum": 5,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200326.tar.gz"
+      },
+      {
+        "night": 20200329,
+        "year": 2020,
+        "stratum": 5,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200329.tar.gz"
+      },
+      {
+        "night": 20200401,
+        "year": 2020,
+        "stratum": 6,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200401.tar.gz"
+      },
+      {
+        "night": 20200406,
+        "year": 2020,
+        "stratum": 6,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200406.tar.gz"
+      },
+      {
+        "night": 20200407,
+        "year": 2020,
+        "stratum": 6,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200407.tar.gz"
+      },
+      {
+        "night": 20200422,
+        "year": 2020,
+        "stratum": 7,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200422.tar.gz"
+      },
+      {
+        "night": 20200427,
+        "year": 2020,
+        "stratum": 7,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200427.tar.gz"
+      },
+      {
+        "night": 20200501,
+        "year": 2020,
+        "stratum": 7,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200501.tar.gz"
+      },
+      {
+        "night": 20200504,
+        "year": 2020,
+        "stratum": 8,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200504.tar.gz"
+      },
+      {
+        "night": 20200511,
+        "year": 2020,
+        "stratum": 8,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200511.tar.gz"
+      },
+      {
+        "night": 20200514,
+        "year": 2020,
+        "stratum": 8,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200514.tar.gz"
+      },
+      {
+        "night": 20200521,
+        "year": 2020,
+        "stratum": 9,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200521.tar.gz"
+      },
+      {
+        "night": 20200524,
+        "year": 2020,
+        "stratum": 9,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200524.tar.gz"
+      },
+      {
+        "night": 20200530,
+        "year": 2020,
+        "stratum": 9,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200530.tar.gz"
+      },
+      {
+        "night": 20200602,
+        "year": 2020,
+        "stratum": 10,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200602.tar.gz"
+      },
+      {
+        "night": 20200603,
+        "year": 2020,
+        "stratum": 10,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200603.tar.gz"
+      },
+      {
+        "night": 20200614,
+        "year": 2020,
+        "stratum": 10,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200614.tar.gz"
+      },
+      {
+        "night": 20200620,
+        "year": 2020,
+        "stratum": 11,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200620.tar.gz"
+      },
+      {
+        "night": 20200623,
+        "year": 2020,
+        "stratum": 11,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200623.tar.gz"
+      },
+      {
+        "night": 20200626,
+        "year": 2020,
+        "stratum": 11,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200626.tar.gz"
+      },
+      {
+        "night": 20200705,
+        "year": 2020,
+        "stratum": 12,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200705.tar.gz"
+      },
+      {
+        "night": 20200711,
+        "year": 2020,
+        "stratum": 12,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200711.tar.gz"
+      },
+      {
+        "night": 20200715,
+        "year": 2020,
+        "stratum": 12,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200715.tar.gz"
+      },
+      {
+        "night": 20200717,
+        "year": 2020,
+        "stratum": 13,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200717.tar.gz"
+      },
+      {
+        "night": 20200719,
+        "year": 2020,
+        "stratum": 13,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200719.tar.gz"
+      },
+      {
+        "night": 20200721,
+        "year": 2020,
+        "stratum": 13,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200721.tar.gz"
+      },
+      {
+        "night": 20200803,
+        "year": 2020,
+        "stratum": 14,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200803.tar.gz"
+      },
+      {
+        "night": 20200810,
+        "year": 2020,
+        "stratum": 14,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200810.tar.gz"
+      },
+      {
+        "night": 20200815,
+        "year": 2020,
+        "stratum": 14,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200815.tar.gz"
+      },
+      {
+        "night": 20200816,
+        "year": 2020,
+        "stratum": 15,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200816.tar.gz"
+      },
+      {
+        "night": 20200820,
+        "year": 2020,
+        "stratum": 15,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200820.tar.gz"
+      },
+      {
+        "night": 20200827,
+        "year": 2020,
+        "stratum": 15,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200827.tar.gz"
+      },
+      {
+        "night": 20200909,
+        "year": 2020,
+        "stratum": 16,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200909.tar.gz"
+      },
+      {
+        "night": 20200910,
+        "year": 2020,
+        "stratum": 16,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200910.tar.gz"
+      },
+      {
+        "night": 20200911,
+        "year": 2020,
+        "stratum": 16,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200911.tar.gz"
+      },
+      {
+        "night": 20200917,
+        "year": 2020,
+        "stratum": 17,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200917.tar.gz"
+      },
+      {
+        "night": 20200919,
+        "year": 2020,
+        "stratum": 17,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20200919.tar.gz"
+      },
+      {
+        "night": 20200925,
+        "year": 2020,
+        "stratum": 17,
+        "role": "primary",
+        "use": "h1",
+        "pilot": true,
+        "tarball": "ztf_public_20200925.tar.gz"
+      },
+      {
+        "night": 20201002,
+        "year": 2020,
+        "stratum": 18,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20201002.tar.gz"
+      },
+      {
+        "night": 20201006,
+        "year": 2020,
+        "stratum": 18,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20201006.tar.gz"
+      },
+      {
+        "night": 20201012,
+        "year": 2020,
+        "stratum": 18,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20201012.tar.gz"
+      },
+      {
+        "night": 20201017,
+        "year": 2020,
+        "stratum": 19,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20201017.tar.gz"
+      },
+      {
+        "night": 20201022,
+        "year": 2020,
+        "stratum": 19,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20201022.tar.gz"
+      },
+      {
+        "night": 20201031,
+        "year": 2020,
+        "stratum": 19,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20201031.tar.gz"
+      },
+      {
+        "night": 20201103,
+        "year": 2020,
+        "stratum": 20,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20201103.tar.gz"
+      },
+      {
+        "night": 20201106,
+        "year": 2020,
+        "stratum": 20,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20201106.tar.gz"
+      },
+      {
+        "night": 20201114,
+        "year": 2020,
+        "stratum": 20,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20201114.tar.gz"
+      },
+      {
+        "night": 20201119,
+        "year": 2020,
+        "stratum": 21,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20201119.tar.gz"
+      },
+      {
+        "night": 20201120,
+        "year": 2020,
+        "stratum": 21,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20201120.tar.gz"
+      },
+      {
+        "night": 20201130,
+        "year": 2020,
+        "stratum": 21,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20201130.tar.gz"
+      },
+      {
+        "night": 20201204,
+        "year": 2020,
+        "stratum": 22,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20201204.tar.gz"
+      },
+      {
+        "night": 20201205,
+        "year": 2020,
+        "stratum": 22,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20201205.tar.gz"
+      },
+      {
+        "night": 20201208,
+        "year": 2020,
+        "stratum": 22,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20201208.tar.gz"
+      },
+      {
+        "night": 20201216,
+        "year": 2020,
+        "stratum": 23,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20201216.tar.gz"
+      },
+      {
+        "night": 20201218,
+        "year": 2020,
+        "stratum": 23,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20201218.tar.gz"
+      },
+      {
+        "night": 20201226,
+        "year": 2020,
+        "stratum": 23,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20201226.tar.gz"
+      },
+      {
+        "night": 20210102,
+        "year": 2021,
+        "stratum": 0,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20210102.tar.gz"
+      },
+      {
+        "night": 20210105,
+        "year": 2021,
+        "stratum": 0,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20210105.tar.gz"
+      },
+      {
+        "night": 20210129,
+        "year": 2021,
+        "stratum": 0,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20210129.tar.gz"
+      },
+      {
+        "night": 20210225,
+        "year": 2021,
+        "stratum": 1,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20210225.tar.gz"
+      },
+      {
+        "night": 20210226,
+        "year": 2021,
+        "stratum": 1,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20210226.tar.gz"
+      },
+      {
+        "night": 20210313,
+        "year": 2021,
+        "stratum": 1,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20210313.tar.gz"
+      },
+      {
+        "night": 20210427,
+        "year": 2021,
+        "stratum": 2,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20210427.tar.gz"
+      },
+      {
+        "night": 20210509,
+        "year": 2021,
+        "stratum": 2,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20210509.tar.gz"
+      },
+      {
+        "night": 20210516,
+        "year": 2021,
+        "stratum": 2,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20210516.tar.gz"
+      },
+      {
+        "night": 20210611,
+        "year": 2021,
+        "stratum": 3,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20210611.tar.gz"
+      },
+      {
+        "night": 20210627,
+        "year": 2021,
+        "stratum": 3,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20210627.tar.gz"
+      },
+      {
+        "night": 20210629,
+        "year": 2021,
+        "stratum": 3,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20210629.tar.gz"
+      },
+      {
+        "night": 20210715,
+        "year": 2021,
+        "stratum": 4,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20210715.tar.gz"
+      },
+      {
+        "night": 20210723,
+        "year": 2021,
+        "stratum": 4,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20210723.tar.gz"
+      },
+      {
+        "night": 20210807,
+        "year": 2021,
+        "stratum": 4,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20210807.tar.gz"
+      },
+      {
+        "night": 20210829,
+        "year": 2021,
+        "stratum": 5,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20210829.tar.gz"
+      },
+      {
+        "night": 20210908,
+        "year": 2021,
+        "stratum": 5,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20210908.tar.gz"
+      },
+      {
+        "night": 20210929,
+        "year": 2021,
+        "stratum": 5,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20210929.tar.gz"
+      },
+      {
+        "night": 20211026,
+        "year": 2021,
+        "stratum": 6,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20211026.tar.gz"
+      },
+      {
+        "night": 20211029,
+        "year": 2021,
+        "stratum": 6,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20211029.tar.gz"
+      },
+      {
+        "night": 20211110,
+        "year": 2021,
+        "stratum": 6,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20211110.tar.gz"
+      },
+      {
+        "night": 20211127,
+        "year": 2021,
+        "stratum": 7,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20211127.tar.gz"
+      },
+      {
+        "night": 20211213,
+        "year": 2021,
+        "stratum": 7,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20211213.tar.gz"
+      },
+      {
+        "night": 20211219,
+        "year": 2021,
+        "stratum": 7,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20211219.tar.gz"
+      },
+      {
+        "night": 20220112,
+        "year": 2022,
+        "stratum": 0,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20220112.tar.gz"
+      },
+      {
+        "night": 20220126,
+        "year": 2022,
+        "stratum": 0,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20220126.tar.gz"
+      },
+      {
+        "night": 20220213,
+        "year": 2022,
+        "stratum": 0,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20220213.tar.gz"
+      },
+      {
+        "night": 20220220,
+        "year": 2022,
+        "stratum": 1,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20220220.tar.gz"
+      },
+      {
+        "night": 20220302,
+        "year": 2022,
+        "stratum": 1,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20220302.tar.gz"
+      },
+      {
+        "night": 20220309,
+        "year": 2022,
+        "stratum": 1,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20220309.tar.gz"
+      },
+      {
+        "night": 20220424,
+        "year": 2022,
+        "stratum": 2,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20220424.tar.gz"
+      },
+      {
+        "night": 20220429,
+        "year": 2022,
+        "stratum": 2,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20220429.tar.gz"
+      },
+      {
+        "night": 20220507,
+        "year": 2022,
+        "stratum": 2,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20220507.tar.gz"
+      },
+      {
+        "night": 20220519,
+        "year": 2022,
+        "stratum": 3,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20220519.tar.gz"
+      },
+      {
+        "night": 20220527,
+        "year": 2022,
+        "stratum": 3,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20220527.tar.gz"
+      },
+      {
+        "night": 20220623,
+        "year": 2022,
+        "stratum": 3,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20220623.tar.gz"
+      },
+      {
+        "night": 20220709,
+        "year": 2022,
+        "stratum": 4,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20220709.tar.gz"
+      },
+      {
+        "night": 20220710,
+        "year": 2022,
+        "stratum": 4,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20220710.tar.gz"
+      },
+      {
+        "night": 20220812,
+        "year": 2022,
+        "stratum": 4,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20220812.tar.gz"
+      },
+      {
+        "night": 20220817,
+        "year": 2022,
+        "stratum": 5,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20220817.tar.gz"
+      },
+      {
+        "night": 20220828,
+        "year": 2022,
+        "stratum": 5,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20220828.tar.gz"
+      },
+      {
+        "night": 20220911,
+        "year": 2022,
+        "stratum": 5,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20220911.tar.gz"
+      },
+      {
+        "night": 20221004,
+        "year": 2022,
+        "stratum": 6,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20221004.tar.gz"
+      },
+      {
+        "night": 20221017,
+        "year": 2022,
+        "stratum": 6,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20221017.tar.gz"
+      },
+      {
+        "night": 20221025,
+        "year": 2022,
+        "stratum": 6,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20221025.tar.gz"
+      },
+      {
+        "night": 20221122,
+        "year": 2022,
+        "stratum": 7,
+        "role": "spare2",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20221122.tar.gz"
+      },
+      {
+        "night": 20221202,
+        "year": 2022,
+        "stratum": 7,
+        "role": "spare1",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20221202.tar.gz"
+      },
+      {
+        "night": 20221223,
+        "year": 2022,
+        "stratum": 7,
+        "role": "primary",
+        "use": "h1",
+        "pilot": false,
+        "tarball": "ztf_public_20221223.tar.gz"
+      },
+      {
+        "night": 20230110,
+        "year": 2023,
+        "stratum": 0,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20230110.tar.gz"
+      },
+      {
+        "night": 20230205,
+        "year": 2023,
+        "stratum": 0,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20230205.tar.gz"
+      },
+      {
+        "night": 20230206,
+        "year": 2023,
+        "stratum": 0,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20230206.tar.gz"
+      },
+      {
+        "night": 20230218,
+        "year": 2023,
+        "stratum": 1,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20230218.tar.gz"
+      },
+      {
+        "night": 20230219,
+        "year": 2023,
+        "stratum": 1,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20230219.tar.gz"
+      },
+      {
+        "night": 20230321,
+        "year": 2023,
+        "stratum": 1,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20230321.tar.gz"
+      },
+      {
+        "night": 20230404,
+        "year": 2023,
+        "stratum": 2,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20230404.tar.gz"
+      },
+      {
+        "night": 20230418,
+        "year": 2023,
+        "stratum": 2,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20230418.tar.gz"
+      },
+      {
+        "night": 20230516,
+        "year": 2023,
+        "stratum": 2,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20230516.tar.gz"
+      },
+      {
+        "night": 20230517,
+        "year": 2023,
+        "stratum": 3,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20230517.tar.gz"
+      },
+      {
+        "night": 20230523,
+        "year": 2023,
+        "stratum": 3,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20230523.tar.gz"
+      },
+      {
+        "night": 20230617,
+        "year": 2023,
+        "stratum": 3,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20230617.tar.gz"
+      },
+      {
+        "night": 20230709,
+        "year": 2023,
+        "stratum": 4,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20230709.tar.gz"
+      },
+      {
+        "night": 20230713,
+        "year": 2023,
+        "stratum": 4,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20230713.tar.gz"
+      },
+      {
+        "night": 20230716,
+        "year": 2023,
+        "stratum": 4,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20230716.tar.gz"
+      },
+      {
+        "night": 20230916,
+        "year": 2023,
+        "stratum": 5,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20230916.tar.gz"
+      },
+      {
+        "night": 20230918,
+        "year": 2023,
+        "stratum": 5,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20230918.tar.gz"
+      },
+      {
+        "night": 20230924,
+        "year": 2023,
+        "stratum": 5,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20230924.tar.gz"
+      },
+      {
+        "night": 20231005,
+        "year": 2023,
+        "stratum": 6,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20231005.tar.gz"
+      },
+      {
+        "night": 20231018,
+        "year": 2023,
+        "stratum": 6,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20231018.tar.gz"
+      },
+      {
+        "night": 20231020,
+        "year": 2023,
+        "stratum": 6,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20231020.tar.gz"
+      },
+      {
+        "night": 20231128,
+        "year": 2023,
+        "stratum": 7,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20231128.tar.gz"
+      },
+      {
+        "night": 20231204,
+        "year": 2023,
+        "stratum": 7,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20231204.tar.gz"
+      },
+      {
+        "night": 20231219,
+        "year": 2023,
+        "stratum": 7,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20231219.tar.gz"
+      },
+      {
+        "night": 20240102,
+        "year": 2024,
+        "stratum": 0,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20240102.tar.gz"
+      },
+      {
+        "night": 20240120,
+        "year": 2024,
+        "stratum": 0,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20240120.tar.gz"
+      },
+      {
+        "night": 20240121,
+        "year": 2024,
+        "stratum": 0,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20240121.tar.gz"
+      },
+      {
+        "night": 20240217,
+        "year": 2024,
+        "stratum": 1,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20240217.tar.gz"
+      },
+      {
+        "night": 20240227,
+        "year": 2024,
+        "stratum": 1,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20240227.tar.gz"
+      },
+      {
+        "night": 20240305,
+        "year": 2024,
+        "stratum": 1,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20240305.tar.gz"
+      },
+      {
+        "night": 20240408,
+        "year": 2024,
+        "stratum": 2,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20240408.tar.gz"
+      },
+      {
+        "night": 20240425,
+        "year": 2024,
+        "stratum": 2,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20240425.tar.gz"
+      },
+      {
+        "night": 20240428,
+        "year": 2024,
+        "stratum": 2,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20240428.tar.gz"
+      },
+      {
+        "night": 20240518,
+        "year": 2024,
+        "stratum": 3,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20240518.tar.gz"
+      },
+      {
+        "night": 20240521,
+        "year": 2024,
+        "stratum": 3,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20240521.tar.gz"
+      },
+      {
+        "night": 20240522,
+        "year": 2024,
+        "stratum": 3,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20240522.tar.gz"
+      },
+      {
+        "night": 20240705,
+        "year": 2024,
+        "stratum": 4,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20240705.tar.gz"
+      },
+      {
+        "night": 20240802,
+        "year": 2024,
+        "stratum": 4,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20240802.tar.gz"
+      },
+      {
+        "night": 20240812,
+        "year": 2024,
+        "stratum": 4,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20240812.tar.gz"
+      },
+      {
+        "night": 20240827,
+        "year": 2024,
+        "stratum": 5,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20240827.tar.gz"
+      },
+      {
+        "night": 20240902,
+        "year": 2024,
+        "stratum": 5,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20240902.tar.gz"
+      },
+      {
+        "night": 20240928,
+        "year": 2024,
+        "stratum": 5,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20240928.tar.gz"
+      },
+      {
+        "night": 20241012,
+        "year": 2024,
+        "stratum": 6,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20241012.tar.gz"
+      },
+      {
+        "night": 20241014,
+        "year": 2024,
+        "stratum": 6,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20241014.tar.gz"
+      },
+      {
+        "night": 20241022,
+        "year": 2024,
+        "stratum": 6,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": true,
+        "tarball": "ztf_public_20241022.tar.gz"
+      },
+      {
+        "night": 20241207,
+        "year": 2024,
+        "stratum": 7,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20241207.tar.gz"
+      },
+      {
+        "night": 20241209,
+        "year": 2024,
+        "stratum": 7,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20241209.tar.gz"
+      },
+      {
+        "night": 20241217,
+        "year": 2024,
+        "stratum": 7,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20241217.tar.gz"
+      },
+      {
+        "night": 20250101,
+        "year": 2025,
+        "stratum": 0,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20250101.tar.gz"
+      },
+      {
+        "night": 20250108,
+        "year": 2025,
+        "stratum": 0,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20250108.tar.gz"
+      },
+      {
+        "night": 20250207,
+        "year": 2025,
+        "stratum": 0,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20250207.tar.gz"
+      },
+      {
+        "night": 20250215,
+        "year": 2025,
+        "stratum": 1,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20250215.tar.gz"
+      },
+      {
+        "night": 20250317,
+        "year": 2025,
+        "stratum": 1,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20250317.tar.gz"
+      },
+      {
+        "night": 20250322,
+        "year": 2025,
+        "stratum": 1,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20250322.tar.gz"
+      },
+      {
+        "night": 20250413,
+        "year": 2025,
+        "stratum": 2,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20250413.tar.gz"
+      },
+      {
+        "night": 20250420,
+        "year": 2025,
+        "stratum": 2,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20250420.tar.gz"
+      },
+      {
+        "night": 20250506,
+        "year": 2025,
+        "stratum": 2,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20250506.tar.gz"
+      },
+      {
+        "night": 20250522,
+        "year": 2025,
+        "stratum": 3,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20250522.tar.gz"
+      },
+      {
+        "night": 20250605,
+        "year": 2025,
+        "stratum": 3,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20250605.tar.gz"
+      },
+      {
+        "night": 20250610,
+        "year": 2025,
+        "stratum": 3,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20250610.tar.gz"
+      },
+      {
+        "night": 20250711,
+        "year": 2025,
+        "stratum": 4,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20250711.tar.gz"
+      },
+      {
+        "night": 20250724,
+        "year": 2025,
+        "stratum": 4,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20250724.tar.gz"
+      },
+      {
+        "night": 20250729,
+        "year": 2025,
+        "stratum": 4,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20250729.tar.gz"
+      },
+      {
+        "night": 20250824,
+        "year": 2025,
+        "stratum": 5,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20250824.tar.gz"
+      },
+      {
+        "night": 20250903,
+        "year": 2025,
+        "stratum": 5,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20250903.tar.gz"
+      },
+      {
+        "night": 20250908,
+        "year": 2025,
+        "stratum": 5,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20250908.tar.gz"
+      },
+      {
+        "night": 20251001,
+        "year": 2025,
+        "stratum": 6,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20251001.tar.gz"
+      },
+      {
+        "night": 20251023,
+        "year": 2025,
+        "stratum": 6,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20251023.tar.gz"
+      },
+      {
+        "night": 20251024,
+        "year": 2025,
+        "stratum": 6,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20251024.tar.gz"
+      },
+      {
+        "night": 20251121,
+        "year": 2025,
+        "stratum": 7,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20251121.tar.gz"
+      },
+      {
+        "night": 20251122,
+        "year": 2025,
+        "stratum": 7,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20251122.tar.gz"
+      },
+      {
+        "night": 20251127,
+        "year": 2025,
+        "stratum": 7,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20251127.tar.gz"
+      },
+      {
+        "night": 20260113,
+        "year": 2026,
+        "stratum": 0,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260113.tar.gz"
+      },
+      {
+        "night": 20260121,
+        "year": 2026,
+        "stratum": 0,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260121.tar.gz"
+      },
+      {
+        "night": 20260206,
+        "year": 2026,
+        "stratum": 0,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260206.tar.gz"
+      },
+      {
+        "night": 20260209,
+        "year": 2026,
+        "stratum": 1,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260209.tar.gz"
+      },
+      {
+        "night": 20260211,
+        "year": 2026,
+        "stratum": 1,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260211.tar.gz"
+      },
+      {
+        "night": 20260214,
+        "year": 2026,
+        "stratum": 1,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260214.tar.gz"
+      },
+      {
+        "night": 20260328,
+        "year": 2026,
+        "stratum": 2,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260328.tar.gz"
+      },
+      {
+        "night": 20260414,
+        "year": 2026,
+        "stratum": 2,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260414.tar.gz"
+      },
+      {
+        "night": 20260425,
+        "year": 2026,
+        "stratum": 2,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260425.tar.gz"
+      },
+      {
+        "night": 20260429,
+        "year": 2026,
+        "stratum": 3,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260429.tar.gz"
+      },
+      {
+        "night": 20260430,
+        "year": 2026,
+        "stratum": 3,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260430.tar.gz"
+      },
+      {
+        "night": 20260525,
+        "year": 2026,
+        "stratum": 3,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260525.tar.gz"
+      },
+      {
+        "night": 20260606,
+        "year": 2026,
+        "stratum": 4,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260606.tar.gz"
+      },
+      {
+        "night": 20260704,
+        "year": 2026,
+        "stratum": 4,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260704.tar.gz"
+      },
+      {
+        "night": 20260711,
+        "year": 2026,
+        "stratum": 4,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260711.tar.gz"
+      },
+      {
+        "night": 20260726,
+        "year": 2026,
+        "stratum": 5,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260726.tar.gz"
+      },
+      {
+        "night": 20260728,
+        "year": 2026,
+        "stratum": 5,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260728.tar.gz"
+      },
+      {
+        "night": 20260808,
+        "year": 2026,
+        "stratum": 5,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260808.tar.gz"
+      },
+      {
+        "night": 20260828,
+        "year": 2026,
+        "stratum": 6,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260828.tar.gz"
+      },
+      {
+        "night": 20260917,
+        "year": 2026,
+        "stratum": 6,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260917.tar.gz"
+      },
+      {
+        "night": 20260923,
+        "year": 2026,
+        "stratum": 6,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20260923.tar.gz"
+      },
+      {
+        "night": 20261005,
+        "year": 2026,
+        "stratum": 7,
+        "role": "spare1",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20261005.tar.gz"
+      },
+      {
+        "night": 20261018,
+        "year": 2026,
+        "stratum": 7,
+        "role": "spare2",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20261018.tar.gz"
+      },
+      {
+        "night": 20261030,
+        "year": 2026,
+        "stratum": 7,
+        "role": "primary",
+        "use": "ablation",
+        "pilot": false,
+        "tarball": "ztf_public_20261030.tar.gz"
+      }
+    ]
+  },
+  "estimate": {
+    "bytes_per_stamp": 47773,
+    "years": {
+      "2018": {
+        "nights": 24,
+        "use": "h1",
+        "stamps_per_night": 17500,
+        "stamps": 420000,
+        "float32_gb": 20.06466,
+        "float16_gb": 10.06278,
+        "download_gb": 192.0,
+        "download_hours": 12.0,
+        "basis": "assumed"
+      },
+      "2019": {
+        "nights": 24,
+        "use": "h1",
+        "stamps_per_night": 17500,
+        "stamps": 420000,
+        "float32_gb": 20.06466,
+        "float16_gb": 10.06278,
+        "download_gb": 192.0,
+        "download_hours": 12.0,
+        "basis": "assumed"
+      },
+      "2020": {
+        "nights": 24,
+        "use": "h1",
+        "stamps_per_night": 17500,
+        "stamps": 420000,
+        "float32_gb": 20.06466,
+        "float16_gb": 10.06278,
+        "download_gb": 192.0,
+        "download_hours": 12.0,
+        "basis": "assumed"
+      },
+      "2021": {
+        "nights": 8,
+        "use": "h1",
+        "stamps_per_night": 17500,
+        "stamps": 140000,
+        "float32_gb": 6.68822,
+        "float16_gb": 3.35426,
+        "download_gb": 64.0,
+        "download_hours": 4.0,
+        "basis": "assumed"
+      },
+      "2022": {
+        "nights": 8,
+        "use": "h1",
+        "stamps_per_night": 17500,
+        "stamps": 140000,
+        "float32_gb": 6.68822,
+        "float16_gb": 3.35426,
+        "download_gb": 64.0,
+        "download_hours": 4.0,
+        "basis": "assumed"
+      },
+      "2023": {
+        "nights": 8,
+        "use": "ablation",
+        "stamps_per_night": 17500,
+        "stamps": 140000,
+        "float32_gb": 6.68822,
+        "float16_gb": 3.35426,
+        "download_gb": 64.0,
+        "download_hours": 4.0,
+        "basis": "assumed"
+      },
+      "2024": {
+        "nights": 8,
+        "use": "ablation",
+        "stamps_per_night": 17500,
+        "stamps": 140000,
+        "float32_gb": 6.68822,
+        "float16_gb": 3.35426,
+        "download_gb": 64.0,
+        "download_hours": 4.0,
+        "basis": "assumed"
+      },
+      "2025": {
+        "nights": 8,
+        "use": "ablation",
+        "stamps_per_night": 17500,
+        "stamps": 140000,
+        "float32_gb": 6.68822,
+        "float16_gb": 3.35426,
+        "download_gb": 64.0,
+        "download_hours": 4.0,
+        "basis": "assumed"
+      },
+      "2026": {
+        "nights": 8,
+        "use": "ablation",
+        "stamps_per_night": 17500,
+        "stamps": 140000,
+        "float32_gb": 6.68822,
+        "float16_gb": 3.35426,
+        "download_gb": 64.0,
+        "download_hours": 4.0,
+        "basis": "assumed"
+      }
+    },
+    "uses": {
+      "h1": {
+        "nights": 88,
+        "stamps": 1540000,
+        "float32_gb": 73.57042,
+        "float16_gb": 36.896860000000004,
+        "download_gb": 704.0,
+        "download_hours": 44.0
+      },
+      "ablation": {
+        "nights": 32,
+        "stamps": 560000,
+        "float32_gb": 26.75288,
+        "float16_gb": 13.41704,
+        "download_gb": 256.0,
+        "download_hours": 16.0
+      }
+    },
+    "total": {
+      "nights": 120,
+      "stamps": 2100000,
+      "float32_gb": 100.3233,
+      "float16_gb": 50.313900000000004,
+      "download_gb": 960.0,
+      "download_hours": 60.0
+    }
+  }
+}
