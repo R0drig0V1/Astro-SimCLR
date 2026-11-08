@@ -33,8 +33,9 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  │    (training ──► paper_variants: rot4 / single / p4 / p4m ──► paper_model, group_conv;
  │     paper_model ──► feature_sets: all / position / none)
  ├──► preflight ──► experiments, data (inspection, manifest)
- └──► engine (phase 4: the plain-PyTorch loop's contracts; imports no Lightning) ──► config
+ └──► engine (phase 4: the loop's contracts, the data tiers; imports no Lightning) ──► config, data
  └──► runs (phase 4, A0: run identity, manifest.json, layout, retention) ──► config, data
+ └──► registry (phase 4, A2: runs reindex | ls | show | compare; SQLite) ──► runs, reference
  └──► simclr (phase 5, 5.0b: the SimCLR pilot; imports no Lightning) ──► engine.randomness,
       optim (LARS), losses (NT_Xent), stamp_relation, protocol (splits, stats), data
 
@@ -62,7 +63,9 @@ matplotlib, tensorboard. torch and torchvision come from PyPI by default (MPS on
 CUDA 13 on Linux), or from the PyTorch indexes through the conflicting extras `cpu` and
 `cu126`. After `uv sync --locked --extra X`, run everything with `UV_NO_SYNC=1` or
 `uv run --no-sync`. Design and rationale: [ADR 0001](decisions/0001-torch-wheels-and-accelerators.md);
-`scripts/check-torch-wheels.sh` asserts it in CI.
+`scripts/check-torch-wheels.sh` asserts it in CI. CI runs on pushes to `main` (ubuntu),
+weekly on macOS and on demand, never on pull requests: the integrator's `verify-merge.sh` is
+the PR gate ([ADR 0021](decisions/0021-ci-on-main-pushes-only.md)).
 
 ## `config` (task 1.1)
 
@@ -228,6 +231,10 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
 - `preflight (--synthetic | --data-dir DIR) [--accelerator cuda] [--runs R1,R2,R3,R4]
   [--set ...]` (see `preflight`): exit 0 if no step failed, else 1.
   `scripts/gpu-preflight.sh` is a thin `uv run --no-sync` wrapper.
+- `runs reindex [ROOT ...] [--rebuild]`, `runs ls`, `runs show KEY`, `runs compare SPEC`
+  (task A2, see `registry`): the local run registry. Exit 0 on success (`reindex` also when
+  it skipped directories), 1 when the registry cannot be used or a comparison does not
+  resolve.
 - **SimCLR pilot (task 5.0b, see `simclr`):** `simclr-pilot DATA --output-dir OUT
   [--splits FILE] [--epochs N | --steps N] [--batch-size B] [--temperature T] [--lr-per-256
   X] [--warmup-epochs E] [--noise-scale S] [--seed N] [--device auto|cpu|cuda|mps]
@@ -1180,7 +1187,8 @@ workers fork), not repeated here because spawned workers cost about 25 s on macO
 
 ALeRCE's training procedure as Lightning pieces, all under `src/astro_simclr/training/`.
 
-**Tiling** (`tiling.py`). `tile_indices(labels)` is ALeRCE's
+**Tiling** (`tiling.py`, a re-export of `engine/stream.py` since task 4.3, so the plain
+engine shares the stream without importing Lightning). `tile_indices(labels)` is ALeRCE's
 `balance_data_by_replication` on indices: classes in sorted label order; a smaller class
 becomes `max // n` full copies of its indices (file order) plus their first `max % n`; the
 largest class is kept. Every class then has `max` entries (`red`: 5 × 14,542 = 72,710).
@@ -1443,13 +1451,74 @@ Lightning behaviour the loop reproduces (C1-C11) and the test that pins each.
 | `checkpoint` | `Checkpoint` (a `TypedDict` of plain values, read with `weights_only=True`) and its frozen key set `CHECKPOINT_KEYS`: format, engine, identity (A0's run id and attempt, the split run), `steps_done` (also the stream position), model, optimizer, task, policy, stream definition, every RNG stream, numerics (ADR 0010) and versions. `check_resumable` refuses Lightning checkpoints, other engines, formats and incomplete ones. |
 | `device` | `DevicePolicy`: one device (`world_size != 1` refused), `cudnn.benchmark = not deterministic`, `use_deterministic_algorithms(deterministic)`, `CUBLAS_WORKSPACE_CONFIG=":4096:8"` only when deterministic (`torch_flags()`, checked equal to Lightning's `_set_torch_flags`), ADR 0010's precision. |
 | `data` | `Batch` / `TrainBatch` (equal to `device_data`'s); `DataTier` (`device`, `pinned`, `memmap`, all exact); `TierChoice` (non-float32 storage is a recorded deviation); the `BatchSource` (`batch(step)`, a pure function of the stream and the step) and `EvalSource` protocols. |
-| `randomness` | `host_generator(seed, step, stream)` (= `class_augment.augment_rng`: per-sample parameters, device-independent); `device_generator(seed, step, stream, device)` (per-pixel fields: the seed is device-independent, the values are not, so runs record the device); `RESERVED_STREAMS`, the stream numbers in use (1-4 the paper model's augmentations, 6-9 the SimCLR pilot's views, noise fields, batch order and diagnostics; ADR 0025). |
+| `randomness` | `host_generator(seed, step, stream)` (= `class_augment.augment_rng`: per-sample parameters, device-independent); `device_generator(seed, step, stream, device)` (per-pixel fields: the seed is device-independent, the values are not, so runs record the device); `RESERVED_STREAMS`, the stream numbers in use (1-4 the paper model's augmentations, 5 the `block` stream's passes (4.3, ADR 0018), 6-9 the SimCLR pilot's views, noise fields, batch order and diagnostics; ADR 0025). |
 
 `tests/test_engine_contracts.py` also pins the Lightning 2.6.6 facts the checklist relies on
 (the validation grid across 7-step epochs, `global_step` inside `training_step`, the
 gradient `None` at validation, `no_grad` in the fit's validations and `inference_mode` in
 `trainer.validate`, the epoch numbering of `metrics.json`), so an upgrade that changes one
 fails here.
+
+### The data layer (task 4.3; ADR 0018)
+
+One dataset API and three tiers that serve identical bytes, so the tier is a memory versus
+bandwidth choice that cannot change a result.
+
+| Module | What it does |
+|---|---|
+| `dataset` | `Dataset`: float32 `images` of any per-row shape (possibly a memory map), optional in-memory `features` / `labels` (+ `n_classes`) / `fits`, and an optional `rows` selection (`select` composes; `materialised` copies). Adapters: `prepared_split(path, split)` (`classifier`; `unlabelled` for a pretraining `Train`; refuses layouts without `images_f32.npy`), `raw_alerts_dataset(path, candids=...)` (raw cutouts, labels from the index, the 23 CD21 features as float32), or the constructor (`arrays`). |
+| `stream` | `tile_indices` and `PermutationStream` (moved from `training/tiling.py`); `BlockShuffleStream`; `TrainOrder` (tiling, then the stream over its positions; per-pass row orders cached; `state()` = the stream keys plus `rows_sha256`). |
+| `tiers` | `open_train(dataset, TierChoice, StreamSpec, device) -> TrainSource` (`batch(step)`, the frozen `TrainBatch`; `columns(step)` by name, for unlabelled kinds; `state()`, `resume(state, steps_done)`, `describe()` for the manifest) and `open_eval(...) -> EvalBatches` (consecutive batches, the last partial; `iter_columns()`). |
+| `bench` | `python -m astro_simclr.engine.bench`: batches/s per tier and device, interleaved rounds, median. |
+
+- **`device`:** the materialised dataset on the device; each pass's row order is uploaded
+  once and sliced, so a step makes no host-to-device copy. Its batches are `torch.equal` to
+  `DeviceTensorDataModule`'s (tested), and the stream keys are the Lightning loader's.
+- **`pinned`:** the dataset in pageable host memory; the step's rows are gathered into one
+  of two pinned staging buffers and uploaded `non_blocking` on the current stream, one step
+  ahead; a buffer is refilled only after the event behind its last upload completes. On a
+  CPU device nothing is staged or prefetched.
+- **`memmap`:** the images stay in their file; a batch is read sorted by file offset and
+  scattered into the staging buffer, then uploaded as in `pinned`. float32 only.
+- **Shuffle granularity** (`StreamSpec.shuffle`): `row` (default; a uniform permutation per
+  pass, the paper's, the only one with `balance`) or `block` (`block_rows`-row blocks
+  permuted, then positions shuffled within windows of `window_blocks` blocks; a batch reads
+  at most two windows of contiguous ranges, but file neighbours share batches far more
+  often). It is part of the stream definition, served identically by every tier.
+- **The stream definition** (`TrainSource.state()`, the checkpoint's `stream`): `n`,
+  `batch_size`, `seed`, the block parameters when used, `rows_sha256` and `storage_dtype`.
+  Not the tier: a resume may move to another tier and stays exact (tested). The only
+  mutable state is the position (`steps_done`).
+- **Storage dtype:** `float16` / `uint8` images (`TierChoice.storage_dtype`) are quantised
+  once and dequantised on the device after the gather; `describe()["deviation"]` is true,
+  a resume under another dtype is refused, and the `memmap` tier refuses them.
+
+**Tested** (`tests/test_engine_tiers.py`, on CPU and on MPS or CUDA when present): `pinned`
+and `memmap` `torch.equal` to `device` for 40 steps across pass boundaries, balanced and
+not, with fits and a scrambled selection, and in evaluation (partial last batch, two
+passes); `block` identical on every tier; `device` equal to `DeviceTensorDataModule`; exact
+resume mid-pass on every tier and onto another tier; out-of-order steps; resume refusals
+(seed, batch size, balance, storage dtype); the quantised values and their record;
+unlabelled columns. `tests/test_engine_stream.py` and `tests/test_engine_dataset.py` test
+the stream and the adapters on the synthetic prepared and raw-alerts layouts.
+
+**Throughput** (`python -m astro_simclr.engine.bench`, Apple M4, torch 2.14.1, 2026-11-08,
+batch 64, 300 timed batches × 7 interleaved rounds, median; the Mac was shared with other
+agents, load average about 40-50, so the rounds spread by 2-3×; the memmap file is in the
+page cache). Results: `results/phase4/data-tiers-bench-{crop21,stamp63}.json`.
+
+| Rows | Device | `device` | `pinned` | `memmap` |
+|---|---|---|---|---|
+| 3×21×21 (the paper's crops), n = 20,000 | CPU | 6,180 batches/s | 7,611 | 5,128 |
+| | MPS | 7,460 | 1,440 | 1,451 |
+| 3×63×63 (phase 5's stamps), n = 10,000 | CPU | 1,398 (4.3 GB/s) | 1,615 | 929 |
+| | MPS | 2,873 (8.8 GB/s) | 666 (2.0 GB/s) | 589 (1.8 GB/s) |
+
+Every tier serves more than 580 batches/s of 63-px stamps (under 1.7 ms per batch, a
+fraction of a SimCLR step). On MPS the host tiers cost about 0.7 ms per batch against
+0.13 ms for `device`: with unified memory there is nothing to gain from them, so `device` is
+the choice whenever the data fit; `pinned` and `memmap` exist for CUDA machines and the
+phase-5 corpus. Their CUDA and cold-disk numbers are measured on the GPU machine.
 
 ## `presets` (task 2.2c)
 
@@ -1767,6 +1836,55 @@ calls `record.start_run` and `RunRecord.end` around the fit (task A1).
   An unreadable manifest is a `ConfigError`, never overwritten. The git state and the
   `uv.lock` SHA-256 come from the source checkout (`source_root()`, `None` in an installed
   wheel). `concurrent_jobs` comes from `ASTRO_SIMCLR_CONCURRENT_JOBS` (default 1).
+
+## `registry` (phase 4, task A2; ADR 0024)
+
+`src/astro_simclr/registry/` is the local run registry: a derived SQLite index of run
+directories at `$ASTRO_SIMCLR_HOME/registry.sqlite` (default `~/.astro-simclr`), rebuildable
+from them. Nothing in it imports torch; `parser.py` imports only argparse, so `--help` stays
+fast and the handlers (`commands.py`) load on use.
+
+- **`home`**: `astro_simclr_home()`, `registry_path()` (refuses a path inside a git working
+  tree), `specs_dir()` (`$ASTRO_SIMCLR_HOME/specs`, where A3's queue writes accepted specs).
+  `RegistryError` is the package's error (exit 1).
+- **`readers`**: `read_run_dir(path)` returns an `IndexedRun`:
+  - from `manifest.json` (validated by `runs.manifest.read_manifest`), plus the metrics of
+    `metrics.json` once finished;
+  - or, backfilled from `metrics.json` alone, `legacy: true`, with null run id, attempt,
+    data / pretrained SHA-256, git, `uv.lock` and `numerics_epoch`; `status: finished`,
+    `engine: lightning` and the machine class derived (ADR 0024 rule 4).
+
+  The config is read by the reader of its `config_format` (`CONFIG_FORMATS`; `flat-1` when
+  the file names none): `lower_flat_1` fills the fields added since with `FLAT_1_FILLS`
+  (each the pre-field behaviour, with its reason; fields added after A0 from
+  `canonical.HASH_NEUTRAL_DEFAULTS`) and refuses unknown or unfillable keys, so
+  the archived runs hash like today's presets. `metrics_summary` keeps
+  `<stage>.{accuracy,balanced_accuracy,macro_f1}`, `monitor_best`, `best_step`,
+  `last_step` and `seconds_per_step`. `IndexedRun.key` is `<run id[:16]>-a<attempt>` or
+  `legacy-<metrics SHA[:16]>`; copies of an attempt share it.
+- **`store`**: `open_registry(path)` creates and migrates the file (`SCHEMA_VERSION` in
+  `PRAGMA user_version`; `MIGRATIONS` append-only; a newer file is refused). Tables:
+  `roots`, `runs` (one row per run directory), `artefacts` (path, kind, size, mtime,
+  SHA-256; deleted with their run) and `specs` (id, name, file).
+- **`index`**: `reindex(conn, roots, specs=..., rebuild=False)` walks the roots (no
+  symlinks, no hidden directories, not into a run directory), replaces each root's rows in
+  one transaction, reports skipped directories and missing remembered roots, rehashes only
+  changed files, then indexes the spec files of `specs_dir()` through A3's `load_spec`.
+- **`spec_view`**: `SpecLike`, the `Protocol` of A3's `runs.spec.ExperimentSpec` that the
+  registry reads; `load_spec_file` (a lazy import of `runs.spec`: `SpecUnavailableError`
+  without A3); `ComparisonPlan` and `PlannedCell`, the minimal frozen dataclasses a
+  comparison runs on (`plan_from_spec` builds one and hashes the spec's splits file).
+- **`compare`**: `resolve(plan, records, use=..., attempts="error"|"latest",
+  allow_mixed=...)` maps each cell to one finished attempt, or raises `ComparisonError`
+  with every problem: a missing cell, several attempts without a choice, copies that
+  differ, mixed machine signatures / engines / numerics epochs (allowed per kind), or
+  different data (never allowed). Matching runs outside the cells are counted.
+  `format_report` / `resolution_to_plain` print the cells and the mean ± std (ddof=1) per
+  arm; a report, never a decision (`compare-variants` decides).
+- **`parser`** / **`commands`**: `astro-simclr runs reindex [ROOT ...] [--rebuild]`,
+  `runs ls [filters] [--json]`, `runs show KEY [--json]`, `runs compare SPEC [--metric M]
+  [--use KEY] [--attempts latest] [--allow-mixed KIND] [--json]`; `--registry FILE` on
+  each.
 
 ## `simclr` (phase 5, task 5.0b; ADR 0025)
 

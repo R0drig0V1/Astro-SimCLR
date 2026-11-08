@@ -30,19 +30,21 @@ import torch
 __all__ = ["RESERVED_STREAMS", "device_generator", "host_generator"]
 
 #: Stream numbers in use (the third ``SeedSequence`` word), by augmentation. ``rot90``
-#: keeps the two-word ``[seed, step]`` of task 2.5-models and has no number. Phase 5
-#: (task 5.0b, :mod:`astro_simclr.simclr`; 5 is left to task 4.3's ``block_shuffle``, PR #42):
-#: ``simclr_views`` the per-sample view parameters
-#: (host), ``simclr_view_noise`` the views' per-pixel noise fields (device),
-#: ``simclr_batch_order`` the permutation of each pass over the stamps (its second word is
-#: the pass, not the step) and ``simclr_diagnostics`` the fixed diagnostic sample and views
-#: (second word 0).
+#: keeps the two-word ``[seed, step]`` of task 2.5-models and has no number (the same two
+#: words as the ``row`` training stream's passes, ``engine.stream``; ADR 0018).
+#: ``block_shuffle`` is the ``block`` training stream's pass word (``[seed, pass, 5]``),
+#: task 4.3. Phase 5 (task 5.0b, :mod:`astro_simclr.simclr`; ADR 0025): ``simclr_views``
+#: the per-sample view parameters (host), ``simclr_view_noise`` the views' per-pixel noise
+#: fields (device), ``simclr_batch_order`` the permutation of each pass over the stamps (its
+#: second word is the pass, not the step) and ``simclr_diagnostics`` the fixed diagnostic
+#: sample and views (second word 0).
 RESERVED_STREAMS: Final = MappingProxyType(
     {
         "aug_noise": 1,
         "aug_feature_jitter": 2,
         "synthetic_bogus": 3,
         "flux_rescale": 4,
+        "block_shuffle": 5,
         "simclr_views": 6,
         "simclr_view_noise": 7,
         "simclr_batch_order": 8,

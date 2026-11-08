@@ -37,6 +37,10 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   macro-F1 (± std over seeds), per class and on the first-stamp view, and with a baseline
   the paired bootstrap CI of the macro-F1 difference and McNemar (always exit 0: a report);
 - ``preflight`` (:mod:`astro_simclr.preflight`): exit 0 if no step failed, else 1.
+- the run registry (task A2, :mod:`astro_simclr.registry`): ``runs reindex [ROOT ...]``,
+  ``runs ls``, ``runs show KEY`` and ``runs compare SPEC`` (by experiment spec); exit 1
+  when the registry cannot be used or a comparison does not resolve. Registered by
+  :func:`astro_simclr.registry.parser.add_runs_command`, whose handlers load on use.
 - SimCLR pilot (task 5.0b, :mod:`astro_simclr.simclr.commands`): ``simclr-pilot``
   pretrains, ``simclr-embed`` dumps ``h`` of a checkpoint or of the random init,
   ``make-label-subsets`` stores the probe's label subsets and ``simclr-probe`` scores the
@@ -89,6 +93,7 @@ from astro_simclr.config import (
     settings_to_plain,
 )
 from astro_simclr.hparams import COMMAND_DEFAULTS, COMMANDS, load_legacy_hparams
+from astro_simclr.registry.parser import add_runs_command
 from astro_simclr.simclr.commands import add_simclr_commands
 
 if TYPE_CHECKING:
@@ -1212,6 +1217,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_check_commands(commands)
     _add_oracle_commands(commands)
     _add_alert_commands(commands)
+    add_runs_command(commands)
     add_simclr_commands(commands)
     return parser
 

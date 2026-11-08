@@ -236,7 +236,9 @@ scripts/check-torch-wheels.sh    # after touching the torch pins, extras or inde
 
 `scripts/check.sh` is the single definition of green; CI runs exactly that script. It runs
 the tests in parallel, one process per CPU (`PYTEST_XDIST_AUTO_NUM_WORKERS=N` caps it). GitHub
-workflows also run zizmor, actionlint, gitleaks, pip-audit, CodeQL and Scorecard; security
+workflows also run zizmor, actionlint, gitleaks, pip-audit, CodeQL and Scorecard. None runs on
+pull requests: the integrator's local `verify-merge.sh` is the PR gate, and CI runs on pushes
+to `main`, weekly and on demand ([ADR 0021](docs/decisions/0021-ci-on-main-pushes-only.md)); security
 reports go through [SECURITY.md](SECURITY.md). The scaffolding comes from
 [python-template](https://github.com/R0drig0V1/python-template) (`uvx copier@9.19.1 update`
 on a clean tree).
