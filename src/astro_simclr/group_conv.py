@@ -25,6 +25,23 @@ With these, transforming the input by ``g`` transforms every regular map spatial
 ``g`` and permutes its orientation axis by left multiplication. :func:`orientation_mean`
 (the mean over the ``|G|`` maps of each field) is then invariant to the orientation part.
 
+**Kernel expansion as one gather.** The expanded kernel is pure data movement: every entry
+is a copy of one parameter entry. Each layer therefore computes, once at construction, the
+flat source index of every expanded entry (by running the transforms above on an
+``arange`` of the parameter's shape) and keeps it as a non-persistent buffer, so it follows
+the module across devices and stays out of ``state_dict``. A call is then one
+``index_select`` of the flattened parameter instead of up to ~``|G|^2`` ``select`` / ``rot90``
+/ ``stack`` ops per layer (p4's training step issued ~200 of them). The values are the
+same bits as the transform-by-transform expansion. The backward is not ``index_select``'s
+own: that is an accumulating scatter (``index_add_``), which has no deterministic MPS
+kernel (``Trainer(deterministic=True)`` would fail there) and sums the ``|G|`` copies of
+each parameter entry in a different order than the transform expansion's autograd graph,
+so the gradients would change in the last bits. :class:`_KernelGather` instead gathers the
+``|G|`` copies with a precomputed inverse index and adds them in a fixed order, the one in
+which autograd accumulated them for the transform expansion (from the last output
+orientation to the first): no scatter, deterministic on CPU, CUDA and MPS, and the same
+gradient bits (``tests/test_group_conv.py`` checks both against the transform expansion).
+
 **Geometry.** Exact equivariance also needs every spatial operation to map its sampling
 grid onto itself under the rotations (and flips) about the image centre: valid
 convolutions of any kernel size, "same" convolutions with odd kernels and symmetric
@@ -52,7 +69,7 @@ equivariance requires) and are initialised by the model, not here (zero by defau
 from __future__ import annotations
 
 import math
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 import torch
 import torch.nn.functional as F
@@ -128,6 +145,89 @@ def _glorot_(weight: torch.Tensor, fan_in: int, fan_out: int) -> None:
     nn.init.uniform_(weight, -bound, bound)
 
 
+def _lifting_layout(group: Group, weight: torch.Tensor) -> torch.Tensor:
+    """:class:`LiftingConv`'s expansion by transforms: ``(O, I, k, k) -> (O |G|, I, k, k)``."""
+    out_fields, in_channels, k, _ = weight.shape
+    kernel = torch.stack([group.apply(weight, g) for g in range(group.order)], dim=1)
+    return kernel.reshape(out_fields * group.order, in_channels, k, k)
+
+
+def _group_layout(group: Group, weight: torch.Tensor) -> torch.Tensor:
+    """:class:`GroupConv`'s expansion by transforms: ``(O, I, |G|, k, k) -> (O |G|, I |G|, k, k)``.
+
+    For output orientation ``g`` the input orientations are permuted by ``h -> g^-1 h`` and
+    the result transformed by ``T_g`` (module docstring). Used on an index tensor only, so
+    the advanced index has no backward.
+    """
+    out_fields, in_fields, order, k, _ = weight.shape
+    kernel = torch.stack(
+        [
+            group.apply(weight[:, :, [group.mul[group.inv[g]][h] for h in range(order)]], g)
+            for g in range(order)
+        ],
+        dim=1,
+    )  # (out_fields, |G| out, in_fields, |G| in, k, k)
+    return kernel.reshape(out_fields * order, in_fields * order, k, k)
+
+
+def _gather_indices(
+    layout: torch.Tensor, shape: torch.Size, order: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The forward and inverse indices of :class:`_KernelGather` for an expansion ``layout``.
+
+    ``layout`` is the expansion of ``arange(numel).reshape(shape)``, so its flat entries
+    are the source index of each expanded entry (the forward index). The inverse index,
+    ``(order, numel)``, lists for each parameter entry the ``order`` flat positions that
+    copy it, from the last position to the first: the order in which the transform
+    expansion's autograd graph accumulated them (module docstring).
+
+    Raises:
+        RuntimeError: if some parameter entry is not copied exactly ``order`` times (a
+            layout bug; the gather would then not be the transform expansion).
+    """
+    index = layout.reshape(-1)
+    numel = math.prod(shape)
+    if not torch.equal(torch.bincount(index, minlength=numel), torch.full((numel,), order)):
+        raise RuntimeError(f"the kernel layout does not copy every entry {order} times")
+    positions = torch.argsort(index, stable=True).reshape(numel, order)
+    return index, positions.flip(1).T.contiguous()
+
+
+class _KernelGather(torch.autograd.Function):
+    """``weight.flatten()[index]`` whose backward is a gather and an ordered sum, not a scatter.
+
+    ``forward(weight, index, inverse)`` returns the flat expanded kernel. ``backward``
+    gathers the ``|G|`` copies of every parameter entry's gradient with ``inverse`` and adds
+    them row by row in ``inverse``'s order: deterministic on every backend, and bit-equal
+    to the gradient of the transform expansion (module docstring).
+    """
+
+    @staticmethod
+    def forward(
+        ctx: Any, weight: torch.Tensor, index: torch.Tensor, inverse: torch.Tensor
+    ) -> torch.Tensor:
+        ctx.save_for_backward(inverse)
+        ctx.weight_shape = weight.shape
+        return weight.reshape(-1).index_select(0, index)
+
+    @staticmethod
+    def backward(ctx: Any, grad: torch.Tensor) -> tuple[torch.Tensor, None, None]:
+        (inverse,) = ctx.saved_tensors
+        copies = grad.reshape(-1).index_select(0, inverse.reshape(-1)).view(inverse.shape)
+        total = copies[0]
+        for row in copies[1:]:  # a fixed order, not a reduction kernel's
+            total = total + row
+        return total.view(ctx.weight_shape), None, None
+
+
+def _gathered_kernel(
+    weight: torch.Tensor, index: torch.Tensor, inverse: torch.Tensor, shape: torch.Size
+) -> torch.Tensor:
+    """The expanded kernel of ``shape``: one :class:`_KernelGather` of ``weight``."""
+    flat: torch.Tensor = _KernelGather.apply(weight, index, inverse)
+    return flat.view(shape)
+
+
 class LiftingConv(nn.Module):
     """Image to regular map: ``(N, in_channels, H, W) -> (N, out_fields * |G|, H', W')``.
 
@@ -136,6 +236,9 @@ class LiftingConv(nn.Module):
     ``F.conv2d``'s integer padding. :meth:`reset_parameters` draws the Glorot-uniform kernel
     (module docstring) and zeroes the bias.
     """
+
+    _kernel_index: torch.Tensor
+    _kernel_inverse: torch.Tensor
 
     def __init__(
         self, group: Group, in_channels: int, out_fields: int, kernel_size: int, padding: int = 0
@@ -148,6 +251,12 @@ class LiftingConv(nn.Module):
         self.padding = padding
         self.weight = nn.Parameter(torch.empty(out_fields, in_channels, kernel_size, kernel_size))
         self.bias = nn.Parameter(torch.empty(out_fields))
+        layout = _lifting_layout(group, torch.arange(self.weight.numel()).view(self.weight.shape))
+        self._kernel_shape = layout.shape
+        index, inverse = _gather_indices(layout, self.weight.shape, group.order)
+        # Not persistent: derived from the shapes, so checkpoints keep only the parameters.
+        self.register_buffer("_kernel_index", index, persistent=False)
+        self.register_buffer("_kernel_inverse", inverse, persistent=False)
         self.reset_parameters()
 
     def fans(self) -> tuple[int, int]:
@@ -161,11 +270,15 @@ class LiftingConv(nn.Module):
         nn.init.zeros_(self.bias)
 
     def expanded(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """The plain ``conv2d`` kernel ``(out_fields * |G|, in, k, k)`` and its bias."""
-        order, k = self.group.order, self.kernel_size
-        kernel = torch.stack([self.group.apply(self.weight, g) for g in range(order)], dim=1)
-        kernel = kernel.reshape(self.out_fields * order, self.in_channels, k, k)
-        return kernel, self.bias.repeat_interleave(order)
+        """The plain ``conv2d`` kernel ``(out_fields * |G|, in, k, k)`` and its bias.
+
+        One gather of :attr:`weight` (module docstring): the kernel stacks ``T_g(weight)``
+        over ``g`` along the output fields.
+        """
+        kernel = _gathered_kernel(
+            self.weight, self._kernel_index, self._kernel_inverse, self._kernel_shape
+        )
+        return kernel, self.bias.repeat_interleave(self.group.order)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """One ``F.conv2d`` with the expanded kernel."""
@@ -182,6 +295,9 @@ class GroupConv(nn.Module):
     draws the Glorot-uniform kernel with :meth:`fans` and zeroes the bias.
     """
 
+    _kernel_index: torch.Tensor
+    _kernel_inverse: torch.Tensor
+
     def __init__(
         self, group: Group, in_fields: int, out_fields: int, kernel_size: int, padding: int = 0
     ) -> None:
@@ -196,10 +312,12 @@ class GroupConv(nn.Module):
             torch.empty(out_fields, in_fields, order, kernel_size, kernel_size)
         )
         self.bias = nn.Parameter(torch.empty(out_fields))
-        # permutations[g][h] = g^-1 h: which stored input orientation filter g reads at h.
-        self._permutations = tuple(
-            [group.mul[group.inv[g]][h] for h in range(order)] for g in range(order)
-        )
+        layout = _group_layout(group, torch.arange(self.weight.numel()).view(self.weight.shape))
+        self._kernel_shape = layout.shape
+        index, inverse = _gather_indices(layout, self.weight.shape, order)
+        # Not persistent: derived from the shapes, so checkpoints keep only the parameters.
+        self.register_buffer("_kernel_index", index, persistent=False)
+        self.register_buffer("_kernel_inverse", inverse, persistent=False)
         self.reset_parameters()
 
     def fans(self) -> tuple[int, int]:
@@ -213,21 +331,14 @@ class GroupConv(nn.Module):
         nn.init.zeros_(self.bias)
 
     def expanded(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """The plain ``conv2d`` kernel ``(out_fields * |G|, in_fields * |G|, k, k)`` and bias."""
-        order, k = self.group.order, self.kernel_size
-        # The permutation is a stack of slices, not an advanced index: the backward of an
-        # index is an accumulating scatter, which has no deterministic MPS implementation
-        # (Trainer(deterministic=True) would fail there).
-        slices = self.weight.unbind(dim=2)
-        kernel = torch.stack(
-            [
-                self.group.apply(torch.stack([slices[h] for h in self._permutations[g]], 2), g)
-                for g in range(order)
-            ],
-            dim=1,
-        )  # (out_fields, |G| out, in_fields, |G| in, k, k)
-        kernel = kernel.reshape(self.out_fields * order, self.in_fields * order, k, k)
-        return kernel, self.bias.repeat_interleave(order)
+        """The plain ``conv2d`` kernel ``(out_fields * |G|, in_fields * |G|, k, k)`` and bias.
+
+        One gather of :attr:`weight` (module docstring), laid out as :func:`_group_layout`.
+        """
+        kernel = _gathered_kernel(
+            self.weight, self._kernel_index, self._kernel_inverse, self._kernel_shape
+        )
+        return kernel, self.bias.repeat_interleave(self.group.order)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """One ``F.conv2d`` with the expanded kernel."""

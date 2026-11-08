@@ -534,11 +534,19 @@ runs one `F.conv2d`, so it works on CPU, CUDA and MPS, and costs what a plain CN
   `(field, g)` order.
 - `LiftingConv(group, in_channels, out_fields, k, padding)`: image → regular map;
   `GroupConv(group, in_fields, out_fields, k, padding)`: regular → regular, with the input
-  orientations permuted by `h → g⁻¹h` for output `g` (a stack of slices, not an advanced
-  index: the index's backward has no deterministic MPS kernel); `GroupReadout(group,
+  orientations permuted by `h → g⁻¹h` for output `g`; `GroupReadout(group,
   in_fields, out_fields, k)`: a valid `GroupConv` covering the whole k×k map (the paper's
   fc1); `orientation_mean(x, order)`: the invariant mean over the orientations of each
   field. Biases: one per field.
+- **Expansion = one gather** (ADR 0005, decision 8): each layer computes once, from the
+  transforms applied to an `arange` of its weight's shape, the flat source index of every
+  expanded entry and keeps it as a non-persistent buffer (it follows `.to()`, stays out of
+  `state_dict`). `expanded()` is one `index_select` of the flattened weight through
+  `_KernelGather`, whose backward gathers each entry's `|G|` copies with an inverse index
+  and adds them from the last output orientation to the first. Not `index_select`'s own
+  backward: that is an `index_add_` scatter, with no deterministic MPS kernel, and it sums
+  in another order. Values and gradients are bit-equal to the transform-by-transform
+  expansion it replaced (~200 `select`/`rot90`/`stack` ops per p4 training step).
 - **Glorot fans** (the initialisation of the faithful model, defined for group layers):
   those of the expanded linear map. Convolutions use Keras' convention on the expanded
   kernel, `fan_in = in_channels·k²`, `fan_out = out_fields·|G|·k²` (= `xavier_uniform_`'s
@@ -551,7 +559,11 @@ runs one `F.conv2d`, so it works on CPU, CUDA and MPS, and costs what a plain CN
 - **Tested** (`tests/test_group_conv.py`): the group axioms and the table against the
   transforms; the equivariance law `layer(T_g x) = T_g(layer(x))` with the orientation
   permutation, for every element, kernel parity and padding, in float64 with random
-  biases; the readout's invariance after the orientation mean; the fans and bounds.
+  biases; the readout's invariance after the orientation mean; the fans and bounds; the
+  gathered kernel and its gradient bit-equal to the transform expansion (kept in the test
+  as the reference) for every group layer of the p4 and p4m paper models and a few odd
+  shapes, on CPU and on MPS / CUDA when present, also under
+  `torch.use_deterministic_algorithms(True)`; the buffers out of `state_dict`.
 
 ## `paper_variants` (task 2.5-models)
 
@@ -594,10 +606,12 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
   gathers the 6-channel images by pool index like the 3-channel ones (tested in
   `tests/test_split_runs.py`).
 - `scripts/bench_paper_models.py`: parameters, MACs, CPU latency (batch 1) and
-  throughput (batch 512, default threads and 1 thread) and, on the accelerator torch
-  reports, batch 1 / 512 / 4096, for every variant (`--out FILE` writes JSON). The group
-  layers re-expand their kernels on every call, which shows in the batch-1 latency, not in
-  the throughput; an exported, constant-folded model does not pay it.
+  throughput (batch 512, default threads and 1 thread), a batch-64 training step (forward
+  and backward of the summed logits, train mode, no optimiser step) and, on the
+  accelerator torch reports, batch 1 / 512 / 4096 and the training step, for every variant
+  (`--out FILE` writes JSON). The group layers re-expand their kernels on every call,
+  which shows in the batch-1 latency and the training step more than in the throughput; an
+  exported, constant-folded model does not pay it.
 - **Tested** (`tests/test_paper_variants.py`): once per new flag, the faithful preset with
   that flag at its default reproduces the golden fixture (parameter count, every initial
   tensor's sum, float64 logits); every invariant configuration (`rot4`, `p4`, `p4` 16/32,
