@@ -261,7 +261,7 @@ This design was verified with uv 0.11 on toy projects (plan review, round 2).
   stays under 10 minutes.
 - pip-audit is green and covers torch.
 
-### 1.2 Data: schemas, loader, inspection, synthetic data (after 1.1)
+### 1.2 Data: schemas, loader, inspection, synthetic data (after 1.1) — done (PR #5, merged as 5523547, 2026-11-07)
 
 - `docs/data.md`: per-file schemas (classifier vs pretraining), file names, provenance and
   size, and the manifest workflow.
@@ -510,6 +510,19 @@ This design was verified with uv 0.11 on toy projects (plan review, round 2).
 
   Still open: the full 100 % file and the 300k pretraining set. Where do they live
   (`deepspace`/`deepsleep`)?
+
+  Task 1.2 (PR #5) inspected the complete files (details in `docs/data.md`):
+  - **`red` is the full labelled set:** it is the original `td_ztf_stamp_17_06_20.pkl`
+    with duplicate stamps removed. Train has 50,582 stamps (14,542 / 1,396 / 14,517 /
+    9,599 / 10,528), and Validation and Test have 100 per class.
+  - **`sup_1` and `sup_10` are random 1 % / 10 % draws of `red`'s Train, oversampled to
+    balance the classes.** `sup_1` has only 14 distinct SN stamps, so the label fraction
+    is about *stamps*, not alerts, and low-label results carry large variance.
+  - **`sup_100` is `red`'s Train oversampled to 72,710**, not a different dataset.
+    `red` can stand in for the 100 % runs once the protocol says whether to balance it.
+  - **Features are already standardized on Train** (`isdiffpos` is scaled only).
+  - **One `red` Train stamp also appears in Validation or Test:** a leakage of one item,
+    to be removed before any reported number (phase-1 runs keep the legacy files as-is).
 - **Data governance:** may the ZTF/ALeRCE pickles be uploaded to third-party clouds (Colab,
   Kaggle, RunPod)? Only the synthetic level-2 run is free of this question.
 - ~~**CE reference optimizer**~~: resolved 2026-11-07. The Drive copy of
