@@ -1,8 +1,10 @@
 """The ``carrasco2021`` schedule through ``experiments.run_command`` (task 2.2a).
 
-On the synthetic prepared data (10 stamps per split, 2 per class): batch 4 gives epochs of
+On the synthetic prepared data with float32 stamps (10 stamps per split, 2 per class; the
+``classifier_f32_dir`` fixture, whose leaked Train stamp is dropped): batch 4 gives epochs of
 2 steps, so step-based validation, the horizon and mid-epoch checkpoints all cross epoch
-boundaries. The data path is the interim uint8 crops (2.2c wires the float path).
+boundaries. The data path is the paper's float path (task 2.2c); the preset itself is tested
+in ``test_presets.py``.
 """
 
 from __future__ import annotations
@@ -41,12 +43,12 @@ _SCHEDULE: dict[str, Any] = {
 }
 
 
-def _settings(classifier_dir: Path, out: Path, **changes: Any) -> Settings:
+def _settings(classifier_f32_dir: Path, out: Path, **changes: Any) -> Settings:
     base = Settings(
         accelerator="cpu",
         deterministic=True,
-        data_dir=classifier_dir.parent,
-        dataset=classifier_dir.name,
+        data_dir=classifier_f32_dir.parent,
+        dataset=classifier_f32_dir.name,
         output_dir=out,
         **_SCHEDULE,
     )
@@ -99,9 +101,11 @@ class _Probe(Callback):
         }
 
 
-def test_run_command_writes_metrics(classifier_dir: Path, tmp_path: Path) -> None:
+def test_run_command_writes_metrics(classifier_f32_dir: Path, tmp_path: Path) -> None:
     out = tmp_path / "run"
-    metrics = run_command("train-supervised", _settings(classifier_dir, out), progress_bar=False)
+    metrics = run_command(
+        "train-supervised", _settings(classifier_f32_dir, out), progress_bar=False
+    )
     on_disk = json.loads((out / "metrics.json").read_text(encoding="utf-8"))
     assert on_disk == metrics
     assert metrics["config"]["schedule"] == "carrasco2021"
@@ -120,7 +124,7 @@ def test_run_command_writes_metrics(classifier_dir: Path, tmp_path: Path) -> Non
     assert (out / "confusion_matrix_test.png").is_file()
 
 
-def test_resume_from_mid_epoch_last_checkpoint(classifier_dir: Path, tmp_path: Path) -> None:
+def test_resume_from_mid_epoch_last_checkpoint(classifier_f32_dir: Path, tmp_path: Path) -> None:
     # last.ckpt every 3 steps, on the validation grid, in epochs of 2 steps: the step-9 copy
     # is mid-epoch and was written after the step-9 validation, which the resume must not
     # lose (a ModelCheckpoint in on_train_batch_end would) nor repeat.
@@ -130,7 +134,7 @@ def test_resume_from_mid_epoch_last_checkpoint(classifier_dir: Path, tmp_path: P
     whole_probe = _Probe()
     expected = run_command(
         "train-supervised",
-        _settings(classifier_dir, whole),
+        _settings(classifier_f32_dir, whole),
         callbacks=[copy, whole_probe],
         progress_bar=False,
     )
@@ -143,7 +147,7 @@ def test_resume_from_mid_epoch_last_checkpoint(classifier_dir: Path, tmp_path: P
     probe = _Probe()
     metrics = run_command(
         "train-supervised",
-        _settings(classifier_dir, resumed),
+        _settings(classifier_f32_dir, resumed),
         resume="auto",
         callbacks=[probe],
         progress_bar=False,
@@ -163,13 +167,15 @@ def test_resume_from_mid_epoch_last_checkpoint(classifier_dir: Path, tmp_path: P
     assert all(torch.equal(best_whole[k], best_resumed[k]) for k in best_whole)
 
 
-def test_resume_at_the_horizon_still_writes_best(classifier_dir: Path, tmp_path: Path) -> None:
+def test_resume_at_the_horizon_still_writes_best(classifier_f32_dir: Path, tmp_path: Path) -> None:
     out = tmp_path / "run"
-    expected = run_command("train-supervised", _settings(classifier_dir, out), progress_bar=False)
+    expected = run_command(
+        "train-supervised", _settings(classifier_f32_dir, out), progress_bar=False
+    )
     (out / "checkpoints" / "best.ckpt").unlink()
     # The final last.ckpt is at the horizon: the fit loop is skipped, on_train_end never runs.
     metrics = run_command(
-        "train-supervised", _settings(classifier_dir, out), resume="auto", progress_bar=False
+        "train-supervised", _settings(classifier_f32_dir, out), resume="auto", progress_bar=False
     )
     assert metrics["best_step"] == expected["best_step"]
     assert metrics["monitor_best"] == expected["monitor_best"]
@@ -177,9 +183,11 @@ def test_resume_at_the_horizon_still_writes_best(classifier_dir: Path, tmp_path:
 
 
 @pytest.mark.parametrize("accelerator", ACCELERATORS)
-def test_smoke_on_each_accelerator(accelerator: str, classifier_dir: Path, tmp_path: Path) -> None:
+def test_smoke_on_each_accelerator(
+    accelerator: str, classifier_f32_dir: Path, tmp_path: Path
+) -> None:
     settings = _settings(
-        classifier_dir,
+        classifier_f32_dir,
         tmp_path,
         accelerator=accelerator,
         deterministic=False,
@@ -226,9 +234,9 @@ def test_settings_validate_the_schedule() -> None:
     ],
 )
 def test_run_command_rejects_mismatched_schedule(
-    command: str, changes: dict[str, Any], match: str, classifier_dir: Path, tmp_path: Path
+    command: str, changes: dict[str, Any], match: str, classifier_f32_dir: Path, tmp_path: Path
 ) -> None:
-    settings = _settings(classifier_dir, tmp_path, **changes)
+    settings = _settings(classifier_f32_dir, tmp_path, **changes)
     with pytest.raises(ConfigError, match=match):
         run_command(command, settings, progress_bar=False)
 

@@ -49,14 +49,23 @@ uninterrupted one (augmentations and shuffling of the later epochs differ).
 **Schedules** (``Settings.schedule``, task 2.2a). The above is the ``epochs`` schedule
 (EarlyStopping only if ``early_stopping``). ``carrasco2021`` is ALeRCE's iteration schedule
 for ``train-supervised`` with ``supervised_model: paper_stamp_classifier``: the paper model
-on device-resident 21x21 crops (``training.device_data``; the interim uint8 crops until
-task 2.2c wires the float path), validation every ``val_every_n_steps`` steps, and a
+on device-resident 21x21 crops (``training.device_data``: the float path of task 2.1, or
+the interim uint8 crops with ``paper_input: uint8``), Train without the stamps that leak
+into Validation/Test (``exclude_leaked_train``), validation every ``val_every_n_steps`` steps,
+and a
 ``training.schedule.HorizonCallback`` in place of EarlyStopping and the best
 ``ModelCheckpoint``s; it also writes ``last.ckpt`` after the validation of every
 ``checkpoint_every_n_steps`` steps, and at the end. The outputs are
-the same files; the metrics add ``horizon``, and every run's metrics hold ``best_step`` and
+the same files; the metrics add ``horizon``, ``paper_data`` (input, NaN approximation,
+excluded Train indices, Train and tiled sizes) and ``preset`` (task 2.2c,
+:func:`astro_simclr.presets.preset_report`: whether the run is the faithful preset, and
+which keys and diagnostics differ), and every run's metrics hold ``best_step`` and
 ``last_step`` (optimizer steps). Its resume is exact: the batch stream is a function of the
 step, and the horizon and best weights are in ``last.ckpt``.
+
+**Timing.** Every run's metrics hold ``timing``: the wall-clock seconds of the fit loop, the
+optimizer steps it ran (fewer than ``last_step`` after a resume) and ``seconds_per_step``
+(validation included; the pilot's figure of task 2.2c). ``null`` when no step ran.
 """
 
 from __future__ import annotations
@@ -64,6 +73,7 @@ from __future__ import annotations
 import json
 import math
 import platform
+import time
 from collections.abc import Callable, Sequence
 from importlib.metadata import version
 from pathlib import Path
@@ -76,12 +86,20 @@ from lightning.pytorch.callbacks import Callback
 
 from astro_simclr.augmentations import resolve_augmentation_name
 from astro_simclr.config import CARRASCO2021, ConfigError, Settings, settings_to_plain
-from astro_simclr.data.prepared import is_prepared, read_meta
+from astro_simclr.data.prepared import is_prepared, load_prepared, read_meta
 from astro_simclr.data.schema import LABEL_NAMES, DataError
 from astro_simclr.paper_model import PAPER_CROP
+from astro_simclr.presets import preset_report
+from astro_simclr.protocol.leakage import find_duplicates, train_exclusions
 from astro_simclr.protocol.predictions import Predictions, predictions_file, save_predictions
 from astro_simclr.training.datamodules import ClassifierDataModule, ContrastiveDataModule
-from astro_simclr.training.device_data import DeviceTensorDataModule, interim_uint8_crops
+from astro_simclr.training.device_data import (
+    DeviceTensorDataModule,
+    TensorSplit,
+    float_crops,
+    interim_uint8_crops,
+    without_train_indices,
+)
 from astro_simclr.training.metrics import confusion_counts, macro_f1
 from astro_simclr.training.modules import (
     ClassifierModule,
@@ -308,8 +326,54 @@ def _check_schedule(command: str, settings: Settings) -> None:
         raise ConfigError(msg)
 
 
-def _build_paper(settings: Settings, data: Path) -> tuple[ClassifierModule, DeviceTensorDataModule]:
-    """The paper model and its device-resident data (the interim uint8 crops until 2.2c)."""
+def _leaked_train(settings: Settings, data: Path) -> list[int]:
+    """The Train indices to drop: the stamps that duplicate a Validation or Test stamp.
+
+    Found by ``protocol.leakage`` on the prepared uint8 stamps (``red``: ``[2995]``), the
+    same check that ``make-splits`` stores and ``verify_splits`` repeats; ``[]`` when
+    ``exclude_leaked_train`` is false.
+    """
+    if not settings.exclude_leaked_train:
+        return []
+    return train_exclusions(find_duplicates(load_prepared(data)))
+
+
+def _build_paper(
+    settings: Settings, data: Path
+) -> tuple[ClassifierModule, DeviceTensorDataModule, dict[str, Any]]:
+    """The paper model, its device-resident data and the ``paper_data`` metrics entry.
+
+    The input is the float path (``paper_input: float32``, the paper's) or the interim uint8
+    crops (``uint8``, a diagnostic); the leaked Train stamps are removed before the tiling.
+    The splits are built once, at the data module's first ``setup``.
+    """
+    if settings.paper_input == "float32" and "float32" not in read_meta(data)["images"]:
+        # Fail before the leakage scan and the Trainer; float_crops says the same in setup.
+        msg = (
+            f"{data} has no float32 stamps (images_f32.npy), which the paper's input needs: "
+            "run `astro-simclr prepare-data PKL --images float32 --overwrite` (or set "
+            "paper_input=uint8, a diagnostic)"
+        )
+        raise DataError(msg)
+    excluded = _leaked_train(settings, data)
+    info: dict[str, Any] = {
+        "input": settings.paper_input,
+        "crop": PAPER_CROP,
+        "nan_approximation": (
+            settings.nan_approximation if settings.paper_input == "float32" else None
+        ),
+        "excluded_train": excluded,
+    }
+
+    def source() -> dict[str, TensorSplit]:
+        if settings.paper_input == "float32":
+            splits = float_crops(data, nan_approximation=settings.nan_approximation)
+        else:
+            splits = interim_uint8_crops(data)
+        splits = without_train_indices(splits, excluded)
+        info["n_train"] = len(splits["Train"].labels)
+        return splits
+
     seed_run(settings)
     module = PaperClassifierModule(
         beta_loss=settings.beta_loss,
@@ -318,25 +382,27 @@ def _build_paper(settings: Settings, data: Path) -> tuple[ClassifierModule, Devi
         with_features=settings.with_features,
         dropout_active=settings.dropout_active,
         drop_rate=settings.drop_rate,
+        adam_betas=settings.adam_betas,
     )
     datamodule = DeviceTensorDataModule(
-        lambda: interim_uint8_crops(data),
+        source,
         batch_size=settings.batch_size,
         eval_batch_size=settings.eval_batch_size,
         seed=settings.seed,
     )
-    return module, datamodule
+    return module, datamodule, info
 
 
 def _build(
     command: str, settings: Settings, data: Path
-) -> tuple[L.LightningModule, L.LightningDataModule, frozenset[str]]:
-    """The module, its data module and the metrics the module logs (its ``MONITORABLE``)."""
+) -> tuple[L.LightningModule, L.LightningDataModule, frozenset[str], dict[str, Any] | None]:
+    """The module, its data module, the metrics the module logs (its ``MONITORABLE``) and,
+    for the paper model, its ``paper_data`` metrics entry (filled in at ``setup``)."""
     datamodule: L.LightningDataModule
     _check_schedule(command, settings)
     if settings.schedule == CARRASCO2021:
-        paper, datamodule = _build_paper(settings, data)
-        return paper, datamodule, ClassifierModule.MONITORABLE
+        paper, datamodule, info = _build_paper(settings, data)
+        return paper, datamodule, ClassifierModule.MONITORABLE, info
     if command == "pretrain":
         seed_run(settings)
         module: L.LightningModule = SimCLRModule(
@@ -356,7 +422,7 @@ def _build(
             augmentation=settings.augmentation,
             num_workers=settings.num_workers,
         )
-        return module, datamodule, SimCLRModule.MONITORABLE
+        return module, datamodule, SimCLRModule.MONITORABLE, None
     if command == "train-supervised":
         seed_run(settings)
         module = _build_supervised(settings)
@@ -372,7 +438,7 @@ def _build(
         augmentation=settings.augmentation,
         num_workers=settings.num_workers,
     )
-    return module, datamodule, ClassifierModule.MONITORABLE
+    return module, datamodule, ClassifierModule.MONITORABLE, None
 
 
 def _finite(value: object) -> object:
@@ -625,6 +691,33 @@ def _carrasco2021_trainer(
     return horizon, trainer
 
 
+class _FitTimer(Callback):
+    """The wall-clock time and optimizer steps of the fit loop (``metrics["timing"]``)."""
+
+    def __init__(self) -> None:
+        self._start: tuple[float, int] | None = None
+        self.seconds: float | None = None
+        self.steps: int | None = None
+
+    def on_train_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        """Start the clock at the first step (after setup and the data upload)."""
+        self._start = (time.perf_counter(), trainer.global_step)
+
+    def on_train_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        """Stop the clock; the steps are those of this fit (a resume counts its own)."""
+        if self._start is not None:
+            start, step = self._start
+            self.seconds = time.perf_counter() - start
+            self.steps = trainer.global_step - step
+
+    def report(self) -> dict[str, float | int | None]:
+        """``fit_seconds``, ``steps`` and ``seconds_per_step`` (``None`` without steps)."""
+        per_step = None
+        if self.seconds is not None and self.steps:
+            per_step = self.seconds / self.steps
+        return {"fit_seconds": self.seconds, "steps": self.steps, "seconds_per_step": per_step}
+
+
 def run_command(
     command: str,
     settings: Settings,
@@ -646,14 +739,15 @@ def run_command(
         ConfigError: on an invalid name (augmentation, model, monitor), a missing or wrong
             pretrained checkpoint, a missing ``--resume`` checkpoint, or a ``carrasco2021``
             schedule with another command or model (and the paper model without it).
-        DataError: if the dataset is missing, invalid or smaller than one batch.
+        DataError: if the dataset is missing, invalid or smaller than one batch, or (the
+            paper model's ``paper_input: float32``) has no float32 stamps.
     """
     check_accelerator(settings.accelerator)
     _check_names(settings)
     data = dataset_path(settings)
     ckpt_path = resolve_resume(resume, settings.output_dir)
     try:
-        module, datamodule, monitorable = _build(command, settings, data)
+        module, datamodule, monitorable, paper_data = _build(command, settings, data)
     except ValueError as err:
         # DataError is a ValueError too, and must keep its exit code (1, not 2).
         if isinstance(err, ConfigError | DataError):
@@ -661,15 +755,23 @@ def run_command(
         raise ConfigError(str(err)) from None
     out = settings.output_dir
     out.mkdir(parents=True, exist_ok=True)
+    timer = _FitTimer()
+    extra = [*callbacks, timer]
     if settings.schedule == CARRASCO2021:
-        checkpoint, trainer = _carrasco2021_trainer(settings, monitorable, callbacks, progress_bar)
+        checkpoint, trainer = _carrasco2021_trainer(settings, monitorable, extra, progress_bar)
     else:
-        checkpoint, trainer = _epochs_trainer(settings, monitorable, callbacks, progress_bar)
+        checkpoint, trainer = _epochs_trainer(settings, monitorable, extra, progress_bar)
     trainer.fit(module, datamodule=datamodule, ckpt_path=ckpt_path)
     metrics = _base_metrics(command, settings, trainer, checkpoint, data)
     metrics["resumed_from"] = None if ckpt_path is None else str(ckpt_path)
+    metrics["timing"] = timer.report()
     if isinstance(checkpoint, HorizonCallback):
         metrics["horizon"] = checkpoint.horizon
+    if paper_data is not None and isinstance(datamodule, DeviceTensorDataModule):
+        tiled = datamodule.tiled_indices
+        paper_data["n_tiled"] = None if tiled is None else len(tiled)
+        metrics["paper_data"] = paper_data
+        metrics["preset"] = preset_report(settings)
     if isinstance(module, ClassifierModule):
         metrics.update(
             _classifier_results(

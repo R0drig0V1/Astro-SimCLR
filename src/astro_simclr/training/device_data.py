@@ -26,15 +26,23 @@ gathered there by index: no worker processes, no host-to-device copy per step.
 The device is the Trainer's (``trainer.strategy.root_device``), never named here (the
 portability rule). Without a Trainer (unit tests) the tensors stay on the CPU.
 
-:func:`interim_uint8_crops` builds the splits from the existing prepared layout (uint8
-stamps): a centre crop of 21 scaled to [0, 1]. It is a **stand-in** so that the schedule
-runs end to end on the current data path; task 2.2c replaces it with the float path of task
-2.1 (``crop_then_normalise`` on the stored float32 stamps), which is what the paper used.
+The splits come from a prepared layout through one of two builders:
+
+- :func:`float_crops` (task 2.2c), **the paper's input**: 2.1's float path,
+  ``data.float_input.crop_split`` (centre 21x21, per-channel min-max on the crop without
+  epsilon, NaN -> 0, the NaN approximation on by default) on the stored float32 stamps
+  (``images_f32.npy``, written by ``prepare-data --images float32``);
+- :func:`interim_uint8_crops` (task 2.2a), the stand-in that ran the schedule before the
+  float path existed: the centre 21x21 of the uint8 stamps divided by 255, no
+  re-normalisation. It stays as the ``paper_input: uint8`` diagnostic.
+
+:func:`without_train_indices` drops Train stamps (the leaked one, ``protocol.leakage``)
+from Train only, before the tiling.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -44,17 +52,27 @@ import numpy as np
 import numpy.typing as npt
 import torch
 
+from astro_simclr.data.float_input import crop_split
 from astro_simclr.data.prepared import load_prepared
-from astro_simclr.data.schema import DISCARDED_FEATURES, LABEL_NAMES, SPLITS, DataError
+from astro_simclr.data.schema import (
+    DISCARDED_FEATURES,
+    LABEL_NAMES,
+    SPLITS,
+    DataError,
+    SplitData,
+)
 from astro_simclr.models import N_FEATURES
 from astro_simclr.paper_model import PAPER_CROP
+from astro_simclr.protocol.leakage import train_keep_indices
 from astro_simclr.training.tiling import PermutationStream, tile_indices
 
 __all__ = [
     "DeviceTensorDataModule",
     "SplitSource",
     "TensorSplit",
+    "float_crops",
     "interim_uint8_crops",
+    "without_train_indices",
 ]
 
 #: (crops, features, one-hot labels), as ``ClassifierModule`` expects.
@@ -322,12 +340,26 @@ def _centre_crop_unit(images: npt.NDArray[np.uint8], size: int) -> npt.NDArray[n
     return np.ascontiguousarray(crop.transpose(0, 3, 1, 2) / np.float32(255.0))
 
 
+def _labelled(
+    path: Path, name: str, split: SplitData
+) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.int64]]:
+    """The 23 kept features (float32) and the labels (int64) of a labelled split.
+
+    Raises:
+        DataError: if the split has no labels or features (a pretraining file).
+    """
+    if split.labels is None or split.features is None:
+        raise DataError(f"{path}: {name} is unlabelled; the paper model needs labels")
+    kept = np.delete(np.asarray(split.features), list(DISCARDED_FEATURES), axis=1)
+    return kept.astype(np.float32), np.array(split.labels, dtype=np.int64, copy=True)
+
+
 def interim_uint8_crops(path: Path) -> dict[str, TensorSplit]:
     """The splits of the prepared layout ``path``, as 21x21 crops of its uint8 stamps.
 
-    A **stand-in** until task 2.2c wires the float path of 2.1: the centre 21x21 of the
-    stored uint8 stamps, divided by 255 (no re-normalisation on the crop), with the 23 kept
-    features (columns 13-15 dropped, as in ``StampDataset``) as float32.
+    The stand-in of task 2.2a, now the ``paper_input: uint8`` diagnostic: the centre 21x21
+    of the stored uint8 stamps, divided by 255 (no re-normalisation on the crop), with the
+    23 kept features (columns 13-15 dropped, as in ``StampDataset``) as float32.
 
     Raises:
         DataError: if ``path`` is not a valid prepared layout of a classifier file.
@@ -336,12 +368,65 @@ def interim_uint8_crops(path: Path) -> dict[str, TensorSplit]:
     splits: dict[str, TensorSplit] = {}
     for name in SPLITS:
         split = data.splits[name]
-        if split.labels is None or split.features is None:
-            raise DataError(f"{path}: {name} is unlabelled; the paper model needs labels")
-        kept = np.delete(np.asarray(split.features), list(DISCARDED_FEATURES), axis=1)
+        features, labels = _labelled(path, name, split)
         splits[name] = TensorSplit(
             images=_centre_crop_unit(split.images, PAPER_CROP),
-            features=kept.astype(np.float32),
-            labels=np.array(split.labels, dtype=np.int64, copy=True),
+            features=features,
+            labels=labels,
         )
     return splits
+
+
+def float_crops(path: Path, *, nan_approximation: bool = True) -> dict[str, TensorSplit]:
+    """The splits of the prepared layout ``path`` through the paper's float input path.
+
+    Each split's stored float32 stamps (``images_f32.npy``, read from the memory map in
+    chunks) go through ``crop_split(images, 21, nan_approximation=...)`` (task 2.1: ALeRCE's
+    ``image_crop_at_center`` -> ``image_normalize_by_image`` -> ``image_nan_to_num``),
+    then channels first. The features are the 23 kept ones, as float32. For ``red`` the
+    crops take about 270 MB, plus a transient copy of the same size per split.
+
+    Raises:
+        DataError: if ``path`` is not a valid prepared layout of a classifier file, or it
+            has no float32 stamps (the message names the ``prepare-data`` command).
+    """
+    data = load_prepared(path)
+    splits: dict[str, TensorSplit] = {}
+    for name in SPLITS:
+        split = data.splits[name]
+        if split.images_f32 is None:
+            msg = (
+                f"{path} has no float32 stamps (images_f32.npy), which the paper's input "
+                f"needs: run `astro-simclr prepare-data PKL --images float32 --overwrite` "
+                "(or set paper_input=uint8, a diagnostic)"
+            )
+            raise DataError(msg)
+        features, labels = _labelled(path, name, split)
+        crops = crop_split(split.images_f32, PAPER_CROP, nan_approximation=nan_approximation)
+        splits[name] = TensorSplit(
+            images=np.ascontiguousarray(crops.transpose(0, 3, 1, 2)),
+            features=features,
+            labels=labels,
+        )
+    return splits
+
+
+def without_train_indices(
+    splits: Mapping[str, TensorSplit], excluded: Sequence[int]
+) -> dict[str, TensorSplit]:
+    """``splits`` with the Train stamps ``excluded`` removed; Validation and Test unchanged.
+
+    The kept Train stamps stay in file order, so the tiling and the stream are those of the
+    reduced split (the plan, task 2.3: the leaked stamp leaves Train only).
+
+    Raises:
+        ValueError: if an excluded index is outside the Train split.
+    """
+    train = splits[_TRAIN]
+    keep = train_keep_indices(len(train.labels), excluded)
+    reduced = TensorSplit(
+        images=np.ascontiguousarray(train.images[keep]),
+        features=np.ascontiguousarray(train.features[keep]),
+        labels=np.ascontiguousarray(train.labels[keep]),
+    )
+    return {**splits, _TRAIN: reduced}

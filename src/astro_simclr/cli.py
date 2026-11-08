@@ -10,7 +10,9 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   features standardised with M1's statistics? Exit 1 if not);
 - training (task 1.7, :mod:`astro_simclr.experiments`): ``pretrain``, ``linear-eval``,
   ``fine-tune``, ``train-supervised``. Their settings resolve as: the ``Settings``
-  defaults, the subcommand's legacy protocol (``hparams.COMMAND_DEFAULTS``), ``--hparams``
+  defaults, the subcommand's legacy protocol (``hparams.COMMAND_DEFAULTS``), ``--preset``
+  (``train-supervised`` only: ``carrasco2021`` or ``carrasco2021-no-features``, the paper
+  replication of task 2.2c; :mod:`astro_simclr.presets`), ``--hparams``
   (a legacy ``results/hparams_best_*.yaml``, through the mapping of
   :mod:`astro_simclr.hparams`), ``--config``, ``--set``, then the explicit flags
   (``--data-dir``, ``--output-dir``, ``--seed``, ``--accelerator``, ``--pretrained``);
@@ -47,7 +49,7 @@ import sys
 from collections.abc import Sequence
 from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import yaml
 
@@ -276,6 +278,11 @@ def training_settings(command: str, args: argparse.Namespace) -> Settings:
         ConfigError: if any source is invalid, or the legacy file does not map.
     """
     data: dict[str, object] = dict(COMMAND_DEFAULTS[command])
+    preset: str | None = getattr(args, "preset", None)
+    if preset is not None:
+        from astro_simclr.presets import PRESETS
+
+        data.update(PRESETS[preset])
     if args.hparams is not None:
         legacy = load_legacy_hparams(args.hparams, command)
         if legacy.skipped:
@@ -306,14 +313,26 @@ def _train(args: argparse.Namespace) -> int:
     command: str = args.command
     settings = training_settings(command, args)
     metrics = run_command(command, settings, resume=args.resume)
+    shown = {**metrics, "seconds_per_step": metrics.get("timing", {}).get("seconds_per_step")}
     summary = ", ".join(
-        f"{key} {metrics[key]}"
-        for key in ("best_epoch", "monitor_best", "val_acc_best", "test_acc_at_best")
-        if key in metrics
+        f"{key} {shown[key]}"
+        for key in (
+            "best_epoch",
+            "best_step",
+            "monitor_best",
+            "val_acc_best",
+            "test_acc_at_best",
+            "seconds_per_step",
+        )
+        if shown.get(key) is not None
     )
     sys.stdout.write(f"{command}: {summary}; wrote {settings.output_dir / METRICS_FILE}\n")
     return 0
 
+
+#: ``train-supervised --preset`` choices (``presets.PRESETS``; spelled out here so that
+#: ``--help`` does not import the training stack).
+_TRAINING_PRESETS: Final = ("carrasco2021", "carrasco2021-no-features")
 
 _TRAINING_HELP = {
     "pretrain": "SimCLR pretraining of an encoder (legacy iter_clr.py)",
@@ -353,6 +372,16 @@ def _add_training_commands(
             metavar="PATH|auto",
             help="continue from a checkpoint; auto: OUTPUT_DIR/checkpoints/last.ckpt if any",
         )
+        if command == "train-supervised":
+            sub.add_argument(
+                "--preset",
+                choices=_TRAINING_PRESETS,
+                default=None,
+                help="named settings applied after the legacy protocol and before --hparams, "
+                "--config and --set: carrasco2021 is the paper replication of Carrasco-Davis "
+                "et al. 2021 (float input, Adam (0.9, 0.999), the iteration schedule; ADR "
+                "0003), carrasco2021-no-features its without-features variant",
+            )
         if command in ("linear-eval", "fine-tune"):
             sub.add_argument(
                 "--pretrained",

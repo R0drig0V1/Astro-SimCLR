@@ -1,0 +1,61 @@
+# carrasco2021: paper-faithful replication of the ALeRCE stamp classifier (model "M1") of
+# Carrasco-Davis et al. 2021, AJ 162, 231 (arXiv:2008.03309), with the 23 alert features.
+# The same values as `train-supervised --preset carrasco2021` (src/astro_simclr/presets.py;
+# tests/test_presets.py keeps them equal).
+#
+# Run (one seed; the GTX 1050 pilot of task 2.2c, needs `prepare-data --images float32`):
+#   astro-simclr train-supervised --config configs/phase2/carrasco2021.yaml \
+#       --accelerator cuda --seed S --output-dir OUT/carrasco2021/seed-S
+# Gate (5 seeds): astro-simclr compare-reference OUT/carrasco2021/seed-* --ref CD21 \
+#       --oracle-report results/phase2/replication/m1_oracle.json   (the faithful tier
+#       needs the M1 oracle of task 2.2b, which passed)
+#
+# Provenance (docs/phases/02-stamp-classifier.md, "Starting point"; ADR 0003). Where the
+# paper text and ALeRCE's TF1 code (alercebroker/pipeline@a3705ac,
+# stamp_classifier_step/model/) disagree, the code is the authority: it produced M1.
+# - data: red-002 is the paper's split (50,582 Train after de-duplication; 100 per class
+#   in Validation and Test). Train 2995 (Bogus) is Validation 115 (SN): removed from Train
+#   only (exclude_leaked_train; ADR 0004). Train tiled to the largest class (always on).
+# - input: the stored float32 stamps, centre 21x21 crop, per-channel min-max on the crop
+#   without epsilon, NaN -> 0 (ALeRCE's ztf_preprocessor; task 2.1), with the NaN
+#   approximation for the pickles' former NaNs; the model zero-pads to 27.
+# - model: PaperStampClassifier (DeepHitsWithFeatures, 441,075 parameters); dropout layers
+#   present but inactive (Keras learning phase never fed in M1's graph); the rate 0.5 is
+#   used only by the dropout_active diagnostic.
+# - optimizer: TF1 AdamOptimizer(1e-3, beta1=0.9, beta2=0.999, epsilon=1e-8)
+#   (modules/optimizers.adam; M1's beta2_power = 0.999^4782); the paper text's (0.5, 0.9)
+#   are unused defaults. Loss CE - 0.5 H(softmax) (EntropyRegBeta0.5000). Batch 64.
+# - schedule: validation loss every 10 iterations (mean of batch-64 means in file order),
+#   best checkpoint kept, horizon = max(horizon, best + 10,000) from 30,000; no
+#   EarlyStopping (task 2.2a). Test is evaluated on the selected checkpoint.
+#
+# Diagnostics (plan task 2.4; each one recorded in metrics.json["preset"]):
+#   --set dropout_active=true | adam_betas=paper | nan_approximation=false | paper_input=uint8
+
+# Data and input.
+dataset: td_ztf_stamp_17_06_20_red-002
+supervised_model: paper_stamp_classifier
+image_size: 21
+paper_input: float32
+nan_approximation: true
+with_features: true
+dropout_active: false
+drop_rate: 0.5
+exclude_leaked_train: true
+batch_size: 64
+eval_batch_size: 64
+num_workers: 0
+
+# Optimizer and loss.
+optimizer: Adam
+adam_betas: code
+lr: 1.0e-3
+beta_loss: 0.5
+
+# Schedule.
+schedule: carrasco2021
+monitor: loss_val
+max_steps: 30000
+val_every_n_steps: 10
+horizon_increment: 10000
+early_stopping: false

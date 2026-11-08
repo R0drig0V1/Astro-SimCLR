@@ -8,7 +8,7 @@ legacy modules one task at a time; until a module is ported, its legacy file is 
 characterization oracle and stays excluded from ruff, mypy and coverage.
 
 ```
-cli ──► config, hparams (subcommand defaults, legacy key mapping)
+cli ──► config, hparams (subcommand defaults, legacy key mapping), presets (carrasco2021)
  │
  ├──► data ──────► augmentations (protocol)      registry of transforms (1.5)
  │                                    ▲
@@ -95,8 +95,16 @@ of one run.
 
   Under `carrasco2021` the schedule's definitions are errors to change, not defaults:
   `eval_batch_size` must be 64 (the selection loss is TF's mean of batch-64 means),
-  `early_stopping` false and `num_workers` 0 (`ConfigError` otherwise). Task 2.2c's preset
-  will set them; until then a config spells them out (example in `training`).
+  `early_stopping` false and `num_workers` 0 (`ConfigError` otherwise). The
+  `carrasco2021` preset (task 2.2c, see `presets`) sets them.
+- **Task 2.2c fields** (read by `paper_stamp_classifier` only; ADR 0003):
+
+  | Field | Default | Meaning |
+  |---|---|---|
+  | `paper_input` | `float32` | `float32`: `images_f32.npy` through `crop_split(21)` (the paper's input); `uint8`: the interim uint8 crops (a diagnostic) |
+  | `nan_approximation` | true | `float32` input: `crop_split(nan_approximation=...)`; false is a diagnostic |
+  | `exclude_leaked_train` | true | drop the Train stamps that duplicate a Validation/Test stamp (`protocol.leakage`), from Train only |
+  | `adam_betas` | `code` | Adam/AdamW betas: `code` (0.9, 0.999), `paper` (0.5, 0.9; a diagnostic). The phase-1 modules keep (0.5, 0.9) |
 - `load_settings(path, overrides, defaults=...)`: `defaults` (a subcommand's legacy
   protocol) sits between the dataclass defaults and the file. `read_settings_file` reads a
   YAML mapping without checking keys; `settings_to_plain` gives the plain (YAML/JSON) form
@@ -120,11 +128,15 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   `experiments`). Each takes `--config`, `--set`, `--hparams FILE` (a legacy
   `results/hparams_best_*.yaml`, see `hparams`), `--data-dir`, `--output-dir`, `--seed`,
   `--accelerator`, `--resume PATH|auto`; `linear-eval` and `fine-tune` also `--pretrained
-  PATH`. Settings resolve as: `Settings` defaults → the subcommand's legacy protocol
-  (`hparams.COMMAND_DEFAULTS`) → `--hparams` → `--config` → `--set` → the explicit flags
+  PATH`; `train-supervised` also `--preset carrasco2021|carrasco2021-no-features` (task
+  2.2c, see `presets`). Settings resolve as: `Settings` defaults → the subcommand's legacy
+  protocol (`hparams.COMMAND_DEFAULTS`) → `--preset` → `--hparams` → `--config` → `--set` →
+  the explicit flags
   (later wins; `cli.training_settings`). The legacy file comes before the config so that a
   config can correct it (R1's `AdamW`). Dry mode: `--set max_epochs=1 limit_train_batches=2
-  limit_val_batches=2` (not `fast_dev_run`, which writes no checkpoint).
+  limit_val_batches=2` (not `fast_dev_run`, which writes no checkpoint). The final line
+  prints `best_epoch`, `best_step`, `monitor_best`, `val_acc_best`, `test_acc_at_best` and
+  `seconds_per_step`.
 - `compare-reference RUN_DIR... --ref R1|R2|R3|R4|CD21 [--oracle-report FILE]` (see
   `reference`): exit 0 for PASS or REPORT, 1 for FAIL.
 - `make-splits PREPARED_DIR --out FILE [--seed 0] [--overwrite]` and `compare-variants
@@ -703,10 +715,16 @@ one-hot labels)`:
   With 64, `ClassifierModule`'s epoch loss (the mean of the batch losses) is TF's
   selection loss, the mean of batch-64 means in file order.
 
-`interim_uint8_crops(path)` builds the splits from the existing prepared layout: the centre
-21×21 of the uint8 stamps divided by 255, the 23 kept features. It is a **stand-in** so the
-schedule runs end to end; task 2.2c replaces it with 2.1's float path
-(`crop_then_normalise` on the stored float32 stamps), the paper's input.
+The splits come from a prepared layout (task 2.2c):
+
+- `float_crops(path, nan_approximation=True)`, **the paper's input**: each split's
+  `images_f32.npy` through `data.float_input.crop_split(21)` (per-crop min-max without
+  epsilon, NaN → 0, the NaN approximation), channels first, and the 23 kept features. A
+  layout without float32 stamps raises `DataError` naming `prepare-data --images float32`.
+- `interim_uint8_crops(path)`, the stand-in of 2.2a (centre 21×21 of the uint8 stamps / 255,
+  no re-normalisation), kept as the `paper_input: uint8` diagnostic.
+- `without_train_indices(splits, excluded)` drops Train stamps (the leaked one) in file
+  order, before the tiling; Validation and Test are unchanged.
 
 **Horizon** (`schedule.py`). `HorizonCallback(dirpath, filename="best", monitor="loss_val",
 mode="min", initial_horizon=30000, increment=10000)` on a Trainer with
@@ -740,9 +758,13 @@ Lightning after 10, 20, ... steps. `best_step` counts steps done, so M1's "itera
 is step 4,781 here; the one-step shift of the validation grid is not corrected.
 
 **Module.** `modules.PaperClassifierModule(beta_loss, lr, optimizer, with_features=True,
-dropout_active=False, drop_rate=0.5)`: `PaperStampClassifier` under `ClassifierModule`
-(`P_stamps_loss`, the same logging and buffers). Its optimizer is still the factory's (Adam
-there is (0.5, 0.9)); the paper's Adam (0.9, 0.999) is task 2.2c.
+dropout_active=False, drop_rate=0.5, adam_betas="code")`: `PaperStampClassifier` under
+`ClassifierModule` (`P_stamps_loss`, the same logging and buffers). Its optimizer is the
+factory's with `adam_betas=optimizers.PAPER_ADAM_BETAS[adam_betas]`: `code` (0.9, 0.999),
+ALeRCE's, or `paper` (0.5, 0.9), a diagnostic (task 2.2c). `build_optimizer` takes
+`adam_betas` (default the legacy (0.5, 0.9)); Adam and AdamW use `eps=1e-8`, and Adam has no
+weight decay (torch's defaults, now explicit). TF1 places ε differently; ADR 0003 explains
+why torch's placement is kept.
 
 **Tested:** the tiling example and exact balance; the stream against the concatenated
 permutations; batches against the tiled stream, on the CPU; eval file order; validation at
@@ -754,19 +776,42 @@ validating at exactly the remaining steps, and ending with bit-identical best we
 metrics to the uninterrupted run; a resume at the horizon still writing `best.ckpt`; a
 smoke run on every available accelerator.
 
-A config for the schedule, until 2.2c's preset (`--config`):
+The full replication settings are the `carrasco2021` preset (see `presets`):
+`train-supervised --preset carrasco2021`, or `--config configs/phase2/carrasco2021.yaml`.
 
-```yaml
-schedule: carrasco2021
-supervised_model: paper_stamp_classifier
-image_size: 21
-eval_batch_size: 64
-early_stopping: false
-monitor: loss_val
-batch_size: 64
-beta_loss: 0.5
-lr: 1.0e-3
-optimizer: Adam
+## `presets` (task 2.2c)
+
+`src/astro_simclr/presets.py`: named settings for `train-supervised --preset NAME`, applied
+after the legacy protocol and before `--hparams`, `--config`, `--set` and the flags.
+Decisions and provenance: ADR 0003.
+
+- `PRESETS["carrasco2021"]`: the paper-faithful replication of Carrasco-Davis et al. 2021
+  (model M1). `paper_stamp_classifier`, `image_size` 21, `paper_input: float32`,
+  `nan_approximation: true`, `with_features: true`, `dropout_active: false` (`drop_rate`
+  0.5 for the diagnostic), `exclude_leaked_train: true`, batch 64, eval batch 64,
+  `num_workers` 0; `Adam`, `adam_betas: code` (0.9, 0.999), lr 1e-3, `beta_loss` 0.5;
+  `schedule: carrasco2021`, `monitor: loss_val`, `max_steps` 30000, validation every 10
+  steps, horizon +10000, no EarlyStopping; dataset `td_ztf_stamp_17_06_20_red-002`.
+  `PRESETS["carrasco2021-no-features"]` is the same with `with_features: false`.
+- `configs/phase2/carrasco2021.yaml` and `carrasco2021-no-features.yaml` hold the same
+  values with their provenance (`--config`); `tests/test_presets.py` keeps them equal.
+- `DIAGNOSTICS`: the documented diagnostic flags of 2.4 (`dropout_active: true`,
+  `adam_betas: paper`, `nan_approximation: false`, `paper_input: uint8`).
+- `preset_for(settings)`: the preset of a `carrasco2021`-schedule run (by `with_features`),
+  else `None`. `preset_report(settings)`: `name`, `faithful` (no preset key changed),
+  `deviations` (key → `{value, preset}`) and `diagnostics` (the flags turned on), written
+  to `metrics.json["preset"]`. Seed, paths, accelerator and `checkpoint_every_n_steps` are
+  not compared.
+
+The pilot (task 2.2c, one seed on the GPU machine):
+
+```bash
+uv run --no-sync astro-simclr prepare-data dataset/td_ztf_stamp_17_06_20_red-002.pkl \
+    --images float32 --out dataset --overwrite      # once: adds images_f32.npy
+uv run --no-sync astro-simclr train-supervised --preset carrasco2021 --accelerator cuda \
+    --data-dir dataset --seed 0 --output-dir outputs/phase2/carrasco2021/seed-0
+uv run --no-sync astro-simclr compare-reference outputs/phase2/carrasco2021/seed-0 --ref CD21 \
+    --oracle-report results/phase2/replication/m1_oracle.json   # the faithful tier needs it
 ```
 
 ## `hparams` (task 1.7)
@@ -839,16 +884,25 @@ shuffling differ from an uninterrupted run.
 above (EarlyStopping only if `early_stopping`). `carrasco2021` requires `train-supervised`
 with `supervised_model: paper_stamp_classifier` and `image_size: 21` (and the paper model
 requires the schedule; `ConfigError` otherwise). It builds `PaperClassifierModule` and a
-`DeviceTensorDataModule` over `interim_uint8_crops` (2.2c: the float path), and a Trainer
+`DeviceTensorDataModule` over `float_crops` (or `interim_uint8_crops` with
+`paper_input: uint8`), with Train minus the stamps `protocol.leakage` finds in Validation or
+Test (`exclude_leaked_train`, found on the uint8 stamps before training), and a Trainer
 with `max_epochs=-1`, `max_steps`, `val_check_interval=val_every_n_steps`,
 `check_val_every_n_epoch=None`, no sanity validation, a `HorizonCallback` on `monitor`
 (mode from `MONITOR_MODES`) instead of EarlyStopping and the `ModelCheckpoint`s; it writes
 `best.ckpt`, and `last.ckpt` after the validation of every `checkpoint_every_n_steps` steps
 and at the end. The outputs and metrics are the same files. Every run's
 metrics add `best_step` (the `global_step` stored in `best.ckpt`) and `last_step`;
-`carrasco2021` adds `horizon` (the final one). A resumed `carrasco2021` run is exact:
-the data stream is a function of the step, and the horizon and best weights come back from
-`last.ckpt`.
+`carrasco2021` adds `horizon` (the final one), `paper_data` (`input`, `crop`,
+`nan_approximation`, `excluded_train`, `n_train`, `n_tiled`) and `preset`
+(`presets.preset_report`: `name`, `faithful`, `deviations`, `diagnostics`). A resumed
+`carrasco2021` run is exact: the data stream is a function of the step, and the horizon
+and best weights come back from `last.ckpt`.
+
+**Timing (task 2.2c).** Every run's metrics hold `timing`: `fit_seconds` (wall clock from
+the first step to the end of the fit loop, validation included), `steps` (the optimizer
+steps of this fit, fewer than `last_step` after a resume) and `seconds_per_step`; `null`
+when no step ran (a resume at the horizon).
 
 ## `reference` (task 1.7)
 
@@ -876,7 +930,9 @@ checked (command, `supervised_model`, no duplicate seed) and `val_acc_best` aggr
 - **CD21 (task 2.3), two-tier gate of the paper replication**, on the with-features runs'
   `test_acc_at_best` (the without-features runs are compared with 0.883 ± 0.006 and only
   reported). The runs must be `supervised_model: paper_stamp_classifier` (task 2.2a); a run
-  without `schedule: carrasco2021` gets a WARN line. *Faithful*: `|mean - 0.941| <= 0.005` and the M1 oracle passed
+  whose config differs from the `carrasco2021` preset (`Reference.expected` is
+  `presets.PRESETS["carrasco2021"]` without `with_features`; task 2.2c) gets a WARN line,
+  so a diagnostic or shortened run is flagged. *Faithful*: `|mean - 0.941| <= 0.005` and the M1 oracle passed
   (`--oracle-report FILE`, a JSON whose top-level `passed` is a boolean; the contract for
   2.2b). *Acceptable*: `|mean - 0.941| <= 0.01`. Both need the mean SN test recall
   (`evaluation.test.recall_per_class.SN`) within ±0.04 of 0.87 and the mean `val_acc_best`
