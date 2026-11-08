@@ -20,7 +20,7 @@ difference cutouts plus alert features into AGN, SN, VS, Asteroid or Bogus), bui
 - **Self-supervised pretraining** (SimCLR, Chen et al. 2020; supervised contrastive, Khosla
   et al. 2020) is the next line, on a large unlabelled corpus of raw ZTF alerts.
 
-History: the repository began as a 2021 course project (EL7006) on SimCLR for ZTF stamps.
+History: the repository began as a 2021 course project on SimCLR for ZTF stamps.
 That code was retired from the tree and stays readable at the git tag `legacy-final`.
 
 ## Status
