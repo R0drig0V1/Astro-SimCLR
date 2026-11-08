@@ -35,9 +35,11 @@ import yaml
 __all__ = [
     "ACCELERATORS",
     "ADAM_BETAS_CHOICES",
+    "BACKBONE_WEIGHTS_CHOICES",
     "CARRASCO2021",
     "CARRASCO2021_EVAL_BATCH_SIZE",
     "CONTEXTS",
+    "CONVNEXT_ARCHS",
     "EPOCHS",
     "FEATURE_SETS",
     "FP32_PRECISIONS",
@@ -70,11 +72,19 @@ PAPER_INPUTS: Final = ("float32", "uint8")
 #: unused (0.5, 0.9) (a diagnostic; ADR 0003).
 ADAM_BETAS_CHOICES: Final = ("code", "paper")
 
+#: The ``paper_arch`` values that are timm ConvNeXt backbones on the whole 63x63 stamp
+#: (plan row B8; ``convnext_model``, ADR 0022).
+CONVNEXT_ARCHS: Final = ("convnext_atto", "convnext_pico")
 #: ``Settings.paper_arch`` (task 2.5-models): the faithful 4-rotation model, its single pass,
-#: and the single-pass p4 / p4m group-equivariant CNNs (``paper_variants.PAPER_ARCHS``).
-PAPER_ARCHS: Final = ("rot4", "single", "p4", "p4m")
+#: the single-pass p4 / p4m group-equivariant CNNs (``paper_variants.PAPER_ARCHS``) and the
+#: 4-rotation ConvNeXt-atto / pico at 63 px (:data:`CONVNEXT_ARCHS`).
+PAPER_ARCHS: Final = ("rot4", "single", "p4", "p4m", *CONVNEXT_ARCHS)
 #: The ``paper_arch`` values that are G-CNNs (the only ones ``group_fields`` applies to).
 GROUP_ARCHS: Final = ("p4", "p4m")
+#: ``Settings.backbone_weights`` (plan row B8; ADR 0022): ``none`` trains from scratch;
+#: ``zoobot`` starts ``convnext_pico``'s backbone from the pinned Zoobot weights
+#: (``convnext_model.BACKBONE_WEIGHTS``), downloaded at run time.
+BACKBONE_WEIGHTS_CHOICES: Final = ("none", "zoobot")
 #: ``Settings.context`` (task 2.5-models; ``paper_variants.CONTEXTS``).
 CONTEXTS: Final = ("none", "avgpool63")
 
@@ -240,6 +250,10 @@ class Settings:
     #: (not invariant); ``p4`` / ``p4m`` are single-pass group-equivariant CNNs
     #: (``paper_variants``; plan rows B7 and B2').
     paper_arch: str = "rot4"
+    #: ``paper_arch: convnext_*``: the backbone's initial weights; see
+    #: :data:`BACKBONE_WEIGHTS_CHOICES`. ``zoobot`` needs ``paper_arch: convnext_pico`` and
+    #: network access (or the Hugging Face cache) at the start of the run.
+    backbone_weights: str = "none"
     #: ``paper_arch: p4 | p4m``: fields of conv1-conv2 (conv3-conv5 have twice as many).
     #: None: ``32 // |G|``, the paper's 32/64 maps (p4 8/16, p4m 4/8 fields). Only the
     #: G-CNNs accept it.
@@ -330,10 +344,12 @@ class Settings:
             ("paper_arch", PAPER_ARCHS),
             ("context", CONTEXTS),
             ("feature_set", FEATURE_SETS),
+            ("backbone_weights", BACKBONE_WEIGHTS_CHOICES),
         ):
             value = getattr(self, name)
             if value not in valid:
                 raise ConfigError(f"{name} {value!r} is not one of: {', '.join(valid)}")
+        self._check_convnext()
         if self.group_fields is not None:
             if self.paper_arch not in GROUP_ARCHS:
                 msg = (
@@ -349,6 +365,33 @@ class Settings:
             msg = (
                 f"context {self.context!r} is part of the float input path: it needs "
                 f"paper_input=float32, got {self.paper_input!r}"
+            )
+            raise ConfigError(msg)
+
+    def _check_convnext(self) -> None:
+        """The ConvNeXt rows (B8) take the whole stamp: the 21x21-crop flags do not apply."""
+        if self.backbone_weights == "zoobot" and self.paper_arch != "convnext_pico":
+            msg = (
+                "backbone_weights 'zoobot' exists for paper_arch convnext_pico only, "
+                f"not {self.paper_arch!r}"
+            )
+            raise ConfigError(msg)
+        if self.paper_arch not in CONVNEXT_ARCHS:
+            return
+        on_crops = [
+            name
+            for name, off in (
+                ("context", "none"),
+                ("aug_noise", 0.0),
+                ("synthetic_bogus", 0.0),
+                ("flux_rescale", 0.0),
+            )
+            if getattr(self, name) != off
+        ]
+        if on_crops:
+            msg = (
+                f"{', '.join(on_crops)} work on the 21x21 crop, but paper_arch "
+                f"{self.paper_arch!r} takes the whole 63x63 stamp: turn them off"
             )
             raise ConfigError(msg)
 

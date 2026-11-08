@@ -329,6 +329,11 @@ float_crops(..., context=True)` concatenates it to the crops (6 channels, about 
 for `red`). Only the float input path has it: `context` with `paper_input: uint8` is an
 error.
 
+The ConvNeXt rows (plan row B8; ADR 0022) take the whole stamp instead of the crop:
+`float_crops(..., side=63)` is `crop_split(images_f32, 63)`, the same per-channel min-max
+(no epsilon), NaN approximation and NaN → 0 on all 63×63 pixels, about 2.4 GB for `red`
+(9 times the crops). The model pads it to 64 itself.
+
 ## RJ23 inputs
 
 Phase 3 (task 3.3) reproduces the input of Reyes-Jainaga et al. 2023 (RJ23,

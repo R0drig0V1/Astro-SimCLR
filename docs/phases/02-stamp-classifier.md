@@ -440,6 +440,30 @@ The stored splits are stratified but not grouped, so a CV fold can train on one 
 | B2′ | **Single-pass p4m** (4/8 fields): exact D4 invariance | The cheap version of B2 (the 8-copy version costs ~2× A) |
 | B1′ | **p4 trunk + 63″ context:** the 63×63 stamp average-pooled to 21×21 as 3 more channels (+1.7 % MACs) | More context for SN hosts; fits the 4 GB GTX 1050 |
 
+**Transformer-family rows (research, 2026-11-08).** Full report:
+scratchpad `transformers.md`, with every claim marked verified or inferred.
+
+What the evidence says:
+- The ZTF groups deploy **ConvNeXt**, not ViTs (Rehemtulla et al., arXiv:2512.11957).
+  - Their custom CNN wins below about 100k training alerts; we have about 50k.
+  - ConvNeXt from scratch is about 0.02 AUC below the CNN; Galaxy-Zoo-pretrained MaxViT is
+    about +0.025.
+- Plain ViTs need large pretraining. On CIFAR-10 (50k images, 32 px), a ViT from scratch
+  reaches 93.6 % against 95–96 % for a ResNet.
+- Rotation-equivariant attention is immature.
+- No ViT on ZTF, ATLAS, Pan-STARRS or Rubin stamps was found.
+
+Rows, ranked by expected value per cost:
+
+| Id | Change | Hypothesis |
+|---|---|---|
+| B8 | **ConvNeXt-atto/pico at native 63 px** (padded to 64; in timm, also replace `stages[0].downsample` with Identity for true 32-16-8-4 maps), from scratch and with Zoobot weights, plus 4-rotation averaging; about 3.4–8.5M parameters, 45–112M MACs per view | The modern-CNN control that any transformer must beat. Expected: a tie to −1 point from scratch, a tie to +1 with Zoobot |
+| B9 | **Conv-attention hybrid:** our (or p4) conv stages down to an 8×8 or 16×16 grid, then 2–4 attention blocks (or CoAtNet- or MaxViT-nano at 64 px) | Attention over a small grid without the ViT data hunger; a natural place to fuse metadata. Expected: a tie to +1 over B8 |
+
+A ViT-Ti with patch 7, pretrained on 1–5M unlabelled stamps, belongs to phase 5.5 (SSL),
+not to 2.5. timm is a new dependency, so B8 and B9 need an ADR and a licence check of the
+Zoobot weights first.
+
 **Efficiency rows (B7, B2′, B1′) need a non-inferiority rule**, because the superiority rule
 of 2.3 cannot adopt a change that is only "as good". Adopt when the lower bound of the
 paired-bootstrap 95 % CI of the CV balanced-accuracy difference is above −0.5 points, and

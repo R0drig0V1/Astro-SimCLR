@@ -1,7 +1,8 @@
 # Dependabot version updates. Minor and patch updates are grouped so the queue stays short;
 # `cooldown` skips releases younger than seven days (a buffer against a compromised or yanked
 # release). Bumped by hand (README.md, "Manual bumps"): the actionlint and gitleaks versions
-# and checksums in quality.yml, and the uv/zizmor `version:` inputs of their actions.
+# and checksums in quality.yml and quality-workflows.yml, and the uv/zizmor `version:` inputs of
+# their actions.
 version: 2
 
 updates:
