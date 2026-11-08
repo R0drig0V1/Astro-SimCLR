@@ -40,7 +40,7 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   FILE --fold K | --screen``): CV runs exit 0 for ADOPT and 1 for NOT ADOPTED (``--rule
   superiority|non-inferiority``, ``--margin``), screen runs 0 for KEEP and 1 for DROP;
 - ``ensemble-eval RUN_DIR... --splits FILE --fold K | --screen [--tta rot4|d4|d4_shift]
-  [--test] --out JSON`` (plan row D4, :mod:`astro_simclr.ensemble_eval`): the members'
+  [--test] --out JSON [--overwrite]`` (plan row D4, :mod:`astro_simclr.ensemble_eval`): the members'
   balanced accuracies, their mean and the seed ensemble's, with test-time augmentation
   (:mod:`astro_simclr.tta`), on stored split runs without retraining; the JSON is a run for
   ``compare-variants --splits`` (exit 0 when written);
@@ -1039,6 +1039,7 @@ def _ensemble_eval(args: argparse.Namespace) -> int:
         out=args.out,
         data=args.data,
         accelerator=args.accelerator,
+        overwrite=args.overwrite,
     )
     sys.stdout.write("\n".join(report.lines) + "\n")
     return 0
@@ -1067,7 +1068,14 @@ def _add_ensemble_eval(commands: argparse._SubParsersAction[argparse.ArgumentPar
     sub.add_argument(
         "--test", action="store_true", help="also evaluate the Test split (a report only)"
     )
-    sub.add_argument("--out", type=Path, required=True, metavar="JSON")
+    sub.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        metavar="JSON",
+        help="the report (never inside a run directory); its predictions go next to it",
+    )
+    sub.add_argument("--overwrite", action="store_true", help="replace an existing --out")
     sub.add_argument(
         "--data",
         type=Path,

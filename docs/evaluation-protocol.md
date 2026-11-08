@@ -375,6 +375,8 @@ astro-simclr ensemble-eval runs/cv/base/fold0-seed{0..4} --splits $SPLITS --fold
   by float rounding and the output says so (`WARN`). The output's `machine` is the
   members' training machine, which `compare-variants` checks; where `ensemble-eval` ran
   is `evaluation_machine`.
+- **Outputs.** `--out` is never inside a member's run directory and never replaces an
+  existing file without `--overwrite`; the JSON is written last, after its predictions.
 - **Weights.** It reads each run's selected weights (`ckpt/best.pt`, or Lightning's
   `checkpoints/best.ckpt`), which the retention policy of `runs.layout` would drop for a
   finished classifier once it is applied: keep them for the runs an ensemble needs.

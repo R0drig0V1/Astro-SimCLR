@@ -288,7 +288,7 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   `--rule`/`--margin` without `--splits`, `--split` with it, or `--margin` without
   `--rule non-inferiority` exit 2.
 - `ensemble-eval RUN_DIR... --splits FILE --fold K | --screen [--tta rot4|d4|d4_shift]
-  [--test] --out JSON [--data DIR] [--accelerator ...]` (plan row D4, see `tta and
+  [--test] --out JSON [--overwrite] [--data DIR] [--accelerator ...]` (plan row D4, see `tta and
   ensemble_eval`): exit 0 when written, 2 for runs that cannot form an ensemble or a TTA
   mode their input cannot support, 1 for unusable data.
 - `make-object-splits ALERTS_CSV --out FILE [--seed 0] [--fractions 0.6 0.2 0.2]
@@ -2117,12 +2117,16 @@ randomness, so no random stream). Modes `TTA_MODES = ("rot4", "d4", "d4_shift")`
 - `member_net` rebuilds the model from the manifest's config (`build_paper_model`, no
   backbone download) and loads the selected weights: `ckpt/best.pt` (plain, its run id
   checked) or `checkpoints/best.ckpt` (Lightning; the same `state_dict` keys as
-  `PaperNet`).
+  `PaperNet`). A Lightning checkpoint holds no run id, so what it holds is checked: its
+  `global_step` is the run's `best_step`, its `augment_seed` the seed, and each saved
+  hyperparameter the config's value (a copy from another run of the same config, seed and
+  best step would pass).
 - `evaluation_parts`: the part's evaluation stamps from `paper_crops` and
   `protocol_splits` (pool index for a fold, Validation index for the screen), and Test
   only with `--test`; `shifted_images` re-crops them for `d4_shift` from the memory-mapped
   float32 stamps, 4096 at a time.
-- `member_probabilities` evaluates as the run did: `engine.open_eval` batches of the
+- `ensemble_probabilities` evaluates every member as its run did, offsets outer (the
+  `d4_shift` crops are built once per offset for all members): `engine.open_eval` batches of the
   config's `eval_batch_size`, `eval()` and `inference_mode`, the config's float32
   precision and determinism (`DevicePolicy`), on the members' training device unless
   `--accelerator`; per batch, the views' logits are combined and soft-maxed as
@@ -2137,12 +2141,17 @@ randomness, so no random stream). Modes `TTA_MODES = ("rot4", "d4", "d4_shift")`
   `predictions.evaluation` → `<stem>.predictions_evaluation.npz`), plus `format:
   astro-simclr-ensemble-eval` version 1, `tta`, `members`, `results`,
   `evaluation_machine`. The JSON file itself is a `RUN_DIR` of `compare-variants`.
+  `_check_out` refuses, before any evaluation, an `out` inside a member's run directory
+  (always: those are the runs' records) and an existing `out` or predictions file unless
+  `--overwrite`; once everything is computed, the predictions are written first and the
+  JSON last, atomically (`data.files.atomic_write_bytes`).
 
 **Tested.** `tests/test_tta.py` (view sets, D4 invariance of `d4` for rot4 / single / p4 /
 p4m / ConvNeXt-atto and of `d4_shift` from the stamps, the shifted crops, the refusals) and
 `tests/test_ensemble_eval.py` (six tiny CPU split runs: `rot4` reproduces the plain and
 Lightning runs' predictions bit for bit, the ensemble arithmetic, `d4` / `d4_shift` /
-`--test`, the output read by `compare-variants --splits`, every refusal).
+`--test`, the output read by `compare-variants --splits`, every refusal, the `--out`
+refusals and that a failed evaluation writes nothing, the Lightning checkpoint checks).
 
 ## `runs` (phase 4, task A0; ADR 0015)
 

@@ -20,7 +20,9 @@ or against the runs themselves, with ``compare-variants --splits``).
 **The ensemble as an arm.** ``--out FILE.json`` is shaped like a split run's
 ``metrics.json`` for what ``compare-variants`` reads (``seed``, ``machine``,
 ``data.source``, ``protocol``, ``predictions``), and the predictions are written next to it
-(``<stem>.predictions_evaluation.npz``, the format of ``protocol.predictions``), so the JSON
+(``<stem>.predictions_evaluation.npz``, the format of ``protocol.predictions``; written
+first, the JSON last and atomically; an existing file is replaced only with ``--overwrite``
+and nothing is ever written inside a member's run directory), so the JSON
 file itself is a ``RUN_DIR`` argument of ``compare-variants --splits FILE`` (which accepts a
 metrics file for a directory). Its ``seed`` is the member's seed for one member (so a TTA'd
 run pairs with its own run), the sorted list of the members' seeds for an ensemble (so two
@@ -41,7 +43,8 @@ the same run, or the same directory). All are ``ConfigError``
 (exit 2), with the run and the field named.
 
 **Exactness.** Each member is evaluated as its run evaluated itself: the weights of
-``ckpt/best.pt`` (plain) or ``checkpoints/best.ckpt`` (Lightning) in the model
+``ckpt/best.pt`` (plain, its run id checked) or ``checkpoints/best.ckpt`` (Lightning: its
+step, seed and hyperparameters checked against the run, which holds no run id) in the model
 ``build_paper_model`` builds from the manifest's config, the input of
 ``tasks.paper.paper_crops``, the engine's evaluation batches (``engine.open_eval``) of the
 config's ``eval_batch_size``, in ``eval()`` and ``inference_mode``, with the config's
@@ -67,6 +70,7 @@ import numpy.typing as npt
 import torch
 
 from astro_simclr.config import ConfigError, Settings, settings_from_mapping
+from astro_simclr.data.files import atomic_write_bytes
 from astro_simclr.data.float_input import crop_split
 from astro_simclr.data.prepared import load_prepared
 from astro_simclr.data.schema import DataError
@@ -107,9 +111,9 @@ __all__ = [
     "Member",
     "check_members",
     "ensemble_eval",
+    "ensemble_probabilities",
     "evaluation_parts",
     "member_net",
-    "member_probabilities",
     "read_member",
 ]
 
@@ -257,7 +261,40 @@ def _best_state(member: Member) -> dict[str, torch.Tensor]:
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
     if not isinstance(checkpoint, dict) or not isinstance(checkpoint.get("state_dict"), dict):
         raise ConfigError(f"{path} is not a Lightning checkpoint")
+    _check_lightning_best(member, path, checkpoint)
     return cast(dict[str, torch.Tensor], checkpoint["state_dict"])
+
+
+def _check_lightning_best(member: Member, path: Path, checkpoint: dict[str, Any]) -> None:
+    """Check a Lightning ``best.ckpt`` against its run, as far as it can be checked.
+
+    A Lightning checkpoint holds no run id (the plain ``best.pt`` does, and is checked by
+    it), so this checks what it does hold: its ``global_step`` is the run's ``best_step``
+    (``metrics.json``), its ``augment_seed`` the run's seed, and every hyperparameter it
+    saved equals the manifest config's value of the same name. A checkpoint copied from
+    another run of the same config, seed and best step would pass: the weaker guarantee
+    of the Lightning engine, until task 4.8 retires it.
+
+    Raises:
+        ConfigError: on the first mismatch, naming it.
+    """
+    best_step = member.metrics.get("best_step")
+    if checkpoint.get("global_step") != best_step:
+        msg = (
+            f"{path} is from step {checkpoint.get('global_step')!r}, not the run's best_step "
+            f"{best_step!r}: not this run's selected weights"
+        )
+        raise ConfigError(msg)
+    hparams = checkpoint.get("hyper_parameters")
+    config = member.manifest.config
+    for key, value in (hparams if isinstance(hparams, dict) else {}).items():
+        name = "seed" if key == "augment_seed" else key
+        if name in config and config[name] != value:
+            msg = (
+                f"{path} was trained with {key}={value!r}, the run's config has "
+                f"{name}={config[name]!r}: not this run's weights"
+            )
+            raise ConfigError(msg)
 
 
 def member_net(member: Member, settings: Settings) -> PaperNet:
@@ -363,25 +400,27 @@ def shifted_images(
 ImagesAt = Callable[[tuple[int, int]], npt.NDArray[np.float32]]
 
 
-def member_probabilities(
-    net: PaperNet,
+def ensemble_probabilities(
+    nets: Sequence[PaperNet],
     part: EvalPart,
     views: Sequence[View],
     images_at: ImagesAt,
     device: torch.device,
     batch_size: int,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """The member's TTA probabilities (N, C) and labels (N,) on ``part``, on the CPU.
+) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    """Each member's TTA probabilities (N, C) and the labels (N,) on ``part``, on the CPU.
 
-    For each offset of ``views``, the part's crops at that offset go through the engine's
-    evaluation batches (``open_eval``, ``batch_size`` rows, in order); each batch goes
-    through ``net`` once per dihedral view of that offset. Then, batch by batch, the views'
-    logits are combined (:func:`astro_simclr.tta.combine_view_logits`) and soft-maxed, as
+    For each offset of ``views``, the part's crops at that offset are built once (the
+    offsets are the outer loop, so ``d4_shift`` re-crops the stamps once per offset for
+    every member) and go through the engine's evaluation batches (``open_eval``,
+    ``batch_size`` rows, in order); each batch goes through every member's net once per
+    dihedral view of that offset. Then, batch by batch, each member's views' logits are
+    combined (:func:`astro_simclr.tta.combine_view_logits`) and soft-maxed, as
     ``PaperTask.eval_step`` does: with the single identity view of ``rot4`` this is that
     computation exactly.
     """
     offsets = list(dict.fromkeys(view.offset for view in views))
-    per_view: dict[View, list[torch.Tensor]] = {view: [] for view in views}
+    per_view: list[dict[View, list[torch.Tensor]]] = [{view: [] for view in views} for _ in nets]
     targets: list[torch.Tensor] = []
     split = part.split
     with torch.inference_mode():
@@ -395,16 +434,21 @@ def member_probabilities(
             )
             batches = open_eval(dataset, TierChoice(), device, batch_size=batch_size)
             for x_img, x_feat, y in batches:
-                for view in views:
-                    if view.offset == offset:
-                        per_view[view].append(net(apply_dihedral(x_img, view), x_feat))
+                for net, logits in zip(nets, per_view, strict=True):
+                    for view in views:
+                        if view.offset == offset:
+                            logits[view].append(net(apply_dihedral(x_img, view), x_feat))
                 if offset == offsets[0]:
                     targets.append(y.argmax(dim=1))
-    probabilities = [
-        combine_view_logits([per_view[view][b] for view in views]).softmax(dim=1).cpu()
-        for b in range(len(targets))
-    ]
-    return torch.cat(probabilities), torch.cat(targets).cpu()
+    labels = torch.cat(targets).cpu()
+    out = []
+    for logits in per_view:
+        probabilities = [
+            combine_view_logits([logits[view][b] for view in views]).softmax(dim=1).cpu()
+            for b in range(len(targets))
+        ]
+        out.append((torch.cat(probabilities), labels))
+    return out
 
 
 @dataclass(slots=True)
@@ -438,6 +482,79 @@ def _device(members: Sequence[Member], accelerator: str | None) -> torch.device:
     return torch.device(resolve_accelerator(name))
 
 
+def _predictions_name(out: Path, stage: str) -> str:
+    """The predictions file of ``stage`` next to ``out``: ``<stem>.predictions_<stage>.npz``."""
+    return f"{out.stem}.predictions_{stage}.npz"
+
+
+def _check_out(
+    out: Path, members: Sequence[Member], *, parts: Sequence[str], overwrite: bool
+) -> None:
+    """Refuse an ``out`` that would overwrite a file or write into a member's run directory.
+
+    The run directories are the members' records (their ``metrics.json``, manifest and
+    predictions), so ``ensemble-eval`` never writes there, ``overwrite`` or not. Elsewhere,
+    an existing ``out`` or predictions file of ``parts`` is refused unless ``overwrite``
+    (as ``make-splits``).
+
+    Raises:
+        ConfigError: on either refusal, naming the path.
+    """
+    target = out.resolve()
+    for member in members:
+        run_dir = member.run_dir.resolve()
+        if target.is_relative_to(run_dir):
+            msg = (
+                f"--out {out} is inside the run directory {member.run_dir}: ensemble-eval "
+                "never writes into a run's own records; choose another directory"
+            )
+            raise ConfigError(msg)
+    if overwrite:
+        return
+    for path in (out, *(out.parent / _predictions_name(out, part) for part in parts)):
+        if path.exists():
+            raise ConfigError(f"{path} exists; pass --overwrite to replace it")
+
+
+def _views(tta: str, settings: Settings) -> tuple[View, ...]:
+    """The TTA views of ``tta`` for the run's model.
+
+    Raises:
+        ConfigError: for an unknown mode or one the run's input cannot support.
+    """
+    try:
+        check_tta(
+            tta,
+            paper_arch=settings.paper_arch,
+            context=settings.context,
+            paper_input=settings.paper_input,
+        )
+    except ValueError as err:
+        raise ConfigError(str(err)) from None
+    return tta_views(tta, model_symmetry(settings.paper_arch))
+
+
+def _write_out(
+    out: Path, written: dict[str, Predictions], payload: dict[str, Any]
+) -> dict[str, Any]:
+    """Write the predictions, then the JSON that names them, last and atomically.
+
+    Called once everything is computed, so an interrupted evaluation writes nothing, and a
+    crash between the files leaves no readable ``out`` naming missing predictions. Returns
+    the JSON-clean payload.
+
+    Raises:
+        OSError: if the directory is not writable.
+    """
+    cleaned = cast(dict[str, Any], finite(payload))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    for name, combined in written.items():
+        save_predictions(combined, out.parent / name)
+    text = json.dumps(cleaned, indent=2, allow_nan=False) + "\n"
+    atomic_write_bytes(out, text.encode("utf-8"))
+    return cleaned
+
+
 def ensemble_eval(
     run_dirs: Sequence[Path],
     splits_file: Path,
@@ -448,17 +565,22 @@ def ensemble_eval(
     out: Path,
     data: Path | None = None,
     accelerator: str | None = None,
+    overwrite: bool = False,
 ) -> EnsembleReport:
     """Evaluate the runs' selected weights with ``tta``, alone and as an ensemble (module doc).
 
     ``fold`` is the fold (``None``: the screen); ``data`` the prepared layout (default: the
     members' ``data_dir / dataset``, whose data hash must be theirs); ``accelerator`` the
-    device (default: the members' training device). Writes ``out`` and its predictions.
+    device (default: the members' training device). Writes ``out`` and its predictions
+    (:func:`_check_out`: never over an existing file without ``overwrite``, never inside a
+    member's run directory; the predictions first, the JSON last and atomically, so a
+    readable ``out`` always names complete predictions).
 
     Raises:
         ConfigError: on a refusal (:func:`check_members`), an unknown or unsupported TTA
             mode, data of another hash, missing weights, an unavailable accelerator, or an
-            ``out`` that is not a ``.json`` path.
+            ``out`` that is not a ``.json`` path, exists (without ``overwrite``) or lies in
+            a member's run directory.
         DataError: if the data or the splits file are unreadable or do not match.
     """
     if out.suffix != ".json":
@@ -470,17 +592,11 @@ def ensemble_eval(
     part_id: SplitPart = SCREEN if fold is None else fold
     members = [read_member(path) for path in run_dirs]
     check_members(members, splits_sha256=splits_sha256, part=part_id)
+    _check_out(
+        out, members, parts=("evaluation", "test") if test else ("evaluation",), overwrite=overwrite
+    )
     settings = member_settings(members[0])
-    try:
-        check_tta(
-            tta,
-            paper_arch=settings.paper_arch,
-            context=settings.context,
-            paper_input=settings.paper_input,
-        )
-    except ValueError as err:
-        raise ConfigError(str(err)) from None
-    views = tta_views(tta, model_symmetry(settings.paper_arch))
+    views = _views(tta, settings)
     prepared = dataset_path(settings) if data is None else data
     expected = members[0].manifest.identity.data_sha256
     if data_sha256(prepared) != expected:
@@ -507,6 +623,7 @@ def ensemble_eval(
         )
     results: dict[str, Any] = {}
     predictions: dict[str, Any] = {}
+    written: dict[str, Predictions] = {}
     member_rows: list[dict[str, Any]] = [
         {
             "run_dir": str(m.run_dir),
@@ -521,10 +638,9 @@ def ensemble_eval(
         def images_at(offset: tuple[int, int], part: EvalPart = part) -> npt.NDArray[np.float32]:
             return shifted_images(settings, prepared, part, offset)
 
-        outputs = [
-            member_probabilities(net, part, views, images_at, device, settings.eval_batch_size)
-            for net in nets
-        ]
+        outputs = ensemble_probabilities(
+            nets, part, views, images_at, device, settings.eval_batch_size
+        )
         member_preds = [
             Predictions(probs.float().numpy(), labels.numpy().astype(np.int64), part.index)
             for probs, labels in outputs
@@ -552,10 +668,12 @@ def ensemble_eval(
             "ensemble": ensemble_entry,
             "ensemble_minus_member_mean": gain,
         }
-        file = f"{out.stem}.predictions_{part.stage}.npz"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        save_predictions(combined, out.parent / file)
-        predictions[part.stage] = {"file": file, "split": part.name, "n": int(part.index.size)}
+        written[_predictions_name(out, part.stage)] = combined
+        predictions[part.stage] = {
+            "file": _predictions_name(out, part.stage),
+            "split": part.name,
+            "n": int(part.index.size),
+        }
         lines.append(f"  {part.stage} ({part.name}, {part.index.size} stamps):")
         for row in member_rows:
             stored = row[part.stage]["stored_balanced_accuracy"]
@@ -595,7 +713,6 @@ def ensemble_eval(
         "results": results,
         "predictions": predictions,
     }
-    cleaned = cast(dict[str, Any], finite(payload))
-    out.write_text(json.dumps(cleaned, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    cleaned = _write_out(out, written, payload)
     lines.append(f"ensemble-eval: wrote {out}")
     return EnsembleReport(cleaned, lines)

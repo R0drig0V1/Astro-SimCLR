@@ -31,6 +31,7 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+import torch
 
 from astro_simclr.cli import main
 from astro_simclr.config import ConfigError, Settings
@@ -50,7 +51,7 @@ from astro_simclr.protocol.predictions import load_predictions
 from astro_simclr.protocol.split_runs import SplitRequest, file_sha256, open_split_run
 from astro_simclr.protocol.splits import make_splits, write_splits
 from astro_simclr.protocol.stats import balanced_accuracy
-from astro_simclr.runs.layout import BEST_CHECKPOINT
+from astro_simclr.runs.layout import BEST_CHECKPOINT, LIGHTNING_BEST
 from astro_simclr.tasks.plain import run_plain
 
 _SCHEDULE: dict[str, Any] = {
@@ -330,3 +331,62 @@ def test_refusals_of_data_and_weights(runs: dict[str, Any], tmp_path: Path) -> N
         ensemble_eval([run_dir], tmp_path / "missing.json", fold=None, out=tmp_path / "z.json")
     with pytest.raises(ConfigError, match="manifest"):
         ensemble_eval([tmp_path], runs["splits"], fold=None, out=tmp_path / "w.json")
+
+
+def test_out_is_never_overwritten_or_written_into_a_run(
+    runs: dict[str, Any], tmp_path: Path
+) -> None:
+    run_dir = runs["dirs"]["screen0"]
+    metrics = (run_dir / "metrics.json").read_bytes()
+    for target in (run_dir / "metrics.json", run_dir / "sub" / "ens.json"):
+        for overwrite in (False, True):
+            with pytest.raises(ConfigError, match="inside the run directory"):
+                ensemble_eval([run_dir], runs["splits"], fold=None, out=target, overwrite=overwrite)
+    assert (run_dir / "metrics.json").read_bytes() == metrics
+    assert not (run_dir / "sub").exists()
+    out = tmp_path / "once.json"
+    ensemble_eval([run_dir], runs["splits"], fold=None, out=out)
+    first = out.read_bytes()
+    with pytest.raises(ConfigError, match="exists; pass --overwrite"):
+        ensemble_eval([run_dir], runs["splits"], fold=None, out=out)
+    # A leftover predictions file is refused too.
+    out.unlink()
+    with pytest.raises(ConfigError, match=r"once\.predictions_evaluation\.npz exists"):
+        ensemble_eval([run_dir], runs["splits"], fold=None, out=out)
+    ensemble_eval([run_dir], runs["splits"], fold=None, out=out, overwrite=True)
+    assert out.read_bytes() == first
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_a_failed_evaluation_writes_nothing(runs: dict[str, Any], tmp_path: Path) -> None:
+    good, broken = runs["dirs"]["screen0"], tmp_path / "no_best"
+    shutil.copytree(runs["dirs"]["screen1"], broken)
+    (broken / BEST_CHECKPOINT).unlink()
+    out = tmp_path / "outputs" / "ens.json"
+    with pytest.raises(ConfigError, match="selected weights are missing"):
+        ensemble_eval([good, broken], runs["splits"], fold=None, out=out)
+    assert not out.parent.exists()
+
+
+def test_lightning_weights_are_checked_against_their_run(
+    runs: dict[str, Any], tmp_path: Path
+) -> None:
+    copy = tmp_path / "lightning"
+    shutil.copytree(runs["dirs"]["lightning"], copy)
+    metrics_file = copy / "metrics.json"
+    metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
+    metrics_file.write_text(json.dumps({**metrics, "best_step": -1}), encoding="utf-8")
+    with pytest.raises(ConfigError, match="not the run's best_step"):
+        ensemble_eval([copy], runs["splits"], fold=None, out=tmp_path / "a.json")
+    metrics_file.write_text(json.dumps(metrics), encoding="utf-8")
+    best = copy / LIGHTNING_BEST
+    checkpoint = torch.load(best, map_location="cpu", weights_only=True)
+    checkpoint["hyper_parameters"]["lr"] = 0.5
+    torch.save(checkpoint, best)
+    with pytest.raises(ConfigError, match=r"trained with lr=0\.5"):
+        ensemble_eval([copy], runs["splits"], fold=None, out=tmp_path / "b.json")
+    checkpoint["hyper_parameters"]["lr"] = metrics["config"]["lr"]
+    checkpoint["hyper_parameters"]["augment_seed"] = 9
+    torch.save(checkpoint, best)
+    with pytest.raises(ConfigError, match="augment_seed=9"):
+        ensemble_eval([copy], runs["splits"], fold=None, out=tmp_path / "c.json")

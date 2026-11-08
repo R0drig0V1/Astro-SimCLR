@@ -220,6 +220,16 @@ def test_shifted_crops() -> None:
         crop_split(stamps, offset=(0, 30))
 
 
+def test_shift_direction_against_an_independent_slice() -> None:
+    """``offset=(1, -1)`` is rows 22-42 and columns 20-40 of the 63x63 stamp, min-maxed."""
+    stamps = _stamps()
+    window = stamps[:, 22:43, 20:41, :].copy()
+    window -= window.min(axis=(1, 2), keepdims=True)
+    window /= window.max(axis=(1, 2), keepdims=True)
+    shifted = crop_then_normalise(stamps, offset=(1, -1), nan_approximation=False)
+    assert np.array_equal(shifted, window)
+
+
 def test_check_tta() -> None:
     for mode in TTA_MODES:
         check_tta(mode, paper_arch="rot4", context="none", paper_input="float32")
