@@ -40,6 +40,7 @@ from typing import Any, ClassVar, Final
 import lightning as L
 import numpy as np
 import torch
+from lightning.pytorch.trainer.states import TrainerFn
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch import nn
 
@@ -121,7 +122,8 @@ class ClassifierModule(L.LightningModule):
     ``accuracy_val`` / ``loss_val`` (``accuracy_test`` / ``loss_test``) on the progress bar,
     and store the row-normalised confusion matrix, on the CPU, in
     ``confusion_matrices["val"]`` / ``["test"]`` (the labels in ``predictions``, the
-    probabilities in ``probabilities``).
+    probabilities in ``probabilities``), except in the validations inside ``fit``: those
+    only feed the monitor, and ``trainer.validate`` / ``trainer.test`` fill these.
 
     Subclasses define ``forward(x_img, x_feat)``, and may override :meth:`compute_loss`
     and :meth:`trainable_parameters`.
@@ -216,7 +218,9 @@ class ClassifierModule(L.LightningModule):
         y_pred = torch.cat([out.y_pred for out in outputs])
         y_true = torch.cat([out.y_true for out in outputs])
         loss = torch.stack([out.loss for out in outputs]).mean()
-        metrics = classification_metrics(y_pred, y_true)
+        # The labels are argmaxes of 5-wide tensors, always in range: skip torchmetrics'
+        # value checks (extra kernels and, on a GPU, a sync every validation).
+        metrics = classification_metrics(y_pred, y_true, validate_args=False)
         name = _STAGE_NAMES[stage]
         self.log(f"Loss/{name}", loss)
         for key in METRIC_NAMES:
@@ -225,6 +229,10 @@ class ClassifierModule(L.LightningModule):
             # The legacy monitor names, on the progress bar only (as in the legacy code).
             self.log(f"accuracy_{stage}", metrics["accuracy"], logger=False, prog_bar=True)
             self.log(f"loss_{stage}", loss, logger=False, prog_bar=True)
+            if self.trainer.state.fn == TrainerFn.FITTING:
+                # The fit's validations only select: the run's outputs come from
+                # validate/test(ckpt_path=best), so their copies would be thrown away.
+                return
             self.confusion_matrices[stage] = confusion_matrix(y_pred, y_true).cpu()
             self.predictions[stage] = (y_pred.cpu(), y_true.cpu())
             self.probabilities[stage] = torch.cat([out.probabilities for out in outputs]).cpu()

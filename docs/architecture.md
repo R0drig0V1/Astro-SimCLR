@@ -29,6 +29,7 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  ├──► reference (compare-reference: the gates of R1-R4 and CD21)
  ├──► protocol (make-splits, compare-variants: the phase-2 evaluation protocol) ──► data
  ├──► oracle (fetch-m1, m1-oracle: the published M1 vs our input path) ──► paper_model, data
+ ├──► alerts (fetch-alerts, alerts-summary: raw alerts from ALeRCE) ──► data (prepared, m1_features)
  │    (training ──► paper_variants: rot4 / single / p4 / p4m ──► paper_model, group_conv)
  └──► preflight ──► experiments, data (inspection, manifest)
 ```
@@ -79,7 +80,9 @@ of one run.
 - **Task 1.7 fields** (flat, so every one can be `--set`): EarlyStopping `check_finite`
   (default true, Lightning's default) and `divergence_threshold` (null: never; R1 uses
   0.1); `limit_train_batches` / `limit_val_batches` (null: every batch; the dry mode sets
-  2); and the hyperparameters of the training subcommands. Each subcommand reads only its
+  2); `progress_bar_refresh_rate` (added by audit item 2; default 50: redraw Lightning's
+  progress bar every 50 batches; 0 hides it; no effect on the numbers, not a preset key);
+  and the hyperparameters of the training subcommands. Each subcommand reads only its
   own; the others are recorded in the run's metrics but unused:
 
   | Field | Default | Read by |
@@ -158,7 +161,7 @@ of one run.
   YAML mapping without checking keys; `settings_to_plain` gives the plain (YAML/JSON) form
   that `show-config` prints and the metrics JSON records.
 
-## `cli` (task 1.1; subcommands from 1.2 and 1.7)
+## `cli` (task 1.1; subcommands from 1.2, 1.7 and 3.1)
 
 The `astro-simclr` console script (`[project.scripts]`). `main(argv)` returns the exit code,
 so tests call it in-process. Every subcommand registers in `build_parser()` and takes the
@@ -204,6 +207,14 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   of mixed machines exit 2, an unusable table, splits file or predictions file exits 1.
 - `fetch-m1` and `m1-oracle --data-dir DIR [--out DIR]` (task 2.2b, see `oracle`): exit
   0 if the oracle passed, else 1.
+- `fetch-alerts --dataset NAME --split S [--data-dir DIR] [--out DIR] [--rate 1.5]
+  [--limit N] [--resume] [--batch-size 100] [--cooldown 300] [--from-snapshot RAW_DIR]
+  [--quiet]` and `alerts-summary RAW_DIR [--split S]... [--json]` (task 3.1, see
+  `alerts`). `fetch-alerts` exits 0 when the run ends. It turns SIGTERM, SIGHUP and Ctrl-C
+  into a stop flag polled between rows (exit 128 + the signal; a second signal forces the
+  exit), and restores the previous handlers. A store that exists without `--resume` is a
+  data error (1); an out-of-range option is 2. `alerts-summary` exits 0 if every split
+  shown meets the acceptance, else 1.
 - `preflight (--synthetic | --data-dir DIR) [--accelerator cuda] [--runs R1,R2,R3,R4]
   [--set ...]` (see `preflight`): exit 0 if no step failed, else 1.
   `scripts/gpu-preflight.sh` is a thin `uv run --no-sync` wrapper.
@@ -247,7 +258,13 @@ only on this protocol, never on a concrete transform.
   them with `lightning.seed_everything(seed, workers=True)`; DataLoader workers are seeded
   by Lightning's `pl_worker_init_function`, which the Trainer injects (a DataLoader built
   outside a Trainer must pass it as `worker_init_fn`). Same seed → identical batches, with
-  0 or more workers (tested with 0 and 2).
+  0 or more workers, and a different seed → different batches (tested with 0 workers
+  everywhere and with 2 workers where they fork). The 2-worker case forks its workers
+  explicitly and is skipped, with its reason, on macOS: a spawned worker re-imports torch,
+  torchvision and Lightning (about 5 s of CPU each; 26 s of the suite), and fork is unsafe
+  there once Metal has started. The start method does not change what is checked: torch's
+  worker loop seeds torch, numpy and `random` from the base seed in every worker under any
+  start method, then the init function reseeds them. The Linux CI job runs it.
 - **Naming change:** registry names are descriptive; the legacy names keep working as
   aliases, so no config needs to change.
 - **Characterization:** `tests/fixtures/augmentations/legacy_views.npz`, from
@@ -665,6 +682,94 @@ and no ALeRCE code or weights in the repository (the pipeline repository has no 
   `tests/_tf_writer.py` (from the format description, with knobs that break one property at
   a time), random M1-shaped weights, `file://` downloads and the synthetic prepared data.
 
+## `alerts` (task 3.1)
+
+`src/astro_simclr/alerts/`: recovers the raw ZTF alerts behind a prepared split from
+ALeRCE's public services, verifies them against the stored stamps and stores them with
+their provenance. Method, layout, statuses and the acceptance are in
+[`docs/data.md`](data.md), "Raw alerts"; the format and dependency choices in ADR 0011.
+Nothing in the package imports torch.
+
+```
+prepared split ──targets (destandardise)──► fetch_row ──► AlerceClient ──► Recorder ──► Fetcher ──► urllib
+                                              │  match_detections, ties   (cache, snapshot)  (rate limit,
+                                              │  parse_alert (fastavro, FITS)                 retries)
+                                              │  verify_cutouts (alerce_normalise)
+                                              ▼
+                         batch ──_commit──► shard-NNNNN.npz (ok cutouts + raw responses), then index.csv lines
+                                                    ▲
+                     Snapshot (offline RawFetch) ───┘  fetch-alerts --from-snapshot
+```
+
+- `transport`: `RateLimiter` (request starts at least `1/rate` apart; one limiter covers
+  both hosts), and `Fetcher.get(url, max_bytes)`.
+  - Retries timeouts, `OSError`, `http.client.HTTPException`, 5xx and 429: 5 attempts,
+    backoff `2·2^(k-1)` s capped at 60 s, but at least a numeric `Retry-After` (up to
+    600 s), no jitter (a single sequential client).
+  - Other statuses raise `HttpError` at once.
+  - `urllib_opener` opens only `https://` and follows redirects only to `https://`
+    (`_HttpsRedirects`). It reads at most `max_bytes` in chunks within a 300 s total
+    deadline (`TimeoutError`, retried), and sends the generic `USER_AGENT`.
+- `snapshot`: `Recorder` is the `Getter` between the client and a `RawFetch`
+  (`online_fetch(fetcher)` or `store.Snapshot.fetch`).
+  - It caches cone searches and detection lists by URL (an LRU bounded at 256 MB of
+    bodies), and keeps every new response (url, kind, UTC time, SHA-256, bytes) as
+    `pending()` until a commit has made it durable (`drop_pending(n)`).
+  - It lists the responses each row used (`row_refs`, as `kind:sha256`).
+- `alerce`: `AlerceClient.objects_near`, `detections` and `alert_avro` (the URLs of the
+  module docstring), and `make_client(rate)`, the production stack (the CLI's seam for
+  tests).
+  - The JSON is validated: `items` of ZTF-shaped `oid`s, and detections with an integer
+    `candid` (string or int) and numeric `magpsf`/`sigmapsf`. Others are skipped, and a
+    wrong shape raises `ResponseError`.
+  - An `oid` is checked against `ZTF\d{2}[a-z]{7}` before it goes into a URL. Size caps:
+    16 MB of JSON, 1 MB of avro.
+- `parse`: `check_container` walks the avro container before fastavro reads it.
+  - It accepts the `null`, `deflate` and `snappy` codecs, and bounds the decompressed
+    size to 4 MB: the snappy preamble length, or deflate inflated with an output limit.
+  - `check_schema` refuses a writer schema that is not a record, or that has an array or
+    map of zero-size items (`null`, empty records, `fixed` of size 0). Every other item
+    takes at least one byte, so the decoding work is bounded by the data.
+  - `parse_alert` then reads exactly one record with the embedded writer schema (ALeRCE's
+    record names differ from ZTF's). It checks `objectId`, `candid` and the required
+    candidate fields and types, and keeps the scalar fields, non-finite floats as `null`.
+  - The three cutouts are parsed by `fits.read_fits_image`, and CCD-edge ones repaired
+    with `repair_non_squared_stamp`.
+- `fits`: `gunzip` (a gzip stream with an output cap), and `read_fits_image`, a strict
+  reader of one 2D `BITPIX -32/-64` image, at most 256 px per side, without scaling. It
+  returns native float32 `(NAXIS2, NAXIS1)`, NaN kept, with no flip. It replaces a FITS
+  library for the one layout ZTF uses.
+- `fetch`:
+  - `targets`, `interleaved_order` (round-robin over the classes) and `match_detections`
+    (distinct candids within 1e-4 on both magnitudes);
+  - `alerce_normalise` (`crop_then_normalise` at 63 without the NaN approximation) and
+    `verify_cutouts`;
+  - `fetch_row` (never raises for a miss);
+  - `fetch_alerts`: resume (an `ok` row whose shard is missing is fetched again), and
+    batches of `batch_size` rows. A full batch is detached before `_commit`, so a failed
+    commit is never retried by the `finally`. The run stops between rows when `stop()`
+    turns true. The cooldown follows 3 consecutive *transient* failures
+    (`RowResult.transient`). `fetch.json`'s data identity and every status-deciding
+    setting (radius, tolerances, `max_candidates`) must match on `--resume`.
+- `store`: the layout and its readers. `IndexRow` and `COLUMNS`; `IndexWriter`
+  (append, fsync, repairs a truncated last line); `read_index` and `latest_rows`;
+  `write_shard` / `read_shard` (atomic; `allow_pickle=False`); `load_recovered` (the `ok`
+  alerts, by row); `Snapshot` (URL → stored body, SHA-256 checked); `summarize` /
+  `Summary` / `format_summary` (counts, groups, ghosts, the recovery of non-ghost rows,
+  CCD-edge counts, costs, the 98 % acceptance); `duplicates` / `format_duplicates` (a
+  candid stored for several rows, within or across splits).
+
+Tests (`tests/test_alerts_*.py`, offline): `_alerts_support` writes FITS and avro files
+(fastavro, all three codecs) and runs a fake ALeRCE on an in-memory sky with one Validation
+row per status. They cover:
+- ties decided by the stamp check;
+- two objects in the cone, and cache hits on a shared object;
+- resume, and the retry of `http_error` only;
+- orphan shards, a truncated index, and an interrupt mid-batch;
+- the cooldown, the offline rebuild, and duplicates across splits;
+- backoff and `Retry-After` on a fake clock;
+- the size caps and malformed inputs.
+
 ## `optim` (task 1.5)
 
 `src/astro_simclr/optim.py`: the SimCLR pretraining optimizer and LR schedule.
@@ -752,7 +857,17 @@ legacy modules.
   `module.confusion_matrices["val"|"test"]`, the labels `(y_pred, y_true)` in
   `module.predictions["val"|"test"]`, for the figures and metrics JSON of 1.7, and the
   softmax probabilities (N, 5) in `module.probabilities["val"|"test"]`, for the per-stamp
-  predictions files of task 2.3.
+  predictions files of task 2.3. The validations inside `trainer.fit` skip all three
+  (`trainer.state.fn == FITTING`; audit item 2): they only feed the monitor, and every
+  output of a run comes from `trainer.validate` / `trainer.test(ckpt_path=best)` after the
+  fit, so a 30,000-step `carrasco2021` run no longer builds 3,000 confusion matrices nor
+  copies them, the labels and the probabilities to the host, only to throw them away. The
+  epoch metrics pass
+  `validate_args=False` (the labels are argmaxes, always in range), which skips
+  torchmetrics' value checks and their host sync on a GPU. Neither changes a number:
+  `tests/test_fit_validation.py` runs a short `carrasco2021` schedule with the old
+  behaviour patched back in and compares `metrics.json` (except `timing`), the predictions
+  files and the best weights.
 - `MONITORABLE` (class attribute) lists what `Settings.monitor` may select:
   `accuracy_val`, `loss_val` for the classifiers, `loss_train_enc` for SimCLR (which has no
   validation loop). The protocol default `accuracy_val` therefore raises `ConfigError` for
@@ -781,7 +896,10 @@ module's logged `accuracy_val`), macro precision and macro recall (classes absen
 predictions and targets left out, as in torchmetrics 0.6); `confusion_matrix(y_pred,
 y_true)` uses `normalize="true"` (an empty row is zeros). Added in 1.7 for the metrics JSON:
 `confusion_counts` (not normalised) and `macro_f1` (classes absent from predictions and
-targets left out, like precision and recall).
+targets left out, like precision and recall). `classification_metrics(...,
+validate_args=False)` skips torchmetrics' dtype and range checks of the label values (same
+numbers; for labels known to be in range, like the modules' argmaxes); its own shape check
+always runs.
 
 **Data modules** (`datamodules.py`) build their datasets in `setup()` (legacy:
 `prepare_data()`, which runs on one process only), from a prepared layout directory,
@@ -830,6 +948,9 @@ memory-mapped:
   `devices`, `max_epochs`, `deterministic`, and (when set) `limit_train_batches` /
   `limit_val_batches` from the settings, `benchmark=not deterministic`
   (legacy `True`), `default_root_dir=output_dir`. This is the only place a device is chosen.
+  The progress bar is a `TQDMProgressBar(refresh_rate=progress_bar_refresh_rate)` (default
+  50 batches; Lightning's 1 cost ~0.4 ms a step of the loop's ~1.3 ms on the CPU, audit
+  item 2); a rate of 0, or `enable_progress_bar=False` in the overrides, hides it.
 
 **Tests** run on the CPU everywhere and on MPS/CUDA when available
 (`tests/_training_support.py: ACCELERATORS`): `fast_dev_run` for every module and variant
@@ -839,8 +960,8 @@ memory-mapped:
 does not); the scheduler steps once per epoch; selection on `loss_train_enc` and `loss_val`;
 EarlyStopping stops a flat run; every epoch and every validation pass starts from an empty
 buffer (a module whose predictions flip between passes); downstream checkpoints reload.
-Worker seeding (`num_workers=2`) is covered by the augmentation tests, not repeated here
-because spawned workers cost about 25 s on macOS.
+Worker seeding (`num_workers=2`) is covered by the augmentation tests (on Linux, where the
+workers fork), not repeated here because spawned workers cost about 25 s on macOS.
 
 **Behaviour changes against the legacy code** (no result of a valid legacy run changes):
 

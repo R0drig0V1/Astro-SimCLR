@@ -13,7 +13,8 @@ difference cutouts plus alert features into AGN, SN, VS, Asteroid or Bogus), bui
   pre-registered [evaluation protocol](docs/evaluation-protocol.md): single-pass p4 / p4m
   group-equivariant CNNs, the 63″ context channels, class-aware augmentation (noise,
   synthetic hot-pixel Bogus) and transient flux rescaling.
-- **Raw-alert infrastructure and benchmarks** (phase 3): RJ23 input functions, macro-F1
+- **Raw-alert infrastructure and benchmarks** (phase 3): verified retrieval of the raw
+  alerts behind the labelled stamps (`fetch-alerts`), RJ23 input functions, macro-F1
   benchmark metrics, object-grouped splits, and an object-level 5-class benchmark (R5)
   being built from public sources only.
 - **Self-supervised pretraining** (SimCLR, Chen et al. 2020; supervised contrastive, Khosla
@@ -29,7 +30,7 @@ That code was retired from the tree and stays readable at the git tag `legacy-fi
 | 1. Runnable, tested package | [01-runnable-package.md](docs/phases/01-runnable-package.md) | done; cloud GPU runbook (1.9a) left |
 | 2. Replicate and improve the stamp classifier | [02-stamp-classifier.md](docs/phases/02-stamp-classifier.md) | replication passed; improvements (2.5) running |
 | 3. Raw-alert infrastructure and the R5 benchmark | [03-newer-benchmarks.md](docs/phases/03-newer-benchmarks.md) | in progress |
-| 4. Training platform (plain PyTorch, local run registry) | [04-training-platform.md](docs/phases/04-training-platform.md) | draft |
+| 4. Training platform (plain PyTorch, local run registry) | [04-training-platform.md](docs/phases/04-training-platform.md) | reviewed; first tasks dispatchable |
 | Next: self-supervised pretraining | [roadmap](docs/phases/README.md) | not started |
 
 The [roadmap](docs/phases/README.md) is the authority on what is done and what runs now.
@@ -132,8 +133,20 @@ Both are described in [docs/evaluation-protocol.md](docs/evaluation-protocol.md)
 
 ### 4. Raw alerts
 
-`fetch-alerts` (task 3.1: resumable retrieval of the raw alerts of the labelled set from
-ALeRCE's public services) is coming. The phase-3 tools already in the CLI are
+`fetch-alerts` (task 3.1) recovers the raw alerts behind a prepared split from ALeRCE's
+public services. It checks each one against the stored stamp and keeps the raw cutouts with
+their real NaN masks, the candidate record and every raw response. Runs are resumable, and
+the store can be rebuilt offline with `--from-snapshot`.
+
+```bash
+uv run astro-simclr fetch-alerts --data-dir dataset/prepared --dataset td_ztf_stamp_17_06_20_red-002 \
+    --split Train --out dataset/raw/td_ztf_stamp_17_06_20_red-002 --rate 1.5 --quiet
+uv run astro-simclr fetch-alerts ... --resume --quiet        # after any stop
+uv run astro-simclr alerts-summary dataset/raw/td_ztf_stamp_17_06_20_red-002
+```
+
+The method, the timings and the store layout are in [docs/data.md](docs/data.md) ("Raw
+alerts") and [ADR 0011](docs/decisions/0011-raw-alert-store.md). The other phase-3 tools are
 `make-object-splits`, `bench-report` and `leakage-audit`.
 
 ## Repository map
@@ -201,7 +214,8 @@ uv run ruff format . && uv run ruff check --fix .
 scripts/check-torch-wheels.sh    # after touching the torch pins, extras or indexes
 ```
 
-`scripts/check.sh` is the single definition of green; CI runs exactly that script. GitHub
+`scripts/check.sh` is the single definition of green; CI runs exactly that script. It runs
+the tests in parallel, one process per CPU (`PYTEST_XDIST_AUTO_NUM_WORKERS=N` caps it). GitHub
 workflows also run zizmor, actionlint, gitleaks, pip-audit, CodeQL and Scorecard; security
 reports go through [SECURITY.md](SECURITY.md). The scaffolding comes from
 [python-template](https://github.com/R0drig0V1/python-template) (`uvx copier@9.19.1 update`

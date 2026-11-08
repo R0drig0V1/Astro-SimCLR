@@ -9,7 +9,7 @@ sessions list completed tasks in their PR body instead of ticking them here.
 | 1. Runnable, tested package (refactor legacy code into `src/astro_simclr/`) | [01-runnable-package.md](01-runnable-package.md) | in progress (1.1–1.7 done; 1.9a remains, 1.9b optional) |
 | 2. Replicate and improve the stamp classifier (Carrasco-Davis 2021) | [02-stamp-classifier.md](02-stamp-classifier.md) | in progress: replication **passed** (CD21 faithful, test 0.943 ± 0.004); 2.5 starting |
 | 3. Raw-alert infrastructure and R5 (RJ23 protocol, 5 classes, public sources) | [03-newer-benchmarks.md](03-newer-benchmarks.md) | reviewed (2 rounds, 2026-11-08); 3.1–3.3 running; satellites/C25 out of scope |
-| 4. Modern training platform (plain PyTorch engine, typed config, local run registry, queue) | [04-training-platform.md](04-training-platform.md) | draft (2026-11-08), under review; user decisions: plain PyTorch, local tracking |
+| 4. Modern training platform (plain PyTorch engine, typed config, local run registry, queue) | [04-training-platform.md](04-training-platform.md) | reviewed (round 1, 2026-11-08); Track A (manifest, registry, queue) and Track B (engine ADR) dispatchable; user decisions: plain PyTorch, local tracking |
 
 **Priority (user decision, 2026-11-07):** the goal is to replicate the paper (Carrasco-Davis
 et al. 2021), not the 2022 legacy numbers. Phase 2 is the main line. In phase 1, task 1.7
