@@ -351,7 +351,7 @@ Results (`results/phase2/replication/m1_oracle.json`):
 
 ### 2.4 Replication runs (after the 2.2c pilot; manual) — with features done, **CD21 PASS (faithful)** (2026-11-08); without features done (advisory: 1.06 points low)
 
-**Result (with features, GTX 1050, `cu126`, 5 seeds, code at da3e3ee):**
+**Result (with features, GTX 1050, `cu126`, 5 seeds, code at 510395e, PR #15's first commit; `src/` differs from its merge da3e3ee only by the M1 oracle):**
 
 | Seed | best_step | val_acc_best | test (at best) |
 |---|---|---|---|
@@ -367,7 +367,9 @@ exited 0 with `CD21: PASS (faithful)`: |Δ| = 0.0018 against the paper's 0.941 �
 SN test recall 0.872 ± 0.015 (needs 0.87 ± 0.04); validation 0.9428 (needs 0.950 ± 0.01);
 M1 oracle passed. About 26 minutes per run (0.050 s per step). The best steps (4.2k–6.3k,
 one outlier at 18.9k) match M1's best near 4.8k. No diagnostic was needed, so the list
-below stays unused.
+below stays unused. Archived in `results/phase2/replication/` (PR #19).
+
+**Known defect:** `compare-reference` warns `paper_arch=None (expected 'rot4')` and the same for `context` and `rot90_augment` on runs made before task 2.5-models. A missing key should read as its faithful default. The verdict is not affected.
 
 **Result (without features, advisory; same machine, main @ 695ed93):** test 0.870 / 0.870 /
 0.872 / 0.888 / 0.862, so **0.8724 ± 0.0095** against the paper's 0.883 ± 0.006
