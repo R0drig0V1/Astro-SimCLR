@@ -22,17 +22,23 @@ order, each prints PASS, FAIL, WARN or SKIP, and the exit code is the result (0:
 5. **Dry chain** (:func:`dry_chain`): the reference configs (``configs/reference/``) in dry
    mode (1 epoch, a few batches): pretrain, linear-eval (on that checkpoint), fine-tune,
    then the supervised runs, on the requested accelerator and at the reference batch sizes
-   (so an out-of-memory GPU fails here, not after hours). A run named in ``--runs`` that
-   cannot run (its dataset is not prepared) fails; without ``--runs`` it is skipped.
-6. **Throughput** (:func:`estimate`): steps/s measured during step 5 with the real
-   DataLoader (augmentations, ``num_workers``), and the GPU-hour estimate of R1-R4 from the
-   Train counts, batch sizes and ``max_epochs`` (an upper bound: EarlyStopping usually stops
-   sooner; validation time is not included).
+   (so an out-of-memory GPU fails here, not after hours). Then **CD21** (task 4.6): the
+   ``carrasco2021`` preset (the paper replication) on the **plain engine** (ADR 0014),
+   ``steps + 1`` optimizer steps and one validation; it needs ``red-002`` with float32
+   stamps. R1-R4 run on Lightning (their modules are frozen at ``lightning-final``, plan
+   4.6); ``--runs CD21`` alone never imports Lightning. A run named in ``--runs`` that cannot
+   run (its dataset is not prepared) fails; without ``--runs`` it is skipped.
+6. **Throughput** (:func:`estimate`): steps/s measured during step 5 with the real data path
+   (:class:`ThroughputTimer`, engine-free), and the GPU-hour estimate from the Train counts,
+   batch sizes and ``max_epochs`` for R1-R4 (an upper bound: EarlyStopping usually stops
+   sooner) and from the initial horizon for CD21 (a lower bound: a new best extends it);
+   validation time is not included.
 
 ``--synthetic`` first writes the synthetic stand-ins of the four files (``make-synthetic``,
-``prepare-data``) under the output directory, so a CUDA machine can be checked without the
-real data (level 2 of the plan); its estimate then uses the real Train counts of
-``docs/data.md``. ``--data-dir DIR`` checks the prepared real data instead.
+``prepare-data``; the 100 % file with float32 stamps too, for CD21) under the output
+directory, so a CUDA machine can be checked without the real data (level 2 of the plan); its
+estimate then uses the real Train counts of ``docs/data.md``. ``--data-dir DIR`` checks the
+prepared real data instead.
 """
 
 from __future__ import annotations
@@ -47,17 +53,21 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any, Final, Literal, TextIO
 
 import numpy as np
 import torch
-from lightning.pytorch.callbacks import Callback
 
 from astro_simclr.config import ConfigError, load_settings
 from astro_simclr.data.prepared import RAW_ALERTS_KIND, is_prepared, layout_kind, read_meta
 from astro_simclr.data.schema import DataError
 from astro_simclr.hparams import LABEL_FRACTION_DATASETS
+
+# At import, not in the step: it imports torchvision (and torch._dynamo), which must not
+# happen after a test has replaced torch.backends.mps.is_available.
+from astro_simclr.tasks.common import AcceleratorError, check_accelerator
 
 __all__ = [
     "MANIFEST_NAME",
@@ -109,10 +119,20 @@ REFERENCE_RUNS: Final = (
     ("R2", "train-supervised", "R2.yaml"),
     ("R4", "train-supervised", "R4.yaml"),
 )
+#: The paper replication's run (task 4.6): the ``carrasco2021`` preset on the plain engine,
+#: the dry run that needs no Lightning.
+CD21_RUN: Final = "CD21"
 #: The reference runs ``--runs`` can name.
-_ALL_RUNS: Final = ("R1", "R2", "R3", "R4")
+_ALL_RUNS: Final = ("R1", "R2", "R3", "R4", CD21_RUN)
 #: Seeds of the full set per reference run (the minimal set is 1 seed each).
-_FULL_SEEDS: Final = {"R1": 5, "R2": 5, "R3-pretrain": 1, "R3-linear-eval": 1, "R4": 1}
+_FULL_SEEDS: Final = {
+    "R1": 5,
+    "R2": 5,
+    "R3-pretrain": 1,
+    "R3-linear-eval": 1,
+    "R4": 1,
+    CD21_RUN: 5,
+}
 #: R3's linear evaluation runs at these label fractions (one run each).
 _R3_FRACTIONS: Final = tuple(LABEL_FRACTION_DATASETS.values())
 #: Train-split sizes of the real files (``docs/data.md``), for the synthetic estimate. The
@@ -617,26 +637,29 @@ def _synchronize(device: torch.device) -> None:
         torch.mps.synchronize()
 
 
-class ThroughputTimer(Callback):
-    """Training steps per second, between consecutive batches of the same epoch.
+class ThroughputTimer:
+    """Training steps per second, between consecutive steps (engine-free, task 4.6).
 
-    The first batch of each epoch is not timed (worker start-up, cuDNN benchmarking); each
-    interval includes the DataLoader's wait, so the rate is what a real run gets.
+    :meth:`tick` after each step (after a device synchronisation) records the interval
+    since the previous tick; :meth:`reset` forgets the clock, so the next step is not
+    timed. On Lightning (:func:`lightning_timer`) it resets at each epoch start, so the
+    first batch of each epoch is not timed (worker start-up, cuDNN benchmarking); on the
+    plain engine (``engine.fit(on_step=...)``) only the fit's first step is not. Each
+    interval includes the data's wait (and a validation that ran in it), so the rate is
+    what a real run gets.
     """
 
     def __init__(self) -> None:
         self.intervals: list[float] = []
         self._last: float | None = None
 
-    def on_train_epoch_start(self, trainer: Any, pl_module: Any) -> None:
-        """Forget the previous epoch's clock."""
+    def reset(self) -> None:
+        """Forget the clock: the next step is not timed."""
         self._last = None
 
-    def on_train_batch_end(
-        self, trainer: Any, pl_module: Any, outputs: Any, batch: Any, batch_idx: int
-    ) -> None:
-        """Record the time since the previous batch of this epoch."""
-        _synchronize(pl_module.device)
+    def tick(self, device: torch.device) -> None:
+        """Record the time since the previous tick (after the device's queued work)."""
+        _synchronize(device)
         now = time.perf_counter()
         if self._last is not None:
             self.intervals.append(now - self._last)
@@ -647,6 +670,25 @@ class ThroughputTimer(Callback):
         """The measured rate, or None if no interval was timed."""
         total = sum(self.intervals)
         return len(self.intervals) / total if self.intervals and total > 0 else None
+
+
+def lightning_timer(timer: ThroughputTimer) -> Any:
+    """A Lightning ``Callback`` that drives ``timer`` (imports Lightning; the R1-R4 runs).
+
+    It resets ``timer`` at each training epoch's start and ticks it at each batch's end.
+    """
+    from lightning.pytorch.callbacks import Callback
+
+    class _LightningTimer(Callback):
+        def on_train_epoch_start(self, trainer: Any, pl_module: Any) -> None:
+            timer.reset()
+
+        def on_train_batch_end(
+            self, trainer: Any, pl_module: Any, outputs: Any, batch: Any, batch_idx: int
+        ) -> None:
+            timer.tick(pl_module.device)
+
+    return _LightningTimer()
 
 
 @dataclass(slots=True)
@@ -660,6 +702,9 @@ class Timed:
     measured_batch_size: int
     steps_per_second: float | None
     n_steps: int
+    #: The optimizer steps of a full run when it is counted in steps (CD21: the initial
+    #: horizon, a lower bound since a new best extends it); None: epochs x batches.
+    planned_steps: int | None = None
 
 
 def _train_count(data_dir: Path, dataset: str) -> int | None:
@@ -695,7 +740,7 @@ def _run_one(
     settings = settings.replace(batch_size=batch)
     timer = ThroughputTimer()
     started = time.perf_counter()
-    run_command(command, settings, callbacks=[timer], progress_bar=False)
+    run_command(command, settings, callbacks=[lightning_timer(timer)], progress_bar=False)
     seconds = time.perf_counter() - started
     rate = timer.steps_per_second
     rate_text = "not measured" if rate is None else f"{rate:.2f} steps/s"
@@ -715,6 +760,71 @@ def _run_one(
     )
 
 
+def _run_cd21(
+    overrides: list[str],
+    accelerator: str,
+    data_dir: Path,
+    chain: Path,
+    steps: int,
+    out: list[str],
+    skip: Callable[[str], None],
+) -> Timed | None:
+    """The CD21 dry run: the ``carrasco2021`` preset on the plain engine (no Lightning).
+
+    ``steps + 1`` optimizer steps (the first untimed), one validation after the last, no
+    horizon extension; ``overrides`` (``--set``) come before these. The batch is capped to
+    the Train split. Skipped (``skip``) when the dataset is not prepared with float32
+    stamps (the paper's input).
+    """
+    from astro_simclr.presets import CARRASCO2021_PRESET, PRESETS
+    from astro_simclr.tasks.plain import resolve_accelerator, run_plain
+
+    defaults = dict(PRESETS[CARRASCO2021_PRESET])
+    reference = load_settings(None, overrides, defaults=defaults)
+    n_train = _train_count(data_dir, reference.dataset)
+    if n_train is None or "float32" not in read_meta(data_dir / reference.dataset)["images"]:
+        skip(
+            f"{CD21_RUN}: dataset {reference.dataset} is not prepared with float32 stamps in "
+            f"{data_dir} (prepare-data --images float32)"
+        )
+        return None
+    every = steps + 1
+    forced = [
+        f"accelerator={accelerator}",
+        f"data_dir={data_dir}",
+        f"output_dir={chain / CD21_RUN}",
+        f"max_steps={every}",
+        f"val_every_n_steps={every}",
+        f"checkpoint_every_n_steps={every}",
+        "horizon_increment=0",
+    ]
+    settings = load_settings(None, [*overrides, *forced], defaults=defaults)
+    batch = min(reference.batch_size, n_train)
+    settings = settings.replace(batch_size=batch)
+    device = torch.device(resolve_accelerator(accelerator))
+    timer = ThroughputTimer()
+    started = time.perf_counter()
+    run_plain("train-supervised", settings, on_step=lambda _: timer.tick(device))
+    seconds = time.perf_counter() - started
+    rate = timer.steps_per_second
+    rate_text = "not measured" if rate is None else f"{rate:.2f} steps/s"
+    capped = "" if batch == reference.batch_size else f" (capped from {reference.batch_size})"
+    out.append(
+        f"{CD21_RUN} (train-supervised, plain engine, {reference.dataset}, batch {batch}{capped}): "
+        f"ok in {seconds:.1f} s, {rate_text} over {len(timer.intervals)} steps"
+    )
+    return Timed(
+        CD21_RUN,
+        reference.dataset,
+        reference.batch_size,
+        reference.max_epochs,
+        batch,
+        rate,
+        len(timer.intervals),
+        planned_steps=reference.max_steps,
+    )
+
+
 def _dry_overrides(
     command: str, name: str, accelerator: str, data_dir: Path, chain: Path, steps: int
 ) -> list[str]:
@@ -729,6 +839,23 @@ def _dry_overrides(
     if command in ("linear-eval", "fine-tune"):
         forced.append(f"pretrained={chain / 'R3-pretrain'}")
     return forced
+
+
+def _attempt(step: StepResult, label: str, run: Callable[[], Timed | None]) -> Timed | None:
+    """``run()``, or ``None`` with a FAIL line in ``step`` for a run that errors.
+
+    Raises:
+        AcceleratorError: re-raised (step 1 should have failed).
+    """
+    try:
+        return run()
+    except AcceleratorError:
+        raise
+    except (ConfigError, DataError, RuntimeError) as err:
+        # RuntimeError covers torch.OutOfMemoryError: the batch does not fit the GPU.
+        step.lines.append(f"FAIL {label}: {type(err).__name__}: {err}")
+        step.status = "FAIL"
+        return None
 
 
 def dry_chain(
@@ -754,8 +881,6 @@ def dry_chain(
     Raises:
         AcceleratorError: if the accelerator is not available (step 1 should have failed).
     """
-    from astro_simclr.experiments import AcceleratorError
-
     step = StepResult("dry-chain", "PASS")
     timed: list[Timed] = []
     chain = output_dir / "dry-chain"
@@ -771,33 +896,28 @@ def dry_chain(
     for name, command, config_name in REFERENCE_RUNS:
         if name.split("-")[0] not in runs:
             continue
-        downstream = command in ("linear-eval", "fine-tune")
-        if downstream and not pretrained:
+        if command in ("linear-eval", "fine-tune") and not pretrained:
             skip(f"{name}: no pretrain checkpoint from R3-pretrain")
             continue
         forced = _dry_overrides(command, name, accelerator, data_dir, chain, steps)
-        try:
-            result = _run_one(
-                name,
-                command,
-                reference_dir / config_name,
-                list(overrides),
-                forced,
-                data_dir,
-                step.lines,
-                skip,
-            )
-        except AcceleratorError:
-            raise
-        except (ConfigError, DataError, RuntimeError) as err:
-            # RuntimeError covers torch.OutOfMemoryError: the batch does not fit the GPU.
-            step.lines.append(f"FAIL {name} ({command}): {type(err).__name__}: {err}")
-            step.status = "FAIL"
-            continue
-        if result is None:
-            continue
-        pretrained = pretrained or command == "pretrain"
-        timed.append(result)
+        config = reference_dir / config_name
+        run = partial(
+            _run_one, name, command, config, list(overrides), forced, data_dir, step.lines, skip
+        )
+        result = _attempt(step, f"{name} ({command})", run)
+        if result is not None:
+            pretrained = pretrained or command == "pretrain"
+            timed.append(result)
+    if CD21_RUN in runs:
+        result = _attempt(
+            step,
+            f"{CD21_RUN} (plain engine)",
+            lambda: _run_cd21(
+                list(overrides), accelerator, data_dir, chain, steps, step.lines, skip
+            ),
+        )
+        if result is not None:
+            timed.append(result)
     if not timed and step.status != "FAIL":
         step.lines.append("no reference run could run (no prepared dataset?)")
         step.status = "FAIL"
@@ -807,7 +927,9 @@ def dry_chain(
 def _hours(n_train: int, timed: Timed) -> float | None:
     if timed.steps_per_second is None:
         return None
-    steps = (n_train // timed.batch_size) * timed.max_epochs
+    steps = timed.planned_steps
+    if steps is None:
+        steps = (n_train // timed.batch_size) * timed.max_epochs
     return steps / timed.steps_per_second / 3600
 
 
@@ -843,13 +965,21 @@ def estimate(timed: Sequence[Timed], train_count: Callable[[str], int | None]) -
             note = f" (measured at batch {run.measured_batch_size}, not {run.batch_size})"
         if run.n_steps < 5:
             note += f" (only {run.n_steps} timed steps: rough)"
+        if run.planned_steps is not None:
+            step.lines.append(
+                f"{run.name}: >= {full:.1f} GPU-h full set, {minimal:.1f} minimal "
+                f"({run.planned_steps} steps at least: a new best extends the horizon; "
+                f"batch {run.batch_size}){note}"
+            )
+            continue
         step.lines.append(
             f"{run.name}: <= {full:.1f} GPU-h full set, {minimal:.1f} minimal "
             f"({run.max_epochs} epochs max, batch {run.batch_size}){note}"
         )
     step.lines.append(
         f"total: <= {total_full:.1f} GPU-h full set, {total_minimal:.1f} GPU-h minimal set "
-        "(upper bound: EarlyStopping usually stops sooner; validation not included)"
+        "(upper bound for R1-R4: EarlyStopping usually stops sooner; CD21 counts its initial "
+        "horizon; validation not included)"
     )
     return step
 
@@ -859,12 +989,16 @@ def estimate(timed: Sequence[Timed], train_count: Callable[[str], int | None]) -
 
 def _synthetic_data(output_dir: Path, n_per_split: int, seed: int) -> Path:
     from astro_simclr.data.prepared import prepare
-    from astro_simclr.data.synthetic import make_synthetic
+    from astro_simclr.data.synthetic import CLASSIFIER_FILES, make_synthetic
 
     raw = output_dir / "synthetic" / "raw"
     data = output_dir / "synthetic" / "data"
     for path in make_synthetic(raw, n_per_split, seed):
-        prepare(path, data, overwrite=True)
+        # The 100 % file also gets float32 stamps: CD21's input (the paper's float path).
+        images: Literal["uint8", "float32"] = (
+            "float32" if path.name == CLASSIFIER_FILES[0] else "uint8"
+        )
+        prepare(path, data, overwrite=True, images=images)
     shutil.rmtree(raw)  # the prepared copies are all that training reads
     return data
 
@@ -883,7 +1017,8 @@ def _check_arguments(
         raise ConfigError("preflight needs exactly one of --synthetic and --data-dir DIR")
     unknown = sorted(set(runs or ()) - set(_ALL_RUNS))
     if unknown:
-        raise ConfigError(f"unknown reference run(s) {', '.join(unknown)}; valid: R1, R2, R3, R4")
+        valid = ", ".join(_ALL_RUNS)
+        raise ConfigError(f"unknown reference run(s) {', '.join(unknown)}; valid: {valid}")
     if not (reference_dir / "R1.yaml").is_file():
         raise ConfigError(f"{reference_dir} has no reference configs (R1.yaml, ...)")
 
@@ -891,8 +1026,6 @@ def _check_arguments(
 def _accelerator_step(
     accelerator: str, gpu_query: Callable[[], list[GpuInfo] | None]
 ) -> StepResult:
-    from astro_simclr.experiments import check_accelerator
-
     if accelerator == "cuda":
         return check_cuda(gpu_query())
     step = StepResult("cuda", "SKIP", [f"accelerator {accelerator}: CUDA not checked"])

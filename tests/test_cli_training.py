@@ -17,13 +17,13 @@ from astro_simclr.cli import build_parser, main, training_settings
 from astro_simclr.config import ConfigError, Settings
 from astro_simclr.experiments import (
     AcceleratorError,
-    _finite,
-    _recalls,
     check_accelerator,
     load_pretrained,
     resolve_resume,
 )
 from astro_simclr.protocol.predictions import load_predictions
+from astro_simclr.tasks.results import finite as _finite
+from astro_simclr.tasks.results import recalls_of as _recalls
 
 ROOT = Path(__file__).resolve().parents[1]
 _DRY = ["max_epochs=1", "limit_train_batches=1", "limit_val_batches=1", "num_workers=0"]
