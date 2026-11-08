@@ -80,7 +80,7 @@ def test_presets_decide_the_command() -> None:
         (lambda: StampClassifier(kind="resnet"), "StampClassifier kind must be one of"),
         (lambda: AdamOptim(kind="SGD"), "AdamOptim kind must be one of: AdamW, Adam"),
         (lambda: ResNetClassifier(name="resnet7"), "model.name 'resnet7' is not one of"),
-        (lambda: Runtime(engine="plain"), "runtime.engine 'plain' is not one of: lightning"),
+        (lambda: Runtime(engine="jax"), "runtime.engine 'jax' is not one of: lightning, plain"),
         (lambda: Config(model=PaperStampClassifier()), "go together"),
         (
             lambda: Config(

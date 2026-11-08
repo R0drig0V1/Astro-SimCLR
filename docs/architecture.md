@@ -33,7 +33,10 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  ├──► r5 (r5-sources, build-r5: the R5 benchmark) ──► alerts (by_oid, store), protocol, data.raw_alerts
  │    (training ──► paper_variants: rot4 / single / p4 / p4m ──► paper_model, group_conv;
  │     paper_model ──► feature_sets: all / position / none)
- ├──► preflight ──► experiments, data (inspection, manifest)
+ ├──► preflight ──► experiments (R1-R4), tasks.plain (CD21), data (inspection, manifest)
+ ├──► tasks (phase 4, 4.6: the paper classifier on the plain engine; no Lightning) ──► engine,
+ │      training (Lightning-free submodules: paper_augment, tensor_splits, class_augment, ...)
+ │    (experiments ──► tasks.common, tasks.paper, tasks.results: shared with Lightning)
  └──► engine (phase 4: the contracts, the loop, the data tiers; imports no Lightning) ──► config, data, runs
  └──► runs (phase 4, A0: run identity, manifest.json, layout, retention) ──► config, data
  └──► registry (phase 4, A2: runs reindex | ls | show | compare; SQLite) ──► runs, reference
@@ -205,8 +208,10 @@ the config hash is defined on, ADR 0015 rule 10), so it changes no numbers.
   | | `paper` | `rot90` (`rot90_augment`), `noise` (`aug_noise`), `feature_jitter`, `synthetic_bogus`, `min_r2` (`aug_min_r2`), `flux_rescale`, `flux_k_min`, `flux_k_max` |
 
   - The model decides the command (`Config.command`). Every default is the default of the
-    flat field (`Config()` lowers to `Settings()`). `runtime.engine` is `lightning` only
-    (the plain engine joins with 4.1 and 4.6); it is the run id's engine, not hashed.
+    flat field (`Config()` lowers to `Settings()`). `runtime.engine` is `lightning` (the
+    default until 4.7/4.8) or `plain` (task 4.6: `astro-simclr run` then trains with
+    `tasks.plain.run_plain`, the paper classifier on `carrasco2021` only); it is the run
+    id's engine, not hashed.
   - A `Config` is valid by construction: the tags, `paper_stamp_classifier` ⇔
     `carrasco2021` schedule ⇔ `paper` augmentation, then the lowered `Settings`' checks,
     with the flat names in their message mapped to nested paths
@@ -1402,7 +1407,10 @@ stream positions `[64b, 64b + 64)`, pass `j` the permutation of
 documented exception to "randomness comes from `seed_everything`", and what makes a
 mid-epoch resume exact. TF's random numbers are not reproduced.
 
-**Device data** (`device_data.py`). `TensorSplit(images, features, labels, fits=None)`:
+**Device data** (`device_data.py`; since task 4.6 the Lightning-free half, `TensorSplit`,
+the crop builders and `check_split_identity`, lives in `tensor_splits.py` and is
+re-exported, so the plain engine builds the same arrays without Lightning).
+`TensorSplit(images, features, labels, fits=None)`:
 float32 (N, 3, 21, 21) (or (N, 6, 21, 21) with the 63×63 context of task 2.5-models, or
 the whole stamps (N, 3, 63, 63) of the ConvNeXt rows, plan row B8; `IMAGE_SIDES`),
 float32 (N, 23), int64 (N,), and optionally the float32 (N, 6) `class_augment.stamp_fits`
@@ -1695,16 +1703,18 @@ inference contexts, `keep`, early stopping against Lightning's `EarlyStopping` o
 sequences, the checkpoint contents, exact resume through the global RNG streams (and its
 control: without `restore_rng` it is not exact), every resume refusal, atomic writes, the
 seeding and flags, the scalars, and the `engine: plain` manifest.
-`tests/test_engine_differential.py` is **the 4.7(a) CPU differential test**, a CI gate:
-`run_command`'s `carrasco2021` path and the plain engine (`tests/_plain_paper.py`, a test
-adapter of `PaperClassifierModule` to `Task` on the `device` tier) run in one process on
-the synthetic data, with a horizon extension, and agree bit for bit (initial weights; the
-steps, `loss_val` and every `state_dict` tensor after each validation; `best_step`,
-horizon, `last_step`, `monitor_best`, the epochs; the final probabilities and accuracies),
-over the 2.5 flags (`single`, `p4`, `p4m`, `context`, `rot90`, C5, C6, C7, both
-`feature_set` diagnostics, all of C5-C7 with `p4`), a fold and the screen, a mid-run plain
-resume, and each accelerator present (deterministic). It also ports the three
-Lightning-bound resume tests to the plain engine.
+`tests/test_engine_differential.py` is **the 4.7(a) CPU differential test**, a CI gate.
+Since task 4.6 it runs `run_command`'s `carrasco2021` path and the real plain runner
+(`tasks.plain.run_plain`, section `tasks`) in one process on the synthetic data, with a
+horizon extension, and they agree bit for bit: the initial weights; the steps, `loss_val`
+and every `state_dict` tensor after each validation; the whole `metrics.json` but for the
+entries that name the engine or the run (`machine.engine`, `checkpoints`, `versions`,
+`accelerator`, `run`, `timing`, `config.output_dir`); the `predictions_*.npz` arrays; both
+manifests `finished`. Cases: the 2.5 flags (`single`, `p4`, `p4m`, `convnext_atto`,
+`context`, `rot90`, C5, C6, C7, both `feature_set` diagnostics, `fp32_precision: tf32`,
+all of C5-C7 with `p4`), a fold and the screen, a mid-run plain resume, and each
+accelerator present (deterministic). It also ports the three Lightning-bound resume tests
+to the plain runner.
 
 ### The data layer (task 4.3; ADR 0018)
 
@@ -1770,6 +1780,29 @@ fraction of a SimCLR step). On MPS the host tiers cost about 0.7 ms per batch ag
 0.13 ms for `device`: with unified memory there is nothing to gain from them, so `device` is
 the choice whenever the data fit; `pinned` and `memmap` exist for CUDA machines and the
 phase-5 corpus. Their CUDA and cold-disk numbers are measured on the GPU machine.
+
+## `tasks` (phase 4, task 4.6; ADR 0014, amendment of task 4.6)
+
+`src/astro_simclr/tasks/`: the paper classifier on the plain engine, and what both engines'
+runners share. **Nothing in it imports Lightning** (tested in a fresh interpreter, with
+the CLI and the preflight). `astro-simclr run CONFIG` with `runtime.engine: plain` trains
+through it; Lightning stays the default until 4.7/4.8.
+
+| Module | What it does |
+|---|---|
+| `common` | The run checks of `run_command`, moved from `experiments` (which re-exports them): `check_accelerator` (`AcceleratorError`), `dataset_path`, `check_names`, `check_schedule` / `check_paper_variant`, `check_split`. |
+| `paper` | `paper_inputs(settings, data, split_run)`: the splits as `TensorSplit`s (float path or uint8 diagnostic, leaked Train stamps removed, a split run's roles, the C5-C7 fits) and the `paper_data` entry; `experiments._build_paper` calls it too. `load_backbone` (ConvNeXt weights, ADR 0022). `PaperNet` (the model under `model`, the loss as `criterion`: `PaperClassifierModule`'s `state_dict` keys). `PaperTask`, the engine `Task`: a step plans the augmentation of step `step` on a host copy (`training.paper_augment.PaperAugment`, the object the Lightning module delegates to), uploads and applies it, then the loss; `build_optimizer` with the configured betas. `build_paper_task(settings, info)` builds it on the CPU (after the seed); `check_paper_task` runs its checks before the manifest. |
+| `results` | `StageOutput` and `classifier_results`: the Validation / Test (or selection / evaluation) entries of `metrics.json`, `predictions_*.npz` and the confusion-matrix figures, moved from `experiments` and used by both engines. |
+| `plain` | `run_plain(command, settings, resume=, split=, on_step=, on_validation=, progress=)`: `run_command` for `train-supervised` of the paper classifier on `carrasco2021` (every 2.5 flag, split runs, `fp32_precision`). The same checks, the data on the `device` tier, `start_run(..., engine="plain")`, `engine.fit`, the final evaluation of the restored best, `metrics.json` (the Lightning keys, with `machine.engine: plain`, `checkpoints` `ckpt/{best,last}.pt`, no Lightning version, `accelerator` the device type), the manifest `finished`. `resume="auto"`: `OUTPUT_DIR/ckpt/last.pt`. Refuses other commands, models and schedules (use `lightning`), `devices != 1`, and `limit_train_batches` / `limit_val_batches`. |
+
+`training/__init__` loads its names lazily (PEP 562), so its Lightning-free submodules
+(`paper_augment`, `tensor_splits`, `class_augment`, `flux_rescale`, `metrics`,
+`optimizers`, `tiling`) import without Lightning.
+
+**Tested.** `tests/test_engine_differential.py` (the 4.7(a) gate, section `engine`) and
+`tests/test_tasks_plain.py`: a plain run's outputs, every refusal (before the manifest, or
+a failed attempt after it), the accelerator and resume resolution, `astro-simclr run` with
+`runtime.engine: plain`, the Lightning-free imports, the timer and the preflight's CD21 run.
 
 ## `presets` (task 2.2c)
 
@@ -2214,12 +2247,20 @@ a failed step 2-4, stops it.
    fine-tune on that checkpoint → R1, R2, R4; `--runs` selects) through `run_command`, with
    `max_epochs=1`, `limit_train_batches=steps+1`, `limit_val_batches=2`, at the reference
    batch sizes (capped to the Train size), on the chosen accelerator, so a batch that does
-   not fit the GPU fails here. Without `--runs`, a run whose dataset is not prepared is a
-   SKIP (WARN); a run named in `--runs` must run, or the step FAILs.
-6. **Throughput:** `ThroughputTimer` measures steps/s between consecutive batches of an
-   epoch (first batch untimed; the device is synchronised so the clock measures work), with
-   the real DataLoader. The estimate per run is `(n_train // batch) * max_epochs / rate`,
-   times 5 seeds (R1, R2) for the full set, with R3's linear evaluation summed over the 1,
+   not fit the GPU fails here. Then **CD21** (task 4.6): the `carrasco2021` preset on the
+   **plain engine** (`tasks.plain.run_plain`), `steps+1` steps with one validation after the
+   last and no horizon extension, on `red-002` with float32 stamps (`--synthetic` prepares
+   that file with them). R1-R4 stay on Lightning (their modules are frozen at
+   `lightning-final`); `--runs CD21` alone never imports Lightning (tested in a fresh
+   interpreter). Without `--runs`, a run whose dataset is not prepared is a SKIP (WARN); a
+   run named in `--runs` must run, or the step FAILs.
+6. **Throughput:** `ThroughputTimer` (engine-free: `tick(device)` after each step,
+   `reset()`; `lightning_timer(timer)` adapts it to a Lightning callback that resets it at
+   each epoch start, the plain engine ticks it through `fit(on_step=...)`) measures steps/s
+   between consecutive steps (the first untimed; the device is synchronised so the clock
+   measures work), with the real data path. The estimate per run is
+   `(n_train // batch) * max_epochs / rate` (CD21: the initial horizon, 30,000 steps, a
+   lower bound), times 5 seeds (R1, R2, CD21) for the full set, with R3's linear evaluation summed over the 1,
    10 and 100 % files; an upper bound, without validation time. With `--synthetic` (the
    four synthetic files, named as the received ones, `--n-per-split` 2400 by default,
    under the output directory) it
