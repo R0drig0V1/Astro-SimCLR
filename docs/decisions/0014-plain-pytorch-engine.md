@@ -6,7 +6,8 @@
 - **Implemented by:** the contracts in `src/astro_simclr/engine/` (`task.py`, `policies.py`,
   `checkpoint.py`, `device.py`, `data.py`, `randomness.py`); the loop itself in task 4.1
   (`loop.py`, `precision.py`, `scalars.py`, `record.py`; amendment below), the config in
-  4.2, the data tiers in 4.3, the tasks in 4.6 (`src/astro_simclr/tasks/`; amendment below)
+  4.2, the data tiers in 4.3, the tasks in 4.6 (`src/astro_simclr/tasks/`; amendment below),
+  the `rj23` schedule's extension points in 3.4b (amendment below)
 - **Amended by:** ADR 0018 (the data tiers, task 4.3: section 3's `pinned` tier pins the
   staging buffers, not the dataset; the shuffle granularity; the stream definition)
 - **Checked by:** `tests/test_engine_contracts.py` (the contracts, and the Lightning
@@ -429,3 +430,27 @@ settled here:
    `steps + 1` steps (`engine.fit` gained an `on_step` hook for the timer), estimated from
    its initial horizon (a lower bound). `--synthetic` prepares the 100 % file with float32
    stamps. R1-R4 still run on Lightning: their modules are not ported (plan 4.6, "Cut").
+
+## Amendment: task 3.4b, the `rj23` schedule on the plain engine (2026-11-08)
+
+RJ23's classifiers train on the plain engine (`tasks.rj23`, ADR 0023 point 10), with the
+policy objects of `rj23_regime` as they are. The loop gained three extension points, each
+off by default, so the `carrasco2021` path and its checkpoints are unchanged (the gate's
+paper cases pass as before; `numerics_epoch` stays 1):
+
+1. **`ValidationGrid.at_start`**: a fresh fit also validates its initial weights, before
+   the first step (RJ23's "iteration 0 included"). `due` is unchanged; `last.pt` is never
+   written at step 0 (there is nothing to resume).
+2. **`fit(score=...)`**: the monitored value is a function of the validation's
+   `EvalOutput`s under the monitor's name (`macro_f1_val`, `max`), instead of the mean of
+   the batch losses. Without a score the monitor must be `loss_val`, as before.
+3. **`Schedule.stop_rule`**: a `StopRule` (`decide(step, history) -> .stop`), an
+   engine-free policy on the whole history of monitored values; exclusive with
+   `early_stop`. The history is in the checkpoint's `policy` (`history`, only with a stop
+   rule), so a resume decides again exactly; a resumed run whose rule had stopped trains
+   nothing. `FitResult.history` returns it.
+
+Point 4 of the 4.6 amendment changes accordingly: `run_plain` trains `schedule: rj23` when
+given its `RJ23Request` (`tasks.rj23.run_rj23_plain`); `run_command` still refuses it (its
+Lightning runner is `training.rj23.run_rj23`). The 4.7(a) gate gained the rj23 cases.
+

@@ -9,8 +9,9 @@ same messages, without importing Lightning:
 - :func:`check_schedule` and :func:`check_paper_variant`: the ``carrasco2021`` schedule,
   the paper model and its 2.5 flags go together;
 - :func:`check_split`: a split run is ``train-supervised`` on ``carrasco2021``;
-- :func:`refuse_rj23`: phase 3's ``rj23`` schedule has its own runner
-  (``training.rj23.run_rj23``, task 3.4b), so both generic runners refuse it.
+- :func:`refuse_rj23`: phase 3's ``rj23`` schedule has its own runners (task 3.4b):
+  ``training.rj23.run_rj23`` on Lightning, so ``run_command`` refuses it, and
+  ``tasks.rj23.run_rj23_plain``, which ``tasks.plain.run_plain`` dispatches to.
 """
 
 from __future__ import annotations

@@ -31,7 +31,7 @@ import os
 import random
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Final, Literal, TypedDict, cast
+from typing import Any, Final, Literal, NotRequired, TypedDict, cast
 
 import numpy as np
 import torch
@@ -111,6 +111,9 @@ class PolicyState(TypedDict):
     stop_score: float | None
     #: The best weights on the CPU (``keep`` includes ``best``), else ``None``.
     best_model: dict[str, torch.Tensor] | None
+    #: Every fit validation's monitored value, in order, for a schedule with a
+    #: ``stop_rule`` (the ``rj23`` schedule, task 3.4b); absent otherwise.
+    history: NotRequired[list[float]]
 
 
 class Checkpoint(TypedDict):

@@ -7,8 +7,8 @@ on class-balanced batches of 256, validate the macro-F1 every 500 iterations, st
 validations without improvement and save the model **at the stopping iteration**. This
 module holds those rules as pure objects, with no training engine (the phase-4 rule from B0
 on: ``docs/phases/04-training-platform.md``). The Lightning adapter is
-:mod:`astro_simclr.training.rj23`; the plain engine of phase 4 adapts the same objects. The
-choices the sources leave open are pinned in ADR 0023.
+:mod:`astro_simclr.training.rj23`, the plain engine's :mod:`astro_simclr.tasks.rj23`; both
+use these objects as they are. The choices the sources leave open are pinned in ADR 0023.
 
 - :class:`RJ23Schedule`, the **schedule policy**: :meth:`RJ23Schedule.decide` is a pure
   function of ``(step, history)``, the number of optimizer steps done and the monitored
