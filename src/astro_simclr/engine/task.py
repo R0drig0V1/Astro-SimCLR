@@ -1,7 +1,7 @@
-"""The ``Task`` protocol: what the plain loop trains, and the monitored value (ADR 0013).
+"""The ``Task`` protocol: what the plain loop trains, and the monitored value (ADR 0014).
 
 A task owns a model, its loss, its optimizer and its per-step randomness; the loop owns
-everything Lightning did around them (ADR 0013, "Checklist"): the ``train()`` / ``eval()``
+everything Lightning did around them (ADR 0014, "Checklist"): the ``train()`` / ``eval()``
 modes, ``zero_grad(set_to_none=True)``, ``backward``, ``optimizer.step()``, ``no_grad``
 during the fit's validations, the validation grid, the horizon, checkpoints and the RNG
 streams. A task never reads a global step counter of its own: the loop passes ``step``,
@@ -47,7 +47,7 @@ class EvalOutput:
 class Task(Protocol):
     """One trainable model with its loss, optimizer and per-step randomness.
 
-    The loop's order for a run (ADR 0013, "Seeding" and "Resume"): seed every global
+    The loop's order for a run (ADR 0014, "Seeding" and "Resume"): seed every global
     stream, build the task (its ``module`` on the CPU, so initial weights do not depend on
     the device), move ``module`` to the device, then call :meth:`make_optimizer` (the
     optimizer is built on the moved parameters, as Lightning's ``strategy.setup`` does).
@@ -83,7 +83,7 @@ def mean_of_batch_losses(losses: Sequence[torch.Tensor]) -> torch.Tensor:
     The mean of the per-batch mean losses in loader order, the last (partial) batch
     weighing as much as a full one: TF's "mean of batch-64 means", what
     ``ClassifierModule._log_epoch`` logs as ``loss_val`` and Lightning passes on unchanged
-    (ADR 0013, "Monitor value"). It is not the per-sample mean.
+    (ADR 0014, "Monitor value"). It is not the per-sample mean.
 
     Raises:
         ValueError: if ``losses`` is empty (no validation batch), or a loss is not a 0-d

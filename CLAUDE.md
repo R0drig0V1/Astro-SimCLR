@@ -72,7 +72,7 @@ uvx copier@9.19.1 update           # pull python-template improvements (clean tr
 - **Typing:** mypy strict; `# type: ignore[override]` only on Lightning hook overrides.
 - **Python changes semantics, not only style:** keep training results reproducible (seeds,
   splits, augmentations) unless the PR says otherwise.
-- **New training flags are engine-free** (ADR 0013) until Lightning is removed (task 4.8).
+- **New training flags are engine-free** (ADR 0014) until Lightning is removed (task 4.8).
   Checklist for the author of a flag (a model variant, augmentation, sampler or schedule):
   1. Write it as a pure function or a policy object outside both engines: no
      `lightning` import, no `self.global_step` / `self.trainer` / `self.log` inside it. It

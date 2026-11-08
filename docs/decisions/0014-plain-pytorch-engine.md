@@ -1,5 +1,5 @@
-<!-- ADR 0013: the plain-PyTorch training engine (phase 4, task B0): what the loop reproduces from Lightning, its frozen contracts, the data tiers and the equivalence gate. -->
-# 0013: A plain-PyTorch training loop, held to Lightning's behaviour by a checklist and a gate
+<!-- ADR 0014: the plain-PyTorch training engine (phase 4, task B0): what the loop reproduces from Lightning, its frozen contracts, the data tiers and the equivalence gate. -->
+# 0014: A plain-PyTorch training loop, held to Lightning's behaviour by a checklist and a gate
 
 - **Status:** accepted (2026-11-08, phase 4, task B0; plan review
   `docs/plan-reviews/2026-11-08-phase-4.md`, findings F1, F5, F6, F12, F14)
@@ -20,7 +20,7 @@ behaviours, each verified in the sources rather than remembered, and the replace
 pass a gate before Lightning goes (4.7, 4.8).
 
 Every item below was read in the installed **Lightning 2.6.6** and in this repository at
-`813935c` (`origin/main` when this ADR was written). Paths: `PL/` is
+`f8cc564` (`origin/main` when this ADR was last checked). Paths: `PL/` is
 `.venv/lib/python3.12/site-packages/lightning/pytorch/`, `FAB/` is `.../lightning/fabric/`,
 `torch/` is the installed torch 2.14.1; ours are relative to `src/astro_simclr/`. Lightning
 facts that were not obvious from the code are also pinned by tests now

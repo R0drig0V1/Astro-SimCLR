@@ -1,11 +1,11 @@
-"""Tests of the plain engine's frozen contracts (``astro_simclr.engine``, task B0, ADR 0013).
+"""Tests of the plain engine's frozen contracts (``astro_simclr.engine``, task B0, ADR 0014).
 
 Two kinds:
 
 - the contracts themselves (dataclass checks, the pure policy rules, the checkpoint key set,
   the generators, the engine-free import rule);
 - **Lightning reference facts**: what Lightning 2.6.6 and today's ``training`` code do, as
-  ADR 0013's checklist states them, pinned here so that a Lightning upgrade that changes
+  ADR 0014's checklist states them, pinned here so that a Lightning upgrade that changes
   one fails before the 4.7(a) differential test is written against it. Each policy rule is
   checked against the Lightning-side code it replaces (``HorizonCallback._improves``,
   ``_set_torch_flags``, ``class_augment.augment_rng``).
@@ -182,7 +182,7 @@ def test_schedule_checks() -> None:
         Schedule(checkpoint_every_n_steps=0)
 
 
-# --- Lightning reference facts (ADR 0013 checklist) -------------------------------------
+# --- Lightning reference facts (ADR 0014 checklist) -------------------------------------
 
 _STEPS_PER_EPOCH = 7  # not a multiple of the validation interval
 
