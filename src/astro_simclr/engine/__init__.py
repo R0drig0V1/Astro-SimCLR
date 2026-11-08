@@ -1,4 +1,4 @@
-"""The plain-PyTorch training engine (phase 4, ADR 0014): contracts only, no loop yet.
+"""The plain-PyTorch training engine (phase 4, ADR 0014): the contracts and the data layer.
 
 Task B0 of ``docs/phases/04-training-platform.md`` freezes the interfaces that the engine
 core (4.1), the typed config (4.2) and the data layer (4.3) are built against, so that those
@@ -14,6 +14,16 @@ tasks can proceed in parallel and the 4.7 equivalence gate has a fixed target:
   float32 precision);
 - :mod:`.data`: the batch tuple format and the three data tiers;
 - :mod:`.randomness`: the seeded per-step generators (host and device).
+
+Task 4.3 (ADR 0016) implements the data layer against them:
+
+- :mod:`.dataset`: :class:`~.dataset.Dataset`, one API over the prepared kinds
+  (classifier, unlabelled, raw-alerts) and in-memory arrays;
+- :mod:`.stream`: the class tiling, the seeded resumable stream and its shuffle
+  granularity (``row`` or ``block``);
+- :mod:`.tiers`: the three tiers (``open_train`` -> :class:`~.tiers.TrainSource`,
+  ``open_eval`` -> :class:`~.tiers.EvalBatches`), exact with each other;
+- :mod:`.bench`: the tiers' throughput microbenchmark (``python -m astro_simclr.engine.bench``).
 
 **Engine-free rule** (ADR 0014, CLAUDE.md): nothing in this package imports Lightning, so a
 flag written against these contracts works on both engines until Lightning is removed (4.8).
@@ -39,6 +49,7 @@ from astro_simclr.engine.data import (
     TierChoice,
     TrainBatch,
 )
+from astro_simclr.engine.dataset import Dataset, prepared_split, raw_alerts_dataset
 from astro_simclr.engine.device import CUBLAS_WORKSPACE_CONFIG, DevicePolicy
 from astro_simclr.engine.policies import (
     EarlyStop,
@@ -50,7 +61,9 @@ from astro_simclr.engine.policies import (
     ValidationTrigger,
 )
 from astro_simclr.engine.randomness import RESERVED_STREAMS, device_generator, host_generator
+from astro_simclr.engine.stream import TrainOrder
 from astro_simclr.engine.task import EvalOutput, Task, mean_of_batch_losses
+from astro_simclr.engine.tiers import EvalBatches, StreamSpec, TrainSource, open_eval, open_train
 
 __all__ = [
     "CHECKPOINT_FORMAT",
@@ -61,8 +74,10 @@ __all__ = [
     "BatchSource",
     "Checkpoint",
     "DataTier",
+    "Dataset",
     "DevicePolicy",
     "EarlyStop",
+    "EvalBatches",
     "EvalOutput",
     "EvalSource",
     "Horizon",
@@ -72,13 +87,20 @@ __all__ = [
     "PolicyState",
     "RngState",
     "Schedule",
+    "StreamSpec",
     "Task",
     "TierChoice",
     "TrainBatch",
+    "TrainOrder",
+    "TrainSource",
     "ValidationGrid",
     "ValidationTrigger",
     "check_resumable",
     "device_generator",
     "host_generator",
     "mean_of_batch_losses",
+    "open_eval",
+    "open_train",
+    "prepared_split",
+    "raw_alerts_dataset",
 ]
