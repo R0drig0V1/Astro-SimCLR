@@ -1751,7 +1751,7 @@ calls `record.start_run` and `RunRecord.end` around the fit (task A1).
   `uv.lock` SHA-256 come from the source checkout (`source_root()`, `None` in an installed
   wheel). `concurrent_jobs` comes from `ASTRO_SIMCLR_CONCURRENT_JOBS` (default 1).
 
-## `registry` (phase 4, task A2; ADR 0016)
+## `registry` (phase 4, task A2; ADR 0018)
 
 `src/astro_simclr/registry/` is the local run registry: a derived SQLite index of run
 directories at `$ASTRO_SIMCLR_HOME/registry.sqlite` (default `~/.astro-simclr`), rebuildable
@@ -1766,7 +1766,7 @@ fast and the handlers (`commands.py`) load on use.
     `metrics.json` once finished;
   - or, backfilled from `metrics.json` alone, `legacy: true`, with null run id, attempt,
     data / pretrained SHA-256, git, `uv.lock` and `numerics_epoch`; `status: finished`,
-    `engine: lightning` and the machine class derived (ADR 0016 rule 4).
+    `engine: lightning` and the machine class derived (ADR 0018 rule 4).
 
   The config is read by the reader of its `config_format` (`CONFIG_FORMATS`; `flat-1` when
   the file names none): `lower_flat_1` fills the fields added since with `FLAT_1_FILLS`
