@@ -9,7 +9,11 @@ Submodules (``docs/architecture.md``, section "training", has the design):
 - :mod:`~astro_simclr.training.metrics`: the shared metrics and confusion matrix;
 - :mod:`~astro_simclr.training.optimizers`: the optimizer factory;
 - :mod:`~astro_simclr.training.runs`: seeding, EarlyStopping/ModelCheckpoint and the
-  Trainer, from ``config.Settings``.
+  Trainer, from ``config.Settings``;
+- task 2.2a, the ``carrasco2021`` schedule: :mod:`~astro_simclr.training.tiling` (class
+  balance and the shuffled batch stream), :mod:`~astro_simclr.training.device_data`
+  (``DeviceTensorDataModule``) and :mod:`~astro_simclr.training.schedule`
+  (``HorizonCallback``); ``modules.PaperClassifierModule``.
 
 A run is: ``seed_run(settings)``, build the module and its data module,
 ``build_callbacks(settings, Module.MONITORABLE, dirpath=...)``,

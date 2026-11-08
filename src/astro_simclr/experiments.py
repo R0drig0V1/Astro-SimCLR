@@ -27,15 +27,16 @@ Everything a run writes is under ``settings.output_dir``::
     OUT/predictions_{val,test}.npz        classifiers only: per-stamp probabilities
 
 ``metrics.json`` holds the command, the seed, the selected (``best_epoch``, 0-based) and
-last epoch, the monitored value at the best epoch, the package/torch/Lightning versions,
-the machine (``machine``: device type, GPU name, torch, CUDA and cuDNN versions, platform;
-task 2.3: runs of one comparison must share it), the data (prepared directory, source
-SHA-256 and the class counts of ``meta.json``) and the resolved settings. Classifiers add
-``val_acc_best`` (micro accuracy on Validation at the best checkpoint: with the default
-monitor ``accuracy_val`` this is the best validation accuracy over epochs, the metric of
-the legacy tables), ``test_acc_at_best``, the macro-F1 and, per split, the balanced
-accuracy, the per-class recall and the confusion matrices (normalised and counts). They also
-write the per-stamp softmax probabilities of the selected checkpoint on each split
+last epoch and global step (``best_step``, ``last_step``), the monitored value at the
+best epoch, the package/torch/Lightning versions, the machine (``machine``: device type,
+GPU name, torch, CUDA and cuDNN versions, platform; task 2.3: runs of one comparison must
+share it), the data (prepared directory, source SHA-256 and the class counts of
+``meta.json``) and the resolved settings. Classifiers add ``val_acc_best`` (micro accuracy
+on Validation at the best checkpoint: with the default monitor ``accuracy_val`` this is the
+best validation accuracy over epochs, the metric of the legacy tables),
+``test_acc_at_best``, the macro-F1 and, per split, the balanced accuracy, the per-class
+recall and the confusion matrices (normalised and counts). They also write the per-stamp
+softmax probabilities of the selected checkpoint on each split
 (``predictions_{val,test}.npz``, :mod:`astro_simclr.protocol.predictions`), listed under
 ``predictions``: what ``compare-variants`` pairs stamp by stamp. Non-finite numbers are
 written as ``null`` so the file stays strict JSON.
@@ -44,6 +45,18 @@ written as ``null`` so the file stays strict JSON.
 EarlyStopping / ModelCheckpoint state (Lightning's ``fit(ckpt_path=...)``). It does not
 restore the global random generators, so a resumed run is not bit-identical to an
 uninterrupted one (augmentations and shuffling of the later epochs differ).
+
+**Schedules** (``Settings.schedule``, task 2.2a). The above is the ``epochs`` schedule
+(EarlyStopping only if ``early_stopping``). ``carrasco2021`` is ALeRCE's iteration schedule
+for ``train-supervised`` with ``supervised_model: paper_stamp_classifier``: the paper model
+on device-resident 21x21 crops (``training.device_data``; the interim uint8 crops until
+task 2.2c wires the float path), validation every ``val_every_n_steps`` steps, and a
+``training.schedule.HorizonCallback`` in place of EarlyStopping and the best
+``ModelCheckpoint``s; it also writes ``last.ckpt`` after the validation of every
+``checkpoint_every_n_steps`` steps, and at the end. The outputs are
+the same files; the metrics add ``horizon``, and every run's metrics hold ``best_step`` and
+``last_step`` (optimizer steps). Its resume is exact: the batch stream is a function of the
+step, and the horizon and best weights are in ``last.ckpt``.
 """
 
 from __future__ import annotations
@@ -54,24 +67,27 @@ import platform
 from collections.abc import Callable, Sequence
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import Any, Final, Protocol, cast
 
 import lightning as L
 import numpy as np
 import torch
-from lightning.pytorch.callbacks import Callback, ModelCheckpoint
+from lightning.pytorch.callbacks import Callback
 
 from astro_simclr.augmentations import resolve_augmentation_name
-from astro_simclr.config import ConfigError, Settings, settings_to_plain
+from astro_simclr.config import CARRASCO2021, ConfigError, Settings, settings_to_plain
 from astro_simclr.data.prepared import is_prepared, read_meta
 from astro_simclr.data.schema import LABEL_NAMES, DataError
+from astro_simclr.paper_model import PAPER_CROP
 from astro_simclr.protocol.predictions import Predictions, predictions_file, save_predictions
 from astro_simclr.training.datamodules import ClassifierDataModule, ContrastiveDataModule
+from astro_simclr.training.device_data import DeviceTensorDataModule, interim_uint8_crops
 from astro_simclr.training.metrics import confusion_counts, macro_f1
 from astro_simclr.training.modules import (
     ClassifierModule,
     FineTuneModule,
     LinearEvalModule,
+    PaperClassifierModule,
     SimCLRModule,
     SupervisedCEModule,
     SupervisedCEResNetModule,
@@ -80,14 +96,17 @@ from astro_simclr.training.runs import (
     build_callbacks,
     build_last_checkpoint,
     build_trainer,
+    monitor_mode,
     seed_run,
 )
+from astro_simclr.training.schedule import HorizonCallback
 
 __all__ = [
     "BEST_CHECKPOINT",
     "CHECKPOINT_DIR",
     "LAST_CHECKPOINT",
     "METRICS_FILE",
+    "PAPER_STAMP_CLASSIFIER",
     "AcceleratorError",
     "check_accelerator",
     "dataset_path",
@@ -106,6 +125,18 @@ LAST_CHECKPOINT: Final = "last.ckpt"
 METRICS_FILE: Final = "metrics.json"
 #: ``train-supervised`` model names that are not ResNets.
 _STAMP_CLASSIFIER: Final = "stamp_classifier"
+#: ``train-supervised`` model of the ``carrasco2021`` schedule (task 2.2a).
+PAPER_STAMP_CLASSIFIER: Final = "paper_stamp_classifier"
+
+
+class _BestCheckpoint(Protocol):
+    """What the metrics read from the best-checkpoint callback of either schedule."""
+
+    @property
+    def best_model_path(self) -> str: ...
+
+    @property
+    def best_model_score(self) -> torch.Tensor | None: ...
 
 
 class AcceleratorError(ConfigError):
@@ -215,8 +246,8 @@ def _build_supervised(settings: Settings) -> ClassifierModule:
         return SupervisedCEModule(drop_rate=settings.drop_rate, **common)
     if not settings.supervised_model.startswith("resnet"):
         msg = (
-            f"supervised_model {settings.supervised_model!r} is not {_STAMP_CLASSIFIER!r} or "
-            "a ResNet (resnet18, resnet34, resnet50, resnet152)"
+            f"supervised_model {settings.supervised_model!r} is not {_STAMP_CLASSIFIER!r}, "
+            f"{PAPER_STAMP_CLASSIFIER!r} or a ResNet (resnet18, resnet34, resnet50, resnet152)"
         )
         raise ConfigError(msg)
     return SupervisedCEResNetModule(resnet_model=settings.supervised_model, **common)
@@ -251,11 +282,61 @@ def _build_downstream(command: str, settings: Settings) -> ClassifierModule:
     )
 
 
+def _check_schedule(command: str, settings: Settings) -> None:
+    """The ``carrasco2021`` schedule and the paper model go together, on 21x21 crops.
+
+    Raises:
+        ConfigError: if only one of them is chosen, the command is not ``train-supervised``,
+            or ``image_size`` is not 21.
+    """
+    paper_model = command == "train-supervised" and (
+        settings.supervised_model == PAPER_STAMP_CLASSIFIER
+    )
+    if settings.schedule == CARRASCO2021 and not paper_model:
+        msg = (
+            f"schedule {CARRASCO2021} trains only train-supervised with "
+            f"supervised_model={PAPER_STAMP_CLASSIFIER}"
+        )
+        raise ConfigError(msg)
+    if paper_model and settings.schedule != CARRASCO2021:
+        raise ConfigError(f"{PAPER_STAMP_CLASSIFIER} needs schedule={CARRASCO2021}")
+    if paper_model and settings.image_size != PAPER_CROP:
+        msg = (
+            f"{PAPER_STAMP_CLASSIFIER} takes {PAPER_CROP}x{PAPER_CROP} crops: "
+            f"set image_size={PAPER_CROP}"
+        )
+        raise ConfigError(msg)
+
+
+def _build_paper(settings: Settings, data: Path) -> tuple[ClassifierModule, DeviceTensorDataModule]:
+    """The paper model and its device-resident data (the interim uint8 crops until 2.2c)."""
+    seed_run(settings)
+    module = PaperClassifierModule(
+        beta_loss=settings.beta_loss,
+        lr=settings.lr,
+        optimizer=settings.optimizer,
+        with_features=settings.with_features,
+        dropout_active=settings.dropout_active,
+        drop_rate=settings.drop_rate,
+    )
+    datamodule = DeviceTensorDataModule(
+        lambda: interim_uint8_crops(data),
+        batch_size=settings.batch_size,
+        eval_batch_size=settings.eval_batch_size,
+        seed=settings.seed,
+    )
+    return module, datamodule
+
+
 def _build(
     command: str, settings: Settings, data: Path
 ) -> tuple[L.LightningModule, L.LightningDataModule, frozenset[str]]:
     """The module, its data module and the metrics the module logs (its ``MONITORABLE``)."""
     datamodule: L.LightningDataModule
+    _check_schedule(command, settings)
+    if settings.schedule == CARRASCO2021:
+        paper, datamodule = _build_paper(settings, data)
+        return paper, datamodule, ClassifierModule.MONITORABLE
     if command == "pretrain":
         seed_run(settings)
         module: L.LightningModule = SimCLRModule(
@@ -350,18 +431,21 @@ def _base_metrics(
     command: str,
     settings: Settings,
     trainer: L.Trainer,
-    checkpoint: ModelCheckpoint,
+    checkpoint: _BestCheckpoint,
     data: Path,
 ) -> dict[str, Any]:
     best = Path(checkpoint.best_model_path)
-    best_epoch = None
+    best_epoch = best_step = None
     if best.is_file():
-        best_epoch = int(torch.load(best, map_location="cpu", weights_only=True)["epoch"])
+        saved = torch.load(best, map_location="cpu", weights_only=True)
+        best_epoch, best_step = int(saved["epoch"]), int(saved["global_step"])
     return {
         "command": command,
         "seed": settings.seed,
         "best_epoch": best_epoch,
         "last_epoch": trainer.current_epoch - 1,
+        "best_step": best_step,
+        "last_step": trainer.global_step,
         "monitor": settings.monitor,
         "monitor_best": _scalar(checkpoint.best_model_score),
         "checkpoints": {
@@ -485,6 +569,62 @@ def _classifier_results(
     }
 
 
+def _epochs_trainer(
+    settings: Settings,
+    monitorable: frozenset[str],
+    callbacks: Sequence[Callback],
+    progress_bar: bool,
+) -> tuple[_BestCheckpoint, L.Trainer]:
+    """The legacy schedule: epochs, EarlyStopping (unless disabled), best and last by epoch."""
+    dirpath = settings.output_dir / CHECKPOINT_DIR
+    early_stopping, checkpoint = build_callbacks(settings, monitorable, dirpath=dirpath)
+    last = build_last_checkpoint(dirpath, Path(LAST_CHECKPOINT).stem)
+    stopping = [early_stopping] if settings.early_stopping else []
+    trainer = build_trainer(
+        settings,
+        callbacks=[*stopping, checkpoint, last, *callbacks],
+        enable_progress_bar=progress_bar,
+    )
+    return checkpoint, trainer
+
+
+def _carrasco2021_trainer(
+    settings: Settings,
+    monitorable: frozenset[str],
+    callbacks: Sequence[Callback],
+    progress_bar: bool,
+) -> tuple[_BestCheckpoint, L.Trainer]:
+    """ALeRCE's schedule: steps, validation every ``val_every_n_steps``, the horizon rule.
+
+    No EarlyStopping, no ``ModelCheckpoint`` and no epoch limit (``max_steps`` and the
+    horizon end the run); the ``HorizonCallback`` writes ``best.ckpt`` and, after the
+    validation of every ``checkpoint_every_n_steps`` steps, ``last.ckpt``; no sanity check.
+    """
+    dirpath = settings.output_dir / CHECKPOINT_DIR
+    horizon = HorizonCallback(
+        dirpath=dirpath,
+        filename=Path(BEST_CHECKPOINT).stem,
+        monitor=settings.monitor,
+        mode=monitor_mode(settings.monitor, monitorable),
+        initial_horizon=settings.max_steps,
+        increment=settings.horizon_increment,
+        last_filename=Path(LAST_CHECKPOINT).stem,
+        last_every_n_steps=settings.checkpoint_every_n_steps,
+    )
+    trainer = build_trainer(
+        settings,
+        callbacks=[horizon, *callbacks],
+        enable_checkpointing=False,
+        enable_progress_bar=progress_bar,
+        max_epochs=-1,
+        max_steps=settings.max_steps,
+        val_check_interval=settings.val_every_n_steps,
+        check_val_every_n_epoch=None,
+        num_sanity_val_steps=0,
+    )
+    return horizon, trainer
+
+
 def run_command(
     command: str,
     settings: Settings,
@@ -504,7 +644,8 @@ def run_command(
     Raises:
         AcceleratorError: if the accelerator is not available.
         ConfigError: on an invalid name (augmentation, model, monitor), a missing or wrong
-            pretrained checkpoint, or a missing ``--resume`` checkpoint.
+            pretrained checkpoint, a missing ``--resume`` checkpoint, or a ``carrasco2021``
+            schedule with another command or model (and the paper model without it).
         DataError: if the dataset is missing, invalid or smaller than one batch.
     """
     check_accelerator(settings.accelerator)
@@ -520,18 +661,15 @@ def run_command(
         raise ConfigError(str(err)) from None
     out = settings.output_dir
     out.mkdir(parents=True, exist_ok=True)
-    early_stopping, checkpoint = build_callbacks(
-        settings, monitorable, dirpath=out / CHECKPOINT_DIR
-    )
-    last = build_last_checkpoint(out / CHECKPOINT_DIR, Path(LAST_CHECKPOINT).stem)
-    trainer = build_trainer(
-        settings,
-        callbacks=[early_stopping, checkpoint, last, *callbacks],
-        enable_progress_bar=progress_bar,
-    )
+    if settings.schedule == CARRASCO2021:
+        checkpoint, trainer = _carrasco2021_trainer(settings, monitorable, callbacks, progress_bar)
+    else:
+        checkpoint, trainer = _epochs_trainer(settings, monitorable, callbacks, progress_bar)
     trainer.fit(module, datamodule=datamodule, ckpt_path=ckpt_path)
     metrics = _base_metrics(command, settings, trainer, checkpoint, data)
     metrics["resumed_from"] = None if ckpt_path is None else str(ckpt_path)
+    if isinstance(checkpoint, HorizonCallback):
+        metrics["horizon"] = checkpoint.horizon
     if isinstance(module, ClassifierModule):
         metrics.update(
             _classifier_results(

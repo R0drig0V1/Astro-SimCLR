@@ -79,6 +79,23 @@ of one run.
   read as a float. `hparams.LABEL_FRACTION_DATASETS` names the 1, 10 and 100 % datasets by
   the received files; the legacy 100 % `td_ztf_stamp_17_06_20.pkl` was never received, and
   `red-002` (the same file without duplicate stamps) stands in for it.
+- **Task 2.2a fields** (the `carrasco2021` schedule; see `training`, "The carrasco2021
+  schedule"):
+
+  | Field | Default | Meaning |
+  |---|---|---|
+  | `schedule` | `epochs` | `epochs` (the legacy protocol) or `carrasco2021` (ALeRCE's iteration schedule) |
+  | `max_steps` | 30000 | `carrasco2021`: initial horizon in optimizer steps (`Trainer(max_steps)`) |
+  | `val_every_n_steps` | 10 | `carrasco2021`: validation and selection interval |
+  | `horizon_increment` | 10000 | `carrasco2021`: a new best at step `s` raises the horizon to `s + increment` |
+  | `checkpoint_every_n_steps` | 1000 | `carrasco2021`: `last.ckpt` interval, a multiple of `val_every_n_steps` |
+  | `early_stopping` | true | `epochs`: false drops EarlyStopping; `carrasco2021` requires false |
+  | `dropout_active` | false | `paper_stamp_classifier`: apply its dropout layers (rate `drop_rate`) |
+
+  Under `carrasco2021` the schedule's definitions are errors to change, not defaults:
+  `eval_batch_size` must be 64 (the selection loss is TF's mean of batch-64 means),
+  `early_stopping` false and `num_workers` 0 (`ConfigError` otherwise). Task 2.2c's preset
+  will set them; until then a config spells them out (example in `training`).
 - `load_settings(path, overrides, defaults=...)`: `defaults` (a subcommand's legacy
   protocol) sits between the dataclass defaults and the file. `read_settings_file` reads a
   YAML mapping without checking keys; `settings_to_plain` gives the plain (YAML/JSON) form
@@ -351,6 +368,40 @@ count):
 - Dropped: the dead `kernel == 3/7` branches and the public `conv_output_shape` /
   `maxpool_output_shape` helpers (now private).
 
+## `paper_model` (task 2.2a)
+
+`src/astro_simclr/paper_model.py`: `PaperStampClassifier(with_features=True,
+dropout_active=False, drop_rate=0.5)`, ALeRCE's `DeepHitsWithFeatures` (without features,
+`DeepHitsExtraLayer`) of Carrasco-Davis et al. 2021, re-implemented from
+`alercebroker/pipeline@a3705ac` (no code copied). A new class: the phase-1
+`StampClassifier` (the legacy 2022 network) is unchanged.
+
+- Input (N, 3, 21, 21) crops and (N, 23) features; output (N, 5) logits. The 4 rotations
+  (`torch.rot90`, counter-clockwise as `tf.image.rot90`; no flips) go through the trunk as
+  one batch of 4N: `ZeroPad2d(3)`, `conv1` 4×4 valid (32), `conv2` 5×5 same (32), max-pool,
+  `conv3`-`conv5` 5×5 same (64), max-pool, flatten (2304, in (c, h, w) order), `fc1` (64),
+  ReLU, `drop1`; then the mean over the rotations; `bn_features` and the concatenation
+  (87); `fc2`, ReLU, `drop2`; `fc3`, ReLU, `drop3`; `logits`.
+- **441,075** trainable parameters with features, **439,557** without (M1's counts;
+  tested).
+- **Dropout inactive by default.** The layers exist, but `dropout_active=False` never applies
+  them (M1's `keras_learning_phase` was never fed); `True` applies `nn.Dropout(drop_rate)` in
+  train mode (diagnostic 1 of 2.4).
+- **Frozen feature BN:** `BatchNorm1d(23, eps=1e-3, momentum=0.0)`: batch statistics in
+  training, running buffers fixed at (0, 1), so evaluation is
+  `gamma * x / sqrt(1 + 1e-3) + beta` (tested after training steps).
+- **Initialisation (code is the authority):** Glorot-uniform kernels; zero biases on the
+  convolutions and `logits`; **Glorot-uniform biases on `fc1`-`fc3`**, U(±0.2165).
+  ALeRCE's `layers.dense` passes `bias_initializer=None` to `tf.keras.layers.Dense`, and
+  Keras' `add_weight` (TF 1.14 and 1.15) then falls back to `glorot_uniform`, whose fans
+  for a shape `(64,)` are 64 and 64. M1's meta graph confirms it:
+  `dense_{1_10,2_12,3_13}/bias/Initializer/random_uniform` with max 0.21650635, while
+  `conv_*/bias` and `output_logits/bias` use `Initializer/zeros`. The plan's "zero biases"
+  holds only for those. BN gamma 1, beta 0.
+- Layer names map to M1's variable scopes (table in the module docstring) for the 2.2b
+  weight mapping: HWIO → OIHW, dense kernels transposed, `fc1` rows permuted from TF's
+  (h, w, c) flatten to (c, h, w).
+
 ## `optim` (task 1.5)
 
 `src/astro_simclr/optim.py`: the SimCLR pretraining optimizer and LR schedule.
@@ -542,6 +593,105 @@ because spawned workers cost about 25 s on macOS.
   which applies its own softmax (legacy `Linear_classifier.prediction_target_loss`). Fixing
   it changes linear-evaluation results, so it is left to a later phase.
 
+### The `carrasco2021` schedule (task 2.2a)
+
+ALeRCE's training procedure as Lightning pieces, all under `src/astro_simclr/training/`.
+
+**Tiling** (`tiling.py`). `tile_indices(labels)` is ALeRCE's
+`balance_data_by_replication` on indices: classes in sorted label order; a smaller class
+becomes `max // n` full copies of its indices (file order) plus their first `max % n`; the
+largest class is kept. Every class then has `max` entries (`red`: 5 × 14,542 = 72,710).
+`PermutationStream(n, batch_size, seed)` reproduces `tf.data`
+`shuffle(100000).repeat().batch(64)` (the buffer holds the whole tiled set, so each pass is a
+uniform permutation, and batches run across pass boundaries with no drop): batch `b` is the
+stream positions `[64b, 64b + 64)`, pass `j` the permutation of
+`numpy.random.default_rng([seed, j])`. A batch is a pure function of `(seed, b)`: the
+documented exception to "randomness comes from `seed_everything`", and what makes a
+mid-epoch resume exact. TF's random numbers are not reproduced.
+
+**Device data** (`device_data.py`). `TensorSplit(images, features, labels)`: float32
+(N, 3, 21, 21), float32 (N, 23), int64 (N,), validated. `DeviceTensorDataModule(source,
+batch_size=64, eval_batch_size=64, seed=0, balance=True)` takes the three splits (a mapping,
+or a callable resolved once at the first `setup`), moves them once to
+`trainer.strategy.root_device` (CPU without a Trainer) and yields `(crops, features,
+one-hot labels)`:
+
+- Train: an epoch is `len(tiled) // batch_size` steps (1,136 for `red`); the loader starts
+  at `trainer.global_step` and yields stream batches up to the next epoch boundary, as
+  device slices of each pass's permutation and a device gather. No DataLoader, no workers.
+  It implements `state_dict` / `load_state_dict`, so Lightning treats it as resumable; the
+  state is the stream definition, and a resume with other data, batch size or seed raises
+  `DataError`. A Train split smaller than one batch raises `DataError` in `setup("fit")`.
+- Validation / Test: consecutive `eval_batch_size` batches in file order, the last partial.
+  With 64, `ClassifierModule`'s epoch loss (the mean of the batch losses) is TF's
+  selection loss, the mean of batch-64 means in file order.
+
+`interim_uint8_crops(path)` builds the splits from the existing prepared layout: the centre
+21×21 of the uint8 stamps divided by 255, the 23 kept features. It is a **stand-in** so the
+schedule runs end to end; task 2.2c replaces it with 2.1's float path
+(`crop_then_normalise` on the stored float32 stamps), the paper's input.
+
+**Horizon** (`schedule.py`). `HorizonCallback(dirpath, filename="best", monitor="loss_val",
+mode="min", initial_horizon=30000, increment=10000)` on a Trainer with
+`max_steps=initial_horizon, val_check_interval=10, check_val_every_n_epoch=None`:
+
+- after each fitting validation (not the sanity check, not `trainer.validate`), a strict
+  improvement of `monitor` (NaN never improves) keeps a copy of `state_dict()` on its
+  device and sets `horizon = max(horizon, step + increment)`, written to
+  `trainer.fit_loop.epoch_loop.max_steps`;
+- `on_train_end` loads the best weights into the module and writes `best.ckpt` once
+  (`trainer.save_checkpoint(weights_only=True)`, then the best's `epoch` and `global_step`
+  in place of the last ones), so `validate/test(ckpt_path=best)` and the metrics work
+  unchanged; nothing is written if no validation ran;
+- `state_dict()` saves the monitor, mode, horizon, best score, step, epoch and weights (CPU)
+  in every `last.ckpt`; `load_state_dict` restores them (the horizon is the larger of the
+  saved one and the new run's `max_steps`) and refuses another monitor or mode;
+- with `last_every_n_steps` it writes `last.ckpt` itself, **at the end of the validation**
+  of every such step (after the update above) and once more when training ends. Not a
+  `ModelCheckpoint(every_n_train_steps=...)`: that saves in `on_train_batch_end`, before the
+  step's validation, and on resume Lightning marks the owed validation as done without
+  running it, so a new best at a checkpoint step was lost (found in review; tested). Hence
+  `checkpoint_every_n_steps` must be a multiple of `val_every_n_steps`;
+- a resume at or past the horizon (from the final `last.ckpt`) skips Lightning's fit loop,
+  so `on_train_end` never runs; `on_fit_end` then writes `best.ckpt` from the restored
+  state (tested);
+- it exposes `best_model_path`, `best_model_score` and `best_step` (what the metrics read
+  from a `ModelCheckpoint`).
+
+Step numbering: TF validated after iteration `i` ∈ {0, 10, ...}, i.e. after `i + 1` steps;
+Lightning after 10, 20, ... steps. `best_step` counts steps done, so M1's "iteration 4,780"
+is step 4,781 here; the one-step shift of the validation grid is not corrected.
+
+**Module.** `modules.PaperClassifierModule(beta_loss, lr, optimizer, with_features=True,
+dropout_active=False, drop_rate=0.5)`: `PaperStampClassifier` under `ClassifierModule`
+(`P_stamps_loss`, the same logging and buffers). Its optimizer is still the factory's (Adam
+there is (0.5, 0.9)); the paper's Adam (0.9, 0.999) is task 2.2c.
+
+**Tested:** the tiling example and exact balance; the stream against the concatenated
+permutations; batches against the tiled stream, on the CPU; eval file order; validation at
+10, 20, 30 across 7-step epochs; the horizon extending (bests at 10, 20, 40 → stop at 65)
+and the best restored in the module and in `best.ckpt`; `mode=max`, NaN, missing monitor;
+`run_command` writing `metrics.json`; a resume from a `last.ckpt` written after the step-9
+validation of 2-step epochs (validation every 3) restoring the horizon and best step,
+validating at exactly the remaining steps, and ending with bit-identical best weights and
+metrics to the uninterrupted run; a resume at the horizon still writing `best.ckpt`; a
+smoke run on every available accelerator.
+
+A config for the schedule, until 2.2c's preset (`--config`):
+
+```yaml
+schedule: carrasco2021
+supervised_model: paper_stamp_classifier
+image_size: 21
+eval_batch_size: 64
+early_stopping: false
+monitor: loss_val
+batch_size: 64
+beta_loss: 0.5
+lr: 1.0e-3
+optimizer: Adam
+```
+
 ## `hparams` (task 1.7)
 
 `src/astro_simclr/hparams.py`: what the training subcommands take from the legacy code.
@@ -607,6 +757,21 @@ Non-finite numbers are written as `null`.
 checkpoint state (tested: 2 + 2 epochs equal 4 in epoch, global step, lr and `wait_count`).
 It does not restore the global random generators, so the later epochs' augmentations and
 shuffling differ from an uninterrupted run.
+
+**Schedules (task 2.2a).** `run_command` branches on `Settings.schedule`. `epochs` is the
+above (EarlyStopping only if `early_stopping`). `carrasco2021` requires `train-supervised`
+with `supervised_model: paper_stamp_classifier` and `image_size: 21` (and the paper model
+requires the schedule; `ConfigError` otherwise). It builds `PaperClassifierModule` and a
+`DeviceTensorDataModule` over `interim_uint8_crops` (2.2c: the float path), and a Trainer
+with `max_epochs=-1`, `max_steps`, `val_check_interval=val_every_n_steps`,
+`check_val_every_n_epoch=None`, no sanity validation, a `HorizonCallback` on `monitor`
+(mode from `MONITOR_MODES`) instead of EarlyStopping and the `ModelCheckpoint`s; it writes
+`best.ckpt`, and `last.ckpt` after the validation of every `checkpoint_every_n_steps` steps
+and at the end. The outputs and metrics are the same files. Every run's
+metrics add `best_step` (the `global_step` stored in `best.ckpt`) and `last_step`;
+`carrasco2021` adds `horizon` (the final one). A resumed `carrasco2021` run is exact:
+the data stream is a function of the step, and the horizon and best weights come back from
+`last.ckpt`.
 
 ## `reference` (task 1.7)
 
