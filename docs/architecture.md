@@ -926,9 +926,11 @@ off by default; see "Class-aware augmentation" below), and row C7 `flux_rescale`
 ### Class-aware augmentation (plan rows C5 and C6)
 
 `src/astro_simclr/training/class_augment.py`; decisions in ADR 0006. Training only, in
-`PaperClassifierModule.training_step`, on the device-resident batch, after the rotation of
-`rot90_augment`: C6, then C5's noise on the rows C6 did not replace, then the feature jitter
-on every row. Validation and test are never augmented.
+`PaperClassifierModule.augmented_batch` (called by `training_step`), on the device-resident
+batch: C6, C7 (below), then C5's noise on the rows C6 did not replace, **then** the rotation
+of `rot90_augment`, then the feature jitter on every row. The class augmentation runs before
+the rotation because the stamp fits describe the unrotated crop (C7's PSF centroid in
+particular; C5 / C6 are rotation-agnostic). Validation and test are never augmented.
 
 - **The difference is computed, not augmented.** `stamp_fits(images)` fits, per crop and in
   float64, `diff ~ a·sci + b·tmpl + c` (least squares over the 441 pixels, a

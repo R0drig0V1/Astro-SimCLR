@@ -54,8 +54,8 @@ def _gaussian(flux: float, x0: float, y0: float, sigma: float) -> np.ndarray:
     return psf_image(params, _SIDE)[0].numpy()
 
 
-def _stamps(n: int = 6, seed: int = 0) -> np.ndarray:
-    """(n, 3, 21, 21) unnormalised crops: noise everywhere, a transient at the centre.
+def _stamps(n: int = 6, seed: int = 0, offset: tuple[float, float] = (0.3, -0.2)) -> np.ndarray:
+    """(n, 3, 21, 21) unnormalised crops: noise everywhere, a transient at ``offset`` (x, y).
 
     The difference is ``sci - 0.7 * tmpl`` (a = 1 for even rows; odd rows are negative
     alerts, ``-(sci - 0.7 tmpl)``, a = -1), so the stamp fit is exact.
@@ -64,7 +64,7 @@ def _stamps(n: int = 6, seed: int = 0) -> np.ndarray:
     out = np.empty((n, 3, _SIDE, _SIDE))
     for i in range(n):
         tmpl = rng.normal(1.0, 0.02, (_SIDE, _SIDE)) + _gaussian(3.0, 6.0, -5.0, 1.5)
-        transient = _gaussian(4.0 + i, 0.3, -0.2, 0.9 + 0.05 * i)
+        transient = _gaussian(4.0 + i, *offset, 0.9 + 0.05 * i)
         sci = 0.7 * tmpl + rng.normal(0.0, 0.03, (_SIDE, _SIDE))
         sci += transient if i % 2 == 0 else -transient
         sign = 1.0 if i % 2 == 0 else -1.0
@@ -309,6 +309,48 @@ def test_module_rescales_training_batches_only() -> None:
     torch.testing.assert_close(module.validation_step(batch, 0), plain.validation_step(batch, 0))
     with pytest.raises(ValueError, match="need the stamp fits"):
         module.training_step(batch, 0)
+
+
+def _residual(target: np.ndarray, columns: list[np.ndarray]) -> float:
+    """Max |residual| of the least-squares fit of ``target`` on ``columns`` and a constant."""
+    design = np.stack([c.ravel() for c in columns] + [np.ones(target.size)], axis=1)
+    coef, *_ = np.linalg.lstsq(design, target.ravel(), rcond=None)
+    return float(np.abs(design @ coef - target.ravel()).max())
+
+
+def test_rescaling_composes_with_rot90_at_the_rotated_transient() -> None:
+    # Review of PR #22: with rot90_augment, the rescaled flux must land where the (rotated)
+    # transient is. A transient 1.5 px right of the centre, k = 2 for every row (k_min =
+    # k_max), every row rotated by its own k*90 degrees.
+    images = torch.from_numpy(_normalised(_stamps(4, offset=(1.5, 0.0))))
+    table = _table(images.numpy())
+    assert (table[:, -1] == 1).all()
+    np.testing.assert_allclose(table[:, 7], 1.5, atol=0.15)  # psf_x0, with noise
+    targets = torch.nn.functional.one_hot(torch.zeros(4, dtype=torch.long), 5).float()
+    features = _features(4, magpsf=19.0, diffmaglim=21.0)
+    changes = {"flux_rescale": 1.0, "flux_k_min": 2.0, "flux_k_max": 2.0}
+    module = _module(paper_arch="single", rot90_augment=True, seed=3, **changes)
+    out, _, _ = module.augmented_batch((images, features, targets, table))
+    turns = module.rotation_steps(4, 0)
+    assert set(turns.tolist()) - {0}  # some rows really are rotated
+    # Exactly "rescale, then rotate".
+    rescaled, _, k = flux_rescale(
+        images, features, targets, table, 1.0, (2.0, 2.0), augment_rng(3, 0, FLUX_STREAM)
+    )
+    assert np.all(k == 2.0)
+    expected = torch.stack([torch.rot90(rescaled[i], int(turns[i]), dims=(1, 2)) for i in range(4)])
+    torch.testing.assert_close(out, expected)
+    # Physically: each augmented difference is an affine function of the rotated original
+    # and the PSF at the ROTATED transient position, not at the unrotated one.
+    for i in range(4):
+        turn = int(turns[i])
+        original = torch.rot90(images[i, 2], turn).numpy()
+        psf = psf_image(table[i : i + 1, 6:10].double(), _SIDE)[0]
+        at_rotated = torch.rot90(psf, turn).numpy()
+        diff = out[i, 2].numpy()
+        assert _residual(diff, [original, at_rotated]) < 1e-5
+        if turn % 4:
+            assert _residual(diff, [original, psf.numpy()]) > 0.05
 
 
 def test_module_and_settings_reject_bad_values() -> None:

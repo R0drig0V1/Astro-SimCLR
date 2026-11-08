@@ -312,8 +312,9 @@ class PaperClassifierModule(ClassifierModule):
     never augmented.
 
     The class-aware augmentation of plan rows C5 and C6 (:mod:`training.class_augment`,
-    ADR 0006), after the rotation: ``synthetic_bogus`` replaces that fraction of the batch
-    with synthetic hot-pixel Bogus, ``aug_noise`` adds background noise to the other rows
+    ADR 0006), before the rotation (:meth:`augmented_batch`): ``synthetic_bogus`` replaces
+    that fraction of the batch with synthetic hot-pixel Bogus, ``aug_noise`` adds background
+    noise to the other rows
     (the difference follows the science and the template), ``aug_feature_jitter`` jitters
     the continuous features of every row; ``aug_min_r2`` excludes the stamps whose
     difference the cross-channel fit does not explain. Each has its own generator seeded
@@ -418,7 +419,23 @@ class PaperClassifierModule(ClassifierModule):
         return torch.from_numpy(rng.integers(0, 4, size=n, dtype=np.int64))
 
     def training_step(self, batch: ClassifierBatch | AugmentBatch, batch_idx: int) -> torch.Tensor:
-        """One optimisation step, on rotated and C5 / C6 / C7 augmented stamps when enabled.
+        """One optimisation step, on :meth:`augmented_batch` (the batch itself when all off).
+
+        Raises:
+            ValueError: as :meth:`augmented_batch`.
+        """
+        return self._step(self.augmented_batch(batch), "train")
+
+    def augmented_batch(self, batch: ClassifierBatch | AugmentBatch) -> ClassifierBatch:
+        """The training batch after C6 / C7 / C5, the rotation and the jitter, when enabled.
+
+        The class-aware augmentation runs **before** the rotation: the stamp fits, and C7's
+        PSF centroid in particular, describe the unrotated crop (``fit_central_psf``), so a
+        rotated off-centre transient would get its rescaled flux at the wrong place (found in
+        review of PR #22). C5 / C6 are rotation-agnostic, so the order only matters for C7.
+        Draws come from ``[augment_seed, global_step, stream]`` (rotation: ``[augment_seed,
+        global_step]``). Returns ``(images, features, one-hot targets)``; ``batch`` is not
+        modified.
 
         Raises:
             ValueError: if ``aug_noise``, ``synthetic_bogus`` or ``flux_rescale`` is on and
@@ -426,10 +443,6 @@ class PaperClassifierModule(ClassifierModule):
                 the fits have no PSF columns.
         """
         x_img, x_feat, targets = batch[0], batch[1], batch[2]
-        if self.rot90_augment:
-            k = self.rotation_steps(x_img.shape[0], self.global_step).to(x_img.device)
-            rotations = torch.stack([torch.rot90(x_img, j, dims=(2, 3)) for j in range(4)])
-            x_img = rotations[k, torch.arange(x_img.shape[0], device=x_img.device)]
         if self.aug_noise or self.synthetic_bogus or self.flux_rescale:
             if len(batch) != 4:
                 msg = (
@@ -439,10 +452,14 @@ class PaperClassifierModule(ClassifierModule):
                 )
                 raise ValueError(msg)
             x_img, x_feat, targets = self.class_augment(x_img, x_feat, targets, batch[3])
+        if self.rot90_augment:
+            k = self.rotation_steps(x_img.shape[0], self.global_step).to(x_img.device)
+            rotations = torch.stack([torch.rot90(x_img, j, dims=(2, 3)) for j in range(4)])
+            x_img = rotations[k, torch.arange(x_img.shape[0], device=x_img.device)]
         if self.aug_feature_jitter:
             rng = augment_rng(self.augment_seed, self.global_step, JITTER_STREAM)
             x_feat = jitter_features(x_feat, self.aug_feature_jitter, rng)
-        return self._step((x_img, x_feat, targets), "train")
+        return x_img, x_feat, targets
 
     def class_augment(
         self, x_img: torch.Tensor, x_feat: torch.Tensor, targets: torch.Tensor, fits: torch.Tensor
