@@ -16,7 +16,8 @@ Task A0 (ADR 0015) freezes the schema; A1 makes every run write it. Format
     uv_lock_sha256             SHA-256 of uv.lock (null if absent)
     machine                    {"device", "gpu", "torch", "cuda", "fp32_precision", ...}:
                                metrics.json["machine"]'s record (ADR 0010); extra keys
-                               (cudnn, platform, ...) kept as written. Null until started
+                               (cudnn, platform, ...) kept as written; an "engine" key, if
+                               present, must equal engine. Null until started
     engine                     "lightning" or "plain" (= identity.engine)
     seeds                      named random streams -> seed; "seed" is identity.seed
     concurrent_jobs            jobs sharing the device while it ran (1: alone)
@@ -220,6 +221,10 @@ class Manifest:
         self._check_seeds()
         if self.machine is not None:
             _check_machine(self.machine)
+            # metrics.json["machine"] records the engine too (task A1): they must agree.
+            if self.machine.get("engine", self.engine) != self.engine:
+                msg = f"machine.engine {self.machine.get('engine')!r} is not engine {self.engine}"
+                raise ManifestError(msg)
         self._check_status()
 
     def _check_config(self) -> None:

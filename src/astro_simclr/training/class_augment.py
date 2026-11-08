@@ -112,6 +112,8 @@ __all__ = [
     "SPIKE_LINE_RATIO",
     "SPIKE_SNR",
     "SYNTHETIC_STREAM",
+    "apply_noise",
+    "apply_synthetic",
     "augment_rng",
     "continuous_feature_mask",
     "fit_exclusions",
@@ -120,11 +122,15 @@ __all__ = [
     "moment_fwhm",
     "noise_augment",
     "perturb",
+    "plan_jitter",
+    "plan_noise",
+    "plan_synthetic",
     "renormalise",
     "spike_patterns",
     "stamp_fits",
     "synthetic_bogus",
     "template_centre_z",
+    "upload_plan",
 ]
 
 #: The columns of :func:`stamp_fits`: ``diff ~ a*sci + b*tmpl + c``, its R^2, and the
@@ -173,6 +179,34 @@ SYNTHETIC_STREAM: Final = 3
 
 _FWHM_PER_SIGMA: Final = 2.0 * float(np.sqrt(2.0 * np.log(2.0)))
 _CHUNK: Final = 4096
+
+
+def _to_device(plan: dict[str, Any], device: torch.device) -> dict[str, Any]:
+    """``plan`` with its tensors on ``device`` (blocking: the in-step path)."""
+    return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in plan.items()}
+
+
+def upload_plan(plan: dict[str, Any], device: torch.device) -> dict[str, Any]:
+    """An augmentation plan (nested dicts of CPU tensors) moved to ``device``.
+
+    On CUDA each tensor is pinned and copied with ``non_blocking=True``: the copy is queued
+    behind the running step instead of draining the GPU (a pageable blocking copy is a copy
+    plus a stream synchronisation). Elsewhere it is a plain copy (a no-op on the CPU). The
+    values are the same bits either way. ``plan`` is not modified.
+    """
+    cuda = device.type == "cuda"
+
+    def move(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: move(item) for key, item in value.items()}
+        if isinstance(value, torch.Tensor):
+            if cuda:
+                return value.pin_memory().to(device, non_blocking=True)
+            return value.to(device)
+        return value
+
+    moved: dict[str, Any] = move(plan)
+    return moved
 
 
 def augment_rng(seed: int, step: int, stream: int) -> np.random.Generator:
@@ -332,23 +366,57 @@ def noise_augment(
     context), are returned unchanged (bit for bit). ``images`` is not modified.
     """
     n, side = images.shape[0], images.shape[-1]
+    plan = plan_noise(fits.detach().cpu().numpy(), side, scale, rng, min_r2=min_r2, skip=skip)
+    if plan is None:
+        return images, np.zeros(n, dtype=bool)
+    rows = plan["keep"].numpy().copy()
+    return apply_noise(images, fits, _to_device(plan, images.device)), rows
+
+
+def plan_noise(
+    fits: npt.NDArray[np.floating[Any]],
+    side: int,
+    scale: float,
+    rng: np.random.Generator,
+    *,
+    min_r2: float = DEFAULT_MIN_R2,
+    skip: npt.NDArray[np.bool_] | None = None,
+) -> dict[str, torch.Tensor] | None:
+    """The host part of :func:`noise_augment`: its draws and decisions, as CPU tensors.
+
+    ``fits`` (B, >= 6) on the host. Returns ``{"keep": bool (B,), "deltas": float32 (B, 2, S,
+    S)}`` (the science and template deltas, computed in float64 and cast as
+    :func:`noise_augment` always did), or None when nothing is noised. The draws are the
+    same, in the same order, whatever the result.
+    """
+    n = fits.shape[0]
     u = rng.random((n, 2))
     z = rng.standard_normal((n, 2, side, side))
-    fits_cpu = fits.detach().cpu().numpy()
-    rows = fits_cpu[:, 3] >= min_r2
+    rows = fits[:, 3] >= min_r2
     if skip is not None:
         rows &= ~skip
     if scale == 0 or not rows.any():
-        return images, np.zeros(n, dtype=bool)
-    sigma = u * scale * fits_cpu[:, 4:6]
-    deltas = torch.from_numpy(sigma[:, :, None, None] * z).to(images.device, images.dtype)
+        return None
+    sigma = u * scale * np.asarray(fits[:, 4:6])
+    deltas = torch.from_numpy(sigma[:, :, None, None] * z).to(torch.float32)
+    return {"keep": torch.from_numpy(rows), "deltas": deltas}
+
+
+def apply_noise(
+    images: torch.Tensor, fits: torch.Tensor, plan: dict[str, torch.Tensor]
+) -> torch.Tensor:
+    """The device part of :func:`noise_augment`, from :func:`plan_noise` (on ``images``' device).
+
+    No host round trip: the deltas and the row mask are already on the device.
+    """
+    deltas = plan["deltas"].to(images.dtype)
     crops = images[:, :3]
     masked = masked_pixels(crops)
     noisy = renormalise(perturb(crops, fits, deltas[:, 0], deltas[:, 1]), masked)
-    keep = torch.from_numpy(rows).to(images.device)[:, None, None, None]
+    keep = plan["keep"][:, None, None, None]
     out = images.clone()
     out[:, :3] = torch.where(keep, noisy, crops)
-    return out, rows
+    return out
 
 
 def continuous_feature_mask() -> npt.NDArray[np.bool_]:
@@ -362,8 +430,15 @@ def jitter_features(features: torch.Tensor, sigma: float, rng: np.random.Generat
     The draw is (B, 23) standard normal; :data:`DISCRETE_FEATURES` columns stay exactly as
     they were. ``features`` is not modified.
     """
-    noise = rng.standard_normal(tuple(features.shape)) * sigma * continuous_feature_mask()
-    return features + torch.from_numpy(noise).to(features.device, features.dtype)
+    return features + plan_jitter(tuple(features.shape), sigma, rng).to(
+        features.device, features.dtype
+    )
+
+
+def plan_jitter(shape: tuple[int, ...], sigma: float, rng: np.random.Generator) -> torch.Tensor:
+    """The host part of :func:`jitter_features`: the (B, 23) noise, float32 on the CPU."""
+    noise = rng.standard_normal(shape) * sigma * continuous_feature_mask()
+    return torch.from_numpy(noise).to(torch.float32)
 
 
 def spike_patterns(rng: np.random.Generator, n: int, side: int = PAPER_CROP) -> np.ndarray:
@@ -445,6 +520,39 @@ def synthetic_bogus(
     """
     if images.ndim != 4 or images.shape[1] != 3:
         raise ValueError(f"synthetic_bogus takes (B, 3, S, S) crops, got {tuple(images.shape)}")
+    plan = plan_synthetic(
+        images.detach().cpu(),
+        features.detach().cpu(),
+        targets.detach().cpu(),
+        fits.detach().cpu().numpy(),
+        fraction,
+        rng,
+        min_r2=min_r2,
+    )
+    replaced = plan.pop("replaced")
+    if not replaced.any():
+        return images, features, targets, replaced
+    out = apply_synthetic(images, features, targets, _to_device(plan, images.device))
+    return (*out, replaced)
+
+
+def plan_synthetic(
+    images: torch.Tensor,
+    features: torch.Tensor,
+    targets: torch.Tensor,
+    fits: npt.NDArray[np.floating[Any]],
+    fraction: float,
+    rng: np.random.Generator,
+    *,
+    min_r2: float = DEFAULT_MIN_R2,
+) -> dict[str, Any]:
+    """The host part of :func:`synthetic_bogus`, on CPU tensors and the host ``fits``.
+
+    Returns ``{"replaced": bool ndarray (B,)}`` plus, when a row is replaced, ``"rows"``
+    (int64, the replaced rows), ``"donors"`` (int64, their feature rows) and ``"built"``
+    (float32 (m, 3, S, S): science, template and difference, built in float64 and cast,
+    before the min-max). The draws are the same, in the same order, whatever the result.
+    """
     n, side = images.shape[0], images.shape[-1]
     order = rng.permutation(n)
     donor_u = rng.random(n)
@@ -454,12 +562,12 @@ def synthetic_bogus(
     wanted = round(fraction * n)
     replaced = np.zeros(n, dtype=bool)
     if wanted == 0:
-        return images, features, targets, replaced
+        return {"replaced": replaced}
 
-    fits_cpu = fits.detach().cpu().numpy().astype(np.float64)
-    a, b, c, r2, sigma = (fits_cpu[:, k] for k in (0, 1, 2, 3, 4))
-    unmasked = ~masked_pixels(images[:, :3]).flatten(1).any(dim=1).cpu().numpy()
-    labels = targets.argmax(dim=1).cpu().numpy()
+    table = np.asarray(fits, dtype=np.float64)
+    a, b, c, r2, sigma = (table[:, k] for k in (0, 1, 2, 3, 4))
+    unmasked = ~masked_pixels(images[:, :3]).flatten(1).any(dim=1).numpy()
+    labels = targets.argmax(dim=1).numpy()
     source = (
         np.isin(labels, _C6_SOURCE_CLASSES)
         & (r2 >= min_r2)
@@ -468,7 +576,7 @@ def synthetic_bogus(
         & (sigma > 0)
         & unmasked
     )
-    positive = features[:, _ISDIFFPOS].cpu().numpy() < _ISDIFFPOS_SPLIT
+    positive = features[:, _ISDIFFPOS].numpy() < _ISDIFFPOS_SPLIT
     donors = np.flatnonzero((labels == _BOGUS) & positive)
     if donors.size == 0:
         source &= labels == _BOGUS  # an Asteroid source needs a donor
@@ -478,25 +586,43 @@ def synthetic_bogus(
         bogus = labels[row] == _BOGUS
         donor_of[row] = row if bogus else donors[int(donor_u[row] * donors.size)]
     if not replaced.any():
-        return images, features, targets, replaced
+        return {"replaced": replaced}
 
     rows = np.flatnonzero(replaced)
-    tmpl = images[rows, 1].detach().cpu().numpy().astype(np.float64)
+    tmpl = images[rows, 1].numpy().astype(np.float64)
     scale = sigma[rows, None, None]
     signal = scale * noise[rows] + (snr[rows] * sigma[rows])[:, None, None] * spikes[rows]
     science = -(b[rows] / a[rows])[:, None, None] * tmpl + signal
     difference = a[rows, None, None] * signal + c[rows, None, None]
-    built = torch.from_numpy(np.stack([science, tmpl, difference], axis=1))
-    built = built.to(images.device, images.dtype)
-    built = renormalise(built, torch.zeros_like(built, dtype=torch.bool))
+    built = torch.from_numpy(np.stack([science, tmpl, difference], axis=1)).to(torch.float32)
+    return {
+        "replaced": replaced,
+        "rows": torch.from_numpy(rows),
+        "donors": torch.from_numpy(donor_of[rows]),
+        "built": built,
+    }
 
-    index = torch.from_numpy(rows).to(images.device)
+
+def apply_synthetic(
+    images: torch.Tensor,
+    features: torch.Tensor,
+    targets: torch.Tensor,
+    plan: dict[str, Any],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """The device part of :func:`synthetic_bogus`, from a :func:`plan_synthetic` with rows.
+
+    ``plan``'s tensors are on ``images``' device: the min-max of the built rows and the
+    assignments need no host round trip.
+    """
+    built = plan["built"].to(images.dtype)
+    built = renormalise(built, torch.zeros_like(built, dtype=torch.bool))
+    index = plan["rows"]
     out_images = images.clone()
     out_images[index] = built
     out_features = features.clone()
-    out_features[index] = features[torch.from_numpy(donor_of[rows]).to(features.device)]
+    out_features[index] = features[plan["donors"]]
     out_targets = targets.clone()
     out_targets[index] = torch.nn.functional.one_hot(
-        torch.full((rows.size,), _BOGUS, device=targets.device), targets.shape[1]
+        torch.full_like(index, _BOGUS), targets.shape[1]
     ).to(targets.dtype)
-    return out_images, out_features, out_targets, replaced
+    return out_images, out_features, out_targets
