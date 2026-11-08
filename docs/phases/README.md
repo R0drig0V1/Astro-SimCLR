@@ -51,3 +51,35 @@ wait.
      domain shift (useful for Rubin).
   4. Storage: about 48 GB float32 (24 GB float16) per million stamps, under
      `~/Astro-SimCLR/dataset` on the GPU machine (user decision).
+
+## Later step (not started): the newer benchmarks
+
+Literature check of 2026-11-08: has the stamp classifier's benchmark moved since
+Carrasco-Davis 2021 (CD21)?
+- **CD21's own benchmark** (5 classes; test of 100 per class; accuracy 0.941) has not been
+  re-reported by later work. Our replication stays the reference on it.
+- **ALeRCE moved to a new dataset (RJ23)** with Reyes-Jainaga et al. 2023 (ApJL,
+  arXiv:2304.13080):
+  - 6 classes (a Satellite class added) and more SNe from TNS;
+  - AGN 9,774, Asteroid 9,180, Bogus 15,950, Satellite 580, SN 3,615, VS 10,211;
+  - an imbalanced, stratified 60/20/20 split;
+  - **macro-F1** of about 87 for the full 63×63 stamps, which multi-scale 4×16² stamps
+    match at 1/15 of the size, and SN recall 85.1 %;
+  - also evaluated on each object's first stamp.
+
+  Not comparable with CD21's accuracy.
+- **Pérez-Carrasco et al. / Carvajal et al. 2025** (A&A 697, A119, arXiv:2411.03258) use the
+  RJ23 dataset. The 2D FFT of the difference image raises the satellite accuracy of the
+  16″ model from 72.0 % to 87.8 %. Other classes change little.
+- **Other directions:**
+  - multiple detections: Temporal Stamp Classifier, Neira et al. 2024 (arXiv:2405.15073);
+  - multimodal models: AppleCiDEr 2025 (arXiv:2507.16088); ORACLE-2 Omni, deployed on ZTF
+    in May 2026 (arXiv:2607.00228);
+  - pretrained backbones: Rehemtulla et al. 2025/26 (arXiv:2512.11957), where pretrained
+    ConvNeXt matches a custom CNN.
+
+  None of them is a new first-detection 5-class benchmark.
+
+Future step: once 2.5/2.6 settle, evaluate the best model on the RJ23 benchmark (6 classes,
+macro-F1, first stamp). This needs that dataset from ALeRCE (not public, as far as found),
+or a rebuild of it from the raw alerts (section above) with their labels and cuts.
