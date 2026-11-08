@@ -64,6 +64,9 @@ class Env:
         )
         self.config.save()
         self.drop = tmp_path / "drop"
+        # The laptop's home too: `runs reindex` must never touch the user's registry.
+        self.local_home = tmp_path / "laptop-home"
+        monkeypatch.setenv("ASTRO_SIMCLR_HOME", str(self.local_home))
         monkeypatch.setenv("FAKE_SSH_ASTRO_HOME", str(self.config.home))
         monkeypatch.setenv("FAKE_SSH_HOME", str(tmp_path))
         monkeypatch.setenv("FAKE_SSH_DROP", str(self.drop))
@@ -163,7 +166,8 @@ def test_submit_run_and_sync(env: Env) -> None:
     synced = sync(env.transport, dest, specs_dest=specs, remote_cli=CLI)
     assert synced.runs == 3
     assert synced.checkpoints == ("other/p-a1/checkpoints/best.ckpt",)
-    assert synced.reindexed is False  # no `runs reindex` before the registry (A2) lands
+    assert synced.reindexed is True  # the registry (A2) indexed the synced runs
+    assert (env.local_home / "registry.sqlite").is_file()
     assert (dest / "other" / "p-a1" / "checkpoints" / "best.ckpt").read_bytes() == b"best"
     assert not (dest / "other" / "p-a1" / "checkpoints" / "last.ckpt").exists()
     for run_dir in (dest / "demo").iterdir():
@@ -196,6 +200,14 @@ def test_sync_runs_reindex(env: Env) -> None:
     assert calls == [
         [sys.executable, "-m", "astro_simclr.cli", "runs", "reindex", str(env.tmp / "d")]
     ]
+
+    def absent(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(argv, 2, b"", b"error: invalid choice: 'runs'")
+
+    without = sync(
+        env.transport, env.tmp / "d", specs_dest=env.tmp / "s", remote_cli=CLI, commands=absent
+    )
+    assert without.reindexed is False  # an older build without the registry: synced only
 
     def failing(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
         return subprocess.CompletedProcess(argv, 1, b"", b"registry locked")
