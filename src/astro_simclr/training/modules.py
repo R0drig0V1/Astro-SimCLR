@@ -44,6 +44,7 @@ from lightning.pytorch.trainer.states import TrainerFn
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch import nn
 
+from astro_simclr.config import CONVNEXT_ARCHS
 from astro_simclr.feature_sets import feature_columns
 from astro_simclr.losses import NT_Xent, P_stamps_loss
 from astro_simclr.models import (
@@ -370,7 +371,9 @@ class PaperClassifierModule(ClassifierModule):
 
     The variants of task 2.5-models (``paper_variants.build_paper_model``): ``paper_arch``
     (``rot4``, faithful; ``single``; ``p4``; ``p4m``), ``group_fields`` and ``context``
-    (``none`` or ``avgpool63``: the batches then have 6 channels). The defaults build the
+    (``none`` or ``avgpool63``: the batches then have 6 channels); ``convnext_atto`` and
+    ``convnext_pico`` (plan row B8, ADR 0022) take the whole stamps, (B, 3, 63, 63) batches,
+    and refuse C5's noise, C6 and C7 (defined on the crop). The defaults build the
     faithful model with the same draws from the global generator. ``rot90_augment`` rotates
     every training stamp by ``k * 90`` degrees, ``k`` uniform in 0..3, drawn from a CPU
     generator seeded with ``[augment_seed, global_step]``: independent of the device and of
@@ -463,6 +466,12 @@ class PaperClassifierModule(ClassifierModule):
         if not 0 < flux_k_min <= flux_k_max:
             raise ValueError("flux_k_min and flux_k_max must satisfy 0 < min <= max")
         _check_cd21_augment(synthetic_bogus, flux_rescale, context, n_classes)
+        if paper_arch in CONVNEXT_ARCHS and (aug_noise or synthetic_bogus or flux_rescale):
+            # C5's noise, C6 and C7 are defined on the 21x21 crop (ADR 0022).
+            raise ValueError(
+                f"aug_noise, synthetic_bogus and flux_rescale work on the 21x21 crop, not on "
+                f"the whole stamps of {paper_arch}"
+            )
         self.adam_betas = adam_betas
         self.rot90_augment = rot90_augment
         self.augment_seed = augment_seed
@@ -491,7 +500,10 @@ class PaperClassifierModule(ClassifierModule):
         self.save_hyperparameters(ignore=_hparams_ignore(n_classes, *default_set))
 
     def forward(self, x_img: torch.Tensor, x_feat: torch.Tensor) -> torch.Tensor:
-        """Crops (B, C, 21, 21) and features -> (B, n_classes) logits (C: 3, or 6 with context)."""
+        """Crops (B, C, S, S) and features -> (B, n_classes) logits.
+
+        S is 21 (C: 3, or 6 with context), or 63 for the ConvNeXt archs (C: 3).
+        """
         out: torch.Tensor = self.model(x_img, x_feat if self.with_features else None)
         return out
 
