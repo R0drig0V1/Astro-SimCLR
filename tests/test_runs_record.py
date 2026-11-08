@@ -10,7 +10,7 @@ import pytest
 from astro_simclr.config import ConfigError, Settings
 from astro_simclr.data.files import sha256_file
 from astro_simclr.protocol.split_runs import SplitRequest
-from astro_simclr.runs.identity import SCREEN, data_sha256
+from astro_simclr.runs.identity import SCREEN, WHOLE, data_sha256
 from astro_simclr.runs.manifest import MANIFEST_FILE, ManifestError, read_manifest
 from astro_simclr.runs.record import (
     CONCURRENT_JOBS_ENV,
@@ -193,5 +193,31 @@ def test_the_machine_engine_must_agree(classifier_dir: Path, tmp_path: Path) -> 
             _settings(tmp_path),
             data=classifier_dir,
             machine={**MACHINE, "engine": "plain"},
+            root=tmp_path,
+        )
+
+
+def test_object_splits_are_the_whole_split_part(classifier_dir: Path, tmp_path: Path) -> None:
+    splits = tmp_path / "object_splits.json"
+    splits.write_text("{}", encoding="utf-8")
+    settings = _settings(tmp_path)
+    start_run(
+        "train-supervised",
+        settings,
+        data=classifier_dir,
+        machine=MACHINE,
+        object_splits=splits,
+        root=tmp_path,
+    )
+    identity = read_manifest(settings.output_dir).identity
+    assert (identity.split, identity.splits_sha256) == (WHOLE, sha256_file(splits))
+    with pytest.raises(ConfigError, match="one splits file"):
+        start_run(
+            "train-supervised",
+            settings,
+            data=classifier_dir,
+            machine=MACHINE,
+            split=SplitRequest(splits, None),
+            object_splits=splits,
             root=tmp_path,
         )

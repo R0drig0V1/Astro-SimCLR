@@ -12,7 +12,9 @@ recorded but unused (``docs/architecture.md``, section ``config``, lists which).
 ``schedule`` field (task 2.2a) chooses between the legacy epoch protocol and the iteration
 schedule of Carrasco-Davis et al. 2021, whose own fields it validates; the paper model's input,
 leakage and Adam fields (task 2.2c) are set by the ``carrasco2021`` preset
-(:mod:`astro_simclr.presets`).
+(:mod:`astro_simclr.presets`). The ``rj23`` schedule (task 3.4b) trains RJ23's classifiers on a
+``raw-alerts`` layout with their regime (``rj23_regime``); its ``rj23_*`` fields are set by
+the ``rj23-<scenario>`` presets.
 
 Resolution order (later wins): the dataclass defaults, an optional ``defaults`` mapping (a
 subcommand's legacy protocol), the YAML file, the overrides. YAML is read with
@@ -46,6 +48,13 @@ __all__ = [
     "GROUP_ARCHS",
     "PAPER_ARCHS",
     "PAPER_INPUTS",
+    "RJ23",
+    "RJ23_BN_POSITIONS",
+    "RJ23_KEEPS",
+    "RJ23_LARGE_VALUES",
+    "RJ23_MODEL",
+    "RJ23_MONITOR",
+    "RJ23_SCENARIOS",
     "SCHEDULES",
     "ConfigError",
     "Settings",
@@ -61,8 +70,22 @@ __all__ = [
 EPOCHS: Final = "epochs"
 #: ``Settings.schedule`` of the Carrasco-Davis et al. 2021 iteration protocol (task 2.2a).
 CARRASCO2021: Final = "carrasco2021"
+#: ``Settings.schedule`` of the Reyes-Jainaga et al. 2023 regime (task 3.4b).
+RJ23: Final = "rj23"
 #: The accepted ``Settings.schedule`` values.
-SCHEDULES: Final = (EPOCHS, CARRASCO2021)
+SCHEDULES: Final = (EPOCHS, CARRASCO2021, RJ23)
+#: ``Settings.supervised_model`` of the ``rj23`` schedule: ``rj23_model.RJ23Classifier``.
+RJ23_MODEL: Final = "rj23"
+#: The validation metric of the ``rj23`` schedule: the macro-F1 on the selection part.
+RJ23_MONITOR: Final = "macro_f1_val"
+#: ``Settings.rj23_scenario``: RJ23's four inputs (``data.rj23_input.VIEW_NAMES``).
+RJ23_SCENARIOS: Final = ("full", "cropped", "lowres", "multiscale")
+#: ``Settings.rj23_bn_position`` (``rj23_model.BNPosition``; ADR 0013's sensitivity arm).
+RJ23_BN_POSITIONS: Final = ("after_concat", "before_concat")
+#: ``Settings.rj23_keep``: the primary weights of a run (``rj23_regime.KEEPS``).
+RJ23_KEEPS: Final = ("stop", "best")
+#: ``Settings.rj23_large_values`` (``data.rj23_input.LargeValues``; ADR 0009).
+RJ23_LARGE_VALUES: Final = ("paper", "code")
 #: The evaluation batch the ``carrasco2021`` schedule requires (TF's batch of 64).
 CARRASCO2021_EVAL_BATCH_SIZE: Final = 64
 
@@ -142,7 +165,7 @@ class Settings:
     fp32_precision: str = "ieee"
     #: Upper bound on training epochs.
     max_epochs: int = 220
-    #: EarlyStopping patience, in epochs.
+    #: EarlyStopping patience, in epochs; for the ``rj23`` schedule, in validations.
     patience: int = 40
     #: Smallest change of ``monitor`` that EarlyStopping counts as an improvement.
     min_delta: float = 0.001
@@ -211,13 +234,16 @@ class Settings:
 
     # --- Training schedule (task 2.2a) ------------------------------------------------------
 
-    #: ``epochs`` (the legacy schedule: ``max_epochs``, EarlyStopping, best by epoch) or
+    #: ``epochs`` (the legacy schedule: ``max_epochs``, EarlyStopping, best by epoch),
     #: ``carrasco2021`` (ALeRCE's: steps, validation every ``val_every_n_steps``, the horizon
-    #: rule; ``training.schedule``). See :data:`SCHEDULES`.
+    #: rule; ``training.schedule``) or ``rj23`` (RJ23's: validation every
+    #: ``val_every_n_steps`` from step 0, ``patience`` validations, the ``max_steps`` cap;
+    #: ``rj23_regime``). See :data:`SCHEDULES`.
     schedule: str = "epochs"
     #: ``carrasco2021``: the initial horizon, in optimizer steps (the Trainer's ``max_steps``).
+    #: ``rj23``: the hard cap, a multiple of ``val_every_n_steps``.
     max_steps: int = 30_000
-    #: ``carrasco2021``: validate (and select) every this many optimizer steps.
+    #: ``carrasco2021`` / ``rj23``: validate (and select) every this many optimizer steps.
     val_every_n_steps: int = 10
     #: ``carrasco2021``: a new best at step ``s`` raises the horizon to ``s + horizon_increment``.
     horizon_increment: int = 10_000
@@ -301,6 +327,19 @@ class Settings:
     #: C7: the largest ``k``.
     flux_k_max: float = 1.5
 
+    # --- The RJ23 regime (task 3.4b; ADR 0023) ----------------------------------------------
+
+    #: ``rj23``: the input and its Table 2 classifier; see :data:`RJ23_SCENARIOS`.
+    rj23_scenario: str = "full"
+    #: ``rj23``: the BN after the position concat (ADR 0013) or before it (the sensitivity
+    #: arm); see :data:`RJ23_BN_POSITIONS`.
+    rj23_bn_position: str = "after_concat"
+    #: ``rj23``: the weights whose predictions are the run's primary ones, ``stop`` (RJ23's)
+    #: or ``best``; both are evaluated and written. See :data:`RJ23_KEEPS`.
+    rj23_keep: str = "stop"
+    #: ``rj23``: ``data.rj23_input.normalise(large_values=...)``; see :data:`RJ23_LARGE_VALUES`.
+    rj23_large_values: str = "paper"
+
     def __post_init__(self) -> None:
         """Check the values that a type alone cannot (ranges and names).
 
@@ -328,6 +367,7 @@ class Settings:
         self._check_paper_model()
         self._check_paper_variants()
         self._check_schedule()
+        self._check_rj23()
 
     def _check_fp32_precision(self) -> None:
         if self.fp32_precision not in FP32_PRECISIONS:
@@ -494,6 +534,48 @@ class Settings:
                 f"multiple of val_every_n_steps ({self.val_every_n_steps})"
             )
             raise ConfigError(msg)
+
+    def _check_rj23(self) -> None:
+        choices = (
+            ("rj23_scenario", RJ23_SCENARIOS, "full"),
+            ("rj23_bn_position", RJ23_BN_POSITIONS, "after_concat"),
+            ("rj23_keep", RJ23_KEEPS, "stop"),
+            ("rj23_large_values", RJ23_LARGE_VALUES, "paper"),
+        )
+        for name, valid, _ in choices:
+            if getattr(self, name) not in valid:
+                msg = f"{name} {getattr(self, name)!r} is not one of: {', '.join(valid)}"
+                raise ConfigError(msg)
+        if self.schedule == RJ23:
+            self._check_rj23_regime()
+            return
+        changed = [name for name, _, default in choices if getattr(self, name) != default]
+        if changed:
+            raise ConfigError(f"{', '.join(changed)} apply only to schedule={RJ23}")
+        if self.supervised_model == RJ23_MODEL:
+            raise ConfigError(f"supervised_model={RJ23_MODEL} needs schedule={RJ23}")
+
+    def _check_rj23_regime(self) -> None:
+        # The regime's definitions (rj23_regime.RJ23Schedule), which no setting may bend.
+        rules = (
+            (self.supervised_model == RJ23_MODEL, f"supervised_model={RJ23_MODEL}"),
+            (not self.with_features, "with_features=false (RJ23 read no alert features)"),
+            (self.monitor == RJ23_MONITOR, f"monitor={RJ23_MONITOR} (the selection macro-F1)"),
+            (not self.early_stopping, "early_stopping=false (its patience is the schedule's)"),
+            (self.num_workers == 0, "num_workers=0 (the data stays on the device)"),
+            (self.patience >= 1, "patience >= 1"),
+            (
+                self.max_steps % self.val_every_n_steps == 0,
+                "max_steps a multiple of val_every_n_steps (the cap step is validated)",
+            ),
+            (
+                self.checkpoint_every_n_steps % self.val_every_n_steps == 0,
+                "checkpoint_every_n_steps a multiple of val_every_n_steps",
+            ),
+        )
+        problems = [what for ok, what in rules if not ok]
+        if problems:
+            raise ConfigError(f"schedule {RJ23} needs {'; '.join(problems)}")
 
     def replace(self, **changes: Any) -> Settings:
         """Return a copy with ``changes`` applied, validated like :func:`settings_from_mapping`.

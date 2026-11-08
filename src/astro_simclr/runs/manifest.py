@@ -119,7 +119,7 @@ _TRANSITIONS: Final[Mapping[Status, frozenset[Status]]] = {
     "cancelled": frozenset(),
 }
 
-#: The keys every ``machine`` record has (``experiments._machine``; ADR 0010).
+#: The keys every ``machine`` record has (``experiments.machine_record``; ADR 0010).
 MACHINE_KEYS: Final = ("device", "gpu", "torch", "cuda", "fp32_precision")
 
 _KEYS: Final = (

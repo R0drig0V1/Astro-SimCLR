@@ -123,8 +123,15 @@ IDENTITY_KEYS: Final[Mapping[str, str]] = {
 #:
 #: - a field added after canonical version 1, at the value that reproduces the behaviour
 #:   before it, so existing hashes and recorded manifests stay valid: ``feature_set: all``
-#:   (ADR 0016; every feature, as before the field) and ``backbone_weights: none`` (ADR
-#:   0022; from scratch, the only initialisation before the field);
+#:   (ADR 0016; every feature, as before the field), ``backbone_weights: none`` (ADR
+#:   0022; from scratch, the only initialisation before the field), and the ``rj23_*``
+#:   fields of task 3.4b at their defaults (they apply only to ``schedule: rj23``, which no
+#:   run had before them; an ``rj23`` run hashes the scenario only when it is not
+#:   ``full``, which is harmless: the schedule and learning rate already tell the presets
+#:   apart). ``rj23_keep`` only names which of the two computed keeps is primary, so it
+#:   could be non-semantic; it is hash-neutral instead, by ADR 0015 rule 9 (every post-A0
+#:   field has its pre-field value here, which the registry's ``flat-1`` reader fills), at
+#:   the cost of two keeps of one experiment having two ids (a rerun, never a false match);
 #: - ``num_workers`` at 0. With DataLoader workers, Lightning seeds each worker, so the
 #:   worker count decides which augmentations are drawn: 0, 2 and 3 workers are three
 #:   different runs, and a false run-id match would contaminate a comparison, while a
@@ -134,6 +141,10 @@ HASH_NEUTRAL_DEFAULTS: Final[Mapping[str, object]] = {
     "num_workers": 0,
     "feature_set": "all",
     "backbone_weights": "none",
+    "rj23_scenario": "full",
+    "rj23_bn_position": "after_concat",
+    "rj23_large_values": "paper",
+    "rj23_keep": "stop",
 }
 
 _EXCLUDED: Final = frozenset(NON_SEMANTIC_KEYS) | frozenset(IDENTITY_KEYS)
