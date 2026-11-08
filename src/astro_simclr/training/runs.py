@@ -26,7 +26,14 @@ from lightning.pytorch.loggers import Logger
 
 from astro_simclr.config import ConfigError, Settings
 
-__all__ = ["MONITOR_MODES", "build_callbacks", "build_trainer", "monitor_mode", "seed_run"]
+__all__ = [
+    "MONITOR_MODES",
+    "build_callbacks",
+    "build_last_checkpoint",
+    "build_trainer",
+    "monitor_mode",
+    "seed_run",
+]
 
 #: Every metric a module can be selected on, and whether larger (``max``) or smaller
 #: (``min``) is better.
@@ -70,10 +77,12 @@ def build_callbacks(
     """EarlyStopping and the best-by-monitor checkpoint of a run.
 
     Both watch ``settings.monitor``. EarlyStopping stops after ``settings.patience`` epochs
-    without an improvement larger than ``settings.min_delta`` (and on a non-finite value).
-    The checkpoint keeps only the best epoch, as ``dirpath/<filename>.ckpt``; with
-    ``enable_version_counter=False`` a rerun overwrites it instead of writing
-    ``<filename>-v1.ckpt`` (what the legacy ``ModelCheckpoint_V2`` did).
+    without an improvement larger than ``settings.min_delta``, on a non-finite value if
+    ``settings.check_finite``, and as soon as the value is worse than
+    ``settings.divergence_threshold`` if that is set. The checkpoint keeps only the best
+    epoch, as ``dirpath/<filename>.ckpt``; with ``enable_version_counter=False`` a rerun
+    overwrites it instead of writing ``<filename>-v1.ckpt`` (what the legacy
+    ``ModelCheckpoint_V2`` did). For the latest epoch, see :func:`build_last_checkpoint`.
 
     Raises:
         ConfigError: if the module does not log ``settings.monitor``.
@@ -84,6 +93,8 @@ def build_callbacks(
         min_delta=settings.min_delta,
         patience=settings.patience,
         mode=mode,
+        check_finite=settings.check_finite,
+        divergence_threshold=settings.divergence_threshold,
     )
     checkpoint = ModelCheckpoint(
         dirpath=dirpath,
@@ -96,6 +107,24 @@ def build_callbacks(
     return early_stopping, checkpoint
 
 
+def build_last_checkpoint(dirpath: Path, filename: str = "last") -> ModelCheckpoint:
+    """A checkpoint of the latest epoch, ``dirpath/<filename>.ckpt``, overwritten every epoch.
+
+    This is what ``--resume`` continues from. It is a second, monitor-less
+    ``ModelCheckpoint`` rather than ``save_last=True`` on the best checkpoint: since
+    Lightning 2.6, ``save_last`` writes only in the steps where the top-k checkpoint was
+    also written, so after an epoch without improvement ``last.ckpt`` would be stale (and a
+    resume would repeat epochs and lose the EarlyStopping count).
+    """
+    return ModelCheckpoint(
+        dirpath=dirpath,
+        filename=filename,
+        monitor=None,
+        save_top_k=1,
+        enable_version_counter=False,
+    )
+
+
 def build_trainer(
     settings: Settings,
     *,
@@ -105,9 +134,10 @@ def build_trainer(
 ) -> L.Trainer:
     """A ``lightning.Trainer`` configured from ``settings``.
 
-    ``accelerator``, ``devices``, ``max_epochs`` and ``deterministic`` come from the
-    settings; ``benchmark`` is the legacy ``True`` unless the run is deterministic (cuDNN
-    ignores determinism when benchmarking). Outputs go under ``settings.output_dir``.
+    ``accelerator``, ``devices``, ``max_epochs``, ``deterministic`` and (when set)
+    ``limit_train_batches`` / ``limit_val_batches`` come from the settings; ``benchmark`` is
+    the legacy ``True`` unless the run is deterministic (cuDNN ignores determinism when
+    benchmarking). Outputs go under ``settings.output_dir``.
     ``trainer_kwargs`` override or extend these (for example ``fast_dev_run=True`` or
     ``limit_train_batches=2``).
     """
@@ -122,5 +152,9 @@ def build_trainer(
         "logger": logger,
         "enable_model_summary": False,
     }
+    for name in ("limit_train_batches", "limit_val_batches"):
+        value = getattr(settings, name)
+        if value is not None:
+            kwargs[name] = value
     kwargs.update(trainer_kwargs)
     return L.Trainer(**kwargs)

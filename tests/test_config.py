@@ -10,6 +10,7 @@ from astro_simclr.config import (
     load_settings,
     parse_override,
     settings_from_mapping,
+    settings_to_plain,
 )
 
 
@@ -136,3 +137,69 @@ def test_parse_override(text: str, expected: tuple[str, object]) -> None:
 def test_parse_override_errors(text: str) -> None:
     with pytest.raises(ConfigError):
         parse_override(text)
+
+
+@pytest.mark.parametrize(
+    ("data", "match"),
+    [
+        ({"batch_size": 0}, "batch_size must be >= 1"),
+        ({"image_size": 0}, "image_size must be >= 1"),
+        ({"projection_dim": 0}, "projection_dim must be >= 1"),
+        ({"lr": 0}, "lr must be > 0"),
+        ({"temperature": -1}, "temperature must be > 0"),
+        ({"fine_tune_lr_factor": 0}, "fine_tune_lr_factor must be > 0"),
+        ({"drop_rate": 1.0}, r"drop_rate must be in \[0, 1\)"),
+        ({"limit_train_batches": 0}, "limit_train_batches must be > 0"),
+        ({"limit_val_batches": -0.5}, "limit_val_batches must be > 0"),
+        ({"limit_val_batches": True}, "an integer or a number or null"),
+        ({"dataset": ""}, "dataset must not be empty"),
+        ({"divergence_threshold": "x"}, "a number or null"),
+        ({"pretrained": 3}, "a non-empty path or null"),
+    ],
+)
+def test_invalid_hyperparameters(data: dict[str, object], match: str) -> None:
+    with pytest.raises(ConfigError, match=match):
+        settings_from_mapping(data)
+
+
+def test_optional_fields_accept_null_and_numbers() -> None:
+    settings = load_settings(
+        overrides=[
+            "limit_train_batches=2",
+            "limit_val_batches=0.5",
+            "divergence_threshold=null",
+            "pretrained=runs/pretrain",
+        ]
+    )
+    assert settings.limit_train_batches == 2
+    assert isinstance(settings.limit_train_batches, int)
+    assert settings.limit_val_batches == 0.5
+    assert settings.divergence_threshold is None
+    assert settings.pretrained == Path("runs/pretrain")
+    assert load_settings(overrides=["divergence_threshold=1"]).divergence_threshold == 1.0
+
+
+def test_defaults_layer_sits_between_dataclass_and_file(tmp_path: Path) -> None:
+    path = tmp_path / "run.yaml"
+    path.write_text("patience: 5\n")
+    settings = load_settings(path, ["seed=2"], defaults={"patience": 100, "max_epochs": 400})
+    assert (settings.patience, settings.max_epochs, settings.seed) == (5, 400, 2)
+
+
+def test_settings_to_plain_round_trips() -> None:
+    settings = Settings(pretrained=Path("p"), data_dir=Path("d"), limit_val_batches=2)
+    plain = settings_to_plain(settings)
+    assert plain["pretrained"] == "p"
+    assert settings_from_mapping(plain) == settings
+
+
+def test_floats_accept_exponent_strings(tmp_path: Path) -> None:
+    # PyYAML (YAML 1.1) reads `1e-3` as a string; only `1.0e-3` is a float there.
+    assert load_settings(overrides=["lr=1e-3"]).lr == 0.001
+    path = tmp_path / "run.yaml"
+    path.write_text("lr: 1e-3\nmin_delta: 2E-4\n")
+    settings = load_settings(path)
+    assert (settings.lr, settings.min_delta) == (0.001, 0.0002)
+    assert load_settings(overrides=["limit_val_batches=5e-1"]).limit_val_batches == 0.5
+    with pytest.raises(ConfigError, match="a number"):
+        load_settings(overrides=["lr=fast"])

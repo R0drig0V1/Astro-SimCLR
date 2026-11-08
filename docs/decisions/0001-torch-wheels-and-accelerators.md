@@ -1,7 +1,8 @@
 <!-- ADR 0001: how torch and torchvision wheels are chosen per machine. -->
 # 0001. Torch wheels and accelerators
 
-- **Status:** accepted (2026-11-07, phase 1, task 1.1)
+- **Status:** accepted (2026-11-07, phase 1, task 1.1); rule 6 amended in task 1.7
+  (compute capability, Blackwell, Windows)
 - **Checked by:** `scripts/check-torch-wheels.sh` (run in CI)
 
 ## Context
@@ -51,13 +52,33 @@ Facts that constrain the design (verified with uv 0.11 on toy projects; plan rev
    UV_NO_SYNC=1 scripts/check.sh           # or: uv run --no-sync astro-simclr ...
    ```
 
-6. **The driver picks the extra** on a GPU machine (`nvidia-smi` shows the driver version):
+6. **The driver and the GPU's compute capability pick the extra** on a GPU machine
+   (`nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv`). *Amended in
+   task 1.7:* the first version picked by driver only, which is wrong for pre-Turing GPUs
+   with a new driver: CUDA 13 dropped compute capability < 7.5, so the default build has no
+   kernels for them (the user's GTX 1050, sm_61, driver 582), and `cu126` has no Blackwell
+   kernels (sm_100, sm_120).
 
-   | Driver | Command |
-   |---|---|
-   | >= 580 | `uv sync --locked` (PyPI, CUDA 13) |
-   | < 580 | `uv sync --locked --extra cu126` |
-   | no GPU | `uv sync --locked --extra cpu` |
+   | GPU (compute capability) | Driver | Command |
+   |---|---|---|
+   | Maxwell, Pascal, Volta (< 7.5; e.g. GTX 1050, P100, V100) | >= 525 | `uv sync --locked --extra cu126` |
+   | Turing to Hopper (7.5-9.x; e.g. T4, RTX 30/40, A100, H100) | >= 580 | `uv sync --locked` (PyPI, CUDA 13) |
+   | Turing to Hopper | 525-579 | `uv sync --locked --extra cu126` |
+   | Blackwell (>= 10.0; e.g. RTX 5090, sm_120) | >= 580 | `uv sync --locked` (`cu126` cannot run it) |
+   | Blackwell | < 580 | none: update the driver |
+   | any | < 525 | none: update the driver |
+   | no NVIDIA GPU | | `uv sync --locked --extra cpu` |
+
+   **Windows:** PyPI torch for native Windows is CPU-only; run the project inside WSL2.
+   The Windows driver serves WSL2: `nvidia-smi` and `libcuda` live in `/usr/lib/wsl/lib`,
+   which non-login shells (ssh) may not have on PATH; the preflight looks there too.
+
+   `astro-simclr preflight` (step 1; `scripts/gpu-preflight.sh`) applies this table
+   (`preflight.choose_torch_build`), then checks the installed build against the machine:
+   `torch.version.cuda` not None, a driver new enough for it (CUDA 13: >= 580; CUDA 12:
+   >= 525), `torch.cuda.is_available()`, and the GPU's `sm_XY` in
+   `torch.cuda.get_arch_list()` (same major, minor <= the GPU's). On a mismatch it prints
+   the `uv sync` command that fixes it.
 
 7. **CI** (on `ubuntu-latest` x86_64 and, since task 1.6, `macos-latest` arm64) runs
    `uv sync --locked --extra cpu`, checks that no `nvidia-*` package is

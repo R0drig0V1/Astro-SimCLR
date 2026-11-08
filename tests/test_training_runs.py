@@ -27,7 +27,7 @@ from astro_simclr.training.optimizers import (
     UnknownOptimizerError,
     build_optimizer,
 )
-from astro_simclr.training.runs import monitor_mode
+from astro_simclr.training.runs import build_last_checkpoint, monitor_mode
 
 
 def _params() -> list[torch.nn.Parameter]:
@@ -193,3 +193,28 @@ def test_contrastive_datamodule_yields_view_pairs(pretraining_dir: Path) -> None
         ContrastiveDataModule(
             pretraining_dir, image_size=27, batch_size=2, augmentation="simclr", num_workers=-1
         )
+
+
+def test_divergence_and_finiteness_come_from_the_settings(tmp_path: Path) -> None:
+    settings = Settings(divergence_threshold=0.1, check_finite=False)
+    early_stopping, _ = build_callbacks(settings, frozenset({"accuracy_val"}), dirpath=tmp_path)
+    assert early_stopping.divergence_threshold == 0.1
+    assert early_stopping.check_finite is False
+
+
+def test_last_checkpoint_has_no_monitor(tmp_path: Path) -> None:
+    last = build_last_checkpoint(tmp_path)
+    assert last.monitor is None
+    assert last.filename == "last"
+    assert last.save_top_k == 1
+
+
+def test_trainer_batch_limits(tmp_path: Path) -> None:
+    trainer = build_trainer(Settings(output_dir=tmp_path, accelerator="cpu"))
+    assert trainer.limit_train_batches == 1.0
+    limited = build_trainer(
+        Settings(
+            output_dir=tmp_path, accelerator="cpu", limit_train_batches=2, limit_val_batches=0.5
+        )
+    )
+    assert (limited.limit_train_batches, limited.limit_val_batches) == (2, 0.5)

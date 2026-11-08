@@ -1,0 +1,39 @@
+# R3, step 1: SimCLR pretraining with the 31b10c9 settings (the only recorded 300k-alert run).
+# Run: astro-simclr pretrain --config configs/reference/R3-pretrain.yaml --seed 0
+#      --output-dir OUT/R3/pretrain
+# Then R3-linear-eval.yaml at 1, 10 and 100 % labels, with --pretrained OUT/R3/pretrain.
+# Gate (with the linear-eval runs): astro-simclr compare-reference OUT/R3/pretrain
+#       OUT/R3/linear-eval-* --ref R3 (finite loss; accuracy above the majority baseline).
+#
+# Provenance (docs/phases/01-runnable-package.md, "Reference runs" and "Known defects"):
+# - 31b10c9:iter_clr_stamps_300.py: encoder pstamps, batch 550, LARS lr_encoder 0.258,
+#   temperature 0.1791, projection 300, 27 px; its augmentation loop runs only astro8
+#   (legacy alias of astro_perspective_gray); Trainer(max_epochs=850);
+#   EarlyStopping("loss_train_enc", min_delta=0.002, patience=100, check_finite=True).
+# - results/hparams_best_simclr.yaml (lr 12.258, batch 150) looks like a mistyped edit of
+#   this run and is NOT used (open question of the plan).
+# - the NT-Xent denominator and the LARS trust ratio keep their legacy defaults (ADR 0002).
+# - data: dataset/td_ztf_stamp_simclr_300.pkl (missing; ~300k stamps), prepared as .npy.
+# - devices: 1 is required: NT_Xent has no all-gather, so DDP would change the loss.
+
+accelerator: cuda
+devices: 1
+num_workers: 4
+
+dataset: td_ztf_stamp_simclr_300
+encoder_name: pstamps
+image_size: 27
+augmentation: astro8
+batch_size: 550
+optimizer: LARS
+lr: 0.258059613629328
+temperature: 0.17910250439416514
+projection_dim: 300
+nt_xent_legacy_denominator: true
+lars_legacy_trust_ratio: true
+
+max_epochs: 850
+patience: 100
+min_delta: 0.002
+monitor: loss_train_enc
+check_finite: true

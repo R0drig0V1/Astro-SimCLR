@@ -15,6 +15,9 @@ Averaging, as in the legacy code:
   torchmetrics 0.6 and 1.x alike.
 - **the confusion matrix is normalised over the true labels** (``normalize="true"``: each
   row sums to 1); a class with no true sample gives a row of zeros, as in torchmetrics 0.6.
+- **macro-F1** (new, for the metrics JSON of the CLI; the legacy code had none) is the
+  unweighted mean of the per-class F1 over the classes present in the predictions or the
+  targets, consistent with the precision and recall above.
 
 Inputs are integer class labels, already ``argmax``-ed. The functions work on the device of
 their inputs (no device is named here).
@@ -28,13 +31,20 @@ import torch
 from torchmetrics.functional.classification import (
     multiclass_accuracy,
     multiclass_confusion_matrix,
+    multiclass_f1_score,
     multiclass_precision,
     multiclass_recall,
 )
 
 from astro_simclr.models import N_CLASSES
 
-__all__ = ["METRIC_NAMES", "classification_metrics", "confusion_matrix"]
+__all__ = [
+    "METRIC_NAMES",
+    "classification_metrics",
+    "confusion_counts",
+    "confusion_matrix",
+    "macro_f1",
+]
 
 #: Keys of :func:`classification_metrics`, in logging order.
 METRIC_NAMES: Final = ("accuracy", "precision", "recall")
@@ -80,3 +90,25 @@ def confusion_matrix(
     """
     _check_labels(y_pred, y_true)
     return multiclass_confusion_matrix(y_pred, y_true, num_classes, normalize="true")
+
+
+def confusion_counts(
+    y_pred: torch.Tensor, y_true: torch.Tensor, *, num_classes: int = N_CLASSES
+) -> torch.Tensor:
+    """The (num_classes, num_classes) confusion matrix of counts (int64, not normalised).
+
+    Raises:
+        ValueError: if the inputs are not non-empty 1-D tensors of the same shape.
+    """
+    _check_labels(y_pred, y_true)
+    return multiclass_confusion_matrix(y_pred, y_true, num_classes)
+
+
+def macro_f1(y_pred: torch.Tensor, y_true: torch.Tensor, *, num_classes: int = N_CLASSES) -> float:
+    """Macro-averaged F1 of the labels ``y_pred`` (classes absent from both are left out).
+
+    Raises:
+        ValueError: if the inputs are not non-empty 1-D tensors of the same shape.
+    """
+    _check_labels(y_pred, y_true)
+    return float(multiclass_f1_score(y_pred, y_true, num_classes, average="macro"))

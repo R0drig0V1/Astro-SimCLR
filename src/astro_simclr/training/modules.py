@@ -95,7 +95,7 @@ class ClassifierModule(L.LightningModule):
     ``Precision/<Stage>`` and ``Recall/<Stage>`` (macro). Validation and test also log
     ``accuracy_val`` / ``loss_val`` (``accuracy_test`` / ``loss_test``) on the progress bar,
     and store the row-normalised confusion matrix, on the CPU, in
-    ``confusion_matrices["val"]`` / ``["test"]``.
+    ``confusion_matrices["val"]`` / ``["test"]`` (and the labels in ``predictions``).
 
     Subclasses define ``forward(x_img, x_feat)``, and may override :meth:`compute_loss`
     and :meth:`trainable_parameters`.
@@ -119,6 +119,9 @@ class ClassifierModule(L.LightningModule):
         self._outputs: dict[str, list[_StepOutput]] = {stage: [] for stage in _STAGE_NAMES}
         #: The last confusion matrix of each evaluation stage (``"val"``, ``"test"``).
         self.confusion_matrices: dict[str, torch.Tensor] = {}
+        #: The last ``(y_pred, y_true)`` of each evaluation stage, on the CPU (for the
+        #: metrics JSON of the CLI: macro-F1 and the confusion-matrix counts).
+        self.predictions: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
 
     def compute_loss(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """The training loss of a batch: ``P_stamps_loss(logits, one_hot_targets)``."""
@@ -191,6 +194,7 @@ class ClassifierModule(L.LightningModule):
             self.log(f"accuracy_{stage}", metrics["accuracy"], logger=False, prog_bar=True)
             self.log(f"loss_{stage}", loss, logger=False, prog_bar=True)
             self.confusion_matrices[stage] = confusion_matrix(y_pred, y_true).cpu()
+            self.predictions[stage] = (y_pred.cpu(), y_true.cpu())
 
     def configure_optimizers(self) -> OptimizerLRScheduler:
         """The optimizer ``optimizer`` over :meth:`trainable_parameters`, no LR schedule."""

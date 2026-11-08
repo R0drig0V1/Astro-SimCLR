@@ -1,0 +1,43 @@
+# R1: CE stamp classifier, row-10 config, legacy tuning protocol, 100 % labels.
+# Run: astro-simclr train-supervised --config configs/reference/R1.yaml --seed S
+#      --output-dir OUT/R1/seed-S   (full set: seeds 0-4; minimal set: seed 0)
+# Gate: astro-simclr compare-reference OUT/R1/seed-* --ref R1 (pass rule vs 0.9496 ± 0.0022).
+#
+# Provenance (docs/phases/01-runnable-package.md, "Reference runs"):
+# - hyperparameters: results/summary_tuning_ce.csv row 10 = results/hparams_best_ce.yaml,
+#   with optimizer AdamW: every tuned trial behind it used AdamW (search space
+#   ['AdamW', 'SGD']), and the Drive copy of hparams_best_ce.yaml says AdamW; the repo's
+#   "Adam" is a later hand edit (resolved 2026-11-07). balanced_batch was false (no effect).
+# - protocol: hyperparams_ce.py, which produced the 0.9496 reference: max 220 epochs,
+#   EarlyStopping on accuracy_val with patience 70, min_delta 0.001, check_finite and
+#   divergence_threshold 0.1; best validation epoch; eval batch 100.
+# - data: the legacy 100 % file dataset/td_ztf_stamp_17_06_20.pkl was never received. Its
+#   received stand-in is td_ztf_stamp_17_06_20_red-002.pkl, the same file with duplicate
+#   stamps removed (50,582 Train stamps; docs/data.md; plan "Data received"). The legacy
+#   0.9496 was measured on the original, so a small shift is possible.
+
+# Hardware: a missing GPU must fail fast; one device (no DDP).
+accelerator: cuda
+devices: 1
+num_workers: 4
+
+# Data and model.
+dataset: td_ztf_stamp_17_06_20_red-002
+supervised_model: stamp_classifier
+image_size: 27
+with_features: true
+augmentation: without_aug
+batch_size: 45
+eval_batch_size: 100
+optimizer: AdamW
+lr: 0.002495379490073152
+beta_loss: 0.016063800410738464
+drop_rate: 0.2
+
+# Protocol.
+max_epochs: 220
+patience: 70
+min_delta: 0.001
+monitor: accuracy_val
+check_finite: true
+divergence_threshold: 0.1
