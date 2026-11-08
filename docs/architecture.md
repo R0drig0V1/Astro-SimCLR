@@ -32,6 +32,7 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  ├──► alerts (fetch-alerts, alerts-summary: raw alerts from ALeRCE) ──► data (prepared, m1_features)
  │    (training ──► paper_variants: rot4 / single / p4 / p4m ──► paper_model, group_conv)
  ├──► preflight ──► experiments, data (inspection, manifest)
+ └──► engine (phase 4: the plain-PyTorch loop's contracts; imports no Lightning) ──► config
  └──► runs (phase 4, A0: run identity, manifest.json, layout, retention) ──► config, data
 
 rj23_model (engine-free nn.Modules, not wired yet: task 3.4b) ──► data.rj23_input
@@ -40,8 +41,10 @@ rj23_model (engine-free nn.Modules, not wired yet: task 3.4b) ──► data.rj2
 Conventions shared by every module:
 
 - **Settings** come from `config.Settings`, never from module-level constants.
-- **Randomness** comes from `lightning.seed_everything(seed, workers=True)`; no module
-  creates its own generators.
+- **Randomness:** the global streams come from `lightning.seed_everything(seed,
+  workers=True)`; per-step draws (augmentations) come from generators keyed by
+  `(seed, step, stream)` (ADR 0006, ADR 0014: `engine.randomness`), never from an unseeded
+  or global generator.
 - **Devices:** no module hard-codes CUDA. The accelerator comes from the settings, and tensors
   follow their module's device.
 - **Behaviour changes** against the legacy code are listed in the section of the module that
@@ -1348,6 +1351,30 @@ many draws, a stamp beyond its limit left alone; Bogus never rescaled; seeded dr
 module (training only), the settings and the preset deviation; a p4 run on every
 accelerator; and in `tests/test_split_runs.py` an augmented fold run (the fits are the
 fold's training part's) and its exact resume.
+
+## `engine` (phase 4, task B0; ADR 0014)
+
+`src/astro_simclr/engine/`: the contracts of the plain-PyTorch training loop that replaces
+Lightning (phase 4). B0 freezes them; the loop (4.1), the typed config (4.2) and the data
+tiers (4.3) are built against them, and the 4.7 gate compares the two engines. **Nothing in
+the package imports Lightning** (checked in a fresh interpreter), so a flag written against
+it works on both engines until 4.8. ADR 0014 lists, with file and line, every hidden
+Lightning behaviour the loop reproduces (C1-C11) and the test that pins each.
+
+| Module | Contract |
+|---|---|
+| `task` | `Task`: `module`, `make_optimizer()` (after the device move), `train_step(batch, step)` (the loss with its graph; `step` = optimizer steps done before it), `eval_step(batch) -> EvalOutput`, `state()` / `load_state()`. `mean_of_batch_losses`: the monitored value, the float32 mean of the batch means (not the per-sample mean). |
+| `policies` | `Monitor.improves` (strict, NaN never, the first finite value always: `HorizonCallback`'s rule); `ValidationGrid.due(steps_done)` (multiples of the interval only: no step 0, no epoch-end, no forced final validation); `Horizon.extended` / `resumed`; `EarlyStop` (Lightning's semantics, for `rj23`); `Keep = stop \| best`; `Schedule`, whose defaults are the `carrasco2021` settings. |
+| `checkpoint` | `Checkpoint` (a `TypedDict` of plain values, read with `weights_only=True`) and its frozen key set `CHECKPOINT_KEYS`: format, engine, identity (A0's run id and attempt, the split run), `steps_done` (also the stream position), model, optimizer, task, policy, stream definition, every RNG stream, numerics (ADR 0010) and versions. `check_resumable` refuses Lightning checkpoints, other engines, formats and incomplete ones. |
+| `device` | `DevicePolicy`: one device (`world_size != 1` refused), `cudnn.benchmark = not deterministic`, `use_deterministic_algorithms(deterministic)`, `CUBLAS_WORKSPACE_CONFIG=":4096:8"` only when deterministic (`torch_flags()`, checked equal to Lightning's `_set_torch_flags`), ADR 0010's precision. |
+| `data` | `Batch` / `TrainBatch` (equal to `device_data`'s); `DataTier` (`device`, `pinned`, `memmap`, all exact); `TierChoice` (non-float32 storage is a recorded deviation); the `BatchSource` (`batch(step)`, a pure function of the stream and the step) and `EvalSource` protocols. |
+| `randomness` | `host_generator(seed, step, stream)` (= `class_augment.augment_rng`: per-sample parameters, device-independent); `device_generator(seed, step, stream, device)` (per-pixel fields: the seed is device-independent, the values are not, so runs record the device); `RESERVED_STREAMS`, the stream numbers in use. |
+
+`tests/test_engine_contracts.py` also pins the Lightning 2.6.6 facts the checklist relies on
+(the validation grid across 7-step epochs, `global_step` inside `training_step`, the
+gradient `None` at validation, `no_grad` in the fit's validations and `inference_mode` in
+`trainer.validate`, the epoch numbering of `metrics.json`), so an upgrade that changes one
+fails here.
 
 ## `presets` (task 2.2c)
 
