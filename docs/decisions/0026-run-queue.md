@@ -1,6 +1,6 @@
-<!-- ADR 0018: experiment specs, the durable SQLite queue with heartbeat leases, workers,
+<!-- ADR 0026: experiment specs, the durable SQLite queue with heartbeat leases, workers,
      per-SHA worktrees and ssh submission, and sync by rsync then reindex (task A3). -->
-# 0018: Experiment specs and the durable run queue
+# 0026: Experiment specs and the durable run queue
 
 - **Status:** accepted (2026-11-08, phase 4, task A3)
 - **Implemented by:** `src/astro_simclr/runs/spec.py`, `src/astro_simclr/queue/`
@@ -116,3 +116,7 @@ a git SHA, and sync for the registry (A2), which shares the spec format.
 - Commits from before this change have no `spec` subcommand, so they cannot be submitted.
 - The worker imports no torch: a GPU worker needs `--machine-class`, and `--gpu-memory-mib`
   for more than one slot per GPU.
+- Each GPU machine (today the GTX 1050, `cu126`, and the RTX 5090, PyPI's CUDA 13 build) is
+  a runner with its own queue; there is no cross-machine scheduler. `runner.yaml` lists the
+  machine classes a runner serves (`queue init --machine-class`), and a spec of another
+  class is refused at submission rather than left queued with no worker to claim it.

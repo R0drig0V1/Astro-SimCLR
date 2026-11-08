@@ -1,4 +1,4 @@
-"""The durable queue: one SQLite file of jobs with heartbeat leases (task A3; ADR 0018).
+"""The durable queue: one SQLite file of jobs with heartbeat leases (task A3; ADR 0026).
 
 The file is ``$ASTRO_SIMCLR_HOME/queue/queue.sqlite`` on the runner (the GPU machine),
 checked by :func:`~astro_simclr.queue.location.check_queue_location` (a local disk, never

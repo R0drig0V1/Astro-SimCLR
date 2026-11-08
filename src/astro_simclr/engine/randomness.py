@@ -30,10 +30,18 @@ import torch
 __all__ = ["RESERVED_STREAMS", "device_generator", "host_generator"]
 
 #: Stream numbers in use (the third ``SeedSequence`` word), by augmentation. ``rot90``
-#: keeps the two-word ``[seed, step]`` of task 2.5-models and has no number. Phase 5's
-#: SimCLR views take new numbers here.
+#: keeps the two-word ``[seed, step]`` of task 2.5-models and has no number (the same two
+#: words as the ``row`` training stream's passes, ``engine.stream``; ADR 0018).
+#: ``block_shuffle`` is the ``block`` training stream's pass word (``[seed, pass, 5]``),
+#: task 4.3. Phase 5's SimCLR views take new numbers here.
 RESERVED_STREAMS: Final = MappingProxyType(
-    {"aug_noise": 1, "aug_feature_jitter": 2, "synthetic_bogus": 3, "flux_rescale": 4}
+    {
+        "aug_noise": 1,
+        "aug_feature_jitter": 2,
+        "synthetic_bogus": 3,
+        "flux_rescale": 4,
+        "block_shuffle": 5,
+    }
 )
 
 

@@ -82,12 +82,11 @@ def test_queue_init_status_cancel_paths(
     assert "queue init" in capsys.readouterr().err
     repo = tmp_path / "repo"
     repo.mkdir()
-    assert (
-        main(["queue", "init", "--repo", str(repo), "--data-dir", str(tmp_path), "--uv", "/x/uv"])
-        == 0
-    )
+    init = ["queue", "init", "--repo", str(repo), "--data-dir", str(tmp_path), "--uv", "/x/uv"]
+    assert main([*init, "--machine-class", "cpu-test"]) == 0
     config = RunnerConfig.load()
     assert config.repo == repo.resolve() and config.uv == "/x/uv"
+    assert config.machine_classes == ("cpu-test",)
     assert config.runs_root == (home / "runs").resolve()
     capsys.readouterr()
     assert main(["queue", "paths"]) == 0

@@ -168,7 +168,7 @@ Every run of today's `run_command` now writes its manifest, with `engine: lightn
 
 ## Amendment: task A3 (2026-11-08)
 
-The queue (ADR 0018) names each attempt's directory, so `start_run` and `run_command` take
+The queue (ADR 0026) names each attempt's directory, so `start_run` and `run_command` take
 `queued=QueueAttempt(attempt, machine_class, run_id)` from `spec run-cell`:
 
 - a run id other than `run_id` (the spec expansion's) is refused before training;

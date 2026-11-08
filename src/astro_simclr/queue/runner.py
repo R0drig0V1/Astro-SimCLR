@@ -3,7 +3,7 @@
 **Runner home** (:class:`RunnerConfig`, ``$ASTRO_SIMCLR_HOME``, default ``~/.astro-simclr``,
 on the GPU machine)::
 
-    runner.yaml              repo, data_dir, runs_root, uv (written by `queue init`)
+    runner.yaml              repo, data_dir, runs_root, uv, machine_classes (`queue init`)
     queue/queue.sqlite       the queue (queue.store); never copied
     queue/logs/<job>.log     each job's stdout and stderr
     specs/<spec id>.yaml     every accepted spec, the bytes as submitted (synced back)
@@ -13,8 +13,9 @@ on the GPU machine)::
 The runner's own code (the clone in ``repo``, its ``.venv``) is only the queue: it never
 computes a run's settings or hashes. :func:`enqueue` does, in order:
 
-1. checks the SHA (40 hex digits) and parses the spec (its own reading, for ``scratch``,
-   ``extra`` and the name);
+1. parses the spec (its own reading, for ``scratch``, ``extra``, the name and the machine
+   class, which must be one this runner serves when ``runner.yaml`` lists them) and checks
+   the SHA (40 hex digits);
 2. :func:`ensure_worktree`: ``worktrees/<sha>``, created with ``git worktree add --detach``
    from ``repo`` (after ``git fetch origin`` if the commit is not there yet);
 3. refuses the worktree if ``git status --porcelain`` lists anything and the spec is not
@@ -96,7 +97,10 @@ def default_home() -> Path:
 class RunnerConfig:
     """The runner's settings (module docstring), stored in ``<home>/runner.yaml``.
 
-    ``entry_point`` is the argv prefix of the per-SHA CLI, relative to the worktree's
+    ``machine_classes`` are the classes this runner's workers serve (``queue init
+    --machine-class``); when set, a spec of another class is refused at enqueue time
+    instead of waiting forever for a worker. ``entry_point`` is the argv prefix of the
+    per-SHA CLI, relative to the worktree's
     ``.venv`` by default; the tests set it to this interpreter's ``-m astro_simclr.cli``.
     """
 
@@ -106,6 +110,7 @@ class RunnerConfig:
     runs_root: Path
     uv: str = "uv"
     entry_point: tuple[str, ...] | None = None
+    machine_classes: tuple[str, ...] = ()
 
     @property
     def queue_file(self) -> Path:
@@ -141,6 +146,7 @@ class RunnerConfig:
             "runs_root": str(self.runs_root),
             "uv": self.uv,
             "entry_point": None if self.entry_point is None else list(self.entry_point),
+            "machine_classes": list(self.machine_classes),
         }
 
     def save(self) -> Path:
@@ -175,6 +181,7 @@ class RunnerConfig:
             runs_root=Path(str(data["runs_root"])).expanduser(),
             uv=str(data.get("uv") or "uv"),
             entry_point=None if entry is None else tuple(str(arg) for arg in entry),
+            machine_classes=tuple(str(name) for name in data.get("machine_classes") or ()),
         )
 
 
@@ -262,6 +269,13 @@ def enqueue(
             git, ``uv sync`` or ``spec expand``.
     """
     spec = parse_spec(spec_text.decode("utf-8"))
+    if config.machine_classes and spec.machine_class not in config.machine_classes:
+        served = ", ".join(config.machine_classes)
+        msg = (
+            f"spec {spec.name} is for machine class {spec.machine_class}; this runner serves "
+            f"{served}: submit it to that machine's host"
+        )
+        raise RunnerError(msg)
     worktree = ensure_worktree(config, sha, commands=commands)
     status = _check(commands(["git", "-C", str(worktree), "status", "--porcelain"]), "git status")
     if status.strip() and not spec.scratch:

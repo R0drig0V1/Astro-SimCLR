@@ -1,4 +1,4 @@
-"""The durable run queue: experiment specs in, run directories out (phase 4, task A3; ADR 0018).
+"""The durable run queue: experiment specs in, run directories out (phase 4, task A3; ADR 0026).
 
 It replaces the hand-written tmux/bash queues. The pieces, from the laptop to the GPU:
 

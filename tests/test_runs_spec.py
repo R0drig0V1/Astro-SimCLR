@@ -208,3 +208,25 @@ def test_spec_without_preset_or_splits_uses_the_legacy_protocol() -> None:
     assert spec.split_parts() == (None,)
     settings = spec.arm_settings("wide", 1)
     assert settings.drop_rate == 0.5 and settings.batch_size == 5 and settings.seed == 1
+
+
+def test_the_registry_reads_a_real_spec(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The A2/A3 contract: ``ExperimentSpec`` is the registry's ``SpecLike`` (also for mypy)."""
+    from astro_simclr.registry.spec_view import SpecLike, load_spec_file, plan_from_spec
+
+    splits = tmp_path / "configs" / "splits" / "x.json"
+    splits.parent.mkdir(parents=True)
+    splits.write_text("{}\n")
+    path = tmp_path / "spec.yaml"
+    path.write_text(FULL)
+    spec: SpecLike = parse_spec(FULL)  # a static conformance check
+    monkeypatch.chdir(tmp_path)  # the registry hashes splits.file from the checkout root
+    loaded = load_spec_file(path)
+    assert loaded.spec_id == spec.spec_id
+    plan = plan_from_spec(loaded)
+    assert plan.spec_id == spec.spec_id and plan.machine_class == spec.machine_class
+    assert plan.arms == {arm.name: spec.arm_config_sha256(arm.name) for arm in spec.arms}
+    assert len(plan.cells) == len(spec.cells()) == 8
+    from astro_simclr.data.files import sha256_file
+
+    assert plan.splits_sha256 == sha256_file(splits)

@@ -1,4 +1,4 @@
-"""The queue worker: claim, run, heartbeat, reap (task A3; ADR 0018).
+"""The queue worker: claim, run, heartbeat, reap (task A3; ADR 0026).
 
 One worker per machine runs the jobs of one machine class on its slots
 (:mod:`~astro_simclr.queue.admission`). Each :meth:`Worker.step`:

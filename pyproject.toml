@@ -16,6 +16,7 @@ dependencies = [
     "numpy>=2.5.4",
     "pyyaml>=6.0.3",
     "tensorboard>=2.21.0",
+    "timm>=1.0.31,<2",
     "torch>=2.14,<2.15",
     "torchmetrics>=1.9.0",
     "torchvision==0.29.*",

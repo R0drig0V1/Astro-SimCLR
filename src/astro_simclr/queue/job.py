@@ -3,7 +3,7 @@
 Both run with the code of the *submitted commit*, inside its per-SHA worktree on the runner
 (:mod:`~astro_simclr.queue.runner`), so the settings, presets and hashes are that commit's,
 not the runner's. The runner only ever calls them as argv arrays that name a spec file:
-no shell, no interpolated string (ADR 0018).
+no shell, no interpolated string (ADR 0026).
 
 - :func:`expand` (``spec expand SPEC --data-dir D --repo-root R``) prints, as JSON
   (:data:`EXPANSION_FORMAT`), the spec id and every cell with its run id and config hash.

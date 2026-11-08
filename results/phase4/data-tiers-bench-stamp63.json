@@ -1,0 +1,199 @@
+{
+  "machine": {
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "processor": "arm",
+    "torch": "2.14.1"
+  },
+  "args": {
+    "device": "['cpu', 'mps']",
+    "n": "10000",
+    "shape": "3,63,63",
+    "batch_size": "64",
+    "steps": "300",
+    "warmup": "20",
+    "rounds": "7",
+    "out": "results/phase4/data-tiers-bench-stamp63.json"
+  },
+  "results": [
+    {
+      "tier": "device",
+      "device": "cpu",
+      "image_shape": [
+        3,
+        63,
+        63
+      ],
+      "batch_size": 64,
+      "batches_per_s": 1398.0300240935628,
+      "mb_per_s": 4261.463935201805,
+      "rounds": [
+        1398.0300240935628,
+        1034.9077240573126,
+        1238.8891410594745,
+        1667.7549509190608,
+        750.9067991581024,
+        1951.0006192827468,
+        1466.3691332293654
+      ],
+      "build_s": 0.08890241687186062,
+      "describe": {
+        "tier": "device",
+        "storage_dtype": "float32",
+        "deviation": false,
+        "pinned_staging": false,
+        "prefetch": 0,
+        "shuffle": "row"
+      }
+    },
+    {
+      "tier": "pinned",
+      "device": "cpu",
+      "image_shape": [
+        3,
+        63,
+        63
+      ],
+      "batch_size": 64,
+      "batches_per_s": 1615.2323570743652,
+      "mb_per_s": 4923.538348975223,
+      "rounds": [
+        1023.8725858428265,
+        1606.231106196562,
+        1613.1319702471799,
+        2403.039057957055,
+        1755.5991436453262,
+        1835.6244220410226,
+        1615.2323570743652
+      ],
+      "build_s": 0.0935960840433836,
+      "describe": {
+        "tier": "pinned",
+        "storage_dtype": "float32",
+        "deviation": false,
+        "pinned_staging": false,
+        "prefetch": 0,
+        "shuffle": "row"
+      }
+    },
+    {
+      "tier": "memmap",
+      "device": "cpu",
+      "image_shape": [
+        3,
+        63,
+        63
+      ],
+      "batch_size": 64,
+      "batches_per_s": 928.7391342802629,
+      "mb_per_s": 2830.975199200023,
+      "rounds": [
+        819.8640289599635,
+        905.2766329391656,
+        589.7898041426668,
+        928.7391342802629,
+        1101.2353426511013,
+        971.1207596254412,
+        1138.356661323497
+      ],
+      "build_s": 0.0004878330510109663,
+      "describe": {
+        "tier": "memmap",
+        "storage_dtype": "float32",
+        "deviation": false,
+        "pinned_staging": false,
+        "prefetch": 0,
+        "shuffle": "row"
+      }
+    },
+    {
+      "tier": "device",
+      "device": "mps",
+      "image_shape": [
+        3,
+        63,
+        63
+      ],
+      "batch_size": 64,
+      "batches_per_s": 2872.662077647878,
+      "mb_per_s": 8756.42556378964,
+      "rounds": [
+        2684.3835960825645,
+        1985.5435867073284,
+        3089.87411980003,
+        2496.1102253473896,
+        2900.7321028559936,
+        3041.261025327857,
+        2872.662077647878
+      ],
+      "build_s": 0.550312208943069,
+      "describe": {
+        "tier": "device",
+        "storage_dtype": "float32",
+        "deviation": false,
+        "pinned_staging": false,
+        "prefetch": 0,
+        "shuffle": "row"
+      }
+    },
+    {
+      "tier": "pinned",
+      "device": "mps",
+      "image_shape": [
+        3,
+        63,
+        63
+      ],
+      "batch_size": 64,
+      "batches_per_s": 665.6176415564397,
+      "mb_per_s": 2028.9303700512069,
+      "rounds": [
+        665.6176415564397,
+        665.530273963561,
+        841.239428033086,
+        766.5891482366686,
+        728.0384172112743,
+        628.8960437320214,
+        447.0590496108203
+      ],
+      "build_s": 0.0726962920743972,
+      "describe": {
+        "tier": "pinned",
+        "storage_dtype": "float32",
+        "deviation": false,
+        "pinned_staging": true,
+        "prefetch": 1,
+        "shuffle": "row"
+      }
+    },
+    {
+      "tier": "memmap",
+      "device": "mps",
+      "image_shape": [
+        3,
+        63,
+        63
+      ],
+      "batch_size": 64,
+      "batches_per_s": 589.3405005965669,
+      "mb_per_s": 1796.4229991944503,
+      "rounds": [
+        575.9865902112621,
+        683.150584759801,
+        924.5981263202439,
+        208.92757995315858,
+        219.84081695078908,
+        867.4877529607237,
+        589.3405005965669
+      ],
+      "build_s": 0.0001330000814050436,
+      "describe": {
+        "tier": "memmap",
+        "storage_dtype": "float32",
+        "deviation": false,
+        "pinned_staging": true,
+        "prefetch": 1,
+        "shuffle": "row"
+      }
+    }
+  ]
+}

@@ -33,8 +33,9 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  │    (training ──► paper_variants: rot4 / single / p4 / p4m ──► paper_model, group_conv;
  │     paper_model ──► feature_sets: all / position / none)
  ├──► preflight ──► experiments, data (inspection, manifest)
- └──► engine (phase 4: the plain-PyTorch loop's contracts; imports no Lightning) ──► config
+ └──► engine (phase 4: the loop's contracts, the data tiers; imports no Lightning) ──► config, data
  └──► runs (phase 4, A0: run identity, manifest.json, layout, retention) ──► config, data
+ └──► registry (phase 4, A2: runs reindex | ls | show | compare; SQLite) ──► runs, reference
 
 rj23_model (engine-free nn.Modules, not wired yet: task 3.4b) ──► data.rj23_input
 ```
@@ -56,11 +57,14 @@ Conventions shared by every module:
 ## Environment and torch wheels
 
 Runtime dependencies: torch, torchvision, lightning 2.x, torchmetrics, numpy, pyyaml,
-matplotlib, tensorboard. torch and torchvision come from PyPI by default (MPS on macOS,
+matplotlib, tensorboard, fastavro, and timm (the ConvNeXt rows; it brings huggingface-hub and
+safetensors, and resolves against each fork's torch: [ADR 0022](decisions/0022-convnext-native-stamp.md)). torch and torchvision come from PyPI by default (MPS on macOS,
 CUDA 13 on Linux), or from the PyTorch indexes through the conflicting extras `cpu` and
 `cu126`. After `uv sync --locked --extra X`, run everything with `UV_NO_SYNC=1` or
 `uv run --no-sync`. Design and rationale: [ADR 0001](decisions/0001-torch-wheels-and-accelerators.md);
-`scripts/check-torch-wheels.sh` asserts it in CI.
+`scripts/check-torch-wheels.sh` asserts it in CI. CI runs on pushes to `main` (ubuntu),
+weekly on macOS and on demand, never on pull requests: the integrator's `verify-merge.sh` is
+the PR gate ([ADR 0021](decisions/0021-ci-on-main-pushes-only.md)).
 
 ## `config` (task 1.1)
 
@@ -226,6 +230,10 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
 - `preflight (--synthetic | --data-dir DIR) [--accelerator cuda] [--runs R1,R2,R3,R4]
   [--set ...]` (see `preflight`): exit 0 if no step failed, else 1.
   `scripts/gpu-preflight.sh` is a thin `uv run --no-sync` wrapper.
+- `runs reindex [ROOT ...] [--rebuild]`, `runs ls`, `runs show KEY`, `runs compare SPEC`
+  (task A2, see `registry`): the local run registry. Exit 0 on success (`reindex` also when
+  it skipped directories), 1 when the registry cannot be used or a comparison does not
+  resolve.
 - `spec check|expand|run-cell` and `queue init|enqueue|paths|worker|status|cancel|service|
   tmux|submit|sync` (task A3, see `queue` and `docs/queue.md`): `spec run-cell` exits with
   the job's code (0 finished, 1 failed, 2 refused, 75 busy, 128 + a signal); the queue's
@@ -689,6 +697,8 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
 | `p4`, `group_fields: 16` | p4 G-CNN, 16/32 fields (capacity control) | 587,635 | 209,397,504 |
 | `p4m` | p4m G-CNN, 4/8 fields (B2') | 193,107 | 53,683,968 |
 | `p4`, `context: avgpool63` | B7 with the 63×63 context (B1') | 228,915 | 53,978,880 (+1.7 %) |
+| `convnext_atto`, `image_size: 63` | timm ConvNeXt-atto on the whole stamp, 4 rotations (B8; `convnext_model`) | 3,405,227 | 714,557,184 |
+| `convnext_pico`, `image_size: 63` | timm ConvNeXt-pico on the whole stamp, 4 rotations (B8) | 8,575,667 | 1,785,014,016 |
 
 - `GroupStampClassifier(group, *, group_fields=None, with_features, dropout_active,
   drop_rate, in_channels)`: the paper's geometry with group layers: `ZeroPad2d(3)`,
@@ -703,12 +713,16 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
   weights.
 - `build_paper_model(arch, *, group_fields, context, with_features, dropout_active,
   drop_rate, n_classes, feature_set)`: the factory `PaperClassifierModule` uses; the defaults build the faithful
-  model. `paper_in_channels(context)`, `default_group_fields(arch)`.
+  model. `paper_in_channels(context)`, `default_group_fields(arch)`, `paper_input_side(arch)`
+  (21, or 63 for the ConvNeXts: what `image_size` must be).
 - `count_parameters(model)`; `count_macs(model, *, in_channels)`: MACs per stamp of an
   eval forward, from `torch.utils.flop_counter` (convolutions and matrix products, not the
-  kernel expansion, pooling or BN), tested against the analytic counts.
+  kernel expansion, pooling or BN), tested against the analytic counts. The input side is
+  the model's `input_side` (63 for the ConvNeXts) or 21; a 4-rotation model counts its 4
+  passes (divide by 4 for a view).
 - `VARIANTS`: name → `Variant(row, overrides, description)`: `rot4` (A), `single-aug`
-  (`single` + `rot90_augment`), `p4` (B7), `p4-16`, `p4m` (B2'), `p4-context` (B1'). A run
+  (`single` + `rot90_augment`), `p4` (B7), `p4-16`, `p4m` (B2'), `p4-context` (B1'),
+  `convnext-atto`, `convnext-pico` and `convnext-pico-zoobot` (B8). A run
   is the `carrasco2021` preset plus `--set key=value` for each override, for example
   `train-supervised --preset carrasco2021 --set paper_arch=p4 --set context=avgpool63`.
   Split runs (`--splits FILE --fold K | --screen`, 2.5-infra) take the same flags: one crop
@@ -731,6 +745,51 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
   (the check can fail); invariance through the input path (rotate the 63×63 stamp, then
   crop and pool); the counts; the settings checks; CPU (and MPS/CUDA when present) training
   smoke runs through `run_command`.
+
+## `convnext_model` (task 2.5, plan row B8; ADR 0022)
+
+`src/astro_simclr/convnext_model.py`: ConvNeXt-atto and ConvNeXt-pico (timm) as
+`paper_arch` values of `paper_stamp_classifier`, on the whole 63×63 stamp.
+
+- `ConvNeXtStampClassifier(arch, *, with_features, dropout_active, drop_rate, in_channels,
+  n_classes, feature_set)`: (N, 3, 63, 63) stamps → the 4 rotations as one batch → zero
+  padding to 64 (bottom, right) → the timm backbone (`num_classes=0`; its stem a 4×4
+  convolution at stride 2, padding 1; stage maps 32-16-8-4, `STAGE_SIDES`) → pooled,
+  normalised features (320 / 512) → `fc1` to 64, ReLU, dropout per rotation → the rotation
+  mean → `PaperHead`. Exactly invariant to 90° rotations up to rounding. timm's
+  initialisation for the backbone (the replaced stem drawn the same way), the paper's for
+  fc1 and the head, all from the seeded global generator. `stage_sides(x)` and
+  `representation(x)` are diagnostics. timm is imported only here, when a model is built.
+- | arch | Parameters | Backbone | MACs per view | MACs per stamp |
+  |---|---|---|---|---|
+  | `convnext_atto` | 3,405,227 | 3,374,520 | 178.6 M | 714.6 M |
+  | `convnext_pico` | 8,575,667 | 8,532,672 | 446.3 M | 1,785.0 M |
+
+  (with the 23 features; the paper model is 441,075 and 52.7 M per view.)
+- **Why this stem:** timm's `patch_size=2` alone is compensated by a stride-2 downsample in
+  stage 0 (maps 16-8-4-2 again); a 2×2 stem would not fit the Zoobot 4×4 stem kernel. The
+  constructor refuses a timm whose stage 0 downsamples.
+- **Pretrained weights:** `BackboneWeights` (repo, commit, file, size, SHA-256, licence);
+  `ZOOBOT_CONVNEXT_PICO` (Apache-2.0 per its model card; Walmsley et al. 2024,
+  arXiv:2404.02973); `BACKBONE_WEIGHTS` (`Settings.backbone_weights` → arch → weights);
+  `backbone_weights_for(name, arch)`; `fetch_backbone_weights(weights, *, download)` (the
+  Hugging Face Hub client by default, cached under `HF_HOME`; refuses an entry without a
+  recorded licence before any download, and a file of another size or SHA-256);
+  `load_backbone_weights(model, weights, path)` (`torch.load(weights_only=True)`, strict
+  keys and shapes, backbone only). `WeightsError` is a `DataError` (one CLI error line).
+  `experiments._load_backbone_weights` calls them after the seeded build and records the
+  pin in `metrics.json["paper_data"]["backbone_weights"]`.
+- The data path at 63: `device_data.float_crops(..., side=63)` (and `interim_uint8_crops`):
+  `crop_split(images, 63)`, the paper's normalisation on the whole stamp; about 2.4 GB of
+  device-resident splits for `red` (9 times the crops). The 21×21-crop flags (`context`,
+  `aug_noise`, `synthetic_bogus`, `flux_rescale`) are refused; `rot90_augment` and
+  `aug_feature_jitter` work.
+- **Tested** (`tests/test_convnext_model.py`): stage maps, the timm trap, shapes, float64
+  invariance with every parameter perturbed (and a flip visible), counts, `feature_set`,
+  the seeded initialisation, input and layout checks, the weights loader with a fake
+  downloader (licence gate, size, SHA-256, keys, shapes, channels), from scratch with sockets
+  disabled, the settings, the run wiring; a CPU split run of `convnext_atto` in
+  `tests/test_split_runs.py`; the golden fixture with `backbone_weights: none`.
 
 ## `rj23_model` (task 3.4)
 
@@ -1168,7 +1227,8 @@ workers fork), not repeated here because spawned workers cost about 25 s on macO
 
 ALeRCE's training procedure as Lightning pieces, all under `src/astro_simclr/training/`.
 
-**Tiling** (`tiling.py`). `tile_indices(labels)` is ALeRCE's
+**Tiling** (`tiling.py`, a re-export of `engine/stream.py` since task 4.3, so the plain
+engine shares the stream without importing Lightning). `tile_indices(labels)` is ALeRCE's
 `balance_data_by_replication` on indices: classes in sorted label order; a smaller class
 becomes `max // n` full copies of its indices (file order) plus their first `max % n`; the
 largest class is kept. Every class then has `max` entries (`red`: 5 × 14,542 = 72,710).
@@ -1181,7 +1241,8 @@ documented exception to "randomness comes from `seed_everything`", and what make
 mid-epoch resume exact. TF's random numbers are not reproduced.
 
 **Device data** (`device_data.py`). `TensorSplit(images, features, labels, fits=None)`:
-float32 (N, 3, 21, 21) (or (N, 6, 21, 21) with the 63×63 context of task 2.5-models),
+float32 (N, 3, 21, 21) (or (N, 6, 21, 21) with the 63×63 context of task 2.5-models, or
+the whole stamps (N, 3, 63, 63) of the ConvNeXt rows, plan row B8; `IMAGE_SIDES`),
 float32 (N, 23), int64 (N,), and optionally the float32 (N, 6) `class_augment.stamp_fits`
 of the crops (C5 / C6), or (N, 11) with `flux_rescale.fit_central_psf` after them (C7),
 validated. `without_train_indices` keeps Train's fits with its
@@ -1205,14 +1266,16 @@ one-hot labels)`:
 
 The splits come from a prepared layout (task 2.2c):
 
-- `float_crops(path, nan_approximation=True, context=False)`, **the paper's input**: each
+- `float_crops(path, nan_approximation=True, context=False, side=21)`, **the paper's input**: each
   split's `images_f32.npy` through `data.float_input.crop_split(21)` (per-crop min-max
   without epsilon, NaN → 0, the NaN approximation), channels first, and the 23 kept
   features; `context=True` (`Settings.context: avgpool63`) appends the 3 channels of
-  `context_split`. A layout without float32 stamps raises `DataError` naming
-  `prepare-data --images float32`.
-- `interim_uint8_crops(path)`, the stand-in of 2.2a (centre 21×21 of the uint8 stamps / 255,
-  no re-normalisation), kept as the `paper_input: uint8` diagnostic.
+  `context_split`. `side=63` (the ConvNeXt rows; ADR 0022) is `crop_split(63)`, the same
+  normalisation on the whole stamp (about 2.4 GB for `red`), without context. A layout
+  without float32 stamps raises `DataError` naming `prepare-data --images float32`.
+- `interim_uint8_crops(path, side=21)`, the stand-in of 2.2a (centre 21×21, or the whole
+  63×63, of the uint8 stamps / 255, no re-normalisation), kept as the `paper_input: uint8`
+  diagnostic.
 - `without_train_indices(splits, excluded)` drops Train stamps (the leaked one) in file
   order, before the tiling; Validation and Test are unchanged.
 - Split runs (task 2.5-infra; see `protocol`): both builders take `names=("Train",
@@ -1433,6 +1496,67 @@ Lightning behaviour the loop reproduces (C1-C11) and the test that pins each.
 gradient `None` at validation, `no_grad` in the fit's validations and `inference_mode` in
 `trainer.validate`, the epoch numbering of `metrics.json`), so an upgrade that changes one
 fails here.
+
+### The data layer (task 4.3; ADR 0018)
+
+One dataset API and three tiers that serve identical bytes, so the tier is a memory versus
+bandwidth choice that cannot change a result.
+
+| Module | What it does |
+|---|---|
+| `dataset` | `Dataset`: float32 `images` of any per-row shape (possibly a memory map), optional in-memory `features` / `labels` (+ `n_classes`) / `fits`, and an optional `rows` selection (`select` composes; `materialised` copies). Adapters: `prepared_split(path, split)` (`classifier`; `unlabelled` for a pretraining `Train`; refuses layouts without `images_f32.npy`), `raw_alerts_dataset(path, candids=...)` (raw cutouts, labels from the index, the 23 CD21 features as float32), or the constructor (`arrays`). |
+| `stream` | `tile_indices` and `PermutationStream` (moved from `training/tiling.py`); `BlockShuffleStream`; `TrainOrder` (tiling, then the stream over its positions; per-pass row orders cached; `state()` = the stream keys plus `rows_sha256`). |
+| `tiers` | `open_train(dataset, TierChoice, StreamSpec, device) -> TrainSource` (`batch(step)`, the frozen `TrainBatch`; `columns(step)` by name, for unlabelled kinds; `state()`, `resume(state, steps_done)`, `describe()` for the manifest) and `open_eval(...) -> EvalBatches` (consecutive batches, the last partial; `iter_columns()`). |
+| `bench` | `python -m astro_simclr.engine.bench`: batches/s per tier and device, interleaved rounds, median. |
+
+- **`device`:** the materialised dataset on the device; each pass's row order is uploaded
+  once and sliced, so a step makes no host-to-device copy. Its batches are `torch.equal` to
+  `DeviceTensorDataModule`'s (tested), and the stream keys are the Lightning loader's.
+- **`pinned`:** the dataset in pageable host memory; the step's rows are gathered into one
+  of two pinned staging buffers and uploaded `non_blocking` on the current stream, one step
+  ahead; a buffer is refilled only after the event behind its last upload completes. On a
+  CPU device nothing is staged or prefetched.
+- **`memmap`:** the images stay in their file; a batch is read sorted by file offset and
+  scattered into the staging buffer, then uploaded as in `pinned`. float32 only.
+- **Shuffle granularity** (`StreamSpec.shuffle`): `row` (default; a uniform permutation per
+  pass, the paper's, the only one with `balance`) or `block` (`block_rows`-row blocks
+  permuted, then positions shuffled within windows of `window_blocks` blocks; a batch reads
+  at most two windows of contiguous ranges, but file neighbours share batches far more
+  often). It is part of the stream definition, served identically by every tier.
+- **The stream definition** (`TrainSource.state()`, the checkpoint's `stream`): `n`,
+  `batch_size`, `seed`, the block parameters when used, `rows_sha256` and `storage_dtype`.
+  Not the tier: a resume may move to another tier and stays exact (tested). The only
+  mutable state is the position (`steps_done`).
+- **Storage dtype:** `float16` / `uint8` images (`TierChoice.storage_dtype`) are quantised
+  once and dequantised on the device after the gather; `describe()["deviation"]` is true,
+  a resume under another dtype is refused, and the `memmap` tier refuses them.
+
+**Tested** (`tests/test_engine_tiers.py`, on CPU and on MPS or CUDA when present): `pinned`
+and `memmap` `torch.equal` to `device` for 40 steps across pass boundaries, balanced and
+not, with fits and a scrambled selection, and in evaluation (partial last batch, two
+passes); `block` identical on every tier; `device` equal to `DeviceTensorDataModule`; exact
+resume mid-pass on every tier and onto another tier; out-of-order steps; resume refusals
+(seed, batch size, balance, storage dtype); the quantised values and their record;
+unlabelled columns. `tests/test_engine_stream.py` and `tests/test_engine_dataset.py` test
+the stream and the adapters on the synthetic prepared and raw-alerts layouts.
+
+**Throughput** (`python -m astro_simclr.engine.bench`, Apple M4, torch 2.14.1, 2026-11-08,
+batch 64, 300 timed batches × 7 interleaved rounds, median; the Mac was shared with other
+agents, load average about 40-50, so the rounds spread by 2-3×; the memmap file is in the
+page cache). Results: `results/phase4/data-tiers-bench-{crop21,stamp63}.json`.
+
+| Rows | Device | `device` | `pinned` | `memmap` |
+|---|---|---|---|---|
+| 3×21×21 (the paper's crops), n = 20,000 | CPU | 6,180 batches/s | 7,611 | 5,128 |
+| | MPS | 7,460 | 1,440 | 1,451 |
+| 3×63×63 (phase 5's stamps), n = 10,000 | CPU | 1,398 (4.3 GB/s) | 1,615 | 929 |
+| | MPS | 2,873 (8.8 GB/s) | 666 (2.0 GB/s) | 589 (1.8 GB/s) |
+
+Every tier serves more than 580 batches/s of 63-px stamps (under 1.7 ms per batch, a
+fraction of a SimCLR step). On MPS the host tiers cost about 0.7 ms per batch against
+0.13 ms for `device`: with unified memory there is nothing to gain from them, so `device` is
+the choice whenever the data fit; `pinned` and `memmap` exist for CUDA machines and the
+phase-5 corpus. Their CUDA and cold-disk numbers are measured on the GPU machine.
 
 ## `presets` (task 2.2c)
 
@@ -1755,7 +1879,7 @@ calls `record.start_run` and `RunRecord.end` around the fit (task A1).
   attempt and the machine class are the queue's, a fresh directory starts that attempt,
   an unfinished manifest of the same run id and attempt continues it (with or without a
   `last` checkpoint), and anything else in the directory is a `ConfigError`.
-- **`spec`** (task A3; ADR 0018; `docs/queue.md`): the experiment-spec format shared by
+- **`spec`** (task A3; ADR 0026; `docs/queue.md`): the experiment-spec format shared by
   the queue and the registry (A2). `parse_spec` / `load_spec` validate a YAML file
   (`astro-simclr-experiment-spec`, version 1: name, `train-supervised`, optional preset
   and shared settings, arms as overrides, seeds, optional splits with folds or the screen,
@@ -1767,7 +1891,7 @@ calls `record.start_run` and `RunRecord.end` around the fit (task A1).
   `train-supervised` on the command line; `arm_config_sha256(arm)` is one config hash per
   arm; `expected_run_ids` gives each cell's run id from the data and splits SHA-256.
 
-## `queue` (phase 4, task A3; ADR 0018)
+## `queue` (phase 4, task A3; ADR 0026)
 
 `src/astro_simclr/queue/` replaces the hand-written tmux/bash queues with experiment specs
 (`runs.spec`), a durable SQLite queue on the GPU machine and ssh submission. The user guide
@@ -1816,7 +1940,7 @@ and the survival checklist are in `docs/queue.md`. Nothing imports torch at modu
   (`requeue(expired_only=True)`); a requeued job whose cancel was asked for is cancelled.
   `queue cancel --spec` needs a prefix matching exactly one spec (`store.spec_ids`).
 - **`runner`**: `RunnerConfig` (`$ASTRO_SIMCLR_HOME/runner.yaml`: repo, data_dir,
-  runs_root, uv). `ensure_worktree` checks a commit out into `worktrees/<sha>` (detached;
+  runs_root, uv, the machine classes it serves; a spec of another class is refused). `ensure_worktree` checks a commit out into `worktrees/<sha>` (detached;
   `git fetch origin` if missing). `enqueue` refuses a dirty worktree for a non-scratch
   spec, runs `uv sync --locked [--extra X]`, writes `specs/<spec id>.yaml`, runs the
   worktree's `spec expand` and queues one job per cell with the argv `<worktree>/.venv/
@@ -1835,6 +1959,55 @@ and the survival checklist are in `docs/queue.md`. Nothing imports torch at modu
   targets are always `=<name>` (exact match: `-t screen25` matched `screen25c`).
 - **`cli`**: `spec check|expand|run-cell` and `queue init|enqueue|paths|worker|status|
   cancel|service|tmux|submit|sync`; the queue's errors print one line and exit 1.
+
+## `registry` (phase 4, task A2; ADR 0024)
+
+`src/astro_simclr/registry/` is the local run registry: a derived SQLite index of run
+directories at `$ASTRO_SIMCLR_HOME/registry.sqlite` (default `~/.astro-simclr`), rebuildable
+from them. Nothing in it imports torch; `parser.py` imports only argparse, so `--help` stays
+fast and the handlers (`commands.py`) load on use.
+
+- **`home`**: `astro_simclr_home()`, `registry_path()` (refuses a path inside a git working
+  tree), `specs_dir()` (`$ASTRO_SIMCLR_HOME/specs`, where A3's queue writes accepted specs).
+  `RegistryError` is the package's error (exit 1).
+- **`readers`**: `read_run_dir(path)` returns an `IndexedRun`:
+  - from `manifest.json` (validated by `runs.manifest.read_manifest`), plus the metrics of
+    `metrics.json` once finished;
+  - or, backfilled from `metrics.json` alone, `legacy: true`, with null run id, attempt,
+    data / pretrained SHA-256, git, `uv.lock` and `numerics_epoch`; `status: finished`,
+    `engine: lightning` and the machine class derived (ADR 0024 rule 4).
+
+  The config is read by the reader of its `config_format` (`CONFIG_FORMATS`; `flat-1` when
+  the file names none): `lower_flat_1` fills the fields added since with `FLAT_1_FILLS`
+  (each the pre-field behaviour, with its reason; fields added after A0 from
+  `canonical.HASH_NEUTRAL_DEFAULTS`) and refuses unknown or unfillable keys, so
+  the archived runs hash like today's presets. `metrics_summary` keeps
+  `<stage>.{accuracy,balanced_accuracy,macro_f1}`, `monitor_best`, `best_step`,
+  `last_step` and `seconds_per_step`. `IndexedRun.key` is `<run id[:16]>-a<attempt>` or
+  `legacy-<metrics SHA[:16]>`; copies of an attempt share it.
+- **`store`**: `open_registry(path)` creates and migrates the file (`SCHEMA_VERSION` in
+  `PRAGMA user_version`; `MIGRATIONS` append-only; a newer file is refused). Tables:
+  `roots`, `runs` (one row per run directory), `artefacts` (path, kind, size, mtime,
+  SHA-256; deleted with their run) and `specs` (id, name, file).
+- **`index`**: `reindex(conn, roots, specs=..., rebuild=False)` walks the roots (no
+  symlinks, no hidden directories, not into a run directory), replaces each root's rows in
+  one transaction, reports skipped directories and missing remembered roots, rehashes only
+  changed files, then indexes the spec files of `specs_dir()` through A3's `load_spec`.
+- **`spec_view`**: `SpecLike`, the `Protocol` of A3's `runs.spec.ExperimentSpec` that the
+  registry reads; `load_spec_file` (a lazy import of `runs.spec`: `SpecUnavailableError`
+  without A3); `ComparisonPlan` and `PlannedCell`, the minimal frozen dataclasses a
+  comparison runs on (`plan_from_spec` builds one and hashes the spec's splits file).
+- **`compare`**: `resolve(plan, records, use=..., attempts="error"|"latest",
+  allow_mixed=...)` maps each cell to one finished attempt, or raises `ComparisonError`
+  with every problem: a missing cell, several attempts without a choice, copies that
+  differ, mixed machine signatures / engines / numerics epochs (allowed per kind), or
+  different data (never allowed). Matching runs outside the cells are counted.
+  `format_report` / `resolution_to_plain` print the cells and the mean ± std (ddof=1) per
+  arm; a report, never a decision (`compare-variants` decides).
+- **`parser`** / **`commands`**: `astro-simclr runs reindex [ROOT ...] [--rebuild]`,
+  `runs ls [filters] [--json]`, `runs show KEY [--json]`, `runs compare SPEC [--metric M]
+  [--use KEY] [--attempts latest] [--allow-mixed KIND] [--json]`; `--registry FILE` on
+  each.
 
 ## `preflight` (task 1.7)
 

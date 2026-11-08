@@ -16,7 +16,11 @@ arch        Trunk                                                  Parameters  M
 ``p4m``     p4m G-CNN, 4/8 fields (32/64 maps): **B2'**            193,107     53.7 M
 ==========  =====================================================  ==========  ========
 
-(with features; MACs per stamp from :func:`count_macs`.) :class:`GroupStampClassifier` is
+(with features; MACs per stamp from :func:`count_macs`.) Plan row B8 adds two ``arch``
+values on the whole 63x63 stamp instead of the crop, ``convnext_atto`` and
+``convnext_pico`` (:class:`~astro_simclr.convnext_model.ConvNeXtStampClassifier`, ADR
+0022): timm backbones, 4-rotation averaged, with the same head; 3.4 M and 8.6 M parameters.
+:func:`paper_input_side` gives each ``arch``'s input side. :class:`GroupStampClassifier` is
 the G-CNN: the paper's geometry, 21 zero-padded to 27, a 4x4 valid lifting convolution
 (-> 24), a 5x5 "same" group convolution, 2x2 max-pool (-> 12), three 5x5 group
 convolutions, 2x2 max-pool (-> 6); fc1 becomes a 6x6 group convolution to 64 fields
@@ -53,7 +57,8 @@ import torch.nn.functional as F
 from torch import nn
 from torch.utils.flop_counter import FlopCounterMode
 
-from astro_simclr.config import CONTEXTS, PAPER_ARCHS
+from astro_simclr.config import CONTEXTS, CONVNEXT_ARCHS, PAPER_ARCHS
+from astro_simclr.data.schema import STAMP_SHAPE
 from astro_simclr.feature_sets import feature_columns
 from astro_simclr.group_conv import (
     GROUPS,
@@ -86,6 +91,7 @@ __all__ = [
     "count_parameters",
     "default_group_fields",
     "paper_in_channels",
+    "paper_input_side",
 ]
 
 #: Width of fc1-fc3 (the paper's 64 units); also the readout's number of fields.
@@ -113,6 +119,17 @@ def paper_in_channels(context: str) -> int:
     if context not in CONTEXTS:
         raise ValueError(f"context must be one of {', '.join(CONTEXTS)}, got {context!r}")
     return PAPER_IN_CHANNELS * (1 if context == "none" else 2)
+
+
+def paper_input_side(arch: str) -> int:
+    """The side of the images ``arch`` takes: 21 (the paper's crop), 63 for the ConvNeXts.
+
+    Raises:
+        ValueError: for an ``arch`` not in :data:`PAPER_ARCHS`.
+    """
+    if arch not in PAPER_ARCHS:
+        raise ValueError(f"paper_arch must be one of {', '.join(PAPER_ARCHS)}, got {arch!r}")
+    return STAMP_SHAPE[0] if arch in CONVNEXT_ARCHS else PAPER_CROP
 
 
 def default_group_fields(arch: str) -> int:
@@ -307,17 +324,37 @@ def build_paper_model(
     the same draws from the global torch generator). ``n_classes`` only resizes the last
     layer; 5 (the default) is the phase-2 model. ``feature_set`` (``all``, ``position`` or
     ``none``; :mod:`astro_simclr.feature_sets`) picks the features the head reads, for every
-    ``arch``; ``none`` builds the ``with_features=False`` model.
+    ``arch``; ``none`` builds the ``with_features=False`` model. The ConvNeXt ``arch``
+    values take the whole stamp (:func:`paper_input_side`) and no context; their backbone
+    starts from timm's initialisation (pretrained weights are loaded afterwards, by
+    ``convnext_model.load_backbone_weights``).
 
     Raises:
         ValueError: for an ``arch`` not in :data:`PAPER_ARCHS`, a ``context`` not in
-            :data:`CONTEXTS`, ``group_fields`` set for an ``arch`` that is not a G-CNN, an
-            unknown ``feature_set`` (or ``position`` without features), or the
-            constructors' errors.
+            :data:`CONTEXTS` (or not ``none`` for a ConvNeXt), ``group_fields`` set for an
+            ``arch`` that is not a G-CNN, an unknown ``feature_set`` (or ``position``
+            without features), or the constructors' errors.
     """
     if arch not in PAPER_ARCHS:
         raise ValueError(f"paper_arch must be one of {', '.join(PAPER_ARCHS)}, got {arch!r}")
     in_channels = paper_in_channels(context)
+    if group_fields is not None and arch not in GROUPS:
+        raise ValueError(f"group_fields applies to {' and '.join(GROUPS)} only, not {arch!r}")
+    if arch in CONVNEXT_ARCHS:
+        if context != "none":
+            msg = f"{arch} takes the whole 63x63 stamp: context must be none, got {context!r}"
+            raise ValueError(msg)
+        # Imported here: convnext_model imports PaperHead from this module.
+        from astro_simclr.convnext_model import ConvNeXtStampClassifier
+
+        return ConvNeXtStampClassifier(
+            arch,
+            with_features=with_features,
+            dropout_active=dropout_active,
+            drop_rate=drop_rate,
+            n_classes=n_classes,
+            feature_set=feature_set,
+        )
     if arch in GROUPS:
         return GroupStampClassifier(
             arch,
@@ -329,8 +366,6 @@ def build_paper_model(
             n_classes=n_classes,
             feature_set=feature_set,
         )
-    if group_fields is not None:
-        raise ValueError(f"group_fields applies to {' and '.join(GROUPS)} only, not {arch!r}")
     return PaperStampClassifier(
         with_features=with_features,
         dropout_active=dropout_active,
@@ -351,16 +386,20 @@ def count_macs(model: nn.Module, *, in_channels: int = PAPER_IN_CHANNELS) -> int
     """Multiply-accumulates of one eval-mode forward pass per stamp.
 
     Counted by ``torch.utils.flop_counter.FlopCounterMode`` (convolutions and matrix
-    products; 2 FLOPs per MAC) on a CPU batch of zeros, (2, ``in_channels``, 21, 21) with
-    (2, 23) features, divided by the batch. Element-wise operations, pooling, batch norm and
-    the weight expansion of the group layers (independent of the batch) are not counted.
-    The model must be on the CPU; its train/eval mode is restored afterwards.
+    products; 2 FLOPs per MAC) on a CPU batch of zeros, (2, ``in_channels``, S, S) with
+    (2, 23) features, divided by the batch. S is the model's ``input_side`` attribute (63
+    for the ConvNeXts), or 21 (the paper's crop) when it has none. Element-wise operations,
+    pooling, batch and layer norms and the weight expansion of the group layers
+    (independent of the batch) are not counted. A model that averages 4 rotations counts
+    all 4 passes (divide by 4 for the MACs per view). The model must be on the CPU; its
+    train/eval mode is restored afterwards.
 
     Raises:
         ValueError: if the counted FLOPs are not a whole number of MACs per stamp.
     """
     batch = 2
-    images = torch.zeros(batch, in_channels, PAPER_CROP, PAPER_CROP)
+    side = int(getattr(model, "input_side", PAPER_CROP))
+    images = torch.zeros(batch, in_channels, side, side)
     features = torch.zeros(batch, N_FEATURES)
     training = model.training
     model.eval()
@@ -411,5 +450,21 @@ VARIANTS: Final[Mapping[str, Variant]] = {
         "B1'",
         {"paper_arch": "p4", "context": "avgpool63"},
         "p4 with the 63x63 stamp average-pooled to 21x21 as 3 more channels",
+    ),
+    # Plan row B8 (ADR 0022): the whole 63x63 stamp, so image_size 63.
+    "convnext-atto": Variant(
+        "B8",
+        {"paper_arch": "convnext_atto", "image_size": 63},
+        "ConvNeXt-atto at the native 63 px, 4 rotations, from scratch",
+    ),
+    "convnext-pico": Variant(
+        "B8",
+        {"paper_arch": "convnext_pico", "image_size": 63},
+        "ConvNeXt-pico at the native 63 px, 4 rotations, from scratch",
+    ),
+    "convnext-pico-zoobot": Variant(
+        "B8",
+        {"paper_arch": "convnext_pico", "image_size": 63, "backbone_weights": "zoobot"},
+        "ConvNeXt-pico at the native 63 px, 4 rotations, from the Zoobot weights",
     ),
 }

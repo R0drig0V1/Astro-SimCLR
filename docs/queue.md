@@ -1,4 +1,4 @@
-<!-- The run queue (phase 4, task A3; ADR 0018): experiment specs, the runner, the worker,
+<!-- The run queue (phase 4, task A3; ADR 0026): experiment specs, the runner, the worker,
      submission and sync over ssh, and the manual survival checklist. Code:
      src/astro_simclr/runs/spec.py and src/astro_simclr/queue/. -->
 # The run queue
@@ -7,7 +7,7 @@ The queue replaces the hand-written tmux/bash queues on the GPU machine. You wri
 **experiment spec** (arms × seeds × folds), submit it from the laptop over ssh, a **worker**
 on the GPU machine runs one job per cell and survives disconnects, crashes and reboots,
 and `queue sync` brings the run directories back for the registry (`runs reindex`, task
-A2). Design and reasons: ADR 0018. Module reference: `docs/architecture.md`, sections
+A2). Design and reasons: ADR 0026. Module reference: `docs/architecture.md`, sections
 `runs` (`spec`) and `queue`.
 
 ## Experiment specs
@@ -44,20 +44,50 @@ scratch: false                  # true: a dirty tree is allowed (never a result)
 - Each cell (`<arm>/s<seed>/<f<fold>|screen|all>`) is one run id (ADR 0015). The seeds of
   one arm share its config hash.
 
-## The GPU machine (runner), once
+## The GPU machines
+
+Each GPU machine is a runner of its own: its own `~/.astro-simclr` home, queue, worktrees
+and run directories. A spec names one machine class and is submitted to that machine's
+host. Today:
+
+| Machine | ssh host | Machine class | `machine.extra` | Worker hosted in |
+|---------|----------|---------------|-----------------|------------------|
+| GTX 1050 (WSL2) | `rvidal@desktop-qj6b97d` | `cuda-nvidia-geforce-gtx-1050` | `cu126` (driver < 580) | systemd user service, or tmux |
+| RTX 5090 (Blackwell) | `rvidal@100.105.188.13` | `cuda-nvidia-geforce-rtx-5090` | none (PyPI's default CUDA 13 build) | tmux |
+
+The machine class is `runs.identity.default_machine_class` of the GPU's name (ADR 0015), so
+a queued run and a run launched by hand on the same GPU share run ids. The submitting side
+uses ssh in batch mode (no password prompt): put the 5090's key in `~/.ssh/config` and use
+the alias as the host:
+
+```
+Host gpu5090
+    HostName 100.105.188.13
+    User rvidal
+    IdentityFile ~/.ssh/id_ed25519_go001
+```
+
+### Once per machine
+
+On the 1050 (`--extra cu126`; on the 5090, `uv sync --locked` with no extra, and
+`--machine-class cuda-nvidia-geforce-rtx-5090`):
 
 ```bash
 cd ~/Astro-SimCLR && git pull && uv sync --locked --extra cu126
-.venv/bin/astro-simclr queue init --repo ~/Astro-SimCLR --data-dir ~/Astro-SimCLR/dataset/prepared
+.venv/bin/astro-simclr queue init --repo ~/Astro-SimCLR \
+    --data-dir ~/Astro-SimCLR/dataset/prepared --machine-class cuda-nvidia-geforce-gtx-1050
 ```
 
 This writes `~/.astro-simclr/runner.yaml` (`$ASTRO_SIMCLR_HOME` overrides the home) and
-creates the queue, `~/.astro-simclr/queue/queue.sqlite`. The queue must be on the Linux side
-(ext4): `queue init` refuses `/mnt/c`, network mounts and synced folders. Run directories go
-to `~/.astro-simclr/runs/<spec name>/<run id[:16]>-a<attempt>/` (`--runs-root` to change it).
+creates the queue, `~/.astro-simclr/queue/queue.sqlite`. The queue must be on a local Linux
+disk (ext4): `queue init` refuses `/mnt/c`, network mounts and synced folders. Run
+directories go to `~/.astro-simclr/runs/<spec name>/<run id[:16]>-a<attempt>/`
+(`--runs-root` to change it). `--machine-class` (repeatable) lists the classes this runner
+serves: a spec of another class is refused at submission, instead of waiting forever for a
+worker that never claims it.
 
-Then host the worker, preferably as a systemd user service (WSL2 needs `systemd=true` under
-`[boot]` in `/etc/wsl.conf`):
+Then host the worker. With systemd (on WSL2, `systemd=true` under `[boot]` in
+`/etc/wsl.conf`):
 
 ```bash
 .venv/bin/astro-simclr queue service --gpu 0 --machine-class cuda-nvidia-geforce-gtx-1050 --write
@@ -67,20 +97,25 @@ loginctl enable-linger "$USER"      # runs without a login session, starts at bo
 journalctl --user -u astro-simclr-worker -f
 ```
 
-Without systemd, use tmux; the session is found by its **exact** name (tmux matches a bare
+With tmux (the 5090), the session is found by its **exact** name (tmux matches a bare
 `-t name` by prefix: `has-session -t screen25` was true while only `screen25c` existed):
 
 ```bash
 .venv/bin/astro-simclr queue tmux --session astro-simclr-worker --gpu 0 \
-    --machine-class cuda-nvidia-geforce-gtx-1050
+    --machine-class cuda-nvidia-geforce-rtx-5090
 tmux attach -t =astro-simclr-worker
 ```
+
+A tmux worker does not come back by itself after a reboot: run the same `queue tmux` again
+(it does nothing if the exact session already runs). Other tmux sessions on the machine are
+never touched.
 
 Worker options (`queue worker --help`): `--gpu N` (repeat for several GPUs; none means a
 CPU worker), `--machine-class` (required with a GPU: the jobs of other classes are never
 claimed), `--slots-per-gpu N` (default 1) with `--gpu-memory-mib M` (admission by measured
-peak memory; a config's first run always runs alone), `--lease-seconds` (120),
-`--poll-seconds` (5), `--grace-seconds` (30).
+peak memory; a config's first run always runs alone; on the 5090, set the slots by
+measurement, plan task A3), `--lease-seconds` (120), `--poll-seconds` (5),
+`--grace-seconds` (30).
 
 ## The laptop
 
@@ -88,7 +123,8 @@ peak memory; a config's first run always runs alone), `--lease-seconds` (120),
 git push                                   # the runner fetches the commit from origin
 uv run astro-simclr queue submit configs/specs/c5.yaml --host rvidal@desktop-qj6b97d
 uv run astro-simclr queue status --host rvidal@desktop-qj6b97d
-uv run astro-simclr queue sync --host rvidal@desktop-qj6b97d --dest ~/runs/gpu
+uv run astro-simclr queue sync --host rvidal@desktop-qj6b97d --dest ~/runs/gtx1050
+uv run astro-simclr queue sync --host gpu5090 --dest ~/runs/rtx5090
 ```
 
 - `submit` refuses a dirty tree, an uncommitted spec or a commit on no remote branch,
@@ -131,7 +167,7 @@ takes well under a second).
 
 ## Manual survival checklist
 
-Run it once on the GPU machine after installing the service, with a small scratch spec
+Run it once on each GPU machine after installing the worker, with a small scratch spec
 (for example the dry spec below), and again after any change to the queue. No step may
 lose a job or run one twice. Record the date and the outcome in the PR or the plan.
 
@@ -162,12 +198,13 @@ scratch: true
    `queue tmux` (exact session name).
 4. **Job `kill -9`.** `kill -9` the `spec run-cell` process. Expected: requeued at once
    (`resumes` +1), resumed from `last.ckpt`.
-5. **`wsl --shutdown`.** From Windows, `wsl --shutdown` while a job runs, then start the
+5. **`wsl --shutdown`** (the 1050; on the 5090, skip to the reboot). From Windows, `wsl --shutdown` while a job runs, then start the
    distribution again (open a WSL terminal, or the scheduled task below). Expected: with
    systemd and lingering, the worker starts by itself; the job, an expired lease of
    another boot, is requeued without a kill and resumes. With tmux: start `queue tmux`
    again, same result.
-6. **Reboot.** Reboot Windows. WSL does not start by itself: add a Task Scheduler task "At
+6. **Reboot.** On the 5090 (tmux): reboot, run `queue tmux` again, expect step 5's result.
+   On the 1050, reboot Windows. WSL does not start by itself: add a Task Scheduler task "At
    log on" (or "At startup" with the user's credentials) running
    `wsl.exe -d <distro> --exec /bin/true`, so the distribution, its systemd and the worker
    come up. Expected: as in step 5, and the queue file (`queue status`) is intact.

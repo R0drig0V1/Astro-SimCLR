@@ -6,7 +6,8 @@ once per run (about 270 MB for ``red``), moved to the training device once, and 
 gathered there by index: no worker processes, no host-to-device copy per step.
 
 - :class:`TensorSplit`: one split as float32 crops (N, 3, 21, 21), or (N, 6, 21, 21) with
-  the 63x63 context channels (task 2.5-models), the 23 kept features and the int64 labels.
+  the 63x63 context channels (task 2.5-models), or the whole stamps (N, 3, 63, 63) for the
+  ConvNeXt rows (plan row B8, ADR 0022), the 23 kept features and the int64 labels.
 - :class:`DeviceTensorDataModule`: takes the splits (a mapping, or a callable that builds
   them, called once in ``setup``) and yields ``(crops, features, one-hot labels)`` batches,
   the batch format of ``ClassifierModule``; when the Train split carries ``fits`` (the
@@ -36,7 +37,10 @@ The splits come from a prepared layout through one of two builders:
   (``images_f32.npy``, written by ``prepare-data --images float32``); with
   ``context=True`` (``Settings.context: avgpool63``, plan row B1'), the 3 channels of
   ``data.float_input.context_split`` (the whole stamp average-pooled to 21x21, normalised
-  like the crop, the same NaN approximation) follow the crop's;
+  like the crop, the same NaN approximation) follow the crop's. With ``side=63`` (the
+  ConvNeXt rows) the "crop" is the whole stamp, re-normalised the same way on its own
+  pixels: about 2.4 GB for ``red`` instead of 270 MB, which on the 4 GB GTX 1050 leaves
+  little room for the model;
 - :func:`interim_uint8_crops` (task 2.2a), the stand-in that ran the schedule before the
   float path existed: the centre 21x21 of the uint8 stamps divided by 255, no
   re-normalisation. It stays as the ``paper_input: uint8`` diagnostic.
@@ -76,6 +80,7 @@ from astro_simclr.data.prepared import load_prepared
 from astro_simclr.data.schema import (
     DISCARDED_FEATURES,
     SPLITS,
+    STAMP_SHAPE,
     DataError,
     SplitData,
 )
@@ -89,6 +94,7 @@ from astro_simclr.training.tiling import PermutationStream, tile_indices
 
 __all__ = [
     "IMAGE_CHANNELS",
+    "IMAGE_SIDES",
     "SPLIT_RUN_STATE",
     "DeviceTensorDataModule",
     "SplitSource",
@@ -104,6 +110,9 @@ __all__ = [
 SPLIT_RUN_STATE: Final = "split_run"
 #: The image channels a :class:`TensorSplit` may have: the crop, or the crop and the context.
 IMAGE_CHANNELS = (3, 6)
+#: The image sides a :class:`TensorSplit` may have: the paper's crop, or the whole stamp
+#: (the ConvNeXt rows, plan row B8; whole stamps have 3 channels only).
+IMAGE_SIDES = (PAPER_CROP, STAMP_SHAPE[0])
 
 #: (crops, features, one-hot labels), as ``ClassifierModule`` expects.
 Batch = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
@@ -121,8 +130,9 @@ class TensorSplit:
     """One labelled split, ready for the paper model.
 
     Attributes:
-        images: float32 (N, C, 21, 21) crops, channels first; C is 3, or 6 with the
-            context channels (:data:`IMAGE_CHANNELS`).
+        images: float32 (N, C, S, S) crops, channels first; S is 21 and C is 3, or 6 with
+            the context channels (:data:`IMAGE_CHANNELS`), or S is 63 (whole stamps) and C
+            is 3 (:data:`IMAGE_SIDES`).
         features: float32 (N, 23), the kept alert features.
         labels: int64 (N,), values in ``range(n_classes)``.
         fits: float32 (N, 6) ``class_augment.stamp_fits`` of the crops, or (N, 11) with
@@ -149,8 +159,12 @@ class TensorSplit:
         n = len(self.labels)
         channels = self.images.shape[1] if self.images.ndim == 4 else 0
         channels = channels if channels in IMAGE_CHANNELS else IMAGE_CHANNELS[0]
+        side = self.images.shape[-1] if self.images.ndim == 4 else 0
+        side = side if side in IMAGE_SIDES else PAPER_CROP
+        if side != PAPER_CROP:
+            channels = IMAGE_CHANNELS[0]  # whole stamps: no context channels
         expected = {
-            "images": (np.float32, (n, channels, PAPER_CROP, PAPER_CROP)),
+            "images": (np.float32, (n, channels, side, side)),
             "features": (np.float32, (n, N_FEATURES)),
             "labels": (np.int64, (n,)),
         }
@@ -158,9 +172,13 @@ class TensorSplit:
             array = getattr(self, name)
             if array.dtype != dtype or array.shape != shape:
                 wanted = str(shape)
-                if name == "images":  # the channel count may be either of IMAGE_CHANNELS
+                if name == "images":  # (N, 3 or 6, 21, 21) or (N, 3, 63, 63)
                     choices = " or ".join(map(str, IMAGE_CHANNELS))
-                    wanted = f"(N, {choices}, {PAPER_CROP}, {PAPER_CROP}) with N = {n}"
+                    big = IMAGE_SIDES[1]
+                    wanted = (
+                        f"(N, {choices}, {PAPER_CROP}, {PAPER_CROP}) or (N, 3, {big}, {big}) "
+                        f"with N = {n}"
+                    )
                 msg = (
                     f"TensorSplit.{name} must be {np.dtype(dtype)} {wanted}, "
                     f"got {array.dtype} {array.shape}"
@@ -499,6 +517,11 @@ def _centre_crop_unit(images: npt.NDArray[np.uint8], size: int) -> npt.NDArray[n
     return np.ascontiguousarray(crop.transpose(0, 3, 1, 2) / np.float32(255.0))
 
 
+def _check_side(side: int) -> None:
+    if side not in IMAGE_SIDES:
+        raise ValueError(f"side must be one of {IMAGE_SIDES}, got {side}")
+
+
 def _labelled(
     path: Path, name: str, split: SplitData
 ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.int64]]:
@@ -513,23 +536,28 @@ def _labelled(
     return kept.astype(np.float32), np.array(split.labels, dtype=np.int64, copy=True)
 
 
-def interim_uint8_crops(path: Path, *, names: Sequence[str] = SPLITS) -> dict[str, TensorSplit]:
-    """The splits ``names`` of the prepared layout ``path``, as 21x21 crops of its uint8 stamps.
+def interim_uint8_crops(
+    path: Path, *, names: Sequence[str] = SPLITS, side: int = PAPER_CROP
+) -> dict[str, TensorSplit]:
+    """The splits ``names`` of the prepared layout ``path``, as crops of its uint8 stamps.
 
-    The stand-in of task 2.2a, now the ``paper_input: uint8`` diagnostic: the centre 21x21
-    of the stored uint8 stamps, divided by 255 (no re-normalisation on the crop), with the
-    23 kept features (columns 13-15 dropped, as in ``StampDataset``) as float32.
+    The stand-in of task 2.2a, now the ``paper_input: uint8`` diagnostic: the centre
+    ``side`` x ``side`` (21, or 63 for the whole stamp) of the stored uint8 stamps, divided
+    by 255 (no re-normalisation on the crop), with the 23 kept features (columns 13-15
+    dropped, as in ``StampDataset``) as float32.
 
     Raises:
         DataError: if ``path`` is not a valid prepared layout of a classifier file.
+        ValueError: if ``side`` is not one of :data:`IMAGE_SIDES`.
     """
+    _check_side(side)
     data = load_prepared(path)
     splits: dict[str, TensorSplit] = {}
     for name in names:
         split = data.splits[name]
         features, labels = _labelled(path, name, split)
         splits[name] = TensorSplit(
-            images=_centre_crop_unit(split.images, PAPER_CROP),
+            images=_centre_crop_unit(split.images, side),
             features=features,
             labels=labels,
         )
@@ -542,6 +570,7 @@ def float_crops(
     nan_approximation: bool = True,
     names: Sequence[str] = SPLITS,
     context: bool = False,
+    side: int = PAPER_CROP,
 ) -> dict[str, TensorSplit]:
     """The splits ``names`` of the prepared layout ``path`` through the paper's float path.
 
@@ -549,14 +578,21 @@ def float_crops(
     chunks) go through ``crop_split(images, 21, nan_approximation=...)`` (task 2.1: ALeRCE's
     ``image_crop_at_center`` -> ``image_normalize_by_image`` -> ``image_nan_to_num``),
     then channels first. With ``context``, ``context_split(images, nan_approximation=...)``
-    adds 3 channels after the crop's (task 2.5-models). The features are the 23 kept ones,
-    as float32. For ``red`` the crops take about 270 MB (twice that with the context), plus
-    a transient copy of the same size per split.
+    adds 3 channels after the crop's (task 2.5-models). ``side=63`` crops the whole stamp
+    (``crop_split(images, 63, ...)``: the same min-max and NaN approximation on all its
+    pixels; the ConvNeXt rows, plan row B8). The features are the 23 kept ones, as float32.
+    For ``red`` the crops take about 270 MB (twice that with the context, 9 times at 63),
+    plus a transient copy of the same size per split.
 
     Raises:
         DataError: if ``path`` is not a valid prepared layout of a classifier file, or it
             has no float32 stamps (the message names the ``prepare-data`` command).
+        ValueError: if ``side`` is not one of :data:`IMAGE_SIDES`, or ``context`` is set
+            with whole stamps.
     """
+    _check_side(side)
+    if context and side != PAPER_CROP:
+        raise ValueError("the context channels go with the 21x21 crop, not whole stamps")
     data = load_prepared(path)
     splits: dict[str, TensorSplit] = {}
     for name in names:
@@ -569,7 +605,7 @@ def float_crops(
             )
             raise DataError(msg)
         features, labels = _labelled(path, name, split)
-        crops = crop_split(split.images_f32, PAPER_CROP, nan_approximation=nan_approximation)
+        crops = crop_split(split.images_f32, side, nan_approximation=nan_approximation)
         if context:
             crops = np.concatenate(
                 (crops, context_split(split.images_f32, nan_approximation=nan_approximation)),

@@ -293,3 +293,20 @@ def test_enqueue_reports_a_failed_command(env: Env) -> None:
         enqueue(config, store, env.spec.read_bytes(), sha=env.sha, now=time.time())
     store.close()
     assert os.environ["FAKE_SSH_HOME"] == str(env.tmp)
+
+
+def test_a_runner_refuses_a_spec_of_another_machine_class(env: Env) -> None:
+    config = RunnerConfig(
+        home=env.config.home,
+        repo=env.config.repo,
+        data_dir=env.config.data_dir,
+        runs_root=env.config.runs_root,
+        uv=env.config.uv,
+        entry_point=CLI,
+        machine_classes=("cuda-nvidia-geforce-rtx-5090",),
+    )
+    config.save()
+    assert RunnerConfig.load(config.home).machine_classes == config.machine_classes
+    with pytest.raises(SubmitError, match="this runner serves cuda-nvidia-geforce-rtx-5090"):
+        env.submit()
+    assert not config.worktrees.exists()  # refused before any checkout

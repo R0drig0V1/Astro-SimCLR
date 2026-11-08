@@ -174,6 +174,7 @@ def _queue_init(args: argparse.Namespace) -> int:
         data_dir=args.data_dir.expanduser().resolve(),
         runs_root=(args.runs_root or home / "runs").expanduser().resolve(),
         uv=uv,
+        machine_classes=tuple(args.machine_class),
     )
     path = config.save()
     QueueStore.open(config.queue_file).close()
@@ -423,6 +424,13 @@ def add_queue_commands(commands: argparse._SubParsersAction[argparse.ArgumentPar
     init.add_argument("--data-dir", type=Path, required=True, metavar="DIR")
     init.add_argument("--runs-root", type=Path, metavar="DIR", help="default HOME/runs")
     init.add_argument("--uv", metavar="PATH", help="the uv binary (default: uv on PATH)")
+    init.add_argument(
+        "--machine-class",
+        action="append",
+        default=[],
+        metavar="SLUG",
+        help="a machine class this runner's workers serve (repeat); specs of others are refused",
+    )
     init.set_defaults(handler=_queue_init)
 
     enq = sub.add_parser("enqueue", help="runner: accept a spec at a commit (stdin with -)")
