@@ -1,45 +1,42 @@
-<!-- Phase 3 of the roadmap (docs/phases/README.md); owned by the integrator. Draft amended
-after review round 1 and task 3.0's research (docs/plan-reviews/2026-11-08-phase-3.md). -->
-# Phase 3: the newer benchmarks and the raw-alert dataset (draft, review round 1 applied)
+<!-- Phase 3 of the roadmap (docs/phases/README.md); owned by the integrator. Reviewed in 2
+rounds plus task 3.0's research (docs/plan-reviews/2026-11-08-phase-3.md). -->
+# Phase 3: raw-alert infrastructure and the R5 benchmark (RJ23 protocol, public sources)
 
-## Goal
+## Goal (after review round 2, 2026-11-08)
 
-The user's request (2026-11-08) is to prepare the jump to the post-2021 work while phase 2
-runs: replicate the newer ALeRCE stamp classifiers and rebuild the data they need.
+The user asked (2026-11-08) to prepare the jump to the post-2021 work while phase 2 runs.
+The research (3.0) showed that **no exact replication of RJ23 or C25 is possible from public
+data**:
+- RJ23's alert choice was random and unseeded;
+- RJ23's labels come from internal tables;
+- the satellites were tagged by hand in SN Hunter, and those reports are not public;
+- C25 relabelled 624 Bogus by hand.
 
-1. **RJ23**: Reyes-Jainaga et al. 2023 (ApJL, arXiv:2304.13080).
-   - **The data:** 6 classes (Satellite added). **One randomly chosen alert per object**, not
-     necessarily the first; an imbalanced, stratified 60/20/20 split.
-   - **AGN and VS** are sampled from ALeRCE's light-curve labelled set:
-     - AGN 9,774, from AGN 3,916, Blazar 1,932 and QSO 3,926;
-     - VS from nine periodic subclasses.
-   - **Asteroids** are single-detection objects.
-   - **Bogus:** alerts of objects with ≥ 10 detections are removed (except 12 confirmed), as
-     are those cross-matched to SN, VS or AGN; 48 Bogus are relabelled Satellite.
-   - **Satellites:** 580, by visual inspection.
-   - **The input:**
-     - scenarios full 63², cropped 16², low-resolution 16², and **multi-scale 4×8²**
-       (1″/2″/4″/8″ per pixel, 256 values, the same size as the 16² views);
-     - normalisation |x|-min-p99, clip ±2, plus a binary invalid-pixel mask (NaN, inf,
-       |x| > 1e10);
-     - the position as a unit-sphere (x, y, z), not CD21's 23 features.
-   - **The training:** cross-entropy loss, batch 256 class-balanced, validation F1 every
-     500 iterations with patience 5, 8 rotation and flip variants, per-scenario learning
-     rates.
-   - **The result:** macro-F1 about 87, with full and multi-scale on a par; also evaluated
-     on each object's first stamp.
-2. **C25**: Carvajal et al. 2025 (A&A 697, A119, arXiv:2411.03258).
-   - **A different label set:** RJ23's alerts with about 3 % of the Bogus relabelled
-     Satellite (Bogus 15,326, Satellite 1,204); test 9,888 alerts; F1 about 91.
-   - **The FFT branch:** the normalised 63×63 difference, median-padded to 128, amplitude
-     only, the central 16×16 kept.
-   - **The result:** the satellite accuracy of the 16″ model rises from 72.0 % to 87.8 %.
-3. **N24** (Neira et al. 2024; sequences, 3 classes) is out of this phase: it needs another
-   dataset and input. It is a later note.
+So the phase delivers, in order:
+
+1. **Raw-alert infrastructure**, which phase 2 (row C1, fake SN) and the SimCLR phase (raw
+   cutouts, exclusion lists, N-class evaluation) also need: 3.1, 3.1b, 3.2 and 3.3 (without
+   C25's FFT).
+2. **R5**: an object-level, 5-class benchmark (AGN, Asteroid, Bogus, SN, VS) under RJ23's
+   protocol, built from **public sources only**. Its test set has about 8–9k objects, far
+   more statistical power than CD21's 500 stamps. It also serves as the evaluation set of the
+   SimCLR phase.
+3. **RJ23's four scenarios on R5** (full 63², cropped 16², low-resolution 16², multi-scale
+   4×8²), with the gate of 3.6.
+
+**Out of scope, as later notes:**
+- the Satellite class, C25 and its FFT branch (only if ALeRCE shares C25's list);
+- N24;
+- our p4/p4m variants on R5 (a later improvement phase);
+- manual labelling.
+
+**Reporting rule:** every number is "on R5", never "RJ23's result", unless 3.0a delivers
+RJ23's exact lists. That would add an "RJ23-exact" benchmark next to R5, not replace it.
 
 The phase-2 rules carry over: the protocol of task 2.3, no test-based decisions, and the
-portability rule. Never copy ALeRCE code or weights. **ALeRCE classifier outputs are never a
-label source** (circular). Never unpickle downloads, and treat downloaded data as untrusted.
+portability rule. Never copy ALeRCE code or weights (RJ23's repository is MIT; we
+reimplement and cite). ALeRCE classifier outputs are never a label source. Never unpickle
+downloads, and treat downloaded data as untrusted.
 
 ## Facts so far (2026-11-08)
 
@@ -124,112 +121,111 @@ result is reported only as "on our reconstruction".
 
 ## Tasks
 
-Running now: 3.0, 3.1, 3.2, and phase 2's grouped splits. 3.0a is the user's decision.
-After 3.0 and review round 2: 3.1b, then 3.3/3.4, then 3.5 and 3.6.
+Running now: 3.1, 3.1b, 3.2, 3.3, and phase 2's grouped splits. 3.5 starts right after 3.1,
+without waiting for 3.0a.
 
-### 3.0 Research: availability and exact specifications — done (2026-11-08; results above)
-- For RJ23 and C25: a **per-scenario specification table**, each value marked as
-  published, inferred or unknown. It covers:
-  - layers and filters, dense sizes, dropout and BatchNorm;
-  - the pooling of the coarse scales;
-  - the learning rates and selection.
-- The labelled-set version, its columns and subclass names.
-- How to access TNS (dated public CSV via a bot key from an environment variable).
+### 3.0 Research — done (2026-11-08; results above)
 
-### 3.0a Ask ALeRCE for the RJ23/C25 object lists (user decision)
-Day 0, time-boxed to two weeks: ask the authors for the `oid`/`candid`/label lists of RJ23
-and C25. With them, 3.5 rebuilds exactly; without them, it follows the recipe below. 3.5
-waits for the answer or the deadline. It is an outward contact, so it is the user's call.
+### 3.0a Ask ALeRCE for the RJ23/C25 lists (user decision; does not block anything)
 
-### 3.1 Raw alert retrieval, `fetch-alerts` (running, PR pending)
+### 3.1 Raw alert retrieval, `fetch-alerts` (running)
 Acceptance:
-- per-class recovery of at least 98 %;
-- misses classified as not-found, ambiguous, timeout or mismatch;
-- **zero stored rows failing the stamp check** (≤ 1e-6 after ALeRCE's min-max);
-- ties resolved by downloading every candidate and letting the stamp check decide;
-- many-to-one row→candid mappings reported;
-- the `/detections` list cached per `oid`;
-- every raw response stored with its timestamp and SHA-256 (an offline rebuild must be
-  possible);
+- per-class recovery of at least 98 % over **non-ghost** rows. Ghost rows are CD21 Bogus
+  with no ALeRCE object within the radius; they are counted per class, not retried;
+- misses classified;
+- zero stored rows failing the stamp check (≤ 1e-6);
+- ties resolved by the stamp check;
+- `/detections` cached per `oid`;
+- raw responses snapshotted with their SHA-256 (offline rebuild);
 - non-63×63 cutouts reported.
 
-Load: about 155k requests; about 21 h at 2 req/s, resumable, one throttle across all
-hosts. No network in CI.
+### 3.1b Raw / N-class prepared kind (running)
+`raw-alerts`, format version 3, with `N_CLASSES` taken from the data and the phase-2 path
+byte-identical. It also stores the CD21 23-feature candidate fields of each drawn alert, so
+phase-2 models can be evaluated on R5.
 
-### 3.1b Raw / N-class prepared data kind (new; before 3.3)
-- **Format:** a `meta.json` kind `raw-alerts` (format version 3) with:
-  - configurable label names;
-  - float32 raw cutouts with NaN kept, plus a mask;
-  - per-row `oid`, `candid`, `jd`, `fid`, `label_source` and `source_row`.
-- **Code:** `N_CLASSES` comes from the dataset (today `models.py:60` hard-codes 5).
-- **ADR:** whether derived indexes are committed.
-- **Acceptance:** the phase-2 path is byte-identical, and a synthetic 6-class layout trains
-  end to end.
+### 3.2 Benchmark metrics and grouped splits (running)
+Macro-F1 with a per-resample confusion bootstrap, a prior-reweighted macro-F1, grouped
+splits, the first-stamp view and the MDE per class.
 
-### 3.2 Benchmark metrics and object-grouped splits (running, PR pending)
-- Macro-F1, macro precision and macro recall, plus per class.
-- A **macro-F1 bootstrap that recomputes the confusion matrix per resample** (seed-ensemble
-  argmax, paired, class-stratified), golden-tested against brute force.
-- A prior-reweighted macro-F1 next to the raw one.
-- Object-grouped, class-stratified splits, and selection/decision halves.
-- A first-stamp view.
-- The MDE per class.
-- A cross-benchmark check: no object shared across the 3×3 split pairs of two benchmarks.
+**The cross-benchmark matrix:**
+- allowed: (Train, Train), (Val, Val), (Val, Test), (Test, Val), (Test, Test);
+- forbidden: Train ↔ Val and Train ↔ Test, in both directions;
+- group id: the `oid` where it is matched, otherwise a 1.5″ position group (union-find
+  across both benchmarks; ghosts included).
 
-### 3.3 RJ23 / C25 input path (after 3.0 and 3.1b)
-From raw cutouts:
-- the four RJ23 views (full 63², cropped 16², low-resolution 16², multi-scale 4×8²);
-- the |x|-min-p99 normalisation with clip ±2;
-- the invalid-pixel mask channels;
-- the unit-sphere position;
-- C25's FFT cutout.
+### 3.3 RJ23 input functions (running; C25's FFT removed)
 
-### 3.4 RJ23 / C25 models (after 3.0 and 3.3)
-The specification table of 3.0. Where values are unknown, a bounded search on the phase-3
-selection half only (for example 20 trials per scenario, with a documented budget). Our
-p4/p4m variants are not part of this phase: they belong to a later improvement phase under
-the same protocol.
+### 3.4 RJ23 models (after 3.3)
+**No hyperparameter search.** An ADR pins the details the research marked unknown. Each
+follows from RJ23's stated 8×8 final maps or from C25's description:
+- 'same' conv padding and ceil pooling;
+- flatten, then average over the 8 views;
+- dropout → concat(x, y, z) → BN → FC → FC-5;
+- ReLU.
 
-### 3.5 Dataset reconstruction (after 3.0a's answer or deadline, 3.0 and 3.1)
-If no list is shared, follow RJ23's recipe per class:
-- **AGN/VS:** `oid`s from the light-curve labelled set, sampled to RJ23's subclass counts
-  with a stored seed.
-- **SN:** CD21's SN plus TNS spectroscopic SN, from a dated TNS snapshot.
-- **Asteroids:** CD21's Asteroids that are single-detection objects.
-- **Bogus:** CD21's Bogus after RJ23's ≥ 10-detection and cross-match removals.
-- **Satellites:** candidates from a heuristic (elongation or multiple point sources in the
-  63″ difference; TLE cross-match), **each confirmed by a blinded visual pass** with a
-  written rubric and a second-reviewer agreement rate. The same pass runs on CD21's Bogus,
-  which relabels or drops.
+Table 2's per-scenario hyperparameters are used as published. One pre-registered
+sensitivity arm: multi-scale with BN before versus after the concat, 5 seeds, decided on the
+decision half.
 
-Alert choice: one alert per object, uniformly at random from its detection list (stored
-seed), plus the first alert for the first-stamp view. Drop non-63×63 cutouts.
+### 3.4b RJ23 training regime (new)
+- `schedule: rj23`:
+  - evaluation every 500 iterations, iteration 0 included;
+  - patience 5 on strict improvement of the validation macro-F1;
+  - `keep: stop|best`, both reported from one run; **stop** is primary, as RJ23 did;
+  - a hard cap of 100k iterations, with the runs that hit it reported.
+- A per-sample class-uniform sampler (not CD21's tiling).
+- TF-default parity, each with a hand-computed golden test and no TF dependency:
+  - Adam eps 1e-7;
+  - BN momentum 0.99 and eps 1e-3;
+  - glorot-uniform initialisation;
+  - 'same' pooling semantics.
+- **Protocol:** the 3.6 replication stops on the whole validation set (the paper protocol,
+  as 2.4 did). Any phase-3 *decision* stops on the selection half and decides on the
+  decision half.
 
-Splits:
-- grouped by `oid`;
-- any object with a CD21 Validation or Test alert goes to the phase-3 Test or Validation,
-  never to Train;
-- zero objects shared across the 3×3 split pairs of both benchmarks (the 3.2 check).
+### 3.5 R5 reconstruction (after 3.1; public sources only)
+- **Time cutoff `JD_MAX`,** pre-registered as 2022-12-31: an inferred stand-in for RJ23's
+  build date.
+  - Each object's random alert comes from its detections with a stamp and `jd ≤ JD_MAX`,
+    sorted by `candid` and drawn with `default_rng([seed, oid_hash])`.
+  - The ndet counts of the cuts come from that stored list, not from today's API `ndet`.
+  - The first-stamp view is the first such detection.
+  - A non-63×63 draw drops the object, and the drops are counted.
+- **Per-class sources:**
 
-Era:
-- record `jd` per row and publish a class × year table;
-- add a train-before-T / test-after-T diagnostic view;
-- report the share of TNS SN that ALeRCE itself reported.
+| Class | Source and rule |
+|---|---|
+| AGN | Zenodo 4279623, sampled to RJ23's subclass counts with a stored seed |
+| VS | Zenodo 4279623, sampled to RJ23's subclass counts with a stored seed; the `E` subclass capped at 2,400 (two of RJ23's caps); RSCVn and ZZ are absent from Zenodo and recorded as such |
+| SN | Zenodo SN ∪ **ZTF Bright Transient Survey** spectroscopic SN (public CSV, no login; 6,758 SN with ZTF IDs, checked 2026-11-08), first detection ≤ `JD_MAX`, up to 3,615, seeded. BTS's magnitude limit (peak below about 18.5–19) is recorded as a deviation. Cite Fremling et al. 2020 and Perley et al. 2020, and check BTS's terms. TNS is an optional cross-check |
+| Asteroid | CD21's, with ndet == 1 in the stored list |
+| Bogus | CD21's, after RJ23's ≥ 10-detection and cross-match cuts. CD21's ceiling is accepted: no hunting for other Bogus sources. Ghost rows are dropped and counted |
 
-Freeze the index (oid, candid, label, label_source, split, seed) as a dated version;
-`rebuild --from-snapshot` reproduces it offline byte for byte.
+- **Acceptance:** a pre-registered deviation table, target versus achieved per class and
+  subclass with the cause. There is no ±5 % rule, which was infeasible by construction.
+- **Headline metric:** the macro-F1 reweighted to RJ23's 5-class counts, with the raw
+  macro-F1 next to it.
+- **Splits:**
+  - grouped by object, following the 3.2 matrix (a CD21 Train object goes only to R5
+    Train; CD21 Validation and Test objects never to R5 Train);
+  - an era table (class × year) and the temporal diagnostic view;
+  - a frozen index rebuilt offline from the snapshots.
+- **Load:** about 50–60k requests beyond 3.1 (about 8 h at 2 req/s), resumable, with the
+  same snapshot format.
 
-Acceptance: class counts within ±5 % of RJ23's, or the deviation tabulated.
-
-### 3.6 Replication runs (after 3.2–3.5; 5090; after phase 2.5's CV, or on a stated share)
-- RJ23's four scenarios first, then C25's FFT models, the latter only if the satellites
-  of 3.5 exist. 5 seeds each.
-- **Pre-registered gate:**
-  - (a) the ordering multi-scale ≈ full > cropped > low-res holds, with paired-bootstrap
-    CIs;
-  - (b) FFT raises the cropped-16 satellite recall, with a CI that excludes 0;
-  - (c) absolute macro-F1 is advisory: it is "on our reconstruction".
-- Compute line: runs × the measured s/step on the 5090, about 35 runs.
+### 3.6 RJ23's four scenarios on R5 (after 3.2–3.5; the 5090, or on a stated share with 2.5)
+About 20 runs: 4 scenarios × 5 seeds, with the 3.4b regime. The pre-registered gate runs on
+R5's test set, seed-ensembled, with 3.2's paired bootstrap:
+- **(a1)** low-resolution is below each of full, cropped and multi-scale, with the CI
+  excluding 0. RJ23's gap is at least 3.5 points.
+  - On failure: treat it as a pipeline bug. Re-run the 3.3 and 3.4b golden tests before any
+    write-up.
+- **(a2)** multi-scale is non-inferior to full, with the lower CI bound of (MS − Full)
+  above −1.0 point. This is RJ23's headline claim.
+  - On failure: report that it did not replicate on R5, with no tuning to rescue it.
+- **(a3)** full versus cropped and the per-class recalls are reported, not gated. RJ23's
+  full-over-cropped gap was carried by satellites.
 
 ## Risks
 - **Comparability:** the reconstruction is not RJ23's unless 3.0a succeeds.

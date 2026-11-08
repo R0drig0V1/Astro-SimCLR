@@ -8,7 +8,7 @@ sessions list completed tasks in their PR body instead of ticking them here.
 |-------|------|--------|
 | 1. Runnable, tested package (refactor legacy code into `src/astro_simclr/`) | [01-runnable-package.md](01-runnable-package.md) | in progress (1.1–1.7 done; 1.9a remains, 1.9b optional) |
 | 2. Replicate and improve the stamp classifier (Carrasco-Davis 2021) | [02-stamp-classifier.md](02-stamp-classifier.md) | in progress: replication **passed** (CD21 faithful, test 0.943 ± 0.004); 2.5 starting |
-| 3. Newer benchmarks (RJ23 multi-scale, C25 FFT) and the raw-alert dataset | [03-newer-benchmarks.md](03-newer-benchmarks.md) | draft, review round 1 applied (2026-11-08); 3.0–3.2 running |
+| 3. Raw-alert infrastructure and R5 (RJ23 protocol, 5 classes, public sources) | [03-newer-benchmarks.md](03-newer-benchmarks.md) | reviewed (2 rounds, 2026-11-08); 3.1–3.3 running; satellites/C25 out of scope |
 
 **Priority (user decision, 2026-11-07):** the goal is to replicate the paper (Carrasco-Davis
 et al. 2021), not the 2022 legacy numbers. Phase 2 is the main line. In phase 1, task 1.7
@@ -64,7 +64,7 @@ Carrasco-Davis 2021 (CD21)?
   - 6 classes (a Satellite class added) and more SNe from TNS;
   - AGN 9,774, Asteroid 9,180, Bogus 15,950, Satellite 580, SN 3,615, VS 10,211;
   - an imbalanced, stratified 60/20/20 split;
-  - **macro-F1** of about 87 for the full 63×63 stamps, which multi-scale 4×16² stamps
+  - **macro-F1** of about 87 for the full 63×63 stamps, which multi-scale 4×8² stamps (see phase 3)
     match at 1/15 of the size, and SN recall 85.1 %;
   - also evaluated on each object's first stamp.
 
