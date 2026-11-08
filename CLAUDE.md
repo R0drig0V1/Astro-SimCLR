@@ -22,6 +22,7 @@ jupyter_examples/  2021 exploratory notebooks (they import the legacy code: run 
                    Scorecard, Dependabot; from python-template (.copier-answers.yml)
 configs/reference/  R1-R4 reference-run configs (plan "Reference runs"), with provenance
 configs/splits/     stored phase-2 decision splits (make-splits; docs/evaluation-protocol.md)
+configs/runs/       nested configs for `astro-simclr run` (task 4.2; ADR 0017)
 docs/        architecture.md (one section per module), phases/ (the plan), decisions/
              (ADRs), plan-reviews/, evaluation-protocol.md (phase-2 rules), data.md
 scripts/     characterize/ (fixture generators; legacy code via the legacy-final tag),
@@ -46,6 +47,7 @@ scripts/integrator.sh              # launch the integrator agent (inside herdr, 
 uv sync --locked                   # .venv with the package and dev tools (Python 3.13)
 uv sync --locked --extra cpu       # CPU torch (CI); then UV_NO_SYNC=1 for every uv run (ADR 0001)
 uv run astro-simclr --help         # the CLI (src/astro_simclr/cli.py)
+uv run astro-simclr run configs/runs/carrasco2021.yaml --show   # a nested config, resolved
 scripts/gpu-preflight.sh --synthetic   # GPU machine check (astro-simclr preflight; ADR 0001)
 uv run ruff format . && uv run ruff check --fix .   # fix formatting and most lint findings
 uvx copier@9.19.1 update           # pull python-template improvements (clean tree only)
@@ -86,6 +88,9 @@ uvx copier@9.19.1 update           # pull python-template improvements (clean tr
      the flag must give bit-identical runs on both engines.
   5. If it changes the numbers of an existing config, say so in the PR (and bump
      `numerics_epoch` once task A0 lands); a non-faithful default is a preset deviation.
+  6. A new `Settings` field gets one nested home in `config_tree.schema` (ADR 0017), with
+     `_flat("<field>")`, in the section and variants that read it; the coverage test of
+     `tests/test_config_tree_presets.py` fails otherwise.
 
 ## Plan and workflow
 

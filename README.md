@@ -103,6 +103,16 @@ uv run astro-simclr compare-reference $R/with-features/seed-{0..4} \
     --ref CD21 --oracle-report $R/m1_oracle.json
 ```
 
+The same runs from a nested config (task 4.2; ADR 0017), which has the same config hash:
+
+```bash
+uv run --no-sync astro-simclr run configs/runs/carrasco2021.yaml \
+    --set data.dir=dataset/prepared run.seed=$s run.output_dir=runs/replication/with-features/seed-$s
+```
+
+`--show` prints the resolved config and its hash without training; a 2.5 variant changes
+its section (`--set model.arch=p4`, `--set augment.flux_rescale=0.5`).
+
 `--preset carrasco2021-no-features` is the advisory without-features line (test
 0.8724 ± 0.0095 against the paper's 0.883 ± 0.006; `CD21: REPORT`). Training is not bitwise
 deterministic, so a rerun gives close but not identical numbers.
@@ -157,6 +167,7 @@ src/astro_simclr/   the package: data, models (paper model, p4/p4m variants), lo
 tests/              pytest suite (branch coverage >= 80 %)
 configs/reference/  R1-R4 legacy reference-run configs, with provenance
 configs/splits/     stored phase-2 decision splits (make-splits)
+configs/runs/       nested configs for `astro-simclr run` (ADR 0017)
 results/            phase2/ (replication archive, augmentation inspections); 2021 tuning results
 docs/               architecture.md (one section per module), data.md, evaluation-protocol.md,
                     phases/ (the plan), decisions/ (ADRs), plan-reviews/
