@@ -10,7 +10,7 @@ sessions list completed tasks in their PR body instead of ticking them here.
 | 2. Replicate and improve the stamp classifier (Carrasco-Davis 2021) | [02-stamp-classifier.md](02-stamp-classifier.md) | in progress: replication **passed** (CD21 faithful, test 0.943 ± 0.004); 2.5 starting |
 | 3. Raw-alert infrastructure and R5 (RJ23 protocol, 5 classes, public sources) | [03-newer-benchmarks.md](03-newer-benchmarks.md) | reviewed (2 rounds, 2026-11-08); 3.1–3.3 running; satellites/C25 out of scope |
 | 4. Modern training platform (plain PyTorch engine, typed config, local run registry, queue) | [04-training-platform.md](04-training-platform.md) | reviewed (round 1, 2026-11-08); Track A (manifest, registry, queue) and Track B (engine ADR) dispatchable; user decisions: plain PyTorch, local tracking |
-| 5. Self-supervised pretraining (SimCLR, ResNet-18 first, then custom) | [05-self-supervised.md](05-self-supervised.md) | draft (2026-11-08), under review; needs phase 4 and the corpus download approval |
+| 5. Self-supervised pretraining (SimCLR, ResNet-18 first, then custom) | [05-self-supervised.md](05-self-supervised.md) | reviewed (round 1, 2026-11-08); 5.0b pilot dispatchable now; H1 awaits the user; download only after the pilot |
 
 **Priority (user decision, 2026-11-07):** the goal is to replicate the paper (Carrasco-Davis
 et al. 2021), not the 2022 legacy numbers. Phase 2 is the main line. In phase 1, task 1.7
@@ -40,8 +40,7 @@ wait.
     - other normalisations (row C1);
     - the `candid` exclusion list for any pretraining corpus.
 - **The unlabelled corpus comes from the ZTF public alert archive** (`ztf.uw.edu/alerts/public/`):
-  - 3,065 nightly `.tar.gz` files from 2018-06-01 to 2026-11-07, about 2.4 GB per 2020
-    night;
+  - 3,065 nightly `.tar.gz` files from 2018-06-01 to 2026-11-07, about 8 GB per 2020 night (about 20 TB in total, measured 2026-11-08);
   - every alert is an avro with the three raw 63×63 cutouts;
   - bulk files, so no load on ALeRCE's services.
 
