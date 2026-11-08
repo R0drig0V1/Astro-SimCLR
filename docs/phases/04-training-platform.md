@@ -165,6 +165,12 @@ Plus:
 - **Out of scope:** multi-GPU. The engine refuses `world_size > 1`.
 - **No cross-engine resume:** in-flight Lightning runs finish on Lightning.
 
+**Known issue (data-tiers finding, PR #42).** The tiling row stream's pass *j* and
+`rot90_augment` at step *j* both use `default_rng([seed, j])`, so their draws are
+correlated. This affects only runs with `rot90_augment`. The engine must give every stream
+a distinct stream id. Fixing it on the Lightning path changes numerics, so it waits for
+the engine.
+
 ### 4.1 Engine core (after B0)
 - The loop, the horizon and early-stop policies, checkpoints and exact resume, the
   precision policy (ADR 0010), local scalars.
