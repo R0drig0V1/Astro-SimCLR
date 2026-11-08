@@ -146,7 +146,7 @@ The critical path to the first replication number is:
 Phase-1 task 1.9a (cloud runbook) is needed only for cloud GPUs. Each task is one PR,
 except the manual runs, and the phase-1 portability rule applies to all of them.
 
-### 2.1 Float input path (now)
+### 2.1 Float input path (now) — done (PR #12, merged as 4059070, 2026-11-08)
 
 - `prepare-data --images float32` also writes the stored float32 stamps as
   `images_f32.npy`. `meta.json` moves to format version 2; readers accept versions 1 and
