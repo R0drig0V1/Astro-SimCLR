@@ -228,3 +228,37 @@ def test_simclr_net_normalises_before_projection() -> None:
     assert z_i.shape == z_j.shape == (2, 16)
     # Scaling h does not change z: the projector sees h / ||h||.
     torch.testing.assert_close(net.projector(h_i / h_i.norm(dim=1, keepdim=True)), z_i)
+
+
+_DEVICES = [
+    pytest.param("cpu", id="cpu"),
+    pytest.param(
+        "mps",
+        id="mps",
+        marks=pytest.mark.skipif(not torch.backends.mps.is_available(), reason="no MPS"),
+    ),
+    pytest.param(
+        "cuda",
+        id="cuda",
+        marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="no CUDA"),
+    ),
+]
+
+
+@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("name", ["stamp1", "pstamps", "resnet18"])
+def test_models_follow_their_inputs_device(device: str, name: str) -> None:
+    # Portability rule: no device is hard-coded; outputs live where the inputs and weights do.
+    encoder = build_encoder(name)
+    net = SimCLRNet(encoder.module, encoder.out_features, 16).to(device).eval()
+    x = torch.rand(2, 3, 27, 27, device=device)
+    with torch.no_grad():
+        outputs = net(x, x)
+    for out in outputs:
+        assert out.device.type == device
+        assert torch.isfinite(out).all()
+    classifier = StampClassifier(0.0, with_features=True).to(device).eval()
+    with torch.no_grad():
+        logits = classifier(x, torch.randn(2, 23, device=device))
+    assert logits.device.type == device
+    assert logits.shape == (2, 5)
