@@ -464,6 +464,21 @@ A ViT-Ti with patch 7, pretrained on 1–5M unlabelled stamps, belongs to phase 
 not to 2.5. timm is a new dependency, so B8 and B9 need an ADR and a licence check of the
 Zoobot weights first.
 
+**Phase 2.5 architecture and augmentation CV: results (2026-11-08, RTX 5090, Lightning engine).**
+- Protocol: grouped 5-fold CV (`configs/splits/td_ztf_stamp_17_06_20_red-002-grouped.json`), 2 seeds per fold, 51,081 pool stamps.
+- Statistics: balanced accuracy, a paired class-stratified bootstrap with 10,000 resamples, seed 0. Margin 0.005 for non-inferiority.
+- Baseline: rot4 (CD21 replication) at 0.9345.
+
+| Row | Arm | Pooled | Δ (95 % CI) | Superiority | Non-inferiority | Decision |
+|---|---|---|---|---|---|---|
+| C5 | aug_noise 1.0 + feature jitter 0.05 | 0.9365 | +0.21 [−0.01, +0.43] pts | inconclusive | adopt | **not adopted** (pre-registered superiority rule; the CI touches 0). The user decided on 2026-11-08 to keep the original standard and run no confirmatory replication. Its noise stays an input to the phase-5 views and the C5+position diagnostic |
+| B7 | p4 | 0.9358 | +0.13 [−0.10, +0.35] | inconclusive | **adopt** | **adopted as the efficiency arm** (non-inferior at about half the compute) |
+| B1′ | p4 + avgpool63 context | 0.9325 | −0.20 [−0.45, +0.05] | inconclusive | adopt | dropped (its hypothesis was a gain; more compute) |
+| B2′ | p4m | 0.9313 | −0.32 [−0.56, −0.08] | **worse** | inconclusive | dropped |
+| C6 | synthetic hot-pixel Bogus 0.05 | 0.9349 | +0.04 [−0.17, +0.26] | inconclusive | adopt | dropped (no gain, about 2x slower) |
+
+Raw logs: `~/runs/p25/cv/` on the 5090. The test set was not used.
+
 **Improvement rows from the literature (research, 2026-11-08).** The full ranked report
 (18 ideas, every claim marked verified or inferred) is in the scratchpad `improvements.md`.
 
