@@ -22,12 +22,14 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
 - ``compare-reference RUN_DIR... --ref R1|R2|R3|R4|CD21 [--oracle-report FILE]``
   (:mod:`astro_simclr.reference`): exit 0 for PASS or REPORT, 1 for FAIL;
 - protocol (task 2.3, :mod:`astro_simclr.protocol`): ``make-splits`` writes the stored
-  decision splits of a prepared dataset; ``compare-variants --baseline RUN... --variant
-  RUN...`` reports McNemar on the seed ensembles and the paired bootstrap (always exit 0:
-  a report, never a decision). With ``--splits FILE`` (task 2.5-infra) it decides on split
-  runs (``train-supervised --splits FILE --fold K | --screen``): CV runs exit 0 for ADOPT
-  and 1 for NOT ADOPTED (``--rule superiority|non-inferiority``, ``--margin``), screen
-  runs 0 for KEEP and 1 for DROP;
+  decision splits of a prepared dataset (format version 2: grouped by object, by position
+  within ``--radius-arcsec`` or by ``--group-ids``); ``leakage-audit PREPARED_DIR`` reports
+  the objects shared across splits (always exit 0 on readable data);
+  ``compare-variants --baseline RUN... --variant RUN...`` reports McNemar on the seed
+  ensembles and the paired bootstrap (always exit 0: a report, never a decision). With
+  ``--splits FILE`` (task 2.5-infra) it decides on split runs (``train-supervised --splits
+  FILE --fold K | --screen``): CV runs exit 0 for ADOPT and 1 for NOT ADOPTED (``--rule
+  superiority|non-inferiority``, ``--margin``), screen runs 0 for KEEP and 1 for DROP;
 - phase-3 benchmarks (task 3.2, :mod:`astro_simclr.protocol.object_splits`,
   :mod:`astro_simclr.protocol.bench_report`): ``make-object-splits ALERTS.csv --out FILE``
   writes object-grouped, class-stratified Train/Validation/Test splits of an alert table;
@@ -503,7 +505,12 @@ def _make_splits(args: argparse.Namespace) -> int:
 
     if args.out.exists() and not args.overwrite:
         raise ConfigError(f"{args.out} already exists; pass --overwrite to replace it")
-    splits = make_splits(args.data, seed=args.seed)
+    splits = make_splits(
+        args.data,
+        seed=args.seed,
+        radius_arcsec=args.radius_arcsec,
+        group_ids_file=args.group_ids,
+    )
     write_splits(splits, args.out)
     for dup in splits.duplicates:
         sys.stdout.write(
@@ -512,17 +519,69 @@ def _make_splits(args: argparse.Namespace) -> int:
             f"{dup['features_equal']}\n"
         )
     sizes = ", ".join(
-        f"fold {f.fold}: {f.training.size}/{f.selection.size}/{f.evaluation.size}"
+        f"fold {f.fold}: {f.training.size}/{f.selection.size}/{f.evaluation.size}/{f.unused.size}"
         for f in splits.folds
+    )
+    grouping = splits.grouping
+    assert grouping is not None  # noqa: S101 - make_splits always groups
+    how = (
+        f'position within {grouping.radius_arcsec}"'
+        if grouping.radius_arcsec is not None
+        else f"external ids ({args.group_ids})"
     )
     sys.stdout.write(
         f"excluded from Train: {list(splits.excluded_train)}\n"
+        f"grouping: {how}; {grouping.n_groups} groups over the pool, {len(grouping.multi())} "
+        f"with 2+ stamps\n"
         f"screen: {splits.screen.selection.size} selection / {splits.screen.decision.size} "
-        f"decision Validation stamps\n"
-        f"cv (training/selection/evaluation): {sizes}\n"
-        f"wrote {args.out}\n"
+        f"decision Validation stamps; {len(splits.screen_excluded_train)} Train stamps grouped "
+        f"with Validation leave the screen's training\n"
     )
+    if splits.screen_fallback is not None:
+        sys.stdout.write(f"screen fallback: {splits.screen_fallback}\n")
+    sys.stdout.write(f"cv (training/selection/evaluation/unused): {sizes}\nwrote {args.out}\n")
     return 0
+
+
+def _leakage_audit(args: argparse.Namespace) -> int:
+    from astro_simclr.protocol.audit import format_audit, leakage_audit
+
+    report = leakage_audit(
+        args.data, radius_arcsec=args.radius_arcsec, group_ids_file=args.group_ids
+    )
+    if args.json:
+        sys.stdout.write(json.dumps(report, indent=2) + "\n")
+    else:
+        sys.stdout.write("\n".join(format_audit(report)) + "\n")
+    return 0
+
+
+def _positive_float(text: str) -> float:
+    """An argparse type: a finite float above 0."""
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {text!r}") from None
+    if not 0 < value < float("inf"):
+        raise argparse.ArgumentTypeError(f"must be a positive number, got {text}")
+    return value
+
+
+def _add_grouping_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--radius-arcsec",
+        type=_positive_float,
+        default=1.5,
+        metavar="R",
+        help='group alerts within R arcseconds of each other (default 1.5")',
+    )
+    parser.add_argument(
+        "--group-ids",
+        type=Path,
+        metavar="FILE",
+        help="group by external ids instead (an oid column): a .npz with one array per "
+        "split (Train, Validation; Test for leakage-audit)",
+    )
 
 
 def _make_object_splits(args: argparse.Namespace) -> int:
@@ -727,13 +786,16 @@ def _add_protocol_commands(
         "make-splits",
         help="write the stored decision splits (screen, 5-fold CV) of a prepared dataset",
         description="Find the stamps duplicated across splits (removed from Train only), "
-        "then draw the 250/250 screen of Validation and the stratified 5-fold CV on Train + "
-        "Validation, each fold with its own 100-per-class selection set; write them as "
-        "JSON (docs/evaluation-protocol.md).",
+        "group the alerts of one object (by position within --radius-arcsec, or by "
+        "--group-ids), then draw the grouped 250/250 screen of Validation and the "
+        "stratified group 5-fold CV on Train + Validation, each fold with its own "
+        "100-per-class selection set; write them as JSON, format version 2 "
+        "(docs/evaluation-protocol.md).",
     )
     splits.add_argument("data", type=Path, metavar="PREPARED_DIR")
     splits.add_argument("--out", type=Path, required=True, metavar="FILE")
     splits.add_argument("--seed", type=int, default=0, metavar="N")
+    _add_grouping_arguments(splits)
     splits.add_argument("--overwrite", action="store_true")
     splits.set_defaults(handler=_make_splits)
     _add_benchmark_commands(commands)
@@ -810,6 +872,19 @@ def _add_benchmark_commands(
         help="report runs from different machines or builds together",
     )
     report.set_defaults(handler=_bench_report)
+
+    audit = commands.add_parser(
+        "leakage-audit",
+        help="report the objects a prepared dataset shares across its splits",
+        description="Group the alerts of all three splits by position (or by --group-ids) "
+        "and print the groups within each split and per split pair, by class, and the "
+        "Validation and Test rows that share a position with a Train row; also the "
+        "byte-identical stamps. A report: always exits 0 on readable data.",
+    )
+    audit.add_argument("data", type=Path, metavar="PREPARED_DIR")
+    _add_grouping_arguments(audit)
+    audit.add_argument("--json", action="store_true", help="print the report as JSON")
+    audit.set_defaults(handler=_leakage_audit)
 
 
 def _fetch(args: argparse.Namespace) -> M1Files:

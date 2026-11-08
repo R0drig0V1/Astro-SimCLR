@@ -10,9 +10,16 @@ mode        trains on (tiled)          selects the checkpoint on      predicts (
 ``fold``    fold K's training part     fold K's selection set         fold K's evaluation
                                        (100 per class)                part (pool index)
 ``screen``  Train minus excluded       the screen's selection half    the screen's decision
-                                       (50 per class of Validation)   half (Validation
-                                                                      index)
+            (and, for a version-2      (50 per class of Validation)   half (Validation
+            file, minus the Train                                     index)
+            alerts grouped with
+            Validation)
 ==========  =========================  =============================  =====================
+
+A version-2 (grouped) file needs nothing else: its folds' training parts already leave out
+the unused members of the selection groups (:class:`~astro_simclr.protocol.splits.CVFold`),
+and :meth:`~astro_simclr.protocol.splits.ProtocolSplits.screen_training_excluded` gives the
+screen's Train exclusions. ``describe()`` adds the grouping (``None`` for version 1).
 
 Test is never loaded. The predictions' ``index`` follows ADR 0004 and what the decision
 helpers of :mod:`astro_simclr.protocol.compare` check: the pool index for a fold (Train
@@ -129,7 +136,8 @@ class SplitRun:
         splits = self.splits
         n_train = splits.n_train
         if self.fold is None:
-            training = train_keep_indices(n_train, splits.excluded_train)
+            # Grouped splits: also without the Train alerts grouped with Validation.
+            training = train_keep_indices(n_train, splits.screen_training_excluded())
             parts = RunParts(
                 training=training,
                 selection=n_train + splits.screen.selection,
@@ -185,6 +193,19 @@ class SplitRun:
             "n_selection": int(parts.selection.size),
             "n_evaluation": int(parts.evaluation.size),
             "excluded_train": list(self.splits.excluded_train),
+            "grouping": self._grouping(),
+        }
+
+    def _grouping(self) -> dict[str, Any] | None:
+        """The grouping of a version-2 file (method, radius, groups), ``None`` for version 1."""
+        grouping = self.splits.grouping
+        if grouping is None:
+            return None
+        return {
+            "method": grouping.method,
+            "radius_arcsec": grouping.radius_arcsec,
+            "n_groups": grouping.n_groups,
+            "n_screen_excluded_train": len(self.splits.screen_excluded_train),
         }
 
 
