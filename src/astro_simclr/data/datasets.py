@@ -10,8 +10,8 @@ Ports of the legacy ``utils/dataset.py`` classes:
 The legacy classes unpickled the file in ``__init__`` and applied ``img_float2int`` per
 item; here the split is already uint8 (loaded once, usually memory-mapped from the
 prepared layout), and the transform is any :class:`Augmentation`, normally one from
-``astro_simclr.augmentations.get_augmentation(name, size)`` (the legacy names, including
-``without_aug``, the legacy centre crop ``Resize_img``). Randomness comes from the
+``astro_simclr.augmentations.get_augmentation(name, size)`` (for example ``center_crop``,
+the legacy ``without_aug`` / ``Resize_img``). Randomness comes from the
 augmentation (global generators, seeded by ``seed_everything``); the datasets draw none.
 """
 

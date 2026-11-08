@@ -158,7 +158,7 @@ pickle ──read_pickle──► validate ──► StampData ──write_prepa
   `ContrastiveDataset` returns `augmentation.pair(stamp)`. Each item gets a writable copy
   of its stamp, never a view of the memory map.
   The augmentation normally comes from `get_augmentation(name, size)` (1.5); with
-  `without_aug` an item equals the legacy `img_float2int` → `ToPILImage` → `Resize_img`
+  `center_crop` (legacy `without_aug`) an item equals the legacy `img_float2int` → `ToPILImage` → `Resize_img`
   path, and every registered name is tested with `ContrastiveDataset`.
 - `synthetic`: `make_synthetic` writes the four pickles with the real containers and
   dtypes, and a rotation-invariant class pattern inside the central 27×27 crop (a
