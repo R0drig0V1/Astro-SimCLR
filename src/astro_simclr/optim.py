@@ -28,7 +28,8 @@ Behaviour changes against the legacy code (also in docs/architecture.md):
 - ``p.grad`` is no longer modified in place by the weight-decay term.
 - Dropped: the unused ``epoch`` argument and counter of ``step``, the never-implemented
   ``classic_momentum=False`` mode and the ``exclude_from_*`` lists, which the legacy step
-  never consulted (its name filtering was a TODO).
+  never consulted (its name filtering was a TODO). Phase 5 (task 5.0b) brings the exclusion
+  back per param group (:data:`EXCLUDE_KEY`), off unless a group sets it.
 """
 
 from __future__ import annotations
@@ -42,10 +43,14 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LambdaLR
 from torch.optim.optimizer import ParamsT
 
-__all__ = ["EETA_DEFAULT", "LARS", "cosine_warmup_lr", "cosine_warmup_scheduler"]
+__all__ = ["EETA_DEFAULT", "EXCLUDE_KEY", "LARS", "cosine_warmup_lr", "cosine_warmup_scheduler"]
 
 #: Default trust coefficient (``eeta``) of the legacy and TensorFlow LARS.
 EETA_DEFAULT = 0.001
+#: Param-group key: when True, the group's parameters get neither weight decay nor the
+#: trust ratio (plain SGD with momentum). Read with ``group.get``, so groups without it (every
+#: legacy run) and optimizer states saved before it existed behave as before.
+EXCLUDE_KEY = "exclude_from_adaptation"
 
 
 class LARS(Optimizer):
@@ -61,6 +66,12 @@ class LARS(Optimizer):
         legacy_trust_ratio: True (default) keeps the legacy ``.ge(0)`` test, so a zero
             gradient makes the parameter NaN and a zero weight never moves; False uses
             ``.gt(0)``, giving those parameters a trust ratio of 1.
+
+    A param group with ``exclude_from_adaptation: True`` (:data:`EXCLUDE_KEY`) skips both
+    the weight decay and the trust ratio: its update is ``v <- momentum * v + lr * g``,
+    ``w <- w - v`` (or the Nesterov form), SimCLR's treatment of BatchNorm parameters and
+    biases (phase 5, :func:`astro_simclr.ssl.optim.lars_param_groups`). The key is not a
+    constructor default: it is set per group.
 
     Raises:
         ValueError: a negative ``lr``, ``momentum``, ``weight_decay`` or ``eeta``.
@@ -124,17 +135,23 @@ class LARS(Optimizer):
         assert p.grad is not None  # noqa: S101 -- checked by the caller; narrows the type
         lr: float = group["lr"]
         momentum: float = group["momentum"]
-        grad = p.grad.add(p, alpha=group["weight_decay"])
-        w_norm = torch.linalg.vector_norm(p)
-        g_norm = torch.linalg.vector_norm(grad)
-        if group["legacy_trust_ratio"]:
-            usable = w_norm.ge(0) & g_norm.ge(0)
+        if group.get(EXCLUDE_KEY, False):
+            # SimCLR's exclude_from_weight_decay and exclude_from_layer_adaptation (BN and
+            # biases): no decay term and a trust ratio of 1, i.e. SGD with momentum.
+            grad = p.grad
+            scaled_lr = lr
         else:
-            usable = w_norm.gt(0) & g_norm.gt(0)
-        trust_ratio = torch.where(
-            usable, group["eeta"] * w_norm / g_norm, torch.ones_like(w_norm)
-        ).item()
-        scaled_lr = lr * trust_ratio
+            grad = p.grad.add(p, alpha=group["weight_decay"])
+            w_norm = torch.linalg.vector_norm(p)
+            g_norm = torch.linalg.vector_norm(grad)
+            if group["legacy_trust_ratio"]:
+                usable = w_norm.ge(0) & g_norm.ge(0)
+            else:
+                usable = w_norm.gt(0) & g_norm.gt(0)
+            trust_ratio = torch.where(
+                usable, group["eeta"] * w_norm / g_norm, torch.ones_like(w_norm)
+            ).item()
+            scaled_lr = lr * trust_ratio
         state = self.state[p]
         if "momentum_buffer" not in state:
             state["momentum_buffer"] = torch.zeros_like(p)

@@ -48,6 +48,10 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   ``runs ls``, ``runs show KEY`` and ``runs compare SPEC`` (by experiment spec); exit 1
   when the registry cannot be used or a comparison does not resolve. Registered by
   :func:`astro_simclr.registry.parser.add_runs_command`, whose handlers load on use.
+- SimCLR pilot (task 5.0b, :mod:`astro_simclr.simclr.commands`): ``simclr-pilot``
+  pretrains, ``simclr-embed`` dumps ``h`` of a checkpoint or of the random init,
+  ``make-label-subsets`` stores the probe's label subsets and ``simclr-probe`` scores the
+  probe on the screen halves (exit 0 when they finish).
 - M1 oracle (task 2.2b, :mod:`astro_simclr.oracle`): ``fetch-m1`` downloads M1 at the
   pinned commit (SHA-256 checked) into a local cache and converts it to ``.npz``;
   ``m1-oracle --data-dir DIR --out DIR`` runs the port-equivalence and data-path checks
@@ -102,6 +106,7 @@ from astro_simclr.config import (
 )
 from astro_simclr.hparams import COMMAND_DEFAULTS, COMMANDS, load_legacy_hparams
 from astro_simclr.registry.parser import add_runs_command
+from astro_simclr.simclr.commands import add_simclr_commands
 
 if TYPE_CHECKING:
     from astro_simclr.oracle.m1 import M1Files
@@ -1301,6 +1306,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_oracle_commands(commands)
     _add_alert_commands(commands)
     add_runs_command(commands)
+    add_simclr_commands(commands)
     return parser
 
 
