@@ -349,7 +349,7 @@ Results (`results/phase2/replication/m1_oracle.json`):
 - Leakage: the one `red` Train stamp also found in Validation or Test is removed **from
   Train only**. Validation and Test stay at 500, as in the paper.
 
-### 2.4 Replication runs (after the 2.2c pilot; manual) — with features done, **CD21 PASS (faithful)** (2026-11-08); without features running
+### 2.4 Replication runs (after the 2.2c pilot; manual) — with features done, **CD21 PASS (faithful)** (2026-11-08); without features done (advisory: 1.06 points low)
 
 **Result (with features, GTX 1050, `cu126`, 5 seeds, code at da3e3ee):**
 
@@ -367,7 +367,18 @@ exited 0 with `CD21: PASS (faithful)`: |Δ| = 0.0018 against the paper's 0.941 �
 SN test recall 0.872 ± 0.015 (needs 0.87 ± 0.04); validation 0.9428 (needs 0.950 ± 0.01);
 M1 oracle passed. About 26 minutes per run (0.050 s per step). The best steps (4.2k–6.3k,
 one outlier at 18.9k) match M1's best near 4.8k. No diagnostic was needed, so the list
-below stays unused. The without-features runs (advisory) are queued on the same machine.
+below stays unused.
+
+**Result (without features, advisory; same machine, main @ 695ed93):** test 0.870 / 0.870 /
+0.872 / 0.888 / 0.862, so **0.8724 ± 0.0095** against the paper's 0.883 ± 0.006
+(|Δ| = 0.0106, just outside "acceptable"); validation 0.882 / 0.880 / 0.896 / 0.886 /
+0.888; best steps 2.1k–6.9k. `compare-reference` prints `CD21: REPORT` (advisory, exit 0).
+The likely cause is the preset's documented assumption: `carrasco2021-no-features` reuses
+M1's hyperparameters, while the paper's without-features model was tuned separately and
+there is no checkpoint to check it against. The gap is about 2.5 standard errors of the
+5-seed mean. It does not block 2.5, which is with features. Open, low priority: tune β
+and the learning rate for the without-features model on the screen, if the paper's
+without-features number is ever needed.
 
 
 - `carrasco2021` with features, 5 seeds, plus without features, 5 seeds (advisory). Run on
