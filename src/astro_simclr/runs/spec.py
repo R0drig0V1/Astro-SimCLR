@@ -23,6 +23,7 @@ version 1 (:data:`SPEC_FORMAT`, :data:`SPEC_VERSION`)::
     machine:
       class: cuda-nvidia-geforce-gtx-1050   # the run id's machine class (ADR 0015, rule 7)
       extra: cu126                  # the `uv sync --extra` of that machine (ADR 0001); optional
+    engine: lightning               # optional: lightning (the default) or plain (task 4.6)
     scratch: false                  # optional: true allows a dirty tree (never a result)
 
 **Settings of a cell** (:meth:`ExperimentSpec.arm_settings`) resolve in the order of
@@ -33,6 +34,12 @@ the cell's seed and the runner's ``data_dir`` and ``output_dir``. ``seed``, ``da
 first three belong to the cell and the runner, and a pretrained checkpoint has no
 machine-independent name yet (phase 5).
 
+**Engine.** ``engine`` is the training loop of every cell: ``lightning``
+(``experiments.run_command``) or ``plain`` (``tasks.plain.run_plain``, which trains only the
+paper classifier on the ``carrasco2021`` schedule and has no ``limit_*_batches``). Like
+``runtime.engine`` of a nested config (ADR 0017), it is a run-id component, not a setting:
+the arms' config hashes do not depend on it, their run ids do.
+
 **Identity.** :attr:`ExperimentSpec.spec_id`, the experiment-spec id that a comparison
 takes (A2), is the SHA-256 of the canonical JSON (``runs.canonical.canonical_json``) of
 :meth:`ExperimentSpec.to_plain`: the parsed content, so a comment or a reordering of
@@ -42,7 +49,7 @@ config hash (:meth:`ExperimentSpec.arm_config_sha256`), because the seed is an i
 key (ADR 0015, rule 4).
 
 The registry depends on these names, so they are stable: ``name``, ``spec_id``,
-``command``, ``machine_class``, ``splits`` (``None`` or ``.file``), ``arms`` (each
+``command``, ``machine_class``, ``engine``, ``splits`` (``None`` or ``.file``), ``arms`` (each
 ``.name``), ``cells()`` (each ``.arm``, the arm's name, ``.seed``, ``.split``) and
 ``arm_config_sha256(arm)``.
 """
@@ -62,6 +69,7 @@ from astro_simclr.config import ConfigError, Settings, settings_from_mapping
 from astro_simclr.hparams import COMMAND_DEFAULTS
 from astro_simclr.runs.canonical import CanonicalError, canonical_json, config_sha256, sha256_text
 from astro_simclr.runs.identity import (
+    ENGINES,
     SCREEN,
     Engine,
     IdentityError,
@@ -102,7 +110,7 @@ RESERVED_KEYS: Final[Mapping[str, str]] = {
 
 _TOP_KEYS: Final = frozenset(
     {"format", "version", "name", "command", "preset", "settings", "arms", "seeds"}
-    | {"splits", "machine", "scratch"}
+    | {"splits", "machine", "engine", "scratch"}
 )
 _REQUIRED: Final = ("format", "version", "name", "command", "arms", "seeds", "machine")
 _SLUG = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
@@ -226,6 +234,7 @@ class ExperimentSpec:
     machine_class: str
     extra: str | None
     scratch: bool
+    engine: Engine = "lightning"
 
     def to_plain(self) -> dict[str, object]:
         """The spec as plain values, in the file's form (what :attr:`spec_id` hashes)."""
@@ -247,6 +256,7 @@ class ExperimentSpec:
             "seeds": list(self.seeds),
             "splits": splits,
             "machine": {"class": self.machine_class, "extra": self.extra},
+            "engine": self.engine,
             "scratch": self.scratch,
         }
 
@@ -421,6 +431,9 @@ def _from_plain(data: Mapping[str, object]) -> ExperimentSpec:
     if scratch is not True and scratch is not False:
         raise SpecError(f"scratch must be true or false, got {scratch!r}")
     machine_class, extra = _parse_machine(data["machine"])
+    engine = data.get("engine", "lightning")
+    if engine not in ENGINES:
+        raise SpecError(f"engine {engine!r} is not one of: {', '.join(ENGINES)}")
     spec = ExperimentSpec(
         name=_slug(data["name"], "name"),
         command=command,
@@ -432,6 +445,7 @@ def _from_plain(data: Mapping[str, object]) -> ExperimentSpec:
         machine_class=machine_class,
         extra=extra,
         scratch=scratch,
+        engine=engine,
     )
     for arm in spec.arms:  # every arm must resolve before anything is queued
         spec.arm_settings(arm, spec.seeds[0])
@@ -476,11 +490,12 @@ def expected_run_ids(
     *,
     data_sha256: str,
     splits_sha256: str | None,
-    engine: Engine = "lightning",
+    engine: Engine | None = None,
 ) -> dict[Cell, str]:
     """The run id of every cell, given the data and the splits file the runs read.
 
-    ``splits_sha256`` is the SHA-256 of ``spec.splits.file`` (``None`` without splits).
+    ``splits_sha256`` is the SHA-256 of ``spec.splits.file`` (``None`` without splits);
+    ``engine`` defaults to ``spec.engine``.
 
     Raises:
         SpecError: if ``splits_sha256`` is given without splits or the reverse, or a hash
@@ -497,7 +512,7 @@ def expected_run_ids(
                 settings,
                 data_sha256=data_sha256,
                 machine_class=spec.machine_class,
-                engine=engine,
+                engine=spec.engine if engine is None else engine,
                 split=cell.split,
                 splits_sha256=None if cell.split is None else splits_sha256,
             )

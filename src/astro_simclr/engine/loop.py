@@ -473,6 +473,7 @@ def fit(
     identity: IdentityState | None = None,
     resume: Path | None = None,
     on_validation: Callable[[Validation, Task], None] | None = None,
+    on_step: Callable[[int], None] | None = None,
     progress: IO[str] | None = None,
 ) -> tuple[Task, FitResult]:
     """Train the task ``build()`` makes until its horizon (or early stop); return it and the result.
@@ -483,7 +484,9 @@ def fit(
     checkpoint and checked on resume (default: no run id, no split run). ``resume`` is a
     ``ckpt/last.pt`` to continue from. ``on_validation(record, task)`` runs after each fit
     validation, after its checkpoint (the module holds the weights of that step; it must
-    not change them). ``progress`` gets one line per validation (default: nothing).
+    not change them). ``on_step(steps_done)`` runs after each optimizer step, before its
+    validation (the preflight's throughput timer). ``progress`` gets one line per validation
+    (default: nothing).
 
     The module ends with the **last** weights; :func:`evaluate_kept` restores the best.
 
@@ -524,13 +527,14 @@ def fit(
     )
     if finish is not None:
         finish(run)
-    return task, _drive(run, resume, on_validation, progress)
+    return task, _drive(run, resume, on_validation, on_step, progress)
 
 
 def _drive(
     run: _Fit,
     resume: Path | None,
     on_validation: Callable[[Validation, Task], None] | None,
+    on_step: Callable[[int], None] | None,
     progress: IO[str] | None,
 ) -> FitResult:
     """The loop proper: steps, validations, the final checkpoints (C4, C10)."""
@@ -544,6 +548,8 @@ def _drive(
     try:
         while not run.done():
             run.step()
+            if on_step is not None:
+                on_step(run.steps_done)
             if run.schedule.validation.due(run.steps_done):
                 record = run.validate()
                 _log(log, record, started)

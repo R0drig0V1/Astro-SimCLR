@@ -32,6 +32,7 @@ splits:                         # optional; without it, the file's own Train/Val
 machine:
   class: cuda-nvidia-geforce-gtx-1050   # the run id's machine class
   extra: cu126                  # `uv sync --extra` on that machine (ADR 0001)
+engine: lightning               # optional: lightning (the default) or plain
 scratch: false                  # true: a dirty tree is allowed (never a result)
 ```
 
@@ -43,6 +44,13 @@ scratch: false                  # true: a dirty tree is allowed (never a result)
   order do not change it. The registry's `runs compare` takes it (A2).
 - Each cell (`<arm>/s<seed>/<f<fold>|screen|all>`) is one run id (ADR 0015). The seeds of
   one arm share its config hash.
+- `engine` picks the training loop of every cell: `lightning` (`run_command`) or `plain`
+  (`tasks.plain.run_plain`, task 4.6). As with `runtime.engine` of a nested config, it is
+  part of the run id but not of the config hash, so the same arms on both engines are two
+  sets of runs that `runs compare` refuses to mix unless told to. The plain engine trains
+  only `train-supervised` of `paper_stamp_classifier` on the `carrasco2021` schedule, and
+  has no `limit_train_batches` / `limit_val_batches` (a short run sets `max_steps`); a
+  spec outside that fails when its first cell starts.
 
 ## The GPU machines
 
@@ -158,8 +166,10 @@ then marked `cancelled` in the queue and its manifest). Each job's output is in 
 | ssh drops during `submit` or `sync` | the command fails with the ssh error; nothing half-done remains (the enqueue is one transaction; rsync resumes); run it again |
 | `wsl --shutdown`, a reboot | the queue file is durable (`synchronous=FULL`); running jobs come back as expired leases from another boot and resume |
 
-A resumed Lightning run continues from its last checkpoint (every
-`checkpoint_every_n_steps`, 1000 by default): up to that many steps are recomputed. A
+A resumed run continues from its last checkpoint (`checkpoints/last.ckpt` on Lightning,
+`ckpt/last.pt` on the plain engine; every `checkpoint_every_n_steps`, 1000 by default): up
+to that many steps are recomputed. The plain engine's checkpoints hold the RNG streams,
+so its resumes are exact. A
 `carrasco2021` resume is exact; an `epochs` resume is not bit-identical (Lightning
 checkpoints hold no RNG state; ADR 0014). A crash *while* `last.ckpt` is being written can
 leave it truncated; the resumed job then fails and needs a new attempt (rare: the write

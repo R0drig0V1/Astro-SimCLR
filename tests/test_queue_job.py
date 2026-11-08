@@ -7,6 +7,7 @@ exception), the run-directory lock, the dirty-tree refusal and the idempotent re
 
 from __future__ import annotations
 
+import dataclasses
 import fcntl
 import json
 import subprocess
@@ -108,6 +109,68 @@ def test_run_cell_writes_a_finished_manifest(tmp_path: Path, data_dir: Path, rep
     assert (run_dir / "metrics.json").stat().st_mtime_ns == before
     # Another attempt number on the same directory is refused.
     assert _run(spec_file, run_dir, data_dir, repo, attempt=4) == EXIT_REFUSED
+
+
+PLAIN_SPEC = """\
+format: astro-simclr-experiment-spec
+version: 1
+name: plain-demo
+command: train-supervised
+settings:
+  dataset: {dataset}
+  schedule: carrasco2021
+  supervised_model: paper_stamp_classifier
+  image_size: 21
+  eval_batch_size: 64
+  early_stopping: false
+  batch_size: 4
+  max_steps: 4
+  val_every_n_steps: 2
+  horizon_increment: 0
+  checkpoint_every_n_steps: 2
+  accelerator: cpu
+  deterministic: true
+arms:
+  baseline: {{}}
+seeds: [0]
+machine:
+  class: cpu-test
+engine: plain
+scratch: false
+"""
+
+
+def test_a_plain_spec_trains_on_the_plain_engine(
+    tmp_path: Path, classifier_f32_dir: Path, repo: Path
+) -> None:
+    """``engine: plain``: ``tasks.plain.run_plain`` with the queue's attempt; it resumes."""
+    spec_file = _spec(tmp_path, PLAIN_SPEC.format(dataset=classifier_f32_dir.name))
+    data = classifier_f32_dir.parent
+    document = expand(spec_file, data_dir=data, repo_root=repo)
+    assert document["engine"] == "plain"
+    run_dir = tmp_path / "runs" / "p"
+    spec = parse_spec(spec_file.read_text())
+    settings = spec.arm_settings("baseline", 0, data_dir=data, output_dir=run_dir)
+    identity = job_module.cell_identity(spec, Cell.parse(CELL), settings, repo_root=repo)
+    # A crash before the first checkpoint: the manifest is left running, the same attempt.
+    queued = new_manifest(
+        spec.command, settings, identity, git=GitState(None, None), uv_lock_sha256=None, attempt=2
+    )
+    machine = {"device": "cpu", "gpu": None, "torch": "x", "cuda": None, "fp32_precision": "ieee"}
+    run_dir.mkdir(parents=True)
+    write_manifest(run_dir, transition(queued, "running", machine=machine))
+    assert _run(spec_file, run_dir, data, repo, attempt=2) == 0
+    manifest = read_manifest(run_dir)
+    assert (manifest.status, manifest.engine, manifest.attempt) == ("finished", "plain", 2)
+    assert manifest.identity.machine_class == "cpu-test"
+    cells = document["cells"]
+    assert isinstance(cells, list) and manifest.run_id == cells[0]["run_id"]
+    assert (run_dir / "ckpt" / "last.pt").is_file() and (run_dir / JOB_RESULT_FILE).is_file()
+    # The plain run id differs from the same cell's on Lightning.
+    lightning = job_module.cell_identity(
+        dataclasses.replace(spec, engine="lightning"), Cell.parse(CELL), settings, repo_root=repo
+    )
+    assert lightning.run_id != manifest.run_id
 
 
 def test_a_crashed_attempt_resumes(tmp_path: Path, data_dir: Path, repo: Path) -> None:

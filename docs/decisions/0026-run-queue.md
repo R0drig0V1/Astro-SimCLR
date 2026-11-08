@@ -44,7 +44,8 @@ a git SHA, and sync for the registry (A2), which shares the spec format.
    expiry (120 s); the worker renews it every poll (5 s). Every later write names the
    token, so a worker whose lease was taken over cannot overwrite the new holder. An
    expired lease is requeued and resumes: same attempt, same run directory,
-   `run_command(resume="auto")` continues `checkpoints/last.ckpt`. Five requeues make a
+   `run_command(resume="auto")` continues `checkpoints/last.ckpt` (`run_plain` continues
+   `ckpt/last.pt` for a spec with `engine: plain`). Five requeues make a
    job `failed`. Statuses are the manifest's (ADR 0015 rule 11).
 4. **Workers own processes, not the other way round.** A job is
    `Popen(argv, start_new_session=True)`: its own process group, killed as a whole. The
@@ -103,7 +104,9 @@ a git SHA, and sync for the registry (A2), which shares the spec format.
 ## Consequences
 
 - A queued run differs from a hand-launched one only in the attempt and machine class it is
-  given; its manifest and `metrics.json` are those of `run_command`.
+  given; its manifest and `metrics.json` are those of `run_command`, or of `run_plain` for
+  a spec with `engine: plain` (the spec's engine is a run-id component, as
+  `runtime.engine` is for a nested config, ADR 0017).
 - A spec whose `machine.class` differs from the device's default class gives run ids that a
   hand-launched run on that device would not match: name the default class
   (`cuda-nvidia-geforce-gtx-1050`) unless a different class is meant.

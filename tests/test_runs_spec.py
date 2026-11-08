@@ -5,13 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 from _queue_support import SHA, spec_text
 
 from astro_simclr.cli import build_parser, training_settings
 from astro_simclr.runs.canonical import config_sha256
-from astro_simclr.runs.identity import SCREEN, run_identity
+from astro_simclr.runs.identity import SCREEN, Engine, run_identity
 from astro_simclr.runs.spec import (
     Cell,
+    ExperimentSpec,
     SpecError,
     expected_run_ids,
     load_spec,
@@ -114,6 +116,23 @@ def test_expected_run_ids() -> None:
     assert len(expected_run_ids(plain, data_sha256=SHA, splits_sha256=None)) == 4
 
 
+def test_the_engine_changes_run_ids_not_config_hashes() -> None:
+    """``engine`` is a run-id component, not a setting (ADR 0017)."""
+    lightning = parse_spec(FULL)
+    plain = parse_spec(FULL + "engine: plain\n")
+    assert lightning.engine == "lightning" and plain.engine == "plain"
+    assert plain.spec_id != lightning.spec_id
+    assert parse_spec(FULL + "engine: lightning\n").spec_id == lightning.spec_id
+    assert plain.arm_config_sha256("flux") == lightning.arm_config_sha256("flux")
+
+    def ids(spec: ExperimentSpec, engine: Engine | None = None) -> dict[Cell, str]:
+        return expected_run_ids(spec, data_sha256=SHA, splits_sha256="b" * 64, engine=engine)
+
+    assert set(ids(plain).values()).isdisjoint(ids(lightning).values())
+    assert ids(plain, "lightning") == ids(lightning)
+    assert parse_spec(yaml.safe_dump(plain.to_plain())) == plain
+
+
 def test_cell_keys() -> None:
     for cell in (Cell("a", 0, None), Cell("a.b-c", 12, SCREEN), Cell("x", 3, 4)):
         assert Cell.parse(cell.key) == cell
@@ -163,6 +182,7 @@ def test_cell_keys() -> None:
         (("machine: {", "machine: ["), "YAML"),
         (("name: c5-screen", "name: c5-screen\nowner: me"), "unknown"),
         (("name: c5-screen\n", ""), "missing keys"),
+        (("name: c5-screen", "name: c5-screen\nengine: jax"), "engine"),
     ],
 )
 def test_invalid_specs(edit: tuple[str, str], message: str) -> None:

@@ -91,8 +91,9 @@ uvx copier@9.19.1 update           # pull python-template improvements (clean tr
   2. Draw its randomness from `engine.randomness.host_generator` (per-sample parameters) or
      `device_generator` (per-pixel fields, recorded as device-dependent), with a new
      number in `RESERVED_STREAMS`; never from a global or unseeded generator.
-  3. Wire it into each engine with a thin adapter (today: the Lightning module; with 4.1:
-     the plain `Task`), and test the pure function directly.
+  3. Wire it into each engine with a thin adapter (the Lightning module and the plain
+     `Task`; for the paper model both delegate to `training.paper_augment.PaperAugment` and
+     `tasks.paper`), and test the pure function directly.
   4. Add it to the 4.7(a) CPU differential test's parametrisation (`_FLAGS` in
      `tests/test_engine_differential.py`): the flag must give bit-identical runs on both
      engines.

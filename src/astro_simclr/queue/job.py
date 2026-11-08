@@ -20,15 +20,17 @@ no shell, no interpolated string (ADR 0026).
   3. it reads the manifest already in ``DIR``, if any. A ``finished`` attempt exits 0 at
      once (a requeue after the job ended but before the worker recorded it); a
      ``failed`` or ``cancelled`` one, or one of another run id or attempt, is refused;
-  4. ``run_command(..., resume="auto", queued=QueueAttempt(N, spec machine class))``: a
-     fresh start, or the continuation of ``checkpoints/last.ckpt``. ``run_command``
-     writes the manifest (task A1, ``runs.record``): ``queued -> running``, then
+  4. on the spec's ``engine``, ``experiments.run_command`` (``lightning``) or
+     ``tasks.plain.run_plain`` (``plain``), with ``resume="auto"`` and
+     ``queued=QueueAttempt(N, spec machine class)``: a fresh start, or the continuation of
+     ``checkpoints/last.ckpt`` (``ckpt/last.pt`` on the plain engine). Either writes the
+     manifest (task A1, ``runs.record``): ``queued -> running``, then
      ``finished`` or ``failed``; an attempt left ``running`` by a crash goes
      ``running -> queued -> running`` and keeps its start time;
   5. SIGTERM, SIGINT or SIGHUP (the worker stopping it) end the process at once with
      ``128 + signal`` and write nothing: the manifest stays ``running``, exactly as after
-     ``kill -9``, and the next start resumes it (``run_command`` would otherwise record
-     the attempt ``cancelled``, which is terminal);
+     ``kill -9``, and the next start resumes it (the engine would otherwise record the
+     attempt ``cancelled``, which is terminal);
   6. ``QueueAttempt`` also carries the cell's run id (the expansion's): ``start_run``
      refuses, before any step, to record another one. At the end it writes
      ``DIR/job_result.json`` with the peak device memory (CUDA's
@@ -37,7 +39,8 @@ no shell, no interpolated string (ADR 0026).
   ``ASTRO_SIMCLR_CONCURRENT_JOBS`` (set by the worker) is the manifest's
   ``concurrent_jobs`` (``runs.record``).
 
-The engine is ``lightning`` until task 4.8.
+The engine is part of the run id (ADR 0015), so :func:`expand` and :func:`cell_identity`
+read it from the spec too.
 """
 
 from __future__ import annotations
@@ -59,7 +62,6 @@ from astro_simclr.data.files import atomic_write_bytes, sha256_file
 from astro_simclr.data.prepared import is_prepared
 from astro_simclr.data.schema import DataError
 from astro_simclr.runs.identity import (
-    Engine,
     RunIdentity,
     data_sha256,
     git_state,
@@ -69,7 +71,6 @@ from astro_simclr.runs.manifest import MANIFEST_FILE, read_manifest
 from astro_simclr.runs.spec import Cell, ExperimentSpec, SpecError, load_spec
 
 __all__ = [
-    "ENGINE",
     "EXIT_BUSY",
     "EXIT_FAILED",
     "EXIT_REFUSED",
@@ -82,8 +83,6 @@ __all__ = [
     "run_cell",
 ]
 
-#: The engine of queued runs (the plain engine replaces it with task 4.8).
-ENGINE: Final[Engine] = "lightning"
 #: ``format`` of :func:`expand`'s JSON (version 1).
 EXPANSION_FORMAT: Final = "astro-simclr-spec-expansion"
 #: The run-directory lock (never synced).
@@ -139,7 +138,7 @@ def cell_identity(
         settings,
         data_sha256=data_sha256(_dataset(settings)),
         machine_class=spec.machine_class,
-        engine=ENGINE,
+        engine=spec.engine,
         split=cell.split,
         splits_sha256=None if cell.split is None else splits,
     )
@@ -176,7 +175,7 @@ def expand(spec_path: Path, *, data_dir: Path, repo_root: Path) -> dict[str, obj
         "machine_class": spec.machine_class,
         "extra": spec.extra,
         "scratch": spec.scratch,
-        "engine": ENGINE,
+        "engine": spec.engine,
         "cells": cells,
     }
 
@@ -250,7 +249,6 @@ def _train(
     repo_root: Path,
 ) -> int:
     """Steps 4-6 of the module docstring; the exit code."""
-    from astro_simclr.experiments import run_command
     from astro_simclr.protocol.split_runs import SplitRequest
     from astro_simclr.runs.record import QueueAttempt
 
@@ -261,14 +259,21 @@ def _train(
     queued = QueueAttempt(attempt=attempt, machine_class=spec.machine_class, run_id=identity.run_id)
     try:
         with _signals_exit():
-            run_command(
-                spec.command,
-                settings,
-                resume="auto",
-                split=split,
-                progress_bar=False,
-                queued=queued,
-            )
+            if spec.engine == "plain":
+                from astro_simclr.tasks.plain import run_plain
+
+                run_plain(spec.command, settings, resume="auto", split=split, queued=queued)
+            else:
+                from astro_simclr.experiments import run_command
+
+                run_command(
+                    spec.command,
+                    settings,
+                    resume="auto",
+                    split=split,
+                    progress_bar=False,
+                    queued=queued,
+                )
     except Exception:
         traceback.print_exc()
         return EXIT_FAILED

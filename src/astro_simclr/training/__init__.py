@@ -20,24 +20,50 @@ Submodules (``docs/architecture.md``, section "training", has the design):
 A run is: ``apply_fp32_precision(settings)`` (ADR 0010), ``seed_run(settings)``, build
 the module and its data module, ``build_callbacks(settings, Module.MONITORABLE, dirpath=...)``,
 ``build_trainer(settings, callbacks=...)``, then ``trainer.fit(module, datamodule)``.
-Importing this package imports Lightning; the CLI imports it inside its handlers.
+Importing this package does **not** import Lightning (task 4.6): the names above load on
+first use (PEP 562), so the Lightning-free submodules (``class_augment``, ``flux_rescale``,
+``paper_augment``, ``tensor_splits``, ``metrics``, ``optimizers``, ``tiling``) serve the plain
+engine (ADR 0014) too. ``modules``, ``datamodules``, ``device_data``, ``runs`` and
+``schedule`` import Lightning.
 """
 
-from astro_simclr.training.datamodules import ClassifierDataModule, ContrastiveDataModule
-from astro_simclr.training.modules import (
-    ClassifierModule,
-    FineTuneModule,
-    LinearEvalModule,
-    SimCLRModule,
-    SupervisedCEModule,
-    SupervisedCEResNetModule,
-)
-from astro_simclr.training.runs import (
-    apply_fp32_precision,
-    build_callbacks,
-    build_trainer,
-    seed_run,
-)
+from __future__ import annotations
+
+import importlib
+from typing import TYPE_CHECKING, Any, Final
+
+if TYPE_CHECKING:
+    from astro_simclr.training.datamodules import ClassifierDataModule, ContrastiveDataModule
+    from astro_simclr.training.modules import (
+        ClassifierModule,
+        FineTuneModule,
+        LinearEvalModule,
+        SimCLRModule,
+        SupervisedCEModule,
+        SupervisedCEResNetModule,
+    )
+    from astro_simclr.training.runs import (
+        apply_fp32_precision,
+        build_callbacks,
+        build_trainer,
+        seed_run,
+    )
+
+#: Where each lazily loaded name lives.
+_LAZY: Final[dict[str, str]] = {
+    "ClassifierDataModule": "datamodules",
+    "ContrastiveDataModule": "datamodules",
+    "ClassifierModule": "modules",
+    "FineTuneModule": "modules",
+    "LinearEvalModule": "modules",
+    "SimCLRModule": "modules",
+    "SupervisedCEModule": "modules",
+    "SupervisedCEResNetModule": "modules",
+    "apply_fp32_precision": "runs",
+    "build_callbacks": "runs",
+    "build_trainer": "runs",
+    "seed_run": "runs",
+}
 
 __all__ = [
     "ClassifierDataModule",
@@ -53,3 +79,17 @@ __all__ = [
     "build_trainer",
     "seed_run",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """Load ``name`` from its submodule on first use (importing it imports Lightning).
+
+    Raises:
+        AttributeError: for a name this package does not export.
+    """
+    module = _LAZY.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(importlib.import_module(f"{__name__}.{module}"), name)
+    globals()[name] = value
+    return value
