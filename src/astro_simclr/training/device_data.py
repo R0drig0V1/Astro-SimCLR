@@ -38,6 +38,19 @@ The splits come from a prepared layout through one of two builders:
 
 :func:`without_train_indices` drops Train stamps (the leaked one, ``protocol.leakage``)
 from Train only, before the tiling.
+
+**Split runs** (task 2.5-infra, ``train-supervised --splits FILE --fold K | --screen``;
+:mod:`astro_simclr.protocol.split_runs`): both builders take ``names`` to read only some
+splits (Train and Validation: Test is never loaded), and :func:`protocol_splits` gathers
+the run's parts from them by pool index into the three roles of
+:class:`DeviceTensorDataModule`: ``Train`` is the part trained on (and tiled),
+``Validation`` the checkpoint-selection part, ``Test`` the held-out evaluation part that
+the run predicts. The data module takes the run's identity (``run_identity``:
+``SplitRun.identity()``, the splits SHA-256, mode and fold) and the training loader adds
+it to its checkpoint state as ``split_run``, so that a resume can never continue a run of
+another fold or mode: two folds can have the same tiled size, and the stream state alone
+would accept it. A normal run has no identity and its state has no ``split_run`` key (its
+checkpoints are unchanged; a missing key reads as a normal run).
 """
 
 from __future__ import annotations
@@ -45,13 +58,14 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import lightning as L
 import numpy as np
 import numpy.typing as npt
 import torch
 
+from astro_simclr.config import ConfigError
 from astro_simclr.data.float_input import crop_split
 from astro_simclr.data.prepared import load_prepared
 from astro_simclr.data.schema import (
@@ -64,16 +78,23 @@ from astro_simclr.data.schema import (
 from astro_simclr.models import N_FEATURES
 from astro_simclr.paper_model import PAPER_CROP
 from astro_simclr.protocol.leakage import train_keep_indices
+from astro_simclr.protocol.split_runs import RunParts
 from astro_simclr.training.tiling import PermutationStream, tile_indices
 
 __all__ = [
+    "SPLIT_RUN_STATE",
     "DeviceTensorDataModule",
     "SplitSource",
     "TensorSplit",
+    "check_split_identity",
     "float_crops",
     "interim_uint8_crops",
+    "protocol_splits",
     "without_train_indices",
 ]
+
+#: The key of a split run's identity in the training loader's checkpoint state.
+SPLIT_RUN_STATE: Final = "split_run"
 
 #: (crops, features, one-hot labels), as ``ClassifierModule`` expects.
 Batch = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
@@ -161,11 +182,13 @@ class _StreamLoader:
         tiled: npt.NDArray[np.int64],
         stream: PermutationStream,
         position: Callable[[], int],
+        identity: Mapping[str, object] | None = None,
     ) -> None:
         self._split = split
         self._tiled = tiled
         self._stream = stream
         self._position = position
+        self._identity = None if identity is None else dict(identity)
         self._passes: dict[int, torch.Tensor] = {}
 
     def __len__(self) -> int:
@@ -191,21 +214,55 @@ class _StreamLoader:
             yield self._split.gather(self.indices(batch))
 
     def state_dict(self) -> dict[str, Any]:
-        """The stream definition (Lightning saves it in every checkpoint)."""
-        return self._stream.state()
+        """The stream definition, plus a split run's identity (saved in every checkpoint)."""
+        state = self._stream.state()
+        if self._identity is not None:
+            state[SPLIT_RUN_STATE] = dict(self._identity)
+        return state
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
-        """Check that a resumed run streams the same data; the position is the global step.
+        """Check that a resumed run is the same run; the position is the global step.
 
         Raises:
+            ConfigError: if the checkpoint belongs to another split run (splits file, mode
+                or fold) or to a normal run when this is a split run, or the reverse.
             DataError: if the checkpoint's stream (item count, batch size, seed) differs.
         """
+        check_split_identity(state.get(SPLIT_RUN_STATE), self._identity)
+        state = {key: value for key, value in state.items() if key != SPLIT_RUN_STATE}
         if state != self._stream.state():
             msg = (
                 f"the checkpoint was trained on the stream {state}, but this run's is "
                 f"{self._stream.state()}: resume with the same data, batch_size and seed"
             )
             raise DataError(msg)
+
+
+def check_split_identity(stored: object, current: Mapping[str, object] | None) -> None:
+    """Refuse a resume across split runs: ``stored`` (from a checkpoint) must be ``current``.
+
+    ``None`` is a normal run (no ``--splits``). Both are ``SplitRun.identity()`` mappings
+    otherwise.
+
+    Raises:
+        ConfigError: if they differ (the message names both).
+    """
+    expected = None if current is None else dict(current)
+    if stored == expected:
+        return
+
+    def describe(identity: object) -> str:
+        if not isinstance(identity, Mapping):
+            return "a normal run (no --splits)"
+        part = "the screen" if identity.get("fold") is None else f"fold {identity.get('fold')}"
+        return f"{part} of the splits file with SHA-256 {identity.get('splits_sha256')}"
+
+    msg = (
+        f"the checkpoint is from {describe(stored)}, but this run is {describe(expected)}: "
+        "a resume must continue the same run (its weights saw other stamps; use another "
+        "--output-dir or no --resume)"
+    )
+    raise ConfigError(msg)
 
 
 class _SequentialLoader:
@@ -234,7 +291,9 @@ class DeviceTensorDataModule(L.LightningDataModule):
     ``source`` is a mapping of the three splits (``Train``, ``Validation``, ``Test``) or a
     callable returning one; it is resolved once, at the first ``setup``. ``balance=True``
     (the paper) tiles the Train split (:func:`tiling.tile_indices`); False streams it as
-    it is. ``seed`` defines the training stream (normally ``Settings.seed``). There are no
+    it is. ``seed`` defines the training stream (normally ``Settings.seed``).
+    ``run_identity`` is a split run's ``SplitRun.identity()`` (``None`` for a normal run),
+    kept in the training loader's checkpoint state and checked on resume. There are no
     worker processes: everything happens on the training device.
 
     Raises:
@@ -242,6 +301,7 @@ class DeviceTensorDataModule(L.LightningDataModule):
         DataError: in ``setup``, if a split is missing or not a :class:`TensorSplit`, or the
             (tiled) Train split is smaller than one batch; when resuming, if the checkpoint's
             stream differs (see :class:`_StreamLoader`).
+        ConfigError: when resuming, if the checkpoint is from another split run or mode.
     """
 
     def __init__(
@@ -252,6 +312,7 @@ class DeviceTensorDataModule(L.LightningDataModule):
         eval_batch_size: int = 64,
         seed: int = 0,
         balance: bool = True,
+        run_identity: Mapping[str, object] | None = None,
     ) -> None:
         super().__init__()
         for name, value in (("batch_size", batch_size), ("eval_batch_size", eval_batch_size)):
@@ -264,8 +325,10 @@ class DeviceTensorDataModule(L.LightningDataModule):
         self.eval_batch_size = eval_batch_size
         self.seed = seed
         self.balance = balance
-        # Plain values only, so checkpoints load with torch.load(weights_only=True).
-        self.save_hyperparameters(ignore=["source"])
+        self._identity = run_identity
+        # Plain values only, so checkpoints load with torch.load(weights_only=True). The
+        # identity is not a hyperparameter: it lives in the loader state (module docstring).
+        self.save_hyperparameters(ignore=["source", "run_identity"])
         self._splits: dict[str, _DeviceSplit] | None = None
         self._train: _StreamLoader | None = None
         #: The tiled Train order (indices into the Train split), set by ``setup``.
@@ -299,7 +362,9 @@ class DeviceTensorDataModule(L.LightningDataModule):
             self._train = None
             if len(tiled) >= self.batch_size:
                 stream = PermutationStream(len(tiled), self.batch_size, self.seed)
-                self._train = _StreamLoader(self._splits[_TRAIN], tiled, stream, self._global_step)
+                self._train = _StreamLoader(
+                    self._splits[_TRAIN], tiled, stream, self._global_step, self._identity
+                )
         if stage == "fit" and self._train is None:
             n = 0 if self.tiled_indices is None else len(self.tiled_indices)
             msg = (
@@ -354,8 +419,8 @@ def _labelled(
     return kept.astype(np.float32), np.array(split.labels, dtype=np.int64, copy=True)
 
 
-def interim_uint8_crops(path: Path) -> dict[str, TensorSplit]:
-    """The splits of the prepared layout ``path``, as 21x21 crops of its uint8 stamps.
+def interim_uint8_crops(path: Path, *, names: Sequence[str] = SPLITS) -> dict[str, TensorSplit]:
+    """The splits ``names`` of the prepared layout ``path``, as 21x21 crops of its uint8 stamps.
 
     The stand-in of task 2.2a, now the ``paper_input: uint8`` diagnostic: the centre 21x21
     of the stored uint8 stamps, divided by 255 (no re-normalisation on the crop), with the
@@ -366,7 +431,7 @@ def interim_uint8_crops(path: Path) -> dict[str, TensorSplit]:
     """
     data = load_prepared(path)
     splits: dict[str, TensorSplit] = {}
-    for name in SPLITS:
+    for name in names:
         split = data.splits[name]
         features, labels = _labelled(path, name, split)
         splits[name] = TensorSplit(
@@ -377,8 +442,10 @@ def interim_uint8_crops(path: Path) -> dict[str, TensorSplit]:
     return splits
 
 
-def float_crops(path: Path, *, nan_approximation: bool = True) -> dict[str, TensorSplit]:
-    """The splits of the prepared layout ``path`` through the paper's float input path.
+def float_crops(
+    path: Path, *, nan_approximation: bool = True, names: Sequence[str] = SPLITS
+) -> dict[str, TensorSplit]:
+    """The splits ``names`` of the prepared layout ``path`` through the paper's float path.
 
     Each split's stored float32 stamps (``images_f32.npy``, read from the memory map in
     chunks) go through ``crop_split(images, 21, nan_approximation=...)`` (task 2.1: ALeRCE's
@@ -392,7 +459,7 @@ def float_crops(path: Path, *, nan_approximation: bool = True) -> dict[str, Tens
     """
     data = load_prepared(path)
     splits: dict[str, TensorSplit] = {}
-    for name in SPLITS:
+    for name in names:
         split = data.splits[name]
         if split.images_f32 is None:
             msg = (
@@ -430,3 +497,44 @@ def without_train_indices(
         labels=np.ascontiguousarray(train.labels[keep]),
     )
     return {**splits, _TRAIN: reduced}
+
+
+def protocol_splits(
+    splits: Mapping[str, TensorSplit], parts: RunParts, n_train: int
+) -> dict[str, TensorSplit]:
+    """The roles of a split run, gathered from Train and Validation by pool index.
+
+    ``splits`` holds at least ``Train`` (all ``n_train`` stamps, in file order: the pool
+    index of Train stamp ``i`` is ``i``) and ``Validation`` (pool index ``n_train + j``).
+    Returns ``Train`` = ``parts.training`` (the only stamps trained on; the data module
+    tiles them), ``Validation`` = ``parts.selection`` and ``Test`` = ``parts.evaluation``,
+    each in pool order, which for the screen halves is Validation file order.
+
+    Raises:
+        DataError: if Train does not have ``n_train`` stamps (the splits belong to other
+            data) or a pool index is outside Train + Validation.
+    """
+    train, validation = splits[_TRAIN], splits[_VALIDATION]
+    if len(train.labels) != n_train:
+        msg = f"the splits have {n_train} Train stamps, the data {len(train.labels)}"
+        raise DataError(msg)
+    n_pool = n_train + len(validation.labels)
+
+    def gather(pool: npt.NDArray[np.int64]) -> TensorSplit:
+        if pool.size and (pool.min() < 0 or pool.max() >= n_pool):
+            raise DataError(f"pool indices must be in range({n_pool})")
+        in_train = pool < n_train
+        rows_train, rows_val = pool[in_train], pool[~in_train] - n_train
+
+        def take(attribute: str) -> npt.NDArray[Any]:
+            first = getattr(train, attribute)[rows_train]
+            second = getattr(validation, attribute)[rows_val]
+            return np.ascontiguousarray(np.concatenate([first, second]))
+
+        return TensorSplit(images=take("images"), features=take("features"), labels=take("labels"))
+
+    return {
+        _TRAIN: gather(parts.training),
+        _VALIDATION: gather(parts.selection),
+        _TEST: gather(parts.evaluation),
+    }

@@ -64,8 +64,42 @@ future readers will ask why they were made. The rules themselves are in
 - The training data modules must take index subsets (a fold's training and selection
   parts, the screen's halves) and drop `excluded_train`. They must also write predictions
   whose `index` is the Validation index (screen) or the pool index (CV), which the decision
-  helpers check. This wiring belongs with the GPU-resident data module of task 2.2a.
+  helpers check. Done in task 2.5-infra (see the amendment below).
 - Runs made before task 2.3 have no predictions, per-class recall or machine block. The
   CD21 gate fails them clearly, and `compare-variants` asks for a re-run.
 - The Validation stamp 115 label conflict (SN vs Bogus for the same alert) stays in the
   evaluation set, as in the paper. It costs at most 1 of 500 stamps (0.2 points).
+
+## Amendment (task 2.5-infra, 2026-11-08): split runs and the decision command
+
+10. **Split runs are separate runs with their own outputs.** `train-supervised --splits
+    FILE --fold K | --screen` (the `carrasco2021` schedule only) maps the run's parts onto
+    the device data module's three roles (training → `Train`, selection → `Validation`,
+    evaluation → `Test`) instead of adding a new data module, so the faithful path stays
+    bit-for-bit the same. Test is never read. The metrics have no `val_acc_best` or
+    `test_acc_at_best`, so a split run cannot enter the CD21 gate, and a normal run cannot
+    enter a decision. The flags are CLI arguments, not `Settings` fields: the part a run
+    used is recorded in `metrics.json["protocol"]`, and the preset report stays about the
+    training settings.
+11. **The splits file is verified at training time, and its SHA-256 pairs the runs.** A run
+    refuses a file whose fingerprint (source and label SHA-256, sizes) or leakage check
+    does not match the prepared data; it records the file's SHA-256, and
+    `compare-variants --splits FILE` refuses runs trained on another file. The screen
+    keeps the Validation index in its predictions (decision 2 and the consequence above),
+    the folds the pool index.
+12. **Non-inferiority for the efficiency rows.** The superiority rule (5) cannot adopt a
+    change that is only "as good". For the rows whose point is a lower cost (B7, B2′, B1′),
+    the plan adopts when the lower bound of the same 95 % interval is above −0.5 points.
+    The margin is a fraction (0.005); values above 0.05 are refused, because the likely
+    mistake is a margin typed in points. The rule is chosen per row before the runs, not as
+    a fallback.
+13. **Exit codes of a decision** follow `compare-reference`: 0 for ADOPT or KEEP, 1 for NOT
+    ADOPTED or DROP (and unusable data), 2 for invalid arguments or runs that cannot be
+    compared (another splits file, a missing fold or seed, mixed modes or machines).
+14. **A resume continues only the same split run** (found in the review of PR #17). The
+    stream check (item count, batch size, seed) cannot tell two folds apart, because their
+    tiled sizes can be equal. So the run's identity (splits SHA-256, mode, fold) goes into
+    the training loader's checkpoint state, and a resume from another fold, the screen or a
+    normal run, or a normal run resumed from a split run's checkpoint, is refused before
+    any step. Normal runs store no identity, so their checkpoints are unchanged, and
+    checkpoints from before this change read as normal runs.

@@ -12,7 +12,9 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   ``fine-tune``, ``train-supervised``. Their settings resolve as: the ``Settings``
   defaults, the subcommand's legacy protocol (``hparams.COMMAND_DEFAULTS``), ``--preset``
   (``train-supervised`` only: ``carrasco2021`` or ``carrasco2021-no-features``, the paper
-  replication of task 2.2c; :mod:`astro_simclr.presets`), ``--hparams``
+  replication of task 2.2c; :mod:`astro_simclr.presets`; and ``--splits FILE --fold K |
+  --screen``, a split run of task 2.5-infra: :mod:`astro_simclr.protocol.split_runs`),
+  ``--hparams``
   (a legacy ``results/hparams_best_*.yaml``, through the mapping of
   :mod:`astro_simclr.hparams`), ``--config``, ``--set``, then the explicit flags
   (``--data-dir``, ``--output-dir``, ``--seed``, ``--accelerator``, ``--pretrained``);
@@ -22,7 +24,10 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
 - protocol (task 2.3, :mod:`astro_simclr.protocol`): ``make-splits`` writes the stored
   decision splits of a prepared dataset; ``compare-variants --baseline RUN... --variant
   RUN...`` reports McNemar on the seed ensembles and the paired bootstrap (always exit 0:
-  a report, never a decision);
+  a report, never a decision). With ``--splits FILE`` (task 2.5-infra) it decides on split
+  runs (``train-supervised --splits FILE --fold K | --screen``): CV runs exit 0 for ADOPT
+  and 1 for NOT ADOPTED (``--rule superiority|non-inferiority``, ``--margin``), screen
+  runs 0 for KEEP and 1 for DROP;
 - ``preflight`` (:mod:`astro_simclr.preflight`): exit 0 if no step failed, else 1.
 - M1 oracle (task 2.2b, :mod:`astro_simclr.oracle`): ``fetch-m1`` downloads M1 at the
   pinned commit (SHA-256 checked) into a local cache and converts it to ``.npz``;
@@ -67,6 +72,7 @@ from astro_simclr.hparams import COMMAND_DEFAULTS, COMMANDS, load_legacy_hparams
 
 if TYPE_CHECKING:
     from astro_simclr.oracle.m1 import M1Files
+    from astro_simclr.protocol.split_runs import SplitRequest
 
 __all__ = [
     "add_settings_arguments",
@@ -307,12 +313,33 @@ def training_settings(command: str, args: argparse.Namespace) -> Settings:
     return settings_from_mapping(data)
 
 
+def _split_request(args: argparse.Namespace) -> SplitRequest | None:
+    """The split run asked for by ``--splits FILE --fold K | --screen``, or ``None``.
+
+    Raises:
+        ConfigError: if ``--fold``/``--screen`` come without ``--splits``, or the reverse.
+    """
+    from astro_simclr.protocol.split_runs import SplitRequest
+
+    file: Path | None = getattr(args, "splits", None)
+    fold: int | None = getattr(args, "fold", None)
+    screen: bool = getattr(args, "screen", False)
+    if file is None:
+        if fold is not None or screen:
+            raise ConfigError("--fold and --screen need --splits FILE")
+        return None
+    if fold is None and not screen:
+        raise ConfigError("--splits needs --fold K or --screen")
+    return SplitRequest(file, fold)
+
+
 def _train(args: argparse.Namespace) -> int:
     from astro_simclr.experiments import METRICS_FILE, run_command
 
     command: str = args.command
     settings = training_settings(command, args)
-    metrics = run_command(command, settings, resume=args.resume)
+    split = _split_request(args)
+    metrics = run_command(command, settings, resume=args.resume, split=split)
     shown = {**metrics, "seconds_per_step": metrics.get("timing", {}).get("seconds_per_step")}
     summary = ", ".join(
         f"{key} {shown[key]}"
@@ -322,6 +349,8 @@ def _train(args: argparse.Namespace) -> int:
             "monitor_best",
             "val_acc_best",
             "test_acc_at_best",
+            "selection_acc_best",
+            "evaluation_balanced_accuracy",
             "seconds_per_step",
         )
         if shown.get(key) is not None
@@ -340,6 +369,33 @@ _TRAINING_HELP = {
     "fine-tune": "fine-tuning of a pretrained encoder (legacy fine_tuning.py)",
     "train-supervised": "supervised CE baseline: stamp classifier or ResNet (iter_ce_*.py)",
 }
+
+
+def _add_split_arguments(sub: argparse.ArgumentParser) -> None:
+    """``train-supervised --splits FILE --fold K | --screen`` (task 2.5-infra)."""
+    sub.add_argument(
+        "--splits",
+        type=Path,
+        metavar="FILE",
+        help="a stored decision splits file (make-splits; configs/splits/): train on one of "
+        "its parts instead of Train, select on its selection part and predict its "
+        "evaluation part; test is not loaded (carrasco2021 schedule; "
+        "docs/evaluation-protocol.md)",
+    )
+    part = sub.add_mutually_exclusive_group()
+    part.add_argument(
+        "--fold",
+        type=int,
+        metavar="K",
+        help="with --splits: CV fold K (0-4): train on its training part (tiled), select on "
+        "its selection set, predict its evaluation part (pool indices)",
+    )
+    part.add_argument(
+        "--screen",
+        action="store_true",
+        help="with --splits: the 250/250 screen: train on Train, select on the selection "
+        "half of Validation, predict the decision half (Validation indices)",
+    )
 
 
 def _add_training_commands(
@@ -382,6 +438,7 @@ def _add_training_commands(
                 "et al. 2021 (float input, Adam (0.9, 0.999), the iteration schedule; ADR "
                 "0003), carrasco2021-no-features its without-features variant",
             )
+            _add_split_arguments(sub)
         if command in ("linear-eval", "fine-tune"):
             sub.add_argument(
                 "--pretrained",
@@ -400,18 +457,39 @@ def _compare_reference(args: argparse.Namespace) -> int:
 
 
 def _compare_variants(args: argparse.Namespace) -> int:
-    from astro_simclr.protocol.compare import compare_variants
+    from astro_simclr.protocol.compare import compare_decision, compare_variants
+    from astro_simclr.protocol.stats import NON_INFERIORITY_MARGIN
 
-    comparison = compare_variants(
+    if args.splits is None:
+        for flag, value in (("--rule", args.rule), ("--margin", args.margin)):
+            if value is not None:
+                raise ConfigError(f"{flag} needs --splits FILE (a decision on split runs)")
+        comparison = compare_variants(
+            args.baseline,
+            args.variant,
+            stage=args.split or "test",
+            n_boot=args.n_boot,
+            seed=args.seed,
+            allow_mixed_machines=args.allow_mixed_machines,
+        )
+        sys.stdout.write("\n".join(comparison.lines) + "\n")
+        return 0
+    if args.split is not None:
+        raise ConfigError("--split is for normal runs; split runs are compared on their parts")
+    if args.margin is not None and args.rule != "non-inferiority":
+        raise ConfigError("--margin needs --rule non-inferiority")
+    decision = compare_decision(
         args.baseline,
         args.variant,
-        stage=args.split,
+        args.splits,
+        rule=args.rule,
+        margin=NON_INFERIORITY_MARGIN if args.margin is None else args.margin,
         n_boot=args.n_boot,
         seed=args.seed,
         allow_mixed_machines=args.allow_mixed_machines,
     )
-    sys.stdout.write("\n".join(comparison.lines) + "\n")
-    return 0
+    sys.stdout.write("\n".join(decision.lines) + "\n")
+    return 0 if decision.passed else EXIT_DATA
 
 
 def _make_splits(args: argparse.Namespace) -> int:
@@ -532,16 +610,46 @@ def _add_protocol_commands(
 ) -> None:
     variants = commands.add_parser(
         "compare-variants",
-        help="McNemar and paired bootstrap of two sets of runs (a report)",
-        description="Pair the per-stamp predictions of a baseline and a variant (one run "
-        "per seed each): McNemar on the seed-ensembled predictions and a class-stratified "
+        help="compare two sets of runs: a report, or a decision on split runs (--splits)",
+        description="Pair the per-stamp predictions of a baseline and a variant. Normal runs "
+        "(one per seed): McNemar on the seed-ensembled predictions and a class-stratified "
         "paired bootstrap over stamps of the seed-mean accuracy difference (variant - "
-        "baseline). Always a report (exit 0): test is never a decision input "
+        "baseline); always a report (exit 0): test is never a decision input. With --splits "
+        "FILE, a decision on runs of train-supervised --splits FILE: CV fold runs (one per "
+        "fold and seed) are decided on the balanced accuracy of the evaluation parts by the "
+        "superiority rule (exit 0 ADOPT, 1 NOT ADOPTED) or --rule non-inferiority; screen "
+        "runs (one per seed) can only be dropped (exit 0 KEEP, 1 DROP) "
         "(docs/evaluation-protocol.md).",
     )
     variants.add_argument("--baseline", type=Path, nargs="+", required=True, metavar="RUN_DIR")
     variants.add_argument("--variant", type=Path, nargs="+", required=True, metavar="RUN_DIR")
-    variants.add_argument("--split", choices=["test", "val"], default="test")
+    variants.add_argument(
+        "--split",
+        choices=["test", "val"],
+        default=None,
+        help="normal runs: the stage to report (default test)",
+    )
+    variants.add_argument(
+        "--splits",
+        type=Path,
+        metavar="FILE",
+        help="decide on split runs trained on this splits file (its SHA-256 is checked)",
+    )
+    variants.add_argument(
+        "--rule",
+        choices=["superiority", "non-inferiority"],
+        default=None,
+        help="CV runs: superiority (default; adopt only if the 95 %% CI is above 0) or "
+        "non-inferiority (efficiency rows; adopt if the CI lower bound is above -MARGIN)",
+    )
+    variants.add_argument(
+        "--margin",
+        type=float,
+        default=None,
+        metavar="FRACTION",
+        help="--rule non-inferiority: the margin as a fraction of balanced accuracy "
+        "(default 0.005, half a point; at most 0.05)",
+    )
     variants.add_argument("--n-boot", type=int, default=10_000, metavar="N")
     variants.add_argument("--seed", type=int, default=0, metavar="N", help="bootstrap seed")
     variants.add_argument(

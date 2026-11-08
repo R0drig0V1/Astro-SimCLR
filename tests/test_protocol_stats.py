@@ -9,10 +9,13 @@ import numpy as np
 import pytest
 
 from astro_simclr.protocol.stats import (
+    NON_INFERIORITY_MARGIN,
     BootstrapCI,
     adoption_decision,
     balanced_accuracy,
+    check_margin,
     mcnemar,
+    non_inferiority_decision,
     paired_bootstrap,
     screen_decision,
 )
@@ -123,3 +126,31 @@ def test_screen_rule_only_drops() -> None:
     assert screen_decision(0.94, 0.89) == "drop"
     assert screen_decision(0.94, 0.901) == "keep"
     assert screen_decision(0.90, 0.99) == "keep"  # never "adopt"
+
+
+def _ci(low: float, high: float) -> BootstrapCI:
+    return BootstrapCI("balanced_accuracy", (low + high) / 2, low, high, 0.95, 100)
+
+
+def test_non_inferiority_rule() -> None:
+    assert NON_INFERIORITY_MARGIN == 0.005  # the plan's -0.5 points
+    # "As good" is enough: an interval around 0 is adopted, unlike under superiority.
+    assert non_inferiority_decision(_ci(-0.004, 0.003)) == "adopt"
+    assert adoption_decision(_ci(-0.004, 0.003)) == "inconclusive"
+    assert non_inferiority_decision(_ci(0.001, 0.02)) == "adopt"
+    # The lower bound must be strictly above -margin (-0.005 itself, float noise rounded).
+    assert non_inferiority_decision(_ci(0.003 - 0.008, 0.01)) == "inconclusive"
+    assert non_inferiority_decision(_ci(-0.0051, 0.01)) == "inconclusive"
+    assert non_inferiority_decision(_ci(-0.03, -0.006)) == "worse"
+    assert non_inferiority_decision(_ci(-0.03, -0.004)) == "inconclusive"
+    # A wider margin adopts what the default does not.
+    assert non_inferiority_decision(_ci(-0.009, 0.0), margin=0.01) == "adopt"
+
+
+@pytest.mark.parametrize("margin", [0.0, -0.005, 0.5, 0.051])
+def test_margin_is_a_fraction(margin: float) -> None:
+    with pytest.raises(ValueError, match="fraction of balanced accuracy"):
+        check_margin(margin)
+    with pytest.raises(ValueError, match="fraction"):
+        non_inferiority_decision(_ci(0.0, 0.0), margin=margin)
+    check_margin(0.05)

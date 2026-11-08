@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 import torch
 
+from astro_simclr.config import ConfigError
 from astro_simclr.data.schema import DataError
 from astro_simclr.training.device_data import (
     DeviceTensorDataModule,
@@ -112,6 +113,23 @@ def test_stream_state_guards_resumes() -> None:
     assert state == {"n": 25, "batch_size": 4, "seed": 3}
     loader.load_state_dict(state)
     with pytest.raises(DataError, match="same data, batch_size and seed"):
+        loader.load_state_dict({**state, "seed": 4})
+
+
+def test_split_identity_is_in_the_stream_state() -> None:
+    fold2 = {"splits_sha256": "a" * 64, "mode": "fold", "fold": 2}
+    loader = _ready(batch_size=4, seed=3, run_identity=fold2).train_dataloader()
+    state = loader.state_dict()
+    assert state == {"n": 25, "batch_size": 4, "seed": 3, "split_run": fold2}
+    loader.load_state_dict(state)
+    with pytest.raises(ConfigError, match=r"from fold 3 of .* but this run is fold 2"):
+        loader.load_state_dict({**state, "split_run": {**fold2, "fold": 3}})
+    with pytest.raises(ConfigError, match="from a normal run"):
+        loader.load_state_dict({"n": 25, "batch_size": 4, "seed": 3})
+    normal = _ready(batch_size=4, seed=3).train_dataloader()
+    with pytest.raises(ConfigError, match="this run is a normal run"):
+        normal.load_state_dict(state)
+    with pytest.raises(DataError, match="same data"):  # the stream is still checked
         loader.load_state_dict({**state, "seed": 4})
 
 

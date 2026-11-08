@@ -13,8 +13,12 @@ All inputs are per-stamp arrays of the *same* stamps, in the same order (paired)
   count, because the evaluation sets are balanced by design (100 or 50 per class; the CV
   folds are stratified), so the class mix is not a source of sampling noise. With
   ``metric="balanced_accuracy"`` (the CV metric) the classes weigh equally.
-- :func:`adoption_decision`: a flag is adopted only if the 95 % interval of its CV
-  difference against the baseline excludes 0 on the positive side.
+- :func:`adoption_decision`: the **superiority** rule of task 2.3: a flag is adopted only
+  if the 95 % interval of its CV difference against the baseline excludes 0 on the
+  positive side.
+- :func:`non_inferiority_decision`: the **non-inferiority** rule of the efficiency rows of
+  task 2.5 (B7, B2', B1'), which only need to be "as good": adopt when the interval's
+  lower bound is above ``-margin`` (0.005, half a point of balanced accuracy).
 - :func:`screen_decision`: the 250/250 screen can only **drop** a variant, when it is worse
   than the baseline by 4 points or more; it never adopts one.
 
@@ -32,13 +36,19 @@ import numpy as np
 import numpy.typing as npt
 
 __all__ = [
+    "MAX_NON_INFERIORITY_MARGIN",
+    "NON_INFERIORITY_MARGIN",
     "SCREEN_DROP_THRESHOLD",
+    "Adoption",
     "BootstrapCI",
     "McNemar",
     "Metric",
+    "Rule",
     "adoption_decision",
     "balanced_accuracy",
+    "check_margin",
     "mcnemar",
+    "non_inferiority_decision",
     "paired_bootstrap",
     "screen_decision",
 ]
@@ -46,9 +56,16 @@ __all__ = [
 Metric = Literal["accuracy", "balanced_accuracy"]
 Adoption = Literal["adopt", "worse", "inconclusive"]
 Screen = Literal["drop", "keep"]
+#: The CV decision rules: ``superiority`` (task 2.3) or ``non-inferiority`` (efficiency rows).
+Rule = Literal["superiority", "non-inferiority"]
 
 #: The screen drops a variant worse than the baseline by this much or more (4 points).
 SCREEN_DROP_THRESHOLD: Final = 0.04
+#: The non-inferiority margin of the efficiency rows (plan, task 2.5): half a point.
+NON_INFERIORITY_MARGIN: Final = 0.005
+#: Largest accepted margin. It is a fraction of balanced accuracy; a larger value is far
+#: more likely a margin typed in points (0.5 for half a point) than a real choice.
+MAX_NON_INFERIORITY_MARGIN: Final = 0.05
 #: Upper bound on the bootstrap's (resamples x stamps) block held in memory at once.
 _BLOCK: Final = 2_000_000
 #: Rounding of differences compared with a threshold (0.94 - 0.90 is 0.0400000000000003).
@@ -204,6 +221,44 @@ def adoption_decision(interval: BootstrapCI) -> Adoption:
     if interval.low > 0:
         return "adopt"
     if interval.high < 0:
+        return "worse"
+    return "inconclusive"
+
+
+def check_margin(margin: float) -> None:
+    """Check a non-inferiority margin: a fraction in ``(0, MAX_NON_INFERIORITY_MARGIN]``.
+
+    Raises:
+        ValueError: otherwise; the message says that the margin is a fraction (a margin
+            typed in points, such as 0.5, is the likely mistake).
+    """
+    if not 0 < margin <= MAX_NON_INFERIORITY_MARGIN:
+        msg = (
+            f"the non-inferiority margin must be in (0, {MAX_NON_INFERIORITY_MARGIN}], got "
+            f"{margin}: it is a fraction of balanced accuracy (0.005 is half a point)"
+        )
+        raise ValueError(msg)
+
+
+def non_inferiority_decision(
+    interval: BootstrapCI, *, margin: float = NON_INFERIORITY_MARGIN
+) -> Adoption:
+    """The non-inferiority rule: ``adopt`` if the interval's lower bound is above ``-margin``.
+
+    For changes that only need to be "as good" as the baseline (the efficiency rows of task
+    2.5: fewer MACs or parameters), which the superiority rule (:func:`adoption_decision`)
+    cannot adopt. ``worse`` if the whole interval is below ``-margin`` (inferior beyond the
+    margin); ``inconclusive`` otherwise. ``margin`` is a fraction of the metric (0.005 is
+    half a point). Differences are rounded like :func:`screen_decision`'s, so a bound of
+    exactly ``-margin`` is not above it.
+
+    Raises:
+        ValueError: if ``margin`` is out of range (:func:`check_margin`).
+    """
+    check_margin(margin)
+    if round(interval.low + margin, _DIGITS) > 0:
+        return "adopt"
+    if round(interval.high + margin, _DIGITS) < 0:
         return "worse"
     return "inconclusive"
 
