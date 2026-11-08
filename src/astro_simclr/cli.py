@@ -30,6 +30,12 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   ``--splits FILE`` (task 2.5-infra) it decides on split runs (``train-supervised --splits
   FILE --fold K | --screen``): CV runs exit 0 for ADOPT and 1 for NOT ADOPTED (``--rule
   superiority|non-inferiority``, ``--margin``), screen runs 0 for KEEP and 1 for DROP;
+- phase-3 benchmarks (task 3.2, :mod:`astro_simclr.protocol.object_splits`,
+  :mod:`astro_simclr.protocol.bench_report`): ``make-object-splits ALERTS.csv --out FILE``
+  writes object-grouped, class-stratified Train/Validation/Test splits of an alert table;
+  ``bench-report RUN... --splits FILE --alerts ALERTS.csv [--baseline RUN...]`` prints
+  macro-F1 (± std over seeds), per class and on the first-stamp view, and with a baseline
+  the paired bootstrap CI of the macro-F1 difference and McNemar (always exit 0: a report);
 - ``preflight`` (:mod:`astro_simclr.preflight`): exit 0 if no step failed, else 1.
 - M1 oracle (task 2.2b, :mod:`astro_simclr.oracle`): ``fetch-m1`` downloads M1 at the
   pinned commit (SHA-256 checked) into a local cache and converts it to ``.npz``;
@@ -578,6 +584,61 @@ def _add_grouping_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _make_object_splits(args: argparse.Namespace) -> int:
+    from astro_simclr.protocol.alerts import read_alert_table
+    from astro_simclr.protocol.object_splits import (
+        HALF_NAMES,
+        SPLIT_NAMES,
+        make_object_splits,
+        write_object_splits,
+    )
+
+    if args.out.exists() and not args.overwrite:
+        raise ConfigError(f"{args.out} already exists; pass --overwrite to replace it")
+    names = [n.strip() for n in args.labels.split(",") if n.strip()]
+    table = read_alert_table(args.alerts, names)
+    splits = make_object_splits(
+        table,
+        seed=args.seed,
+        fractions=args.fractions,
+        on_conflict="drop" if args.drop_conflicts else "refuse",
+        name=args.alerts.name,
+    )
+    write_object_splits(splits, args.out)
+    for conflict in splits.conflicts:
+        sys.stdout.write(f"dropped {conflict.group}: labels {', '.join(conflict.labels)}\n")
+    for part in (*SPLIT_NAMES, *HALF_NAMES):
+        counts = splits.counts[part]
+        per_class = ", ".join(
+            f"{name} {a}/{g}"
+            for name, a, g in zip(names, counts["alerts"], counts["groups"], strict=True)
+        )
+        sys.stdout.write(
+            f"{part}: {sum(counts['alerts'])} alerts of {sum(counts['groups'])} groups "
+            f"({splits.group_key}; alerts/groups: {per_class})\n"
+        )
+    sys.stdout.write(f"wrote {args.out}\n")
+    return 0
+
+
+def _bench_report(args: argparse.Namespace) -> int:
+    from astro_simclr.protocol.bench_report import benchmark_report
+
+    lines = benchmark_report(
+        args.run_dirs,
+        args.splits,
+        args.alerts,
+        baseline_dirs=args.baseline or (),
+        stage=args.split,
+        reference_counts=args.reference_counts,
+        n_boot=args.n_boot,
+        seed=args.seed,
+        allow_mixed_machines=args.allow_mixed_machines,
+    )
+    sys.stdout.write("\n".join(lines) + "\n")
+    return 0
+
+
 def _preflight(args: argparse.Namespace) -> int:
     from astro_simclr.preflight import run_preflight
 
@@ -734,6 +795,80 @@ def _add_protocol_commands(
     _add_grouping_arguments(splits)
     splits.add_argument("--overwrite", action="store_true")
     splits.set_defaults(handler=_make_splits)
+    _add_benchmark_commands(commands)
+
+
+def _add_benchmark_commands(
+    commands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    from astro_simclr.protocol.alerts import BENCHMARK_LABEL_NAMES
+
+    objects = commands.add_parser(
+        "make-object-splits",
+        help="write object-grouped, class-stratified Train/Validation/Test splits (phase 3)",
+        description="Read an alert table (CSV with oid, candid, jd, label, and optionally "
+        "group) and assign whole groups (the oid, or the group column) to Train, Validation "
+        "and Test (default 60/20/20 of each class's alerts), so that no group is in two "
+        "splits, and split Validation into grouped selection and decision halves; write "
+        "them as JSON with the table's fingerprint "
+        "(docs/evaluation-protocol.md, Phase 3 benchmark metrics).",
+    )
+    objects.add_argument("alerts", type=Path, metavar="ALERTS_CSV")
+    objects.add_argument("--out", type=Path, required=True, metavar="FILE")
+    objects.add_argument("--seed", type=int, default=0, metavar="N")
+    objects.add_argument(
+        "--fractions",
+        type=float,
+        nargs=3,
+        default=[0.6, 0.2, 0.2],
+        metavar=("TRAIN", "VAL", "TEST"),
+    )
+    objects.add_argument(
+        "--labels",
+        default=",".join(BENCHMARK_LABEL_NAMES),
+        metavar="NAMES",
+        help="the class names, comma-separated, in label order (default: %(default)s)",
+    )
+    objects.add_argument(
+        "--drop-conflicts",
+        action="store_true",
+        help="leave out groups whose alerts have different labels (default: refuse them)",
+    )
+    objects.add_argument("--overwrite", action="store_true")
+    objects.set_defaults(handler=_make_object_splits)
+
+    report = commands.add_parser(
+        "bench-report",
+        help="report macro-F1 of benchmark runs (per class, first stamp; phase 3)",
+        description="Read benchmark runs (one per seed) with per-alert predictions, check "
+        "them against the object splits and the alert table, and print macro-F1, macro "
+        "precision and recall (mean ± std over seeds), per class and the confusion matrix "
+        "(%% of each true class), the prior-reweighted macro-F1 and the per-class minimum "
+        "detectable effect, on all alerts and on each object's first stamp. With "
+        "--baseline: the paired class-stratified bootstrap CI of the macro-F1 difference "
+        "of the seed ensembles and McNemar on them. Always a report (exit 0).",
+    )
+    report.add_argument("run_dirs", type=Path, nargs="+", metavar="RUN_DIR")
+    report.add_argument("--splits", type=Path, required=True, metavar="FILE")
+    report.add_argument("--alerts", type=Path, required=True, metavar="ALERTS_CSV")
+    report.add_argument("--baseline", type=Path, nargs="+", metavar="RUN_DIR")
+    report.add_argument("--split", choices=["test", "val"], default="test")
+    report.add_argument(
+        "--reference-counts",
+        type=float,
+        nargs="+",
+        metavar="N",
+        help="per-class reference counts (label order) of the prior-reweighted macro-F1; "
+        "default: RJ23's class counts, when every class is one of RJ23's",
+    )
+    report.add_argument("--n-boot", type=int, default=10_000, metavar="N")
+    report.add_argument("--seed", type=int, default=0, metavar="N", help="bootstrap seed")
+    report.add_argument(
+        "--allow-mixed-machines",
+        action="store_true",
+        help="report runs from different machines or builds together",
+    )
+    report.set_defaults(handler=_bench_report)
 
     audit = commands.add_parser(
         "leakage-audit",

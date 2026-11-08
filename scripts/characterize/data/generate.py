@@ -9,19 +9,18 @@ against them.
 
 ``utils/dataset.py`` imports torch, pandas, cv2 and albumentations at module level (through
 ``utils.transformations``), none of which the three functions use. So the generator reads
-the file from git, extracts exactly those three function definitions with ``ast`` and runs
+the file at the ``legacy-final`` tag (``legacy_tree.py``; the legacy code is no longer in
+the checkout), extracts exactly those three function definitions with ``ast`` and runs
 them verbatim in a namespace that holds only ``np``. It runs with the legacy numpy
-(``env.yml``: numpy 1.23.5, which needs Python <= 3.11), without the project:
+(``env.yml`` at the tag: numpy 1.23.5, which needs Python <= 3.11), without the project:
 
     uv run --isolated --no-project --python 3.11 --with numpy==1.23.5 python \
         scripts/characterize/data/generate.py
 
-It refuses to run if ``utils/dataset.py`` has uncommitted changes (the recorded SHA would
-lie). Excluded from ruff, mypy and pytest (``scripts/characterize/``).
+Excluded from ruff, mypy and pytest (``scripts/characterize/``).
 """
 
 import ast
-import subprocess
 import sys
 import warnings
 from pathlib import Path
@@ -29,22 +28,17 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / "scripts" / "characterize"))
+import legacy_tree  # noqa: E402
+
 OUT = ROOT / "tests" / "fixtures" / "data"
 LEGACY_FILE = "utils/dataset.py"
 FUNCTIONS = ("repair_non_squared_stamp", "preprocess_stamps", "img_float2int")
 
 
-def git(*args):
-    return subprocess.run(
-        ["git", *args], cwd=ROOT, capture_output=True, text=True, check=True
-    ).stdout
-
-
 def legacy_functions():
-    if git("status", "--porcelain", "--", LEGACY_FILE):
-        sys.exit(f"{LEGACY_FILE} has uncommitted changes; commit or revert them first")
-    commit = git("rev-parse", "HEAD").strip()
-    source = git("show", f"{commit}:{LEGACY_FILE}")
+    commit = legacy_tree.commit()
+    source = legacy_tree.show(LEGACY_FILE)
     tree = ast.parse(source)
     defs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in FUNCTIONS]
     assert sorted(d.name for d in defs) == sorted(FUNCTIONS), [d.name for d in defs]

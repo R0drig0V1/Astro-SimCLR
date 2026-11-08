@@ -3,7 +3,9 @@
      Code: src/astro_simclr/protocol/ (groups, splits, audit, split_runs, compare), the --splits path of
      src/astro_simclr/experiments.py and training/device_data.py,
      src/astro_simclr/reference.py (CD21), the metrics JSON of src/astro_simclr/experiments.py.
-     Design choices: docs/decisions/0004-evaluation-protocol.md. -->
+     Design choices: docs/decisions/0004-evaluation-protocol.md. The last section, "Phase 3
+     benchmark metrics" (task 3.2), documents src/astro_simclr/protocol/{alerts,grouping,
+     object_splits,benchmark_metrics,bench_report}.py; its choices are in ADR 0008. -->
 # Evaluation protocol (phase 2)
 
 Every phase-2 result (the replication of Carrasco-Davis et al. 2021, then every improvement)
@@ -386,3 +388,190 @@ The noise sources that limit a claim:
 - **Claims below 2 points** need the k-fold CV on Train + Validation with balanced accuracy.
   That costs about 5× the compute: (6 flags + baseline) × 5 folds × 2 seeds ≈ 70 runs, on
   the 5090.
+
+## Phase 3 benchmark metrics
+
+Task 3.2 of `docs/phases/03-newer-benchmarks.md`: the evaluation machinery of R5, the
+object-level benchmark under RJ23's protocol (5 imbalanced classes, macro-F1). The code
+takes any number of classes, so RJ23's six (with Satellite) are a `--labels` away. The
+phase-2 rules above still hold: Test is never a decision input, and comparisons pair runs
+item by item. The code is in
+`src/astro_simclr/protocol/` (`alerts`, `grouping`, `object_splits`, `benchmark_metrics`,
+`bench_report`, and `stats.paired_bootstrap_macro_f1`). The design choices are in ADR 0008.
+Everything is built and tested on synthetic tables. The real `oid`s come from task 3.1.
+
+### The input: an alert table
+
+The input is a CSV with one row per labelled alert. Task 3.1's index can feed it directly.
+
+| Column | Content |
+|---|---|
+| `oid` | the ZTF object id: letters, digits, `_`, `-`, `.`; 1-64 characters |
+| `candid` | the alert id: a positive integer below 2⁶³, unique |
+| `jd` | the alert's Julian date: finite and > 0 |
+| `label` | a class name; by default R5's `AGN, SN, VS, Asteroid, Bogus` (the phase-2 five, in label order); `--labels` sets others, such as RJ23's six with `Satellite` |
+| `group` | optional: the split's group key, when it is not the `oid`: the plan's group id is the `oid` where matched, otherwise a 1.5″ position group built elsewhere |
+
+Other columns (`fid`, `split`, `row`) are ignored.
+
+The file is downloaded data, so it is **untrusted**:
+- it is parsed with this schema by the `csv` module, and no field is ever evaluated;
+- a bad row is an error that names its line.
+
+The table's fingerprint (SHA-256 of the canonical rows, sorted by `candid`) does not
+depend on the row order. Per-alert predictions refer to alerts by `candid`.
+
+### Metrics and the zero-division rule
+
+`benchmark_metrics(labels, predicted, label_names)` gives, for any number of classes:
+
+- per class: precision, recall, F1, support and predicted count;
+- macro precision, macro recall and macro-F1 (unweighted means over the classes);
+- micro accuracy;
+- the confusion matrix of counts, and the same matrix with each row normalised to 100 (the
+  percentage of true class *i* predicted as *j*, as RJ23 shows).
+
+F1 is `2 TP / (2 TP + FP + FN)`. The zero-division rule:
+
+| Case | Precision | Recall | F1 | In the macro means? |
+|---|---|---|---|---|
+| true samples, never predicted | 0 (0/0 → 0) | 0 | 0 | **yes**: never predicting a hard class must not pay |
+| predicted, no true sample | 0 | 0 (0/0 → 0) | 0 | **yes**: its false positives are real errors |
+| absent from labels and predictions | `None` | `None` | `None` | no |
+
+This is the rule of the phase-2 macro-F1 (`training.metrics.macro_f1`, torchmetrics), and a
+test checks that the two agree. A confusion row with no true sample is all zeros.
+
+**Prior-reweighted macro-F1.** Precision depends on the class prevalence: a rare class's
+false positives come from the large classes. So the report also gives macro precision and
+macro-F1 with each confusion row rescaled to a reference count (`counts[i] / support_i ×
+reference_i`; recall is unchanged).
+- Scaling the reference changes nothing, so only the class proportions matter. The default
+  reference is RJ23's class totals (`RJ23_CLASS_COUNTS`: AGN 9,774, SN 3,615, VS 10,211,
+  Asteroid 9,180, Bogus 15,950, Satellite 580), taken in the order of the label names. A
+  stratified 60/20/20 split keeps these proportions in its test set, up to rounding.
+- This reweighted macro-F1 is **R5's headline metric**, with the raw one next to it (plan,
+  task 3.5).
+- `--reference-counts` sets another reference. With a class that is not one of RJ23's
+  there is no default, and the reweighting is left out.
+
+### Object-grouped, class-stratified splits: `make-object-splits`
+
+```bash
+astro-simclr make-object-splits dataset/raw/alerts.csv --out configs/splits/rj23-rebuild.json \
+    [--seed 0] [--fractions 0.6 0.2 0.2] [--labels AGN,SN,VS,Asteroid,Bogus] \
+    [--drop-conflicts]
+```
+
+Whole **groups** (the `oid`, or the `group` column) go to Train, Validation or Test, so no
+group is in two splits. The draw, per class:
+1. Shuffle the class's groups with `default_rng([seed, stream, class])`.
+2. Give each group, in that order, to the split whose alert count is furthest below its
+   target (`fraction × class alerts`).
+
+What the draw guarantees:
+- **Bound:** within every class, each split's count ends at most `g` above its target and
+  at most `(k − 1)·g` below it, where `g` is the class's largest group and `k` the number
+  of splits. `verify_object_splits` checks this bound.
+- **Tolerance:** with groups of 1-3 alerts, each class is within 1 point of 60/20/20 (a
+  test checks this).
+- **Order:** the order is random, not largest-first. A largest-first order sends the large
+  objects to Train, so Test would have fewer alerts per object, and its first-stamp view
+  would differ.
+
+**An object has one label.** A group whose alerts carry two labels is refused, unless
+`--drop-conflicts` leaves it out of every split. The dropped groups are recorded in the
+file.
+
+Validation is also split into a **selection half and a decision half**: 50/50 of each
+class's alerts, grouped and stratified the same way, with their own generator stream. So
+phase-2-style decisions (select the checkpoint on one half, decide on the other) are
+possible on the imbalanced 6-class set. `grouping.grouped_halves` does the same on any
+per-row arrays.
+
+**The stored file is the source of truth**, as for the phase-2 splits.
+- It holds the table's fingerprint, the group key, the label names, the seed, the
+  fractions, the conflicts, the sorted group ids per split and per half, and the class
+  counts per part.
+- `verify_object_splits(splits, table)` refuses another table or group key. It also
+  checks that every group is in exactly one split, that the conflicts and halves match,
+  the bound, and the counts.
+- The same seed gives the same file.
+
+**The cross-benchmark rule** (`grouping.assert_no_shared_groups`) takes the per-row group
+ids and split membership of two benchmarks, in one id space (for example `oid`, or a
+position group built across both). It counts the groups that each of the 3 × 3 split pairs
+shares, and refuses the forbidden pairs. The default is the plan's matrix
+(`CROSS_BENCHMARK_ALLOWED`):
+
+| A \ B | Train | Validation | Test |
+|---|---|---|---|
+| **Train** | allowed | forbidden | forbidden |
+| **Validation** | forbidden | allowed | allowed |
+| **Test** | forbidden | allowed | allowed |
+
+So a CD21 Train object may go only to R5 Train, and CD21 Validation and Test objects never
+to R5 Train. `allowed=()` refuses all nine pairs. The returned count matrix is what the
+pretraining exclusion lists are built from. This module never builds position groups: it
+accepts any per-row group-id array (the position groups come from a separate task).
+
+### The first-stamp view
+
+`first_stamps(table, rows)` returns, for each object among `rows`, its **earliest alert in
+the table**: the smallest `jd`, with ties broken by the smaller `candid`. This is RJ23's
+first-stamp view only if the table holds each object's first detection. Task 3.1/3.5 must
+make sure it does, or must document the difference.
+
+### The report: `bench-report`
+
+```bash
+astro-simclr bench-report runs/rj23-full/seed{0..4} --splits FILE --alerts alerts.csv \
+    [--baseline runs/rj23-ms/seed{0..4}] [--split test|val] [--reference-counts N ...] \
+    [--n-boot 10000] [--seed 0] [--allow-mixed-machines]
+```
+
+A **benchmark run** is a run directory that follows this contract (tasks 3.4/3.6 write it):
+- `metrics.json` holds `seed`, `machine` and `benchmark.splits_sha256` (the SHA-256 of the
+  object-splits file the run was trained on), and `predictions.<stage>.file`;
+- the predictions file is the usual `.npz` with one column per class, and its `index` is
+  the **`candid`**.
+
+The report checks, before reporting:
+- the splits verify against the table;
+- every run names this splits file;
+- the predictions cover exactly the split's alerts, once each, with the table's labels;
+- seeds are distinct within a side;
+- the machines are the same (or `--allow-mixed-machines`).
+
+It reports on two views, **all alerts** and **first stamp**. For each side:
+
+- macro-F1, macro precision, macro recall and accuracy, as mean ± std (ddof = 1) over the
+  seeds, and the macro-F1 of the seed ensemble;
+- the prior-reweighted macro-F1 and macro precision;
+- per class: alerts and objects, precision, recall and F1 (mean ± std), and the **minimum
+  detectable effect** of a recall difference (below);
+- the confusion matrix in % of each true class (mean over seeds).
+
+With `--baseline` (the positional runs are the variant), the comparison is on the **seed
+ensembles**: the mean probabilities per alert, then the argmax.
+- **Paired bootstrap of the macro-F1 difference** (`stats.paired_bootstrap_macro_f1`).
+  Each resample draws the alerts within every class with replacement (stratified). The
+  same draw applies to both sides (paired). Both confusion matrices are recomputed from the
+  resample: macro-F1 is not a mean of per-alert scores, because precision depends on the
+  false positives of the other classes. The output is the 95 % percentile interval.
+  Identical sides give exactly [0, 0], and a golden test checks the implementation against
+  a plain one-resample-at-a-time version.
+- **McNemar**: the exact test on the ensembles' "correct" vectors.
+
+The report always ends in `REPORT` (exit 0). On Test it is a pre-registered report and never
+a decision. Decisions use the selection and decision halves, or a CV, as in phase 2.
+
+**The MDE per class** (`stats.minimum_detectable_effect`) is the smallest recall difference
+that a two-sided test at α = 0.05 detects with 80 % power: `(z₀.₉₇₅ + z₀.₈)·SE` = 2.80·SE.
+- With a baseline it is paired, with `SE = √(discordant fraction / n)`.
+- Without one it is unpaired, with `SE = √(2p(1 − p)/n)`.
+- `n` is the number of the class's **objects**, not alerts: the alerts of one object are
+  correlated, so using alerts would understate the MDE.
+- Example: about 116 test objects at 72 % recall (RJ23's Satellite) give an unpaired MDE
+  of about 16.4 points. R5's test set of about 8–9k objects gives far smaller MDEs on its
+  large classes.
