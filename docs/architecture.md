@@ -129,7 +129,9 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   `results/hparams_best_*.yaml`, see `hparams`), `--data-dir`, `--output-dir`, `--seed`,
   `--accelerator`, `--resume PATH|auto`; `linear-eval` and `fine-tune` also `--pretrained
   PATH`; `train-supervised` also `--preset carrasco2021|carrasco2021-no-features` (task
-  2.2c, see `presets`). Settings resolve as: `Settings` defaults → the subcommand's legacy
+  2.2c, see `presets`) and `--splits FILE --fold K | --screen` (task 2.5-infra, a split
+  run; see `protocol`; `--fold`/`--screen` without `--splits`, or the reverse, exit 2).
+  Settings resolve as: `Settings` defaults → the subcommand's legacy
   protocol (`hparams.COMMAND_DEFAULTS`) → `--preset` → `--hparams` → `--config` → `--set` →
   the explicit flags
   (later wins; `cli.training_settings`). The legacy file comes before the config so that a
@@ -142,7 +144,10 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
 - `make-splits PREPARED_DIR --out FILE [--seed 0] [--overwrite]` and `compare-variants
   --baseline RUN... --variant RUN... [--split test|val] [--n-boot N] [--seed S]
   [--allow-mixed-machines]` (task 2.3, see `protocol`); `compare-variants` always exits 0
-  (a report).
+  (a report). With `--splits FILE [--rule superiority|non-inferiority] [--margin F]` (task
+  2.5-infra) it decides on split runs: 0 for ADOPT / KEEP, 1 for NOT ADOPTED / DROP;
+  `--rule`/`--margin` without `--splits`, `--split` with it, or `--margin` without
+  `--rule non-inferiority` exit 2.
 - `fetch-m1` and `m1-oracle --data-dir DIR [--out DIR]` (task 2.2b, see `oracle`): exit
   0 if the oracle passed, else 1.
 - `preflight (--synthetic | --data-dir DIR) [--accelerator cuda] [--runs R1,R2,R3,R4]
@@ -725,6 +730,11 @@ The splits come from a prepared layout (task 2.2c):
   no re-normalisation), kept as the `paper_input: uint8` diagnostic.
 - `without_train_indices(splits, excluded)` drops Train stamps (the leaked one) in file
   order, before the tiling; Validation and Test are unchanged.
+- Split runs (task 2.5-infra; see `protocol`): both builders take `names=("Train",
+  "Validation")` so that Test is never read, and `protocol_splits(splits, parts, n_train)`
+  gathers a run's parts by pool index into the module's three roles (`Train` = the part
+  trained on and tiled, `Validation` = the selection part, `Test` = the evaluation part).
+  The data module is unchanged.
 
 **Horizon** (`schedule.py`). `HorizonCallback(dirpath, filename="best", monitor="loss_val",
 mode="min", initial_horizon=30000, increment=10000)` on a Trainer with
@@ -943,7 +953,7 @@ checked (command, `supervised_model`, no duplicate seed) and `val_acc_best` aggr
 - Every gate prints a WARN line when the runs' `machine_signature` (device, GPU, torch,
   CUDA) differ.
 
-## `protocol` (task 2.3)
+## `protocol` (task 2.3; split runs and decisions in 2.5-infra)
 
 `src/astro_simclr/protocol/`: the code of the phase-2 evaluation protocol; the rules and the
 power note are in `docs/evaluation-protocol.md`, the design choices in ADR 0004. No torch
@@ -954,8 +964,9 @@ import, so `make-splits` and `compare-variants` start fast.
 | `leakage` | `find_duplicates(StampData)`: byte-identical uint8 stamps across every pair of splits (BLAKE2b-128), with both labels and whether the features match; `train_exclusions` (the Train indices to drop, from Train only), `train_keep_indices(n_train, excluded)` |
 | `splits` | `make_splits(prepared_dir, seed=0)`: the 250/250 screen of Validation (50 per class per half) and the stratified 5-fold CV on the pool Train + Validation (pool index: Train `i`, Validation `n_train + j`), each fold with its own 100-per-class selection set drawn from outside the fold; leaked Train stamps are in no fold. At most 10 folds (`fold_of` is one digit per stamp). `write_splits` / `read_splits` (structure checks: sizes, disjointness, ranges, positive integers) / `verify_splits(splits, prepared_dir)` (dataset identity by source and label SHA-256 and sizes, not the directory name; class balance; fold stratification within 1 per class; `excluded_train` equal to a fresh leakage check). `ProtocolSplits.locate` maps pool indices to Train and Validation indices |
 | `predictions` | `Predictions(probabilities, labels, index)`, `save_predictions` / `load_predictions` (`.npz`, `allow_pickle=False`), `check_paired`, `ensemble` (mean probabilities per stamp), `seed_mean_correct` |
-| `stats` | `mcnemar` (exact, integer arithmetic), `paired_bootstrap` (percentile CI of variant − baseline, stratified by class, metric `accuracy` or `balanced_accuracy`, own `default_rng(seed)`, memory-bounded blocks), `balanced_accuracy`, `adoption_decision` (`adopt` only if the CI is above 0), `screen_decision` (`drop` at 4 points or more, never adopt) |
-| `compare` | `compare_variants(baseline_dirs, variant_dirs, stage)`: loads each run's `metrics.json` and predictions file, refuses repeated seeds, runs on different data (`data.source.sha256`: a normal run's `index` is `arange(N)`, so the data identity and the labels are what show two runs saw the same stamps), unpaired runs and mixed machines (unless allowed), reports McNemar on the seed ensembles and the bootstrap, always as REPORT. `screen_comparison` / `cv_comparison`: the decision helpers, which check that the predictions cover exactly the screen's decision half or each fold's evaluation part |
+| `stats` | `mcnemar` (exact, integer arithmetic), `paired_bootstrap` (percentile CI of variant − baseline, stratified by class, metric `accuracy` or `balanced_accuracy`, own `default_rng(seed)`, memory-bounded blocks), `balanced_accuracy`, `adoption_decision` (superiority: `adopt` only if the CI is above 0), `non_inferiority_decision(interval, margin=0.005)` (`adopt` if the CI lower bound is above −margin, `worse` if the CI is below it; `check_margin` refuses margins outside (0, 0.05], a likely points-for-fraction mistake), `screen_decision` (`drop` at 4 points or more, never adopt) |
+| `split_runs` | Task 2.5-infra. `SplitRequest(file, fold)` (`fold=None`: the screen); `open_split_run(request, prepared_dir)` reads the file, refuses a fold it does not have (`ConfigError`) and runs `verify_splits` on the prepared data (a wrong fingerprint is a `SplitsError`); `SplitRun.parts()` gives `RunParts` (training, selection, evaluation as sorted pool indices, and `evaluation_index`: pool indices for a fold, Validation indices for the screen) and checks that they are pairwise disjoint and hold no excluded stamp; `SplitRun.describe()` is `metrics.json["protocol"]` (mode, fold, splits file and SHA-256, part sizes). `file_sha256` |
+| `compare` | `compare_variants(baseline_dirs, variant_dirs, stage)`: loads each run's `metrics.json` and predictions file, refuses repeated seeds, runs on different data (`data.source.sha256`: a normal run's `index` is `arange(N)`, so the data identity and the labels are what show two runs saw the same stamps), unpaired runs and mixed machines (unless allowed), reports McNemar on the seed ensembles and the bootstrap, always as REPORT; it points split runs to `--splits`. `screen_comparison` / `cv_comparison(..., rule="superiority"\|"non-inferiority", margin)`: the decision helpers, which check that the predictions cover exactly the screen's decision half or each fold's evaluation part (so the CV bootstrap is paired by pool index); `CVResult` holds the per-fold and pooled balanced accuracies, the CI, McNemar on the seed ensembles and the decision. `compare_decision(baseline_dirs, variant_dirs, splits_file, rule, margin)` (CLI `compare-variants --splits`): loads split runs (`load_split_run`), checks the splits file's SHA-256, one mode, one data source and machine, the same (fold, seed) cells on both sides and every fold, then applies `cv_comparison` (verdict `ADOPT` / `NOT ADOPTED`) or `screen_comparison` (`KEEP` / `DROP`; `--rule` refused) |
 
 - **Stored splits:** `configs/splits/td_ztf_stamp_17_06_20_red-002.json` (seed 0, made with
   `make-splits` on the real data). On `red`: one duplicate, Train 2995 (Bogus) =
@@ -965,9 +976,15 @@ import, so `make-splits` and `compare-variants` start fast.
   `seed_run`, so a training seed never moves a split and a comparison is reproducible on
   its own (an exception to the "Randomness" convention above, for data definitions and
   statistics only).
-- Not wired yet: training on a fold or a screen half (the data modules taking index
-  subsets, and predictions whose `index` is the pool or Validation index). That belongs
-  with the GPU-resident data module of task 2.2a.
+- **Split runs** (task 2.5-infra): `experiments.run_command(..., split=SplitRequest)`
+  (`train-supervised --splits FILE --fold K | --screen`, `carrasco2021` schedule only)
+  verifies the file first, then builds the device data from Train and Validation only
+  (`device_data.protocol_splits`), trains on the training part, selects on the selection
+  part, predicts the evaluation part as `predictions_evaluation.npz` and records
+  `protocol`, `selection_acc_best`, `evaluation_accuracy` and
+  `evaluation_balanced_accuracy` (no `val`/`test` entries). The default path, and so the
+  faithful preset, is unchanged. The end-to-end commands are in
+  `docs/evaluation-protocol.md`.
 
 ## `preflight` (task 1.7)
 

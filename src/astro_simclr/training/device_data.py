@@ -38,6 +38,14 @@ The splits come from a prepared layout through one of two builders:
 
 :func:`without_train_indices` drops Train stamps (the leaked one, ``protocol.leakage``)
 from Train only, before the tiling.
+
+**Split runs** (task 2.5-infra, ``train-supervised --splits FILE --fold K | --screen``;
+:mod:`astro_simclr.protocol.split_runs`): both builders take ``names`` to read only some
+splits (Train and Validation: Test is never loaded), and :func:`protocol_splits` gathers
+the run's parts from them by pool index into the three roles of
+:class:`DeviceTensorDataModule`: ``Train`` is the part trained on (and tiled),
+``Validation`` the checkpoint-selection part, ``Test`` the held-out evaluation part that
+the run predicts. The data module itself does not change.
 """
 
 from __future__ import annotations
@@ -64,6 +72,7 @@ from astro_simclr.data.schema import (
 from astro_simclr.models import N_FEATURES
 from astro_simclr.paper_model import PAPER_CROP
 from astro_simclr.protocol.leakage import train_keep_indices
+from astro_simclr.protocol.split_runs import RunParts
 from astro_simclr.training.tiling import PermutationStream, tile_indices
 
 __all__ = [
@@ -72,6 +81,7 @@ __all__ = [
     "TensorSplit",
     "float_crops",
     "interim_uint8_crops",
+    "protocol_splits",
     "without_train_indices",
 ]
 
@@ -354,8 +364,8 @@ def _labelled(
     return kept.astype(np.float32), np.array(split.labels, dtype=np.int64, copy=True)
 
 
-def interim_uint8_crops(path: Path) -> dict[str, TensorSplit]:
-    """The splits of the prepared layout ``path``, as 21x21 crops of its uint8 stamps.
+def interim_uint8_crops(path: Path, *, names: Sequence[str] = SPLITS) -> dict[str, TensorSplit]:
+    """The splits ``names`` of the prepared layout ``path``, as 21x21 crops of its uint8 stamps.
 
     The stand-in of task 2.2a, now the ``paper_input: uint8`` diagnostic: the centre 21x21
     of the stored uint8 stamps, divided by 255 (no re-normalisation on the crop), with the
@@ -366,7 +376,7 @@ def interim_uint8_crops(path: Path) -> dict[str, TensorSplit]:
     """
     data = load_prepared(path)
     splits: dict[str, TensorSplit] = {}
-    for name in SPLITS:
+    for name in names:
         split = data.splits[name]
         features, labels = _labelled(path, name, split)
         splits[name] = TensorSplit(
@@ -377,8 +387,10 @@ def interim_uint8_crops(path: Path) -> dict[str, TensorSplit]:
     return splits
 
 
-def float_crops(path: Path, *, nan_approximation: bool = True) -> dict[str, TensorSplit]:
-    """The splits of the prepared layout ``path`` through the paper's float input path.
+def float_crops(
+    path: Path, *, nan_approximation: bool = True, names: Sequence[str] = SPLITS
+) -> dict[str, TensorSplit]:
+    """The splits ``names`` of the prepared layout ``path`` through the paper's float path.
 
     Each split's stored float32 stamps (``images_f32.npy``, read from the memory map in
     chunks) go through ``crop_split(images, 21, nan_approximation=...)`` (task 2.1: ALeRCE's
@@ -392,7 +404,7 @@ def float_crops(path: Path, *, nan_approximation: bool = True) -> dict[str, Tens
     """
     data = load_prepared(path)
     splits: dict[str, TensorSplit] = {}
-    for name in SPLITS:
+    for name in names:
         split = data.splits[name]
         if split.images_f32 is None:
             msg = (
@@ -430,3 +442,44 @@ def without_train_indices(
         labels=np.ascontiguousarray(train.labels[keep]),
     )
     return {**splits, _TRAIN: reduced}
+
+
+def protocol_splits(
+    splits: Mapping[str, TensorSplit], parts: RunParts, n_train: int
+) -> dict[str, TensorSplit]:
+    """The roles of a split run, gathered from Train and Validation by pool index.
+
+    ``splits`` holds at least ``Train`` (all ``n_train`` stamps, in file order: the pool
+    index of Train stamp ``i`` is ``i``) and ``Validation`` (pool index ``n_train + j``).
+    Returns ``Train`` = ``parts.training`` (the only stamps trained on; the data module
+    tiles them), ``Validation`` = ``parts.selection`` and ``Test`` = ``parts.evaluation``,
+    each in pool order, which for the screen halves is Validation file order.
+
+    Raises:
+        DataError: if Train does not have ``n_train`` stamps (the splits belong to other
+            data) or a pool index is outside Train + Validation.
+    """
+    train, validation = splits[_TRAIN], splits[_VALIDATION]
+    if len(train.labels) != n_train:
+        msg = f"the splits have {n_train} Train stamps, the data {len(train.labels)}"
+        raise DataError(msg)
+    n_pool = n_train + len(validation.labels)
+
+    def gather(pool: npt.NDArray[np.int64]) -> TensorSplit:
+        if pool.size and (pool.min() < 0 or pool.max() >= n_pool):
+            raise DataError(f"pool indices must be in range({n_pool})")
+        in_train = pool < n_train
+        rows_train, rows_val = pool[in_train], pool[~in_train] - n_train
+
+        def take(attribute: str) -> npt.NDArray[Any]:
+            first = getattr(train, attribute)[rows_train]
+            second = getattr(validation, attribute)[rows_val]
+            return np.ascontiguousarray(np.concatenate([first, second]))
+
+        return TensorSplit(images=take("images"), features=take("features"), labels=take("labels"))
+
+    return {
+        _TRAIN: gather(parts.training),
+        _VALIDATION: gather(parts.selection),
+        _TEST: gather(parts.evaluation),
+    }

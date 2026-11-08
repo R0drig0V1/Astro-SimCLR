@@ -25,6 +25,8 @@ Everything a run writes is under ``settings.output_dir``::
     OUT/metrics.json              see below
     OUT/confusion_matrix_{val,test}.png   classifiers only
     OUT/predictions_{val,test}.npz        classifiers only: per-stamp probabilities
+                                          (split runs: confusion_matrix_{selection,
+                                          evaluation}.png, predictions_evaluation.npz)
 
 ``metrics.json`` holds the command, the seed, the selected (``best_epoch``, 0-based) and
 last epoch and global step (``best_step``, ``last_step``), the monitored value at the
@@ -63,6 +65,22 @@ which keys and diagnostics differ), and every run's metrics hold ``best_step`` a
 ``last_step`` (optimizer steps). Its resume is exact: the batch stream is a function of the
 step, and the horizon and best weights are in ``last.ckpt``.
 
+**Split runs** (task 2.5-infra; :mod:`astro_simclr.protocol.split_runs`). With
+``split=SplitRequest(file, fold)`` (``train-supervised --splits FILE --fold K | --screen``;
+``carrasco2021`` schedule only) the run first verifies the splits file against the
+prepared data, then trains on the fold's training part (or Train minus the excluded stamps,
+for the screen), tiled as in the preset, selects on the fold's selection set (the screen's
+selection half) with the same monitor, horizon rule and batch-64 means, and predicts the
+evaluation part (the screen's decision half). Test is neither loaded nor predicted. The
+outputs differ from a normal run's: ``predictions_evaluation.npz`` (``index``: the pool
+index, or the Validation index for the screen), ``confusion_matrix_{selection,evaluation}
+.png``, and in the metrics ``protocol`` (:meth:`SplitRun.describe`: mode, fold, the splits
+file and its SHA-256, part sizes), ``selection_acc_best``, ``evaluation_accuracy``,
+``evaluation_balanced_accuracy``, ``evaluation.{selection,evaluation}`` and
+``predictions.evaluation``, instead of ``val_acc_best``, ``test_acc_at_best`` and the
+``val``/``test`` entries. The Lightning logs still call the evaluation part ``test`` (it is
+the data module's ``Test`` role).
+
 **Timing.** Every run's metrics hold ``timing``: the wall-clock seconds of the fit loop, the
 optimizer steps it ran (fewer than ``last_step`` after a resume) and ``seconds_per_step``
 (validation included; the pilot's figure of task 2.2c). ``null`` when no step ran.
@@ -81,6 +99,7 @@ from typing import Any, Final, Protocol, cast
 
 import lightning as L
 import numpy as np
+import numpy.typing as npt
 import torch
 from lightning.pytorch.callbacks import Callback
 
@@ -92,12 +111,14 @@ from astro_simclr.paper_model import PAPER_CROP
 from astro_simclr.presets import preset_report
 from astro_simclr.protocol.leakage import find_duplicates, train_exclusions
 from astro_simclr.protocol.predictions import Predictions, predictions_file, save_predictions
+from astro_simclr.protocol.split_runs import SplitRequest, SplitRun, open_split_run
 from astro_simclr.training.datamodules import ClassifierDataModule, ContrastiveDataModule
 from astro_simclr.training.device_data import (
     DeviceTensorDataModule,
     TensorSplit,
     float_crops,
     interim_uint8_crops,
+    protocol_splits,
     without_train_indices,
 )
 from astro_simclr.training.metrics import confusion_counts, macro_f1
@@ -339,13 +360,16 @@ def _leaked_train(settings: Settings, data: Path) -> list[int]:
 
 
 def _build_paper(
-    settings: Settings, data: Path
+    settings: Settings, data: Path, split_run: SplitRun | None = None
 ) -> tuple[ClassifierModule, DeviceTensorDataModule, dict[str, Any]]:
     """The paper model, its device-resident data and the ``paper_data`` metrics entry.
 
     The input is the float path (``paper_input: float32``, the paper's) or the interim uint8
     crops (``uint8``, a diagnostic); the leaked Train stamps are removed before the tiling.
-    The splits are built once, at the data module's first ``setup``.
+    The splits are built once, at the data module's first ``setup``. With ``split_run``
+    only Train and Validation are read, and the data module's roles are the run's parts
+    (``device_data.protocol_splits``); the excluded Train stamps are the splits file's,
+    which ``open_split_run`` has checked against a fresh leakage check.
     """
     if settings.paper_input == "float32" and "float32" not in read_meta(data)["images"]:
         # Fail before the leakage scan and the Trainer; float_crops says the same in setup.
@@ -355,7 +379,10 @@ def _build_paper(
             "paper_input=uint8, a diagnostic)"
         )
         raise DataError(msg)
-    excluded = _leaked_train(settings, data)
+    if split_run is None:
+        excluded = _leaked_train(settings, data)
+    else:
+        excluded = list(split_run.splits.excluded_train)
     info: dict[str, Any] = {
         "input": settings.paper_input,
         "crop": PAPER_CROP,
@@ -365,7 +392,19 @@ def _build_paper(
         "excluded_train": excluded,
     }
 
+    def split_source(run: SplitRun) -> dict[str, TensorSplit]:
+        names = ("Train", "Validation")  # never Test
+        if settings.paper_input == "float32":
+            pool = float_crops(data, nan_approximation=settings.nan_approximation, names=names)
+        else:
+            pool = interim_uint8_crops(data, names=names)
+        splits = protocol_splits(pool, run.parts(), run.splits.n_train)
+        info["n_train"] = len(splits["Train"].labels)
+        return splits
+
     def source() -> dict[str, TensorSplit]:
+        if split_run is not None:
+            return split_source(split_run)
         if settings.paper_input == "float32":
             splits = float_crops(data, nan_approximation=settings.nan_approximation)
         else:
@@ -393,15 +432,36 @@ def _build_paper(
     return module, datamodule, info
 
 
+def _check_split(command: str, settings: Settings) -> None:
+    """A split run needs ``train-supervised`` on the ``carrasco2021`` schedule.
+
+    Raises:
+        ConfigError: on another command or schedule, or ``exclude_leaked_train: false``
+            (the splits exclude the leaked stamps by construction).
+    """
+    if command != "train-supervised" or settings.schedule != CARRASCO2021:
+        msg = (
+            f"--splits trains only train-supervised on the {CARRASCO2021} schedule (e.g. "
+            f"--preset {CARRASCO2021}), got {command} with schedule {settings.schedule}"
+        )
+        raise ConfigError(msg)
+    if not settings.exclude_leaked_train:
+        msg = (
+            "--splits always leaves the leaked Train stamps out (they are in no fold): "
+            "exclude_leaked_train must be true"
+        )
+        raise ConfigError(msg)
+
+
 def _build(
-    command: str, settings: Settings, data: Path
+    command: str, settings: Settings, data: Path, split_run: SplitRun | None = None
 ) -> tuple[L.LightningModule, L.LightningDataModule, frozenset[str], dict[str, Any] | None]:
     """The module, its data module, the metrics the module logs (its ``MONITORABLE``) and,
     for the paper model, its ``paper_data`` metrics entry (filled in at ``setup``)."""
     datamodule: L.LightningDataModule
     _check_schedule(command, settings)
     if settings.schedule == CARRASCO2021:
-        paper, datamodule, info = _build_paper(settings, data)
+        paper, datamodule, info = _build_paper(settings, data, split_run)
         return paper, datamodule, ClassifierModule.MONITORABLE, info
     if command == "pretrain":
         seed_run(settings)
@@ -554,22 +614,33 @@ def _evaluation(module: ClassifierModule, stage: str) -> dict[str, Any]:
 
 
 def _write_predictions(
-    module: ClassifierModule, stage: str, split: str, out: Path
+    module: ClassifierModule,
+    stage: str,
+    split: str,
+    out: Path,
+    *,
+    index: npt.NDArray[np.int64] | None = None,
+    name: str | None = None,
 ) -> dict[str, Any]:
     """Write the stage's per-stamp probabilities; return its ``metrics["predictions"]`` entry.
 
     The evaluation loaders are unshuffled, so the loader order is the split's file order
-    and ``index`` is ``arange(N)``.
+    and ``index`` is ``arange(N)`` by default; a split run passes its evaluation part's
+    pool (or Validation) indices, in the same order. ``name`` is the file's stage name
+    (default ``stage``).
+
+    Raises:
+        DataError: if ``index`` does not have one entry per predicted stamp.
     """
     labels = module.predictions[stage][1].numpy().astype(np.int64)
-    predictions = Predictions(
-        module.probabilities[stage].float().numpy(),
-        labels,
-        np.arange(labels.size, dtype=np.int64),
-    )
-    name = predictions_file(stage)
-    save_predictions(predictions, out / name)
-    return {"file": name, "split": split, "n": int(labels.size)}
+    if index is None:
+        index = np.arange(labels.size, dtype=np.int64)
+    if index.shape != labels.shape:
+        raise DataError(f"{index.size} indices for {labels.size} predicted stamps")
+    predictions = Predictions(module.probabilities[stage].float().numpy(), labels, index)
+    file = predictions_file(name or stage)
+    save_predictions(predictions, out / file)
+    return {"file": file, "split": split, "n": int(labels.size)}
 
 
 def _plot_confusion_matrix(matrix: list[list[float]], title: str, path: Path) -> None:
@@ -602,6 +673,55 @@ def _plot_confusion_matrix(matrix: list[list[float]], title: str, path: Path) ->
     plt.close(fig)
 
 
+def _split_results(
+    command: str,
+    trainer: L.Trainer,
+    module: ClassifierModule,
+    datamodule: L.LightningDataModule,
+    best: str,
+    out: Path,
+    split_run: SplitRun,
+) -> dict[str, Any]:
+    """A split run's results: the selection part (validate) and the evaluation part (test).
+
+    The data module's ``Test`` role is the evaluation part (``device_data.protocol_splits``),
+    so ``trainer.test`` predicts it and never touches the real Test split.
+    """
+    parts = split_run.parts()
+    trainer.validate(module, datamodule=datamodule, ckpt_path=best, verbose=False)
+    selection = _evaluation(module, "val")
+    trainer.test(module, datamodule=datamodule, ckpt_path=best, verbose=False)
+    evaluation = _evaluation(module, "test")
+    predictions = {
+        "evaluation": _write_predictions(
+            module,
+            "test",
+            parts.evaluation_name,
+            out,
+            index=parts.evaluation_index,
+            name="evaluation",
+        )
+    }
+    figures = []
+    for part, result in (("selection", selection), ("evaluation", evaluation)):
+        title = (
+            f"{command}: {split_run.mode} {part}: balanced accuracy "
+            f"{100 * result['balanced_accuracy']:.1f} %"
+        )
+        figure = f"confusion_matrix_{part}.png"
+        _plot_confusion_matrix(result["confusion_matrix"], title, out / figure)
+        figures.append(figure)
+    return {
+        "selection_acc_best": selection["accuracy"],
+        "evaluation_accuracy": evaluation["accuracy"],
+        "evaluation_balanced_accuracy": evaluation["balanced_accuracy"],
+        "labels": list(LABEL_NAMES),
+        "evaluation": {"selection": selection, "evaluation": evaluation},
+        "predictions": predictions,
+        "figures": figures,
+    }
+
+
 def _classifier_results(
     command: str,
     trainer: L.Trainer,
@@ -609,9 +729,12 @@ def _classifier_results(
     datamodule: L.LightningDataModule,
     best: str,
     out: Path,
+    split_run: SplitRun | None = None,
 ) -> dict[str, Any]:
     if not best or not Path(best).is_file():
         raise DataError("no best checkpoint was written (did any validation run?)")
+    if split_run is not None:
+        return _split_results(command, trainer, module, datamodule, best, out, split_run)
     trainer.validate(module, datamodule=datamodule, ckpt_path=best, verbose=False)
     val = _evaluation(module, "val")
     predictions = {"val": _write_predictions(module, "val", "Validation", out)}
@@ -725,6 +848,7 @@ def run_command(
     resume: str | None = None,
     callbacks: Sequence[Callback] = (),
     progress_bar: bool = True,
+    split: SplitRequest | None = None,
 ) -> dict[str, Any]:
     """Run the training subcommand ``command`` with ``settings``; return the metrics.
 
@@ -732,22 +856,31 @@ def run_command(
     ``resume`` is ``None``, ``"auto"`` or a checkpoint path (:func:`resolve_resume`).
     ``callbacks`` are added to the Trainer (the preflight's throughput timer);
     ``progress_bar=False`` hides Lightning's progress bar (the preflight prints its own
-    summary). The metrics are also written to ``output_dir/metrics.json``.
+    summary). ``split`` makes it a split run (module docstring, "Split runs"). The metrics
+    are also written to ``output_dir/metrics.json``.
 
     Raises:
         AcceleratorError: if the accelerator is not available.
         ConfigError: on an invalid name (augmentation, model, monitor), a missing or wrong
             pretrained checkpoint, a missing ``--resume`` checkpoint, or a ``carrasco2021``
-            schedule with another command or model (and the paper model without it).
+            schedule with another command or model (and the paper model without it); with
+            ``split``, another command or schedule, or a fold the file does not have.
         DataError: if the dataset is missing, invalid or smaller than one batch, or (the
-            paper model's ``paper_input: float32``) has no float32 stamps.
+            paper model's ``paper_input: float32``) has no float32 stamps; with ``split``,
+            a splits file that is malformed or does not belong to the prepared data
+            (``SplitsError``).
     """
     check_accelerator(settings.accelerator)
     _check_names(settings)
     data = dataset_path(settings)
     ckpt_path = resolve_resume(resume, settings.output_dir)
+    split_run = None
+    if split is not None:
+        _check_split(command, settings)
+        # Verify before anything is built or trained: other data must fail fast.
+        split_run = open_split_run(split, data)
     try:
-        module, datamodule, monitorable, paper_data = _build(command, settings, data)
+        module, datamodule, monitorable, paper_data = _build(command, settings, data, split_run)
     except ValueError as err:
         # DataError is a ValueError too, and must keep its exit code (1, not 2).
         if isinstance(err, ConfigError | DataError):
@@ -772,10 +905,12 @@ def run_command(
         paper_data["n_tiled"] = None if tiled is None else len(tiled)
         metrics["paper_data"] = paper_data
         metrics["preset"] = preset_report(settings)
+    if split_run is not None:
+        metrics["protocol"] = split_run.describe()
     if isinstance(module, ClassifierModule):
         metrics.update(
             _classifier_results(
-                command, trainer, module, datamodule, checkpoint.best_model_path, out
+                command, trainer, module, datamodule, checkpoint.best_model_path, out, split_run
             )
         )
     else:

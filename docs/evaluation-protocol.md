@@ -1,5 +1,7 @@
-<!-- The phase-2 evaluation protocol (task 2.3 of docs/phases/02-stamp-classifier.md): the
-     rules, the power note and how to use the tools. Code: src/astro_simclr/protocol/,
+<!-- The phase-2 evaluation protocol (task 2.3 of docs/phases/02-stamp-classifier.md; the CV
+     training path of task 2.5-infra): the rules, the power note and how to use the tools.
+     Code: src/astro_simclr/protocol/ (split_runs, compare), the --splits path of
+     src/astro_simclr/experiments.py and training/device_data.py,
      src/astro_simclr/reference.py (CD21), the metrics JSON of src/astro_simclr/experiments.py.
      Design choices: docs/decisions/0004-evaluation-protocol.md. -->
 # Evaluation protocol (phase 2)
@@ -21,9 +23,12 @@ Every keep/drop decision uses one of:
 Test is computed for every run, archived, and **reported once per pre-registered
 comparison**. The code helps with this:
 
-- `compare-variants` always ends in `REPORT` and says why: on `--split test` because of this
-  rule, and on `--split val` because a normal run's Validation stamps chose its checkpoint.
-- The decision helpers (`screen_comparison`, `cv_comparison` in
+- `compare-variants` on normal runs always ends in `REPORT` and says why: on `--split test`
+  because of this rule, and on `--split val` because a normal run's Validation stamps chose
+  its checkpoint.
+- Decisions come only from *split runs* (`train-supervised --splits FILE --fold K |
+  --screen`, below), which never load Test, and `compare-variants --splits FILE` only
+  accepts them. The decision helpers (`screen_comparison`, `cv_comparison` in
   `astro_simclr.protocol.compare`) only accept predictions on the screen's decision half or
   on a CV fold's evaluation part. They check the stamp indices, so test or full-Validation
   predictions are refused.
@@ -93,14 +98,16 @@ Other details of the gate:
 
 Exit codes: 0 for PASS (either tier) or REPORT, 1 for FAIL.
 
-## Comparing two variants: `compare-variants`
+## Comparing two variants: `compare-variants` (report)
 
 ```bash
 astro-simclr compare-variants --baseline runs/base/seed{0..4} --variant runs/b3/seed{0..4} \
     [--split test|val] [--n-boot 10000] [--seed 0]
 ```
 
-It reports both tests the plan asks for. The difference is always variant − baseline.
+On normal runs (one per seed) it reports both tests the plan asks for, and always exits 0.
+Decisions use `--splits FILE` on split runs instead (see "Running a decision end to end").
+The difference is always variant − baseline.
 
 - **McNemar on seed-ensembled predictions.** For each stamp and variant, the 5 seeds'
   probabilities are averaged and the argmax is taken. Then the exact two-sided McNemar
@@ -151,11 +158,23 @@ the leakage removal. Pool index `i < 50,582` is Train stamp `i`, and pool index
 
 Each fold uses 2 seeds. `cv_comparison` concatenates every fold's per-stamp seed-mean
 scores. Every pool stamp is held out exactly once, so this covers the whole pool. It then
-bootstraps the balanced-accuracy difference, stratified by class.
+bootstraps the balanced-accuracy difference, stratified by class. The bootstrap is **paired
+by pool index**: both sides must cover each fold's evaluation part in its stored order, so
+the same position is the same stamp on both sides, and each resample draws the same stamps
+for both.
 
-**The adoption rule:** a flag is adopted only if the 95 % interval of its CV difference
-against the baseline lies **entirely above 0** (`adoption_decision`: `adopt`, `worse` or
-`inconclusive`). Task 2.6 combines only adopted flags.
+**The adoption rule (superiority, task 2.3):** a flag is adopted only if the 95 % interval
+of its CV difference against the baseline lies **entirely above 0** (`adoption_decision`:
+`adopt`, `worse` or `inconclusive`). Task 2.6 combines only adopted flags.
+
+**The non-inferiority rule (efficiency rows of 2.5: B7, B2′, B1′).** A change whose point is
+to be cheaper (fewer MACs or parameters) only needs to be "as good", which the superiority
+rule cannot adopt. It is adopted when the lower bound of the same interval is **above
+−0.5 points** (−0.005; `non_inferiority_decision`, `--rule non-inferiority`, `--margin`).
+An interval entirely below −margin is `worse`. The margin is a fraction of balanced
+accuracy; values above 0.05 are refused as a likely unit mistake (0.5 typed for half a
+point). Report MACs and throughput next to it (plan, 2.5). The rule is chosen before the
+runs, per row: it is not a fallback when superiority fails.
 
 ### The 250/250 screen (drop only)
 
@@ -165,12 +184,97 @@ half. `screen_comparison` **drops** a variant whose seed-mean accuracy on the de
 is 4 points or more below the baseline's. It never adopts one: its minimum detectable
 effect is about 4 points. It runs first, to drop clear losers cheaply.
 
-> **Not wired yet.** Training on a fold or on a screen half needs the data module to take
-> index subsets, and to write predictions whose `index` is the Validation index (screen) or
-> the pool index (fold). Today every run writes `index = arange(N)` for the whole of
-> Validation and Test. That wiring belongs with the GPU-resident data module of task 2.2a.
-> The split definitions, this predictions contract and the decision helpers are ready for
-> it.
+## Running a decision end to end (task 2.5-infra)
+
+### Split runs: `train-supervised --splits FILE --fold K | --screen`
+
+A split run is a normal `carrasco2021` run (any preset, diagnostic or 2.5 flag) whose data
+are one part of the stored splits:
+
+| | `--fold K` (0-4) | `--screen` |
+|---|---|---|
+| trains on (tiled to the largest class, as in the preset) | fold K's training part | Train minus `excluded_train` |
+| selects the checkpoint on (same monitor, horizon rule and batch-64 means as the preset) | fold K's selection set (500) | the screen's selection half (250) |
+| predicts | fold K's evaluation part (~10,215) | the screen's decision half (250) |
+| `index` in the predictions file | pool index | Validation index |
+
+- **Test is never loaded**, so it can be neither measured nor predicted. Only Train and
+  Validation are read and cropped.
+- Before anything is built, the splits file is **verified against the prepared data**
+  (`verify_splits`: the source and label SHA-256 and sizes, the balance, the
+  stratification, a fresh leakage check). A file made for other data fails with exit 1 and
+  says to regenerate it with `make-splits`. A fold that the file does not have, another
+  schedule than `carrasco2021`, or `exclude_leaked_train: false` fail with exit 2.
+- The outputs: `metrics.json` with `protocol` (`mode`, `fold`, `splits_file`,
+  `splits_sha256`, the part sizes, `excluded_train`), `selection_acc_best`,
+  `evaluation_accuracy`, `evaluation_balanced_accuracy` (the decision metric of the fold),
+  `evaluation.{selection,evaluation}` (the usual per-part block),
+  `predictions.evaluation` → `predictions_evaluation.npz`, and
+  `confusion_matrix_{selection,evaluation}.png`. There is no `val_acc_best` or
+  `test_acc_at_best`, so a split run can never enter the CD21 gate. The Lightning logs call
+  the evaluation part `test` (it is the data module's `Test` role).
+- Measured on the Mac M4 CPU (fold 0 of `red`, `--accelerator cpu --set max_steps=200
+  horizon_increment=0`; `horizon_increment=0` keeps a short run short): 261 s of wall time
+  in total. Of these, 217 s are the fit loop, 1.08 s per step with a 500-stamp selection
+  pass every 10 steps. The other ~45 s are the fixed cost of the run: verifying the splits
+  (the leakage check), cropping Train and Validation, and predicting the 10,219 evaluation
+  stamps. The fold's training part has 40,362 stamps, 58,065 after tiling (907 steps per
+  epoch). A full fold (30,000+ steps) is therefore a GPU job: about 9 h on this CPU.
+
+### The commands
+
+Run every arm on the same machine and build (the 5090 for the full CV), with the same seeds
+on both sides. The baseline arms are run once per machine and shared by every row. `--set`
+takes several `KEY=VALUE` items, so it goes last.
+
+```bash
+SPLITS=configs/splits/td_ztf_stamp_17_06_20_red-002.json
+TRAIN="astro-simclr train-supervised --preset carrasco2021 --data-dir dataset/prepared --splits $SPLITS"
+
+# 1. The screen (cheap; it can only drop): one run per seed and arm.
+for s in 0 1; do
+  $TRAIN --screen --seed $s --output-dir runs/screen/base/seed$s
+  $TRAIN --screen --seed $s --output-dir runs/screen/b7/seed$s --set KEY=VALUE
+done
+astro-simclr compare-variants --splits $SPLITS \
+    --baseline runs/screen/base/seed* --variant runs/screen/b7/seed*
+# exit 1 (DROP): stop here. exit 0 (KEEP): not dropped, go on to the CV.
+
+# 2. The CV: 5 folds x 2 seeds per arm.
+for k in 0 1 2 3 4; do
+  for s in 0 1; do
+    $TRAIN --fold $k --seed $s --output-dir runs/cv/base/fold$k-seed$s
+    $TRAIN --fold $k --seed $s --output-dir runs/cv/b7/fold$k-seed$s --set KEY=VALUE
+  done
+done
+astro-simclr compare-variants --splits $SPLITS \
+    --baseline runs/cv/base/fold* --variant runs/cv/b7/fold*            # superiority
+astro-simclr compare-variants --splits $SPLITS \
+    --baseline runs/cv/base/fold* --variant runs/cv/b7/fold* \
+    --rule non-inferiority [--margin 0.005]                             # efficiency rows
+```
+
+### What `compare-variants --splits FILE` checks and prints
+
+- Every run is a split run trained on **this** file (its SHA-256 is in the run's
+  `protocol`), all in one mode (folds or screen), on the same data (`data.source.sha256`)
+  and machine and build (unless `--allow-mixed-machines`).
+- Both sides cover **the same (fold, seed) cells**, once each, and the CV runs cover
+  **every fold** of the file. A missing fold, a seed on one side only or a repeated cell is
+  an error that names it (exit 2). Fewer than 2 seeds in a fold gives a WARN line.
+- Each run's predictions cover exactly its part, in order (otherwise exit 2).
+- **CV:** the balanced accuracy of each fold (seed means) for both arms and their
+  difference, the pooled balanced accuracies, McNemar on the seed ensembles over all folds
+  (reported, not a rule), the paired bootstrap 95 % CI, and the rule's outcome. Last line
+  `compare-variants: ADOPT` (exit 0) or `compare-variants: NOT ADOPTED (worse|inconclusive)`
+  (exit 1).
+- **Screen:** the seed-mean accuracies on the decision half, McNemar, and
+  `compare-variants: DROP` (exit 1) or `KEEP` (exit 0: not dropped; the screen never
+  adopts). `--rule` is refused for the screen.
+
+Exit codes follow `compare-reference`: 0 for a pass (ADOPT, KEEP), 1 for a fail (NOT
+ADOPTED, DROP) and for unusable data, 2 for invalid arguments or runs that cannot be
+compared.
 
 ## Leakage
 
@@ -180,10 +284,10 @@ splits. On `td_ztf_stamp_17_06_20_red-002` it finds exactly one duplicate: **Tra
 labelled Bogus, is Validation 115, labelled SN**, with identical features. The same alert
 therefore carries two different labels.
 
-The stamp is removed **from Train only** (`excluded_train`), and it is in no CV fold.
-Training runs do **not** drop it yet. The replication's data path (tasks 2.2a and 2.2c) has
-to apply `train_keep_indices(n_train, excluded_train)`. Validation and Test keep their 500
-stamps, as in the paper, so Validation 115 stays, labelled SN.
+The stamp is removed **from Train only** (`excluded_train`), and it is in no CV fold. The
+`carrasco2021` runs drop it (`exclude_leaked_train`; tasks 2.2a and 2.2c), and split runs
+take it from the splits file, checked against a fresh leakage check. Validation and Test
+keep their 500 stamps, as in the paper, so Validation 115 stays, labelled SN.
 
 ## Power note
 
