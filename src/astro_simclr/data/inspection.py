@@ -6,10 +6,15 @@ split the stored containers, dtypes and shapes of every key and the counts per c
 validated against its schema (:func:`load_pickle`), and a prepared layout is checked
 against its ``meta.json``, including the SHA-256 of every array file. The data manifest of
 the preflight (task 1.7) is built from these summaries.
+
+A ``raw-alerts`` layout (task 3.1b) has no splits: its summary has ``format: raw-alerts``,
+the row count, both files, the counts per class under the layout's own label names, and
+the counts per ``label_source``.
 """
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -18,7 +23,16 @@ import numpy as np
 
 from astro_simclr.data.files import sha256_file
 from astro_simclr.data.pickle_loader import read_pickle, validate
-from astro_simclr.data.prepared import is_prepared, load_prepared, read_meta, verify_prepared
+from astro_simclr.data.prepared import (
+    RAW_ALERTS_KIND,
+    is_prepared,
+    layout_kind,
+    load_prepared,
+    read_meta,
+    read_meta_file,
+    verify_prepared,
+)
+from astro_simclr.data.raw_alerts import load_raw_alerts, verify_raw_alerts
 from astro_simclr.data.schema import LABEL_NAMES, DataError, StampData
 
 __all__ = ["format_summary", "summarize"]
@@ -32,6 +46,8 @@ def summarize(path: Path) -> dict[str, Any]:
             not match its schema (the subclasses of :class:`DataError`).
     """
     if is_prepared(path):
+        if layout_kind(path) == RAW_ALERTS_KIND:
+            return _summarize_raw_alerts(path)
         return _summarize_prepared(path)
     if path.is_dir():
         raise DataError(f"{path}: a directory without meta.json is not a prepared layout")
@@ -80,6 +96,26 @@ def _summarize_prepared(path: Path) -> dict[str, Any]:
     }
 
 
+def _summarize_raw_alerts(path: Path) -> dict[str, Any]:
+    data = load_raw_alerts(path)
+    verify_raw_alerts(path)
+    meta = read_meta_file(path)
+    sources = Counter(str(source) for source in data.index["label_source"])
+    return {
+        "path": str(path),
+        "format": RAW_ALERTS_KIND,
+        "kind": RAW_ALERTS_KIND,
+        "size_bytes": sum(f.stat().st_size for f in path.rglob("*") if f.is_file()),
+        "source": meta["source"],
+        "n": len(data),
+        "keys": {
+            name: f"{info['dtype']} {tuple(info['shape'])}" for name, info in meta["files"].items()
+        },
+        "class_counts": dict(zip(data.label_names, data.class_counts(), strict=True)),
+        "label_sources": dict(sorted(sources.items())),
+    }
+
+
 def _splits(data: StampData, stored: dict[str, dict[str, str]]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for split, content in data.splits.items():
@@ -122,6 +158,8 @@ def format_summary(summary: dict[str, Any]) -> str:
     )
     if summary["format"] == "pickle":
         lines.append(f"  sha256: {summary['sha256']}")
+    elif summary["format"] == RAW_ALERTS_KIND:
+        return _format_raw_alerts(summary, lines)
     else:
         source = summary["source"]
         lines.append(f"  source: {source['name']} ({source['size_bytes']:,} bytes)")
@@ -134,4 +172,18 @@ def format_summary(summary: dict[str, Any]) -> str:
         counts = info["class_counts"]
         if counts is not None:
             lines.append("    classes: " + ", ".join(f"{k} {v:,}" for k, v in counts.items()))
+    return "\n".join(lines) + "\n"
+
+
+def _format_raw_alerts(summary: dict[str, Any], lines: list[str]) -> str:
+    lines.append(f"  source: {json.dumps(summary['source'], sort_keys=True)}")
+    lines.append("  files: SHA-256 match meta.json")
+    lines.append(f"  {summary['n']:,} alerts")
+    width = max(len(key) for key in summary["keys"])
+    lines.extend(f"    {key:<{width}}  {desc}" for key, desc in summary["keys"].items())
+    lines.append(
+        "    classes: " + ", ".join(f"{k} {v:,}" for k, v in summary["class_counts"].items())
+    )
+    sources = summary["label_sources"]
+    lines.append("    label sources: " + ", ".join(f"{k} {v:,}" for k, v in sources.items()))
     return "\n".join(lines) + "\n"

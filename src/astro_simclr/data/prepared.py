@@ -19,6 +19,10 @@ it is the uint8-only layout of format version 1, and everything that reads only
 Format versions: 1 (task 1.2) has no ``images_f32.npy`` and no ``meta.json["images"]``;
 2 (task 2.1) adds both. The writer always writes version 2; the readers accept 1 and 2.
 A uint8-only version-2 layout has the same array files, byte for byte, as version 1.
+Version 3 is another kind, ``raw-alerts`` (task 3.1b, :mod:`astro_simclr.data.raw_alerts`):
+one pool of raw cutouts without splits, for any label set. It shares ``meta.json`` and
+:data:`FORMAT`, so :func:`read_meta_file` reads both; :func:`read_meta` and
+:func:`load_prepared` refuse it with a message naming its loader.
 
 :func:`load_prepared` opens it with ``np.load(allow_pickle=False, mmap_mode="r")``, so
 repeated runs never unpickle anything and never hold the stamps in RAM. The writer is
@@ -57,9 +61,11 @@ __all__ = [
     "READABLE_VERSIONS",
     "ImageDtype",
     "is_prepared",
+    "layout_kind",
     "load_prepared",
     "prepare",
     "read_meta",
+    "read_meta_file",
     "verify_prepared",
     "write_prepared",
 ]
@@ -72,6 +78,9 @@ FORMAT_VERSION = 2
 READABLE_VERSIONS: tuple[int, ...] = (1, 2)
 #: Name of the metadata file at the root of a prepared directory.
 META_NAME = "meta.json"
+#: The kind of :mod:`astro_simclr.data.raw_alerts` (format version 3), which shares
+#: ``meta.json`` and :data:`FORMAT` but not the splits; :func:`read_meta` refuses it.
+RAW_ALERTS_KIND = "raw-alerts"
 
 #: ``prepare-data --images``: ``uint8`` writes ``images.npy`` only; ``float32`` also
 #: writes ``images_f32.npy``.
@@ -190,15 +199,15 @@ def write_prepared(
     return dest
 
 
-def read_meta(path: Path) -> dict[str, Any]:
-    """Read and check ``path/meta.json``.
+def read_meta_file(path: Path) -> dict[str, Any]:
+    """Read ``path/meta.json`` of any prepared kind and check only its ``format``.
 
-    Accepts every version of :data:`READABLE_VERSIONS`. A version-1 file gets
-    ``meta["images"] = ["uint8"]`` filled in, so callers can rely on the key.
+    The split layouts (:func:`read_meta`) and the ``raw-alerts`` layout
+    (:mod:`astro_simclr.data.raw_alerts`) share the file name and the format; each reader
+    then checks its own versions and kinds.
 
     Raises:
-        DataError: if it is missing or unreadable, not JSON, or of another format or
-            an unknown format version.
+        DataError: if it is missing or unreadable, not a JSON object, or of another format.
     """
     file = path / META_NAME
     try:
@@ -211,6 +220,41 @@ def read_meta(path: Path) -> dict[str, Any]:
         raise DataError(f"{file}: invalid JSON ({err})") from None
     if not isinstance(meta, dict) or meta.get("format") != FORMAT:
         raise DataError(f"{file}: not an {FORMAT} file")
+    return meta
+
+
+def layout_kind(path: Path) -> str | None:
+    """The ``kind`` of the prepared layout at ``path``, or ``None`` if it cannot be read.
+
+    Never raises: callers that list layouts (``preflight``) or dispatch on the kind
+    (``inspect-data``) use it, and the readers report the actual error.
+    """
+    try:
+        kind = read_meta_file(path).get("kind")
+    except DataError:
+        return None
+    return kind if isinstance(kind, str) else None
+
+
+def read_meta(path: Path) -> dict[str, Any]:
+    """Read and check ``path/meta.json`` of a split layout (``classifier`` or ``pretraining``).
+
+    Accepts every version of :data:`READABLE_VERSIONS`. A version-1 file gets
+    ``meta["images"] = ["uint8"]`` filled in, so callers can rely on the key.
+
+    Raises:
+        DataError: if it is missing or unreadable, not JSON, or of another format or
+            an unknown format version; or if it is a ``raw-alerts`` layout, which the
+            phase-2 readers cannot use (the message names its loader).
+    """
+    file = path / META_NAME
+    meta = read_meta_file(path)
+    if meta.get("kind") == RAW_ALERTS_KIND:
+        raise DataError(
+            f"{file}: a {RAW_ALERTS_KIND} layout (format version "
+            f"{meta.get('format_version')!r}) has no splits and is not read here; open it "
+            "with astro_simclr.data.raw_alerts.load_raw_alerts"
+        )
     version = meta.get("format_version")
     if version not in READABLE_VERSIONS:
         raise DataError(

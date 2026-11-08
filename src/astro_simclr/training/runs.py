@@ -14,7 +14,8 @@ suffix) on ``accuracy_val`` or ``loss_train_enc``, and no seed. Here:
   settings (nothing is hard-coded, so a config can select on ``loss_val``), checks that the
   module logs the monitored metric, and derives ``mode`` from it;
 - :func:`build_trainer` takes ``accelerator`` and ``devices`` from the settings (the only
-  place a device is chosen; ``gpus=`` no longer exists in Lightning 2).
+  place a device is chosen; ``gpus=`` no longer exists in Lightning 2), and the progress
+  bar's refresh rate from ``progress_bar_refresh_rate``.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from typing import Any, Final, Literal, cast
 
 import lightning as L
 import torch
-from lightning.pytorch.callbacks import Callback, EarlyStopping, ModelCheckpoint
+from lightning.pytorch.callbacks import Callback, EarlyStopping, ModelCheckpoint, TQDMProgressBar
 from lightning.pytorch.loggers import Logger
 
 from astro_simclr.config import ConfigError, Settings
@@ -202,10 +203,17 @@ def build_trainer(
     ``accelerator``, ``devices``, ``max_epochs``, ``deterministic`` and (when set)
     ``limit_train_batches`` / ``limit_val_batches`` come from the settings; ``benchmark`` is
     the legacy ``True`` unless the run is deterministic (cuDNN ignores determinism when
-    benchmarking). Outputs go under ``settings.output_dir``.
+    benchmarking). Outputs go under ``settings.output_dir``. The progress bar, unless
+    ``enable_progress_bar=False`` is passed or ``settings.progress_bar_refresh_rate`` is 0,
+    is a ``TQDMProgressBar`` redrawn every ``progress_bar_refresh_rate`` batches.
     ``trainer_kwargs`` override or extend these (for example ``fast_dev_run=True`` or
     ``limit_train_batches=2``).
     """
+    callbacks = list(callbacks)
+    rate = settings.progress_bar_refresh_rate
+    progress_bar = bool(trainer_kwargs.pop("enable_progress_bar", True)) and rate > 0
+    if progress_bar:
+        callbacks.append(TQDMProgressBar(refresh_rate=rate))
     kwargs: dict[str, Any] = {
         "accelerator": settings.accelerator,
         "devices": settings.devices,
@@ -213,9 +221,10 @@ def build_trainer(
         "deterministic": settings.deterministic,
         "benchmark": not settings.deterministic,
         "default_root_dir": settings.output_dir,
-        "callbacks": list(callbacks),
+        "callbacks": callbacks,
         "logger": logger,
         "enable_model_summary": False,
+        "enable_progress_bar": progress_bar,
     }
     for name in ("limit_train_batches", "limit_val_batches"):
         value = getattr(settings, name)
