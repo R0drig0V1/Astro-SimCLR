@@ -29,6 +29,12 @@ the haversine formula, which is accurate at arcsecond scales and handles the RA 
 ``w`` rows (16 on ``red``); a dataset where many rows share a declination band within the
 radius degrades towards ``O(N^2)`` but stays correct.
 
+**Cross-matching two sets** (:func:`match_any_within`, the corpus index of task 5.1): which
+rows of one set lie within the radius of *any* row of a reference set. The same search with
+the reference sorted by ``dec``: each row is compared with the reference rows whose ``dec``
+is within the radius of its own (two ``searchsorted`` bounds), so the cost is ``O(N w)`` for
+a window of ``w`` reference rows, and the RA wrap and the poles are handled as above.
+
 Group ids are canonical: groups are numbered 0, 1, ... in the order of their smallest row
 index, so two groupings of the same rows are equal exactly when their arrays are equal.
 """
@@ -59,6 +65,7 @@ __all__ = [
     "group_members",
     "grouping_for",
     "load_group_ids",
+    "match_any_within",
     "neighbour_pairs",
     "position_groups",
     "split_positions",
@@ -205,6 +212,51 @@ def neighbour_pairs(
     first, second = np.concatenate(found_a), np.concatenate(found_b)
     keep = np.lexsort((second, first))
     return first[keep].astype(np.int64), second[keep].astype(np.int64)
+
+
+def match_any_within(
+    ra: npt.ArrayLike,
+    dec: npt.ArrayLike,
+    ref_ra: npt.ArrayLike,
+    ref_dec: npt.ArrayLike,
+    radius_arcsec: float,
+) -> tuple[npt.NDArray[np.bool_], Indices]:
+    """Which rows lie within ``radius_arcsec`` (inclusive) of any reference row, exactly.
+
+    All coordinates are in degrees (any RA range). Returns ``(matched, nearest)``:
+    ``matched[i]`` is whether row ``i`` has a reference row within the radius, and
+    ``nearest[i]`` the closest such reference row (the smallest index among equally close
+    ones), or -1. The dec-window search of the module docstring, over the reference rows.
+
+    Raises:
+        ValueError: if ``radius_arcsec`` is not positive, or the shapes differ.
+        DataError: if a coordinate is not finite or ``|dec|`` exceeds 90.
+    """
+    if not radius_arcsec > 0:
+        raise ValueError(f"radius_arcsec must be positive, got {radius_arcsec}")
+    ra_, dec_ = np.asarray(ra, dtype=np.float64), np.asarray(dec, dtype=np.float64)
+    ref_ra_, ref_dec_ = np.asarray(ref_ra, dtype=np.float64), np.asarray(ref_dec, dtype=np.float64)
+    _check_positions(ra_, dec_)
+    _check_positions(ref_ra_, ref_dec_)
+    radius = radius_arcsec / 3600.0
+    order = np.argsort(ref_dec_, kind="stable")
+    sorted_dec = ref_dec_[order]
+    # The reference rows of row i are sorted positions lo[i] ... hi[i] - 1.
+    lo = np.searchsorted(sorted_dec, dec_ - radius, side="left")
+    hi = np.searchsorted(sorted_dec, dec_ + radius, side="right")
+    best = np.full(ra_.size, np.inf)
+    nearest = np.full(ra_.size, -1, dtype=np.int64)
+    width = int((hi - lo).max()) if ra_.size else 0
+    for offset in range(width):
+        rows = np.flatnonzero(lo + offset < hi)
+        ref = order[lo[rows] + offset]
+        separation = _separation_deg(ra_[rows], dec_[rows], ref_ra_[ref], ref_dec_[ref])
+        closer = (separation <= radius) & (
+            (separation < best[rows]) | ((separation == best[rows]) & (ref < nearest[rows]))
+        )
+        best[rows[closer]] = separation[closer]
+        nearest[rows[closer]] = ref[closer]
+    return nearest >= 0, nearest
 
 
 def position_groups(ra: npt.ArrayLike, dec: npt.ArrayLike, radius_arcsec: float) -> Grouping:

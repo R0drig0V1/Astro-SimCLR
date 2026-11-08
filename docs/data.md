@@ -733,8 +733,8 @@ Each avro member is parsed as an untrusted alert, with the size limits of
 - **Exclusions:** the integrator builds the file: the union of the evaluation sets'
   objects (CD21's, R5 Validation/Test, and every later benchmark), one `oid` per line,
   `#` comments allowed. It is required: `--no-exclusions` must be asked for explicitly. A
-  longer list later is applied with `corpus_index(out, exclude=...)`, without
-  re-ingesting.
+  longer list later, and the candid, position and near-duplicate exclusions, are applied
+  by the [corpus index](#corpus-index-task-51), without re-ingesting.
 
 ### Layout
 
@@ -785,6 +785,106 @@ uv run astro-simclr archive-summary DIR [--verify] [--json]   # counts, objects,
   nights in parallel, give each process its own `--out`.
 - A truncated or corrupt download, including its gzip trailer, fails the night (exit 1)
   and commits nothing.
+
+### Corpus index (task 5.1)
+
+Pretraining never reads the nights directly: it reads a **corpus index**, the archive
+rows left after the exclusion union of the plan (task 5.1, review finding F5). Code:
+`src/astro_simclr/archive/corpus_index.py`, `near_duplicates.py` and `reader.py`;
+decisions: ADR 0019, amendment of 2026-11-08.
+
+```bash
+uv run astro-simclr build-corpus-index ~/archive-corpus --out ~/corpus-index.npz \
+    --cd21 dataset/prepared/td_ztf_stamp_17_06_20_red-002 \
+    [--exclude-oids FILE]... [--exclude-candids FILE]... [--duplicates first|random --seed N]
+```
+
+The rules run in this order. Each row is counted under the first rule that removes it
+(`counts.excluded`); `counts.matched` also counts, for the first three rules, every row each
+one matches on its own.
+
+| Count | Rule |
+|---|---|
+| `candid_list` | the `candid` is in a `--exclude-candids` file (one positive integer per line, `#` comments) |
+| `oid_list` | the `oid` is in an `--exclude-oids` file (the `ingest-archive --exclude` format): R5 Validation/Test, the CD21 objects `fetch-alerts` resolved |
+| `position` | an `oid` with an alert within 1.5″ (inclusive, `--radius-arcsec`) of **any** CD21 alert (every alert of that `oid` goes; `counts.matched` counts the rows within the radius), Train included (CD21 CV evaluates it), Validation and Test: the layout's `ra`/`dec` de-standardised with M1's statistics, matched on the sphere (haversine, RA wrap, poles; `protocol.groups.match_any_within`). This catches the ghosts: another `oid` of one object (another field or readout channel) and artefacts at a fixed position |
+| `near_duplicate` | the row's stamp is a pixel copy of a CD21 stamp (below); **every** row of its `oid` goes |
+| `duplicate_oid` | one alert per `oid` over the nights: `first` (default) keeps the earliest by `jd`, then `candid` (CD21's first alert); `random` keeps a draw from `default_rng([seed, 0, 10])` (`corpus_duplicates`) |
+
+**The near-duplicate check** (`archive/near_duplicates.py`) compares pixels, so it catches
+what the keys miss (a wrong or missing position, a renamed object). Both sides use the
+stored-stamp normalisation (below).
+
+1. **Candidates:** each stamp is mean-pooled to 9×9×3, each channel centred, and the
+   whole scaled to unit norm. The CD21 stamps (all three splits) with a cosine of at least
+   0.99 (`--near-cosine`) are candidates, at most 4 per row.
+2. **Confirmation:** a candidate is a near-duplicate if the two 63×63×3 stamps differ by at
+   most 1e-3 (`--near-max-diff`) at every pixel. The same cutout normalised twice agrees to
+   about 1e-6; two observations never agree that well, since their noise differs.
+   Unconfirmed candidates are counted (`near_duplicates.candidates`), not dropped.
+
+Measured on 4 real nights (2026-11-08, 144,981 rows):
+- **Stage 1** flagged 29,041 candidates, about 20 % of the rows, because pooled point
+  sources look alike.
+- **Stage 2** was calibrated on the 142 rows within 1.5″ of a CD21 alert. 131 are pixel
+  copies of their CD21 stamp (largest difference 1.2e-7). The other 11 differ by at least
+  0.39.
+- **Cost:** the build took 76 s on the shared 5090.
+
+The check needs the layout's `images_f32.npy`. `--no-near-duplicates` skips it, and the
+index records that it was skipped.
+
+**The file** is an `.npz` without pickles, written atomically. It is not committed (it
+names local paths):
+- `rows`: the kept rows (`night`, `row`, `oid`, `candid`, `jd`), sorted by night and row;
+- `meta`: a JSON string (format `astro-simclr-corpus-index` v1) with:
+  - the archive: its path, the content and SHA-256 of `corpus.json`, and per night `n`
+    and the SHA-256 of its `meta.json`;
+  - the rules;
+  - every exclusion input with its SHA-256: the layout's `meta.json`, and each
+    `features.npy` and `images_f32.npy` it read (checked against that `meta.json`), and
+    each list file;
+  - one `exclusion_sha256` over all of them, labelled, and over the rules (radius,
+    near-duplicate thresholds, duplicate policy and seed): the value a pretraining
+    manifest records;
+  - the counts, and the near-duplicate matches (night, row, oid, candid, CD21 split and
+    row, cosine, pixel difference; at most 1000 listed).
+
+The index lists the archive's nights once. A night that an ingest completes during the
+build is left for the next index.
+
+**Reading it** (`archive/reader.py`, `CorpusStamps`):
+- **Opening:** every night the index uses is memory-mapped and checked against its
+  `meta.json`, and against the index's `oid` and `candid` (another archive is refused).
+- **Batches:** they are read sorted by file offset: one forward sweep per cutout file.
+- **Normalisation, as the stored CD21 stamps:** per channel over the 63×63, `x -=
+  nanmin`, `x /= nanmax` with no epsilon, then NaN → 0 (a constant, all-NaN or inf
+  channel becomes 0). This is `alerts.fetch.alerce_normalise` in float64, cast to float32.
+
+**Pretraining on it.** `simclr-pilot INDEX_FILE --splits FILE ...` pretrains on the index's
+rows. Evaluation stays on CD21:
+- the CD21 layout (`--eval-data`; by default the one recorded in the index, and its source
+  SHA-256 must match) supplies the kNN bank, its Validation selection half and the
+  embedding dump;
+- `--archive` (by default the recorded one) must hold the indexed nights unchanged.
+
+The tiers (ADR 0018):
+
+| `--tier` | Where the stamps live | Use |
+|---|---|---|
+| `memmap` | Read per batch from the night shards, normalised on the host into a pinned buffer, uploaded asynchronously | Default for an index |
+| `host` | The whole corpus normalised once in host memory | Refused above `--host-cap-gb` (default 24): 390k stamps are about 18.6 GB |
+| `device` | On the training device | Refused for a corpus |
+
+The tiers give the same batches. The noise view needs per-stamp fits, so a corpus run
+refuses `--noise-scale`.
+
+The pilot refuses an index built with weaker rules: a radius below 1.5″, or
+`--no-near-duplicates`. `--allow-weak-index` overrides the refusal for a test; it is
+recorded in the config, and the record lists `weak_rules`. A resume refuses a checkpoint
+trained on another index (another `index_sha256`, `exclusion_sha256` or `n`), even at the
+same path. `pilot.json` records the index (path and SHA-256), the archive,
+the `exclusion_sha256`, the counts and the rules.
 
 ### Sampling plan and budget
 
