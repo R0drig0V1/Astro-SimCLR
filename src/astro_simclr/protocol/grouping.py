@@ -18,6 +18,14 @@ group on both sides, so these functions assign whole groups and stratify by clas
   ends more than ``g`` rows above its target and none more than ``(k - 1) g`` below
   (:func:`stratification_bound`; ``g`` is the class's largest group, ``k`` the number of
   parts);
+- **constraints** (task 3.5): ``allowed`` restricts some groups to some parts, as the
+  cross-benchmark rule needs (an R5 object that is in CD21's Train may only go to R5's
+  Train). Within a class, the groups with one allowed part are placed first, then those
+  with fewer allowed parts, then the free ones, each tier in the class's random order, and
+  each group goes to the allowed part furthest below its target. The free groups therefore
+  make up, as far as they can, for what the constraints push into one part; the bound above
+  no longer holds for a class with constrained groups (:func:`check_stratified` is only
+  meaningful for the others). Without ``allowed`` the draw is unchanged, number for number;
 - :func:`grouped_split`: rows -> part, refusing (or dropping) groups with two labels;
   :func:`grouped_halves`: the 50/50 *selection* and *decision* halves of a set, for
   phase-2-style decisions on an imbalanced N-class set;
@@ -36,7 +44,7 @@ torch.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -80,6 +88,7 @@ HALVES_STREAM: Final = 1
 _EPS: Final = 1e-9
 
 Rows = npt.NDArray[np.int64]
+Mask = npt.NDArray[np.bool_]
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +161,17 @@ def stratification_bound(sizes: npt.ArrayLike, n_parts: int = len(SPLIT_NAMES)) 
     return float((n_parts - 1) * values.max()) if values.size else 0.0
 
 
+def _allowed_mask(allowed: npt.ArrayLike | None, n_groups: int, n_parts: int) -> Mask | None:
+    if allowed is None:
+        return None
+    mask = np.asarray(allowed, dtype=bool)
+    if mask.shape != (n_groups, n_parts):
+        raise ValueError(f"allowed must be ({n_groups}, {n_parts}) booleans, got {mask.shape}")
+    if not mask.any(axis=1).all():
+        raise SplitsError(f"group {int(np.flatnonzero(~mask.any(axis=1))[0])} has no allowed part")
+    return mask
+
+
 def assign_groups(
     sizes: npt.ArrayLike,
     labels: npt.ArrayLike,
@@ -160,27 +180,39 @@ def assign_groups(
     seed: int,
     stream: int = 0,
     names: Sequence[str] | None = None,
+    allowed: npt.ArrayLike | None = None,
 ) -> Rows:
     """The part of each group (module docstring, the core draw); deterministic per seed.
 
     ``sizes`` and ``labels`` are per group. ``names`` (class names by label) only make the
-    error message readable.
+    error message readable. ``allowed``, optional, is a ``(groups, parts)`` boolean mask of
+    the parts each group may go to (module docstring, "constraints").
 
     Raises:
-        SplitsError: on invalid fractions, or a class with groups too few for every part to
-            get one.
+        SplitsError: on invalid fractions, a group with no allowed part, or a class with
+            groups too few for every part to get one.
+        ValueError: if ``allowed`` has the wrong shape.
     """
     shares = np.asarray(check_fractions(fractions))
     size_array = np.asarray(sizes, dtype=np.int64)
     label_array = np.asarray(labels, dtype=np.int64)
+    mask = _allowed_mask(allowed, size_array.size, shares.size)
     assigned = np.full(size_array.size, -1, dtype=np.int64)
     for c in np.unique(label_array).tolist():
         members = np.flatnonzero(label_array == c)
         rng = np.random.default_rng([seed, stream, c])
         targets = shares * size_array[members].sum()
         current = np.zeros(shares.size)
-        for item in members[rng.permutation(members.size)]:
-            part = int(np.argmax(targets - current))
+        order = members[rng.permutation(members.size)]
+        if mask is not None:
+            # The most constrained groups first; a stable sort keeps the random order
+            # within a tier.
+            order = order[np.argsort(mask[order].sum(axis=1), kind="stable")]
+        for item in order:
+            gap = targets - current
+            if mask is not None:
+                gap = np.where(mask[item], gap, -np.inf)
+            part = int(np.argmax(gap))
             assigned[item] = part
             current[part] += size_array[item]
         if np.count_nonzero(current) < shares.size:
@@ -189,6 +221,9 @@ def assign_groups(
                 f"{name} has {members.size} groups: too few for each of the "
                 f"{shares.size} parts to get one"
             )
+            if mask is not None and not mask[members].any(axis=0).all():
+                empty = [int(k) for k in np.flatnonzero(~mask[members].any(axis=0))]
+                msg = f"{name}: no group is allowed in part(s) {empty} by the constraints"
             raise SplitsError(msg)
     return assigned
 
@@ -215,13 +250,17 @@ def grouped_split(
     stream: int = 0,
     drop_conflicts: bool = False,
     names: Sequence[str] | None = None,
+    allowed: Mapping[Any, Collection[int]] | None = None,
 ) -> Rows:
     """Per row, its part (index into ``fractions``), or -1 for a dropped conflicting group.
+
+    ``allowed`` maps a group id to the parts (indices) it may go to; groups not in it may
+    go anywhere (module docstring, "constraints").
 
     Raises:
         SplitsError: on a group with two labels (unless ``drop_conflicts``), or as
             :func:`assign_groups`.
-        ValueError: as :func:`group_rows`.
+        ValueError: as :func:`group_rows`, or on a part index outside ``fractions``.
     """
     ids, _ = _arrays(groups, labels)
     found = group_rows(groups, labels)
@@ -229,8 +268,25 @@ def grouped_split(
         _refuse_conflicts(found, names)
     keep = ~np.isin(found.ids, list(found.conflicts))
     part_of_group = np.full(found.ids.size, -1, dtype=np.int64)
+    mask = None
+    if allowed:
+        mask = np.ones((found.ids.size, len(fractions)), dtype=bool)
+        for i, group in enumerate(found.ids.tolist()):
+            parts = allowed.get(group)
+            if parts is not None:
+                if any(not 0 <= k < len(fractions) for k in parts):
+                    raise ValueError(f"group {group!r}: allowed parts {sorted(parts)} out of range")
+                mask[i] = False
+                mask[i, list(parts)] = True
+        mask = mask[keep]
     part_of_group[keep] = assign_groups(
-        found.size[keep], found.label[keep], fractions, seed=seed, stream=stream, names=names
+        found.size[keep],
+        found.label[keep],
+        fractions,
+        seed=seed,
+        stream=stream,
+        names=names,
+        allowed=mask,
     )
     return part_of_group[np.searchsorted(found.ids, ids)]
 
