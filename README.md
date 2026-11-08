@@ -213,8 +213,8 @@ configs/runs/       nested configs for `astro-simclr run` (ADR 0017)
 results/            phase2/ (replication archive, augmentation inspections); 2021 tuning results
 docs/               architecture.md (one section per module), data.md, evaluation-protocol.md,
                     phases/ (the plan), decisions/ (ADRs), plan-reviews/
-scripts/            check.sh, gpu-preflight.sh, check-torch-wheels.sh, inspection scripts,
-                    characterize/ (legacy fixture generators)
+scripts/            check.sh (+ check-lock.sh), gpu-preflight.sh, check-torch-wheels.sh,
+                    inspection scripts, characterize/ (legacy fixture generators)
 jupyter_examples/   2021 exploratory notebooks (they import the legacy code)
 ```
 
@@ -272,7 +272,11 @@ scripts/check-torch-wheels.sh    # after touching the torch pins, extras or inde
 ```
 
 `scripts/check.sh` is the single definition of green; CI runs exactly that script. It runs
-the tests in parallel, one process per CPU (`PYTEST_XDIST_AUTO_NUM_WORKERS=N` caps it). GitHub
+the tests in parallel with at most 4 processes (`min(4, cores/2)` on macOS, `min(4, cores)`
+elsewhere; `PYTEST_XDIST_AUTO_NUM_WORKERS=N` overrides it), behind a machine-wide lock
+(`~/.cache/mc-sddp/check.lock.d`, shared with another project on the developer's Mac): one
+full check at a time, a lock left by a dead pid is broken, `ASTRO_SIMCLR_CHECK_LOCK=0`
+disables it and GitHub Actions skips it ([scripts/check-lock.sh](scripts/check-lock.sh)). GitHub
 workflows also run zizmor, actionlint, gitleaks, pip-audit, CodeQL and Scorecard. None runs on
 pull requests: the integrator's local `verify-merge.sh` is the PR gate, and CI runs on pushes
 to `main`, weekly and on demand ([ADR 0021](docs/decisions/0021-ci-on-main-pushes-only.md)); security

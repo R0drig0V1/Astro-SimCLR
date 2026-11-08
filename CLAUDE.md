@@ -30,9 +30,10 @@ configs/runs/       nested configs for `astro-simclr run` (task 4.2; ADR 0017)
 docs/        architecture.md (one section per module), phases/ (the plan), decisions/
              (ADRs), plan-reviews/, evaluation-protocol.md (phase-2 rules), data.md
 scripts/     characterize/ (fixture generators; legacy code via the legacy-final tag),
-             check.sh (all checks), check-torch-wheels.sh (ADR 0001 lock assertions),
-             gpu-preflight.sh (wraps `astro-simclr preflight`), integrator.sh; optional
-             worktree-setup.sh, verify-reset.sh
+             check.sh (all checks), check-lock.sh (its machine lock and worker cap),
+             check-torch-wheels.sh (ADR 0001 lock assertions), gpu-preflight.sh (wraps
+             `astro-simclr preflight`), integrator.sh; optional worktree-setup.sh,
+             verify-reset.sh
 .claude/     settings.json (enables the multi-agent-herdr plugin), multi-agent-herdr.json
              (base branch, integrator name `integrator-astro-simclr`), prompts/integrator.md
 ```
@@ -73,6 +74,11 @@ uvx copier@9.19.1 update           # pull python-template improvements (clean tr
   one itself: parallel PRs kept colliding on the same number.
 - `scripts/check.sh` is the single definition of "green": `/multi-agent-herdr:commit`,
   `/multi-agent-herdr:pr` and the integrator's `verify-merge.sh` all run it.
+- **Shared Mac:** `scripts/check.sh` takes the machine-wide lock `~/.cache/mc-sddp/check.lock.d`
+  (shared with MC-SDDP) before pytest and runs at most 4 pytest-xdist workers
+  (`PYTEST_XDIST_AUTO_NUM_WORKERS` overrides). Run it directly, never inside a by-hand
+  `until mkdir ...` lock (it would wait for its own parent); a lock whose owner pid is dead is
+  broken, one held by an ancestor is reused. `ASTRO_SIMCLR_CHECK_LOCK=0` disables it (CI).
 - **Code rules:** new code goes in `src/astro_simclr/` with tests, passing ruff, mypy strict
   and coverage. `extend-exclude` holds only `jupyter_examples/`, `results/` and
   `scripts/characterize/`; never widen the exclusions or lower the thresholds without a
