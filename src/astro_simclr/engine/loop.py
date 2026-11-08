@@ -19,13 +19,16 @@ validates it on one evaluation source, following ADR 0014's checklist item by it
   updated (a new best keeps the weights and extends the horizon); ``last`` is written if
   due; the loop ends when ``steps_done >= horizon`` *after* that, so a new best at the
   horizon step extends the run. No validation at an epoch boundary, none forced after the
-  final step, none before training. The epoch is derived, never counted:
+  final step, none before training unless the grid validates at start (a fresh fit's
+  initial weights, step 0: the ``rj23`` schedule). The epoch is derived, never counted:
   ``(steps - 1) // batches_per_pass``.
 - **C6:** ``train_step(batch, step=steps_done)`` and ``batch(steps_done)``: every per-step
   draw is keyed by the steps done before the step.
-- **C7:** the monitored value is ``float(mean_of_batch_losses(...))``, compared strictly
-  (:class:`~.policies.Monitor`); early stopping follows Lightning's ``EarlyStopping``
-  (:meth:`~.policies.EarlyStop.update`).
+- **C7:** the monitored value is ``float(mean_of_batch_losses(...))`` (``loss_val``), or a
+  ``score`` of the validation's outputs that the caller names in the monitor (the ``rj23``
+  schedule's ``macro_f1_val``), compared strictly (:class:`~.policies.Monitor`); early
+  stopping follows Lightning's ``EarlyStopping`` (:meth:`~.policies.EarlyStop.update`), or
+  the schedule's :class:`~.policies.StopRule` decides on the whole history.
 - **C8:** :meth:`DevicePolicy.apply`. **C9:** :func:`evaluate_kept` evaluates the weights the
   schedule keeps (``best``: restored; ``stop``: the last), ``stop`` first.
 - **C10:** checkpoints ``ckpt/last.pt`` (the whole training state, every RNG stream
@@ -45,7 +48,7 @@ caller's (:mod:`.record`): the loop does not know the config it was built from (
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
@@ -76,13 +79,14 @@ from astro_simclr.engine.device import DevicePolicy
 from astro_simclr.engine.policies import Keep, Schedule
 from astro_simclr.engine.randomness import seed_everything
 from astro_simclr.engine.scalars import ScalarLog
-from astro_simclr.engine.task import Task, mean_of_batch_losses
+from astro_simclr.engine.task import EvalOutput, Task, mean_of_batch_losses
 from astro_simclr.runs.layout import BEST_CHECKPOINT, LAST_CHECKPOINT, SCALARS_FILE
 
 __all__ = [
     "MONITORED",
     "Evaluation",
     "FitResult",
+    "Score",
     "TrainStream",
     "Validation",
     "evaluate",
@@ -90,9 +94,12 @@ __all__ = [
     "fit",
 ]
 
-#: The metric a fit validation computes; the only one a schedule may monitor for now (the
-#: tasks of 4.6 and phase 5 add theirs with their validation outputs).
+#: The metric a fit validation computes by default (the mean of the batch losses); a fit
+#: given a ``score`` monitors the metric its schedule names instead (task 3.4b).
 MONITORED: Final = "loss_val"
+
+#: A validation metric of the fit's outputs (the ``rj23`` schedule's macro-F1).
+Score = Callable[[Sequence[EvalOutput]], float]
 
 
 class TrainStream(BatchSource, Protocol):
@@ -134,6 +141,8 @@ class FitResult:
     as ``metrics.json`` derives them (ADR 0014, C5). ``validations`` are this fit's only (a
     resumed fit does not repeat the earlier ones). ``best_model`` is the best weights on
     the CPU (``None`` when the schedule does not keep ``best`` or no validation ran).
+    ``history`` is every fit validation's value of the run, resumed ones included, for a
+    schedule with a ``stop_rule`` (empty otherwise).
     """
 
     last_step: int
@@ -147,6 +156,7 @@ class FitResult:
     steps: int
     fit_seconds: float
     best_model: dict[str, torch.Tensor] | None = field(default=None, repr=False)
+    history: tuple[float, ...] = ()
 
     @property
     def best_epoch(self) -> int | None:
@@ -221,6 +231,7 @@ class _Policy:
     wait_count: int = 0
     stop_score: float | None = None
     best_model: dict[str, torch.Tensor] | None = None
+    history: list[float] = field(default_factory=list)
 
     @classmethod
     def restored(cls, schedule: Schedule, state: PolicyState) -> _Policy:
@@ -244,11 +255,12 @@ class _Policy:
             wait_count=state["wait_count"],
             stop_score=state.get("stop_score"),
             best_model=state["best_model"],
+            history=[float(value) for value in state.get("history", [])],
         )
 
     def state(self) -> PolicyState:
         """The checkpoint entry (plain values; the best weights are on the CPU already)."""
-        return {
+        state: PolicyState = {
             "monitor": self.schedule.monitor.name,
             "mode": self.schedule.monitor.mode,
             "horizon": self.horizon,
@@ -258,6 +270,23 @@ class _Policy:
             "stop_score": self.stop_score,
             "best_model": self.best_model,
         }
+        if self.schedule.stop_rule is not None:
+            # Only with a stop rule: the carrasco2021 checkpoints keep their keys.
+            state["history"] = list(self.history)
+        return state
+
+    def stopped(self, steps_done: int) -> bool:
+        """Whether the stop rule has stopped the run at ``steps_done`` (a resumed run).
+
+        A ``last`` checkpoint on the validation grid follows that step's validation, so its
+        history ends with the value of its step and the rule decides again exactly as it did
+        before the checkpoint. Off the grid (the final ``last`` of a run that ended at its
+        horizon) the rule never stopped there: the horizon ends the run.
+        """
+        rule = self.schedule.stop_rule
+        if rule is None or not self.history or not self.schedule.validation.due(steps_done):
+            return False
+        return rule.decide(steps_done, self.history).stop
 
     def observe(self, value: float, steps_done: int, module: nn.Module) -> tuple[bool, bool]:
         """Update after a validation of value ``value``; ``(improved, stop)``.
@@ -279,6 +308,9 @@ class _Policy:
             self.stop_score, self.wait_count, stop = schedule.early_stop.update(
                 value, self.stop_score, self.wait_count, schedule.monitor.mode
             )
+        if schedule.stop_rule is not None:
+            self.history.append(value)
+            stop = schedule.stop_rule.decide(steps_done, self.history).stop
         return improved, stop
 
 
@@ -296,6 +328,7 @@ class _Fit:
         identity: IdentityState,
         run_dir: Path | None,
         steps_done: int,
+        score: Score | None = None,
     ) -> None:
         self.task = task
         self.module = task.module
@@ -308,8 +341,9 @@ class _Fit:
         self.run_dir = run_dir
         self.steps_done = steps_done
         self.optimizer: torch.optim.Optimizer = task.make_optimizer()
+        self.score = score
         self.validations: list[Validation] = []
-        self.stopped_early = False
+        self.stopped_early = policy.stopped(steps_done)
         self._loss_sum: torch.Tensor | None = None
         self._loss_steps = 0
         self._versions = _versions()
@@ -332,11 +366,13 @@ class _Fit:
         self._loss_steps += 1
 
     def monitored_value(self) -> float:
-        """The fit validation's monitored value (C2, C3, C7)."""
+        """The fit validation's monitored value (C2, C3, C7): ``loss_val``, or the score."""
         self.module.zero_grad(set_to_none=True)
         with _evaluating(self.module), torch.no_grad():
-            losses = [self.task.eval_step(batch).loss for batch in self.validation]
-        return float(mean_of_batch_losses(losses))
+            outputs = [self.task.eval_step(batch) for batch in self.validation]
+        if self.score is not None:
+            return float(self.score(outputs))
+        return float(mean_of_batch_losses([output.loss for output in outputs]))
 
     def _train_loss(self) -> float | None:
         if self._loss_sum is None:
@@ -361,8 +397,9 @@ class _Fit:
         )
         self.validations.append(record)
         every = self.schedule.checkpoint_every_n_steps
-        if every is not None and self.steps_done % every == 0:
-            # After the policy update, so a resume owes no validation (HorizonCallback).
+        if every is not None and self.steps_done > 0 and self.steps_done % every == 0:
+            # After the policy update, so a resume owes no validation (HorizonCallback);
+            # never at step 0 (a fresh fit's start validation): there is nothing to resume.
             self.save_last()
         return record
 
@@ -410,11 +447,11 @@ class _Fit:
         save_checkpoint(self.run_dir / BEST_CHECKPOINT, best)
 
 
-def _check_schedule(schedule: Schedule) -> None:
-    if schedule.monitor.name != MONITORED:
+def _check_schedule(schedule: Schedule, score: Score | None) -> None:
+    if score is None and schedule.monitor.name != MONITORED:
         msg = (
-            f"the plain loop monitors {MONITORED} only, got {schedule.monitor.name!r} "
-            "(other metrics come with the tasks that compute them)"
+            f"the plain loop computes {MONITORED} only, got the monitor "
+            f"{schedule.monitor.name!r}: pass the score that computes it"
         )
         raise ConfigError(msg)
 
@@ -438,20 +475,21 @@ def _resumed(checkpoint: Checkpoint, task: Task) -> Callable[[_Fit], None]:
 
 def _progress_line(record: Validation, policy: _Policy) -> str:
     best = "best" if record.improved else f"best {policy.best_step}"
+    name = policy.schedule.monitor.name
     return (
-        f"step {record.steps_done} epoch {record.epoch} {MONITORED} {record.value:.6g} "
+        f"step {record.steps_done} epoch {record.epoch} {name} {record.value:.6g} "
         f"({best}) horizon {record.horizon}"
     )
 
 
-def _log(log: ScalarLog | None, record: Validation, started: float) -> None:
+def _log(log: ScalarLog | None, record: Validation, started: float, name: str) -> None:
     if log is None:
         return
     log.write(
         {
             "step": record.steps_done,
             "epoch": record.epoch,
-            MONITORED: record.value,
+            name: record.value,
             "loss_train": record.train_loss,
             "improved": record.improved,
             "horizon": record.horizon,
@@ -475,6 +513,7 @@ def fit(
     on_validation: Callable[[Validation, Task], None] | None = None,
     on_step: Callable[[int], None] | None = None,
     progress: IO[str] | None = None,
+    score: Score | None = None,
 ) -> tuple[Task, FitResult]:
     """Train the task ``build()`` makes until its horizon (or early stop); return it and the result.
 
@@ -486,19 +525,21 @@ def fit(
     validation, after its checkpoint (the module holds the weights of that step; it must
     not change them). ``on_step(steps_done)`` runs after each optimizer step, before its
     validation (the preflight's throughput timer). ``progress`` gets one line per validation
-    (default: nothing).
+    (default: nothing). ``score`` computes the monitored value from a validation's outputs
+    (default: ``loss_val``, the mean of the batch losses); the schedule's monitor names it.
 
     The module ends with the **last** weights; :func:`evaluate_kept` restores the best.
 
     Raises:
-        ConfigError: for a monitor other than ``loss_val``; on resume, a checkpoint the
+        ConfigError: for a monitor other than ``loss_val`` without a ``score``; on resume,
+            a checkpoint the
             plain engine cannot continue (:func:`~.checkpoint.check_resumable`), of another
             run (:func:`~.checkpoint.check_identity`), precision or determinism policy
             (:func:`~.checkpoint.check_numerics`) or monitor.
         DataError: on resume, a checkpoint of another training stream.
         ValueError: if the validation source is empty.
     """
-    _check_schedule(schedule)
+    _check_schedule(schedule, score)
     current = _no_identity() if identity is None else identity
     checkpoint = None if resume is None else load_checkpoint(resume)
     if checkpoint is not None:
@@ -524,10 +565,32 @@ def fit(
         identity=current,
         run_dir=run_dir,
         steps_done=start,
+        score=score,
     )
     if finish is not None:
         finish(run)
     return task, _drive(run, resume, on_validation, on_step, progress)
+
+
+def _reporter(
+    run: _Fit,
+    log: ScalarLog | None,
+    started: float,
+    on_validation: Callable[[Validation, Task], None] | None,
+    progress: IO[str] | None,
+) -> Callable[[], None]:
+    """One fit validation and its reports: ``scalars.jsonl``, the progress line, the hook."""
+    name = run.schedule.monitor.name
+
+    def validate() -> None:
+        record = run.validate()
+        _log(log, record, started, name)
+        if progress is not None:
+            print(_progress_line(record, run.policy), file=progress, flush=True)
+        if on_validation is not None:
+            on_validation(record, run.task)
+
+    return validate
 
 
 def _drive(
@@ -545,18 +608,16 @@ def _drive(
         log = ScalarLog.open(
             run.run_dir / SCALARS_FILE, resume_from=None if resume is None else start
         )
+    validate = _reporter(run, log, started, on_validation, progress)
     try:
+        if run.schedule.validation.at_start and run.steps_done == 0:
+            validate()  # the initial weights (a fresh fit: a checkpoint is never at 0)
         while not run.done():
             run.step()
             if on_step is not None:
                 on_step(run.steps_done)
             if run.schedule.validation.due(run.steps_done):
-                record = run.validate()
-                _log(log, record, started)
-                if progress is not None:
-                    print(_progress_line(record, run.policy), file=progress, flush=True)
-                if on_validation is not None:
-                    on_validation(record, run.task)
+                validate()
         seconds = time.perf_counter() - started
         if run.steps_done > start and run.schedule.checkpoint_every_n_steps is not None:
             run.save_last()  # the last weights, at the end of training (HorizonCallback)
@@ -577,6 +638,7 @@ def _drive(
         steps=run.steps_done - start,
         fit_seconds=seconds,
         best_model=policy.best_model,
+        history=tuple(policy.history),
     )
 
 

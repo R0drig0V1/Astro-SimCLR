@@ -197,6 +197,11 @@ uv run astro-simclr train-supervised --preset rj23-multiscale --splits SPLITS.js
 uv run astro-simclr bench-report OUT/rj23-ms/seed-* --splits SPLITS.json --alerts ALERTS.csv
 ```
 
+The same run trains on the plain engine (no Lightning; bit for bit the same results, and an
+exact resume) from a nested config with `runtime.engine: plain`, e.g. `uv run astro-simclr
+run RJ23.yaml --splits SPLITS.json --set runtime.engine=plain` with `preset: rj23-multiscale`
+in `RJ23.yaml`.
+
 ### 5. The SimCLR pilot (phase 5, task 5.0b)
 
 `simclr-pilot` pretrains SimCLR (ResNet-18 with a CIFAR stem, NT-Xent in paper mode, LARS)

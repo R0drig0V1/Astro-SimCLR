@@ -13,7 +13,8 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   command's legacy one, the file, the dotted overrides, then the flat ones on the flat
   view), lower it to the flat settings and train it on ``runtime.engine``: ``lightning``
   (``run_command``, the default) or ``plain`` (``tasks.plain.run_plain``, task 4.6: the paper
-  classifier on ``carrasco2021``, without Lightning). A flat file needs ``--command``;
+  classifier on ``carrasco2021``, and RJ23's on ``rj23`` since task 3.4b, without
+  Lightning). A flat file needs ``--command``;
   ``--show`` prints the resolved config and its config hash without training; ``--resume``
   and ``--splits FILE --fold K | --screen`` as below. The four training subcommands are its
   aliases until task 4.8;
@@ -137,7 +138,7 @@ from astro_simclr.simclr.commands import add_simclr_commands
 if TYPE_CHECKING:
     from astro_simclr.oracle.m1 import M1Files
     from astro_simclr.protocol.split_runs import SplitRequest
-    from astro_simclr.training.rj23 import RJ23Request
+    from astro_simclr.tasks.rj23 import RJ23Request
 
 __all__ = [
     "add_settings_arguments",
@@ -404,7 +405,7 @@ def _rj23_request(args: argparse.Namespace) -> RJ23Request:
     Raises:
         ConfigError: without ``--splits``, or with ``--fold`` (object splits have no folds).
     """
-    from astro_simclr.training.rj23 import RJ23Request
+    from astro_simclr.tasks.rj23 import RJ23Request
 
     file: Path | None = getattr(args, "splits", None)
     if file is None:
@@ -426,26 +427,25 @@ def _execute(
     """Run ``command`` with ``settings`` on ``engine`` and print its summary.
 
     ``lightning``: ``experiments.run_command``; ``plain``: ``tasks.plain.run_plain`` (task
-    4.6, ADR 0014), which never imports Lightning. ``schedule: rj23`` goes to
-    ``training.rj23.run_rj23`` (its ``--splits`` is the object splits), on Lightning only
-    for now: its policy objects are engine-free (``rj23_regime``), its plain adapter is a
-    follow-up (``tasks.plain``).
+    4.6, ADR 0014), which never imports Lightning. ``schedule: rj23`` (its ``--splits`` is
+    the object splits) goes to ``training.rj23.run_rj23`` on Lightning and to
+    ``tasks.plain.run_plain`` (``tasks.rj23.run_rj23_plain``) on the plain engine.
 
     Raises:
-        ConfigError: for ``schedule: rj23`` on the plain engine, or ``--alerts`` outside it.
+        ConfigError: for ``--alerts`` outside ``schedule: rj23``.
     """
     from astro_simclr.runs.layout import METRICS_FILE
 
     if settings.schedule == RJ23:
-        if engine != "lightning":
-            msg = (
-                f"schedule {RJ23} trains on runtime.engine lightning only (the plain "
-                "adapter of rj23_regime is a follow-up)"
-            )
-            raise ConfigError(msg)
-        from astro_simclr.training.rj23 import run_rj23
+        request = _rj23_request(args)
+        if engine == "plain":
+            from astro_simclr.tasks.plain import run_plain
 
-        metrics = run_rj23(settings, _rj23_request(args), resume=args.resume)
+            metrics = run_plain(command, settings, resume=args.resume, rj23=request)
+        else:
+            from astro_simclr.training.rj23 import run_rj23
+
+            metrics = run_rj23(settings, request, resume=args.resume)
         evaluation = metrics["evaluation"]
         scores = ", ".join(
             f"{stage} macro-F1 {e['macro_f1']:.4f}" for stage, e in evaluation.items()
@@ -509,7 +509,7 @@ def _add_run_command(commands: argparse._SubParsersAction[argparse.ArgumentParse
         "command's legacy one), the file, --set section.key=value, then --set key=value on "
         "the flat view. A flat settings file needs --command. The model decides the "
         "training command; runtime.engine picks the loop: lightning (the default) or plain "
-        "(the paper classifier on carrasco2021 only; task 4.6).",
+        "(the paper classifier on carrasco2021, task 4.6, and RJ23's on rj23, task 3.4b).",
     )
     run.add_argument("config_file", type=Path, metavar="CONFIG", help="nested or flat YAML")
     run.add_argument(
