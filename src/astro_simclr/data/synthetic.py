@@ -14,6 +14,11 @@ same structure:
 Each stamp carries a strong, rotation-invariant class pattern inside the central 27x27
 crop (the stamp encoders' input), so that a classifier can learn it in one epoch. The
 generator is deterministic: the same seed gives byte-identical files.
+
+:func:`synthetic_raw_alerts` is the stand-in of a fetched ``raw-alerts`` dataset (task
+3.1b, :mod:`astro_simclr.data.raw_alerts`): raw float32 cutouts in counts, with NaN and inf
+pixels, any number of classes, and a per-row table for ``write_raw_alerts``;
+:func:`synthetic_cd21_features` the optional 23-feature table of that layout.
 """
 
 from __future__ import annotations
@@ -27,9 +32,22 @@ import numpy.typing as npt
 
 from astro_simclr.data.files import atomic_write_bytes
 from astro_simclr.data.preprocessing import preprocess_stamps
-from astro_simclr.data.schema import FEATURE_NAMES, LABEL_NAMES, SPLITS, STAMP_SHAPE
+from astro_simclr.data.schema import (
+    DISCARDED_FEATURES,
+    FEATURE_NAMES,
+    LABEL_NAMES,
+    SPLITS,
+    STAMP_SHAPE,
+)
 
-__all__ = ["CLASSIFIER_FILES", "PRETRAINING_FILE", "class_pattern", "make_synthetic"]
+__all__ = [
+    "CLASSIFIER_FILES",
+    "PRETRAINING_FILE",
+    "class_pattern",
+    "make_synthetic",
+    "synthetic_cd21_features",
+    "synthetic_raw_alerts",
+]
 
 #: Classifier file names: the 100 %, 10 % and 1 % label sets, named as the received files
 #: (the 100 % one is ``red-002``, the deduplicated original that stands in for the legacy
@@ -155,3 +173,73 @@ def make_synthetic(out_dir: Path, n_per_split: int, seed: int) -> list[Path]:
         atomic_write_bytes(path, pickle.dumps(content, protocol=_PROTOCOL))
         paths.append(path)
     return paths
+
+
+#: Raw cutouts: sky level and difference amplitude, in counts, and the pixel noise sigma.
+_RAW_SKY, _RAW_AMPLITUDE, _RAW_NOISE = 500.0, 2000.0, 20.0
+#: The first synthetic ``candid`` (ZTF candids are positive 64-bit integers near 1e18).
+_FIRST_CANDID = 1_200_000_000_000_000_000
+
+
+def synthetic_raw_alerts(
+    label_names: tuple[str, ...], n_per_class: int, seed: int
+) -> tuple[npt.NDArray[np.float32], dict[str, npt.NDArray[Any]]]:
+    """Synthetic raw cutouts and their per-row columns, for ``raw_alerts.write_raw_alerts``.
+
+    ``n_per_class`` rows per class, shuffled. Class ``k`` has a Gaussian point source of
+    width ``1 + 0.6 k`` pixels in the science and difference channels, on a sky of 500
+    counts with noise; every 7th row has a NaN corner (a stamp on a CCD edge) and every 11th
+    a ``+inf`` pixel, as raw alerts can. The columns are those of ``raw_alerts.INDEX_DTYPE``,
+    with unique ``candid`` and ``oid`` values, ``label_source`` and ``source_dataset``
+    ``"synthetic"``, and ``source_row`` the row number. Deterministic in ``seed``.
+
+    Raises:
+        ValueError: if there are fewer than 2 classes or ``n_per_class < 1``.
+    """
+    if len(label_names) < 2 or n_per_class < 1:
+        raise ValueError(
+            f"need >= 2 classes and n_per_class >= 1, got {label_names}, {n_per_class}"
+        )
+    rng = np.random.default_rng(seed)
+    labels = rng.permutation(np.repeat(np.arange(len(label_names)), n_per_class)).astype(np.int64)
+    n = len(labels)
+    yy, xx = np.mgrid[: STAMP_SHAPE[0], : STAMP_SHAPE[1]] - STAMP_SHAPE[0] // 2
+    radius2 = (xx**2 + yy**2).astype(np.float64)
+    cutouts = _RAW_SKY + rng.normal(0.0, _RAW_NOISE, (n, *STAMP_SHAPE))
+    for row, label in enumerate(labels):
+        blob = _RAW_AMPLITUDE * np.exp(-radius2 / (2 * (1.0 + 0.6 * float(label)) ** 2))
+        cutouts[row, :, :, 0] += blob
+        cutouts[row, :, :, 2] += blob - _RAW_SKY  # a difference is centred on 0
+    cutouts[::7, :5, :5, :] = np.nan
+    cutouts[::11, 0, -1, 1] = np.inf
+    rows = np.arange(n)
+    columns: dict[str, npt.NDArray[Any]] = {
+        "oid": np.array([f"ZTF{18 + i % 4}syn{i:05d}" for i in rows]),
+        "candid": _FIRST_CANDID + rows * 1_000,
+        "jd": 2458300.5 + rng.uniform(0.0, 1200.0, n),
+        "fid": 1 + rows % 2,
+        "ra": rng.uniform(0.0, 360.0, n),
+        "dec": rng.uniform(-30.0, 90.0, n),
+        "label": labels,
+        "label_source": np.full(n, "synthetic"),
+        "source_dataset": np.full(n, "synthetic"),
+        "source_row": rows,
+    }
+    return cutouts.astype(np.float32), columns
+
+
+def synthetic_cd21_features(n: int, seed: int) -> npt.NDArray[np.float64]:
+    """Synthetic float64 (n, 23) CD21 features for ``write_raw_alerts(features=...)``.
+
+    Normal values around 0, with a NaN (a missing alert field) in every 5th row's first
+    column. Deterministic in ``seed``.
+
+    Raises:
+        ValueError: if ``n < 1``.
+    """
+    if n < 1:
+        raise ValueError(f"n must be >= 1, got {n}")
+    kept = len(FEATURE_NAMES) - len(DISCARDED_FEATURES)
+    features = np.random.default_rng(seed).normal(0.0, 1.0, (n, kept))
+    features[::5, 0] = np.nan
+    return features

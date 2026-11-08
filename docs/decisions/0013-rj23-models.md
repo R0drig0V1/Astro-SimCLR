@@ -1,7 +1,7 @@
-<!-- ADR 0012: the details of RJ23's classifiers that their missing models.py loses (task
+<!-- ADR 0013: the details of RJ23's classifiers that their missing models.py loses (task
      3.4), each with its source, the TF-default parity choices, and the pre-registered
      sensitivity arm. -->
-# 0012: RJ23's classifiers: 'same' convolutions, TF-'same' max-pooling, flatten then average, dropout → concat → BN → FC → FC, ReLU, Keras defaults
+# 0013: RJ23's classifiers: 'same' convolutions, TF-'same' max-pooling, flatten then average, dropout → concat → BN → FC → FC, ReLU, Keras defaults
 
 - **Status:** accepted (2026-11-08, phase 3, task 3.4)
 - **Implemented by:** `src/astro_simclr/rj23_model.py`

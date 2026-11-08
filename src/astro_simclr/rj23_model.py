@@ -7,7 +7,7 @@ stamp and the 8x8x24 multi-scale stamp, all built by :mod:`astro_simclr.data.rj2
 ``(N, C, H, W)`` tensors this module takes). Their code is public (MIT,
 ``github.com/alercebroker/multiscale_stamps``) but its ``models.py`` is missing, so this is a
 reimplementation from the paper's text and table; nothing is copied. The details the paper
-leaves open are pinned in ADR 0012, each with its source.
+leaves open are pinned in ADR 0013, each with its source.
 
 The modules are plain ``nn.Module`` builders with no Lightning (the phase-4 rule: training
 engines wire them through thin adapters). They import torch and the numpy-only
@@ -351,7 +351,7 @@ def _check_architecture(architecture: RJ23Architecture, n_classes: int) -> None:
 
 
 class RJ23Classifier(nn.Module):
-    """RJ23's stamp classifier for one scenario (module docstring; ADR 0012).
+    """RJ23's stamp classifier for one scenario (module docstring; ADR 0013).
 
     ``forward(x_img, x_pos)`` takes the scenario's view ``(N, C, H, W)`` (channels first;
     :data:`~astro_simclr.data.rj23_input.VIEW_SHAPES` gives ``(H, W, C)``) and the position
@@ -455,7 +455,7 @@ def build_rj23_classifier(
 ) -> RJ23Classifier:
     """RJ23's classifier for ``scenario`` with Table 2's hyperparameters (:data:`RJ23_TABLE2`).
 
-    ``bn_position="before_concat"`` builds the pre-registered sensitivity arm (ADR 0012).
+    ``bn_position="before_concat"`` builds the pre-registered sensitivity arm (ADR 0013).
     The weights are drawn from the global torch generator.
 
     Raises:

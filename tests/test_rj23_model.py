@@ -1,4 +1,4 @@
-"""Tests for RJ23's classifiers (``astro_simclr.rj23_model``, task 3.4; ADR 0012).
+"""Tests for RJ23's classifiers (``astro_simclr.rj23_model``, task 3.4; ADR 0013).
 
 Table 2 as published; the output and trunk shapes of the four scenarios on views built by
 ``rj23_input``; the parameter counts (hand-computed literals and the documented formula);
