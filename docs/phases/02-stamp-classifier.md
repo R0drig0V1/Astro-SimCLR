@@ -223,7 +223,22 @@ except the manual runs, and the phase-1 portability rule applies to all of them.
     every 10 iterations.
   - A CPU smoke run on synthetic data.
 
-### 2.2b M1 oracle (after 2.1 and 2.2a; no GPU)
+### 2.2b M1 oracle (after 2.1 and 2.2a; no GPU) — done, **PASSED** (PR #16, merged as 15f6427, 2026-11-08)
+
+Results (`results/phase2/replication/m1_oracle.json`):
+- **Port equivalence:** max |Δlogit| 1.6e-6 and 100 % argmax agreement.
+- **Data path:** 475/500 exact, loss −0.06162. The 41 NaN-approximated stamps are all
+  correct.
+- **M1 test accuracy: 0.936** (SN recall 0.86). The paper's 0.941 is a 5-run mean.
+- **Pricing of the input paths on M1, validation:**
+
+  | Input path | Change |
+  |---|---|
+  | no NaN approximation | −0.2 pt |
+  | uint8 21 + pad | −2.2 pts |
+  | **uint8 27 px, the phase-1 path** | **−4.0 pts** |
+
+  This confirms the phase-1 input flaw F1.
 
 - A script downloads M1 at the pinned commit, checks its SHA-256 and converts it to a
   local `.npz` that is never committed. It uses a pure-Python TF-checkpoint reader or a
@@ -356,6 +371,26 @@ re-run there first (budgeted).
 | B4 | Width / depth (filters ×1.5–2; one more conv block) | Capacity |
 | B5 | Residual blocks; global-average pooling instead of fc1 | A modern inductive bias, fewer parameters |
 | B6 | Rotation averaging before the activation | A different invariance point |
+| B7 | **Single-pass p4 group-equivariant CNN** (same geometry 27→24→12→6; 8/16 p4 fields = 32/64 maps; fc1 as a 6×6 p4 conv to 64 fields, then the mean over orientations) | Replaces the 4-pass rotation mean: exact invariance, **4× fewer MACs** (53 M vs 211 M), 228,531 parameters (vs 441,075), ~3–4× the throughput |
+| B2′ | **Single-pass p4m** (4/8 fields): exact D4 invariance | The cheap version of B2 (the 8-copy version costs ~2× A) |
+| B1′ | **p4 trunk + 63″ context:** the 63×63 stamp average-pooled to 21×21 as 3 more channels (+1.7 % MACs) | More context for SN hosts; fits the 4 GB GTX 1050 |
+
+**Efficiency rows (B7, B2′, B1′) need a non-inferiority rule**, because the superiority rule
+of 2.3 cannot adopt a change that is only "as good". Adopt when the lower bound of the
+paired-bootstrap 95 % CI of the CV balanced-accuracy difference is above −0.5 points, and
+report MACs and throughput (on the deployment CPU: x86 with ONNX Runtime) next to it.
+
+Control arms:
+- **single-pass + rot90 augmentation** (is exact invariance needed?);
+- **p4 16/32** at about A's cost (separates the inductive bias from capacity).
+
+Every invariant configuration gets a unit test: max |Δlogit| < 1e-5 under rot90, and under
+flips for p4m. Geometry (padding, pooling parity) can silently break G-CNN invariance.
+
+These rows come from the architecture exploration of 2026-11-08 (prototypes and a
+validation-only screen on the uint8 path; all candidates reached 0.915–0.925 there,
+within noise). The prototypes are hand-written p4/p4m layers that run as plain `conv2d`
+(MPS-compatible, no escnn dependency).
 
 **2.5-input/training: data and training changes.**
 

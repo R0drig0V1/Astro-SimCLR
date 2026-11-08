@@ -24,6 +24,10 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   RUN...`` reports McNemar on the seed ensembles and the paired bootstrap (always exit 0:
   a report, never a decision);
 - ``preflight`` (:mod:`astro_simclr.preflight`): exit 0 if no step failed, else 1.
+- M1 oracle (task 2.2b, :mod:`astro_simclr.oracle`): ``fetch-m1`` downloads M1 at the
+  pinned commit (SHA-256 checked) into a local cache and converts it to ``.npz``;
+  ``m1-oracle --data-dir DIR --out DIR`` runs the port-equivalence and data-path checks
+  and writes ``m1_oracle.json`` and ``m1_val_curve.csv``: exit 0 if both passed, else 1.
 
 The heavy modules (torch, Lightning) are imported inside the handlers, so ``show-config``
 and ``--help`` stay fast. A :class:`~astro_simclr.data.DataError` (bad, truncated or missing
@@ -45,7 +49,7 @@ import sys
 from collections.abc import Sequence
 from importlib.metadata import version
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import yaml
 
@@ -60,6 +64,9 @@ from astro_simclr.config import (
     settings_to_plain,
 )
 from astro_simclr.hparams import COMMAND_DEFAULTS, COMMANDS, load_legacy_hparams
+
+if TYPE_CHECKING:
+    from astro_simclr.oracle.m1 import M1Files
 
 __all__ = [
     "add_settings_arguments",
@@ -559,6 +566,110 @@ def _add_protocol_commands(
     splits.set_defaults(handler=_make_splits)
 
 
+def _fetch(args: argparse.Namespace) -> M1Files:
+    """Run :func:`~astro_simclr.oracle.m1.fetch_m1`; download or file errors are data errors."""
+    from astro_simclr.data.schema import DataError
+    from astro_simclr.oracle.m1 import fetch_m1
+
+    try:
+        return fetch_m1(args.cache_dir, source_dir=args.source_dir)
+    except (OSError, ValueError) as err:
+        raise DataError(f"cannot fetch M1: {err}") from None
+
+
+def _fetch_m1(args: argparse.Namespace) -> int:
+    files = _fetch(args)
+    sys.stdout.write(f"wrote {files.weights}\nval log {files.val_events}\n")
+    return 0
+
+
+def _m1_oracle(args: argparse.Namespace) -> int:
+    from astro_simclr.oracle.m1 import load_weights
+    from astro_simclr.oracle.run import read_val_curve, run_m1_oracle, write_curve, write_report
+
+    files = _fetch(args)
+    curve = read_val_curve(files.val_events)
+    report = run_m1_oracle(args.data_dir, load_weights(files.weights), curve=curve)
+    out: Path = args.out
+    write_curve(curve, out / "m1_val_curve.csv")
+    write_report(report, out / "m1_oracle.json")
+    port, data = report["checks"]["port_equivalence"], report["checks"]["data_path"]
+    approx = report["nan_approximation"]["approximated"]
+    lines = [
+        f"port equivalence: max |delta logit| = {port['max_abs_logit_diff']:.3g} "
+        f"(<= {port['tolerance']:g}), argmax agreement {port['argmax_agreement']:.3f} -> "
+        f"{'passed' if port['passed'] else 'FAILED'}",
+        f"data path: {data['correct']}/{data['n']} correct (M1 {data['expected_correct']} "
+        f"± {data['correct_tolerance']}), loss {data['loss']:.4f} (M1 "
+        f"{data['expected_loss']} ± {data['loss_tolerance']}) -> "
+        f"{'passed' if data['passed'] else 'FAILED'}",
+        f"NaN-approximated Validation stamps: {approx['correct']}/{approx['n']} correct",
+        f"test: {report['test']['correct']}/{report['test']['n']} correct "
+        f"(accuracy {report['test']['accuracy']:.3f})",
+    ]
+    lines += [
+        f"diagnostic {name}: Validation accuracy {d['accuracy']:.3f} "
+        f"(delta {d['delta_accuracy']:+.3f})"
+        for name, d in report["diagnostics_validation"].items()
+    ]
+    lines += [f"wrote {out / 'm1_oracle.json'}", "PASS" if report["passed"] else "FAIL"]
+    sys.stdout.write("\n".join(lines) + "\n")
+    return 0 if report["passed"] else EXIT_DATA
+
+
+def _add_oracle_commands(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    def add_source(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--cache-dir",
+            type=Path,
+            default=None,
+            metavar="DIR",
+            help="where M1 is downloaded and converted (default: ~/.cache/astro-simclr/m1/"
+            "<commit>; never inside the repository)",
+        )
+        parser.add_argument(
+            "--source-dir",
+            type=Path,
+            default=None,
+            metavar="DIR",
+            help="copy M1's files from DIR (model.index, model.data-00000-of-00001, "
+            "val.events) instead of downloading them; they are checked the same way",
+        )
+
+    fetch = commands.add_parser(
+        "fetch-m1",
+        help="download M1 (pinned commit, SHA-256) and convert it to a local .npz",
+        description="Download the published checkpoint M1 and its validation log from "
+        "alercebroker/pipeline at the pinned commit, check each file's size and SHA-256, "
+        "and convert the network's variables to CACHE/m1_weights.npz (TF names and "
+        "layout). Without TensorFlow; nothing is unpickled. Never commit the files.",
+    )
+    add_source(fetch)
+    fetch.set_defaults(handler=_fetch_m1)
+
+    oracle = commands.add_parser(
+        "m1-oracle",
+        help="check our input path and paper model against the published M1 (no GPU)",
+        description="Load M1 into PaperStampClassifier and run the two checks of task 2.2b "
+        "on red Validation: port equivalence (torch vs an independent NumPy pass, max "
+        "|delta logit| <= 1e-4, all argmax equal) and data path (475 ± 2 of 500 correct, "
+        "loss -0.0616 ± 0.005). Also reports the NaN-approximated stamps, M1's test "
+        "accuracy and the input diagnostics. Writes OUT/m1_oracle.json (top-level "
+        "'passed', read by compare-reference --ref CD21 --oracle-report) and "
+        "OUT/m1_val_curve.csv. Exit 0 if both checks passed, else 1.",
+    )
+    oracle.add_argument(
+        "--data-dir",
+        type=Path,
+        required=True,
+        metavar="DIR",
+        help="the prepared red layout, with images_f32.npy (prepare-data --images float32)",
+    )
+    oracle.add_argument("--out", type=Path, default=Path("outputs/m1-oracle"), metavar="DIR")
+    add_source(oracle)
+    oracle.set_defaults(handler=_m1_oracle)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level parser with every subcommand."""
     parser = argparse.ArgumentParser(
@@ -576,6 +687,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_data_commands(commands)
     _add_training_commands(commands)
     _add_check_commands(commands)
+    _add_oracle_commands(commands)
     return parser
 
 
