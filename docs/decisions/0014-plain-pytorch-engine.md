@@ -6,13 +6,13 @@
 - **Implemented by:** the contracts in `src/astro_simclr/engine/` (`task.py`, `policies.py`,
   `checkpoint.py`, `device.py`, `data.py`, `randomness.py`); the loop itself in task 4.1
   (`loop.py`, `precision.py`, `scalars.py`, `record.py`; amendment below), the config in
-  4.2, the data tiers in 4.3, the tasks in 4.6
+  4.2, the data tiers in 4.3, the tasks in 4.6 (`src/astro_simclr/tasks/`; amendment below)
 - **Amended by:** ADR 0018 (the data tiers, task 4.3: section 3's `pinned` tier pins the
   staging buffers, not the dataset; the shuffle granularity; the stream definition)
 - **Checked by:** `tests/test_engine_contracts.py` (the contracts, and the Lightning
   reference facts of the checklist); the existing tests named in the checklist;
   `tests/test_engine_loop.py` (the loop); `tests/test_engine_differential.py` (the 4.7(a)
-  gate and the three resume tests, ported)
+  gate and the three resume tests, ported); `tests/test_tasks_plain.py` (task 4.6)
 
 ## Context
 
@@ -384,3 +384,48 @@ The 4.7(a) test runs the paper classifier through a test adapter (`tests/_plain_
 `PaperClassifierModule` as a `Task`, its data from `experiments._build_paper` on the
 `device` tier), not 4.6's task. It uses `lr` 3e-2 so that every case extends the horizon
 and ends within a few dozen steps. It also passes on MPS with `deterministic=True`.
+
+## Amendment: task 4.6, the tasks on the engine (2026-11-08)
+
+The paper classifier runs on the plain engine: `astro-simclr run CONFIG` with
+`runtime.engine: plain` calls `tasks.plain.run_plain`, the counterpart of
+`experiments.run_command` for `train-supervised` of `paper_stamp_classifier` on
+`carrasco2021`, with every 2.5 flag on main, split runs and `fp32_precision`. Lightning
+stays the default until 4.7/4.8. The 4.7(a) gate now compares `run_plain` with
+`run_command` (the test adapter of task 4.1, `tests/_plain_paper.py`, is gone). Points
+settled here:
+
+1. **One implementation of what decides the numbers, shared by the engines.** The
+   paper model's augmentation is `training.paper_augment.PaperAugment` (the host plan and
+   the device application of C5, C6, C7, the rotation and the jitter);
+   `PaperClassifierModule.augment_plan` / `apply_plan` / `rotation_steps` delegate to it.
+   The data are `tasks.paper.paper_inputs` (called by `experiments._build_paper` too), the
+   arrays `training.tensor_splits` (split from `device_data`, which re-exports them), the
+   checks `tasks.common` and the results `tasks.results` (both re-exported or called by
+   `experiments`). These moves are bit-exact (the gate, and the existing tests, pass
+   unchanged; `numerics_epoch` stays 1).
+2. **`training/` imports without Lightning.** Its `__init__` loads its names lazily
+   (PEP 562), so the Lightning-free submodules serve the plain path. Nothing under
+   `tasks/`, and neither `cli` nor `preflight` at import, loads Lightning; a fresh-
+   interpreter test checks it, as for `engine/`.
+3. **A plain run writes the Lightning run's files**, so they compare file by file:
+   `metrics.json` with the same keys and values except those that name the engine or the
+   run (`machine.engine: plain`, `checkpoints` `ckpt/{best,last}.pt`, no Lightning version,
+   `accelerator` the device type, the run id, the timing); the same `predictions_*.npz` and
+   figures; `manifest.json` with `engine: plain` (a run-id component, ADR 0015). The
+   confusion matrix is computed on the training device, as `ClassifierModule` does.
+4. **What the plain runner refuses:** other commands, models and schedules (they stay on
+   Lightning: the legacy modules are frozen at `lightning-final`, the `rj23` schedule comes
+   in a follow-up), `devices != 1`, and Lightning's dry-run limits `limit_train_batches` /
+   `limit_val_batches` (a short plain run sets `max_steps`). Model checks run before the
+   manifest, so a refused config leaves none.
+5. **Resume through the CLI** is `--resume auto` (`OUTPUT_DIR/ckpt/last.pt`) or a path. The
+   run-id check of the 4.1 amendment (point 5) means a resume with another semantic config
+   is refused, including a larger `max_steps` (Lightning accepts that one): extending a run
+   is a new run.
+6. **The preflight works without Lightning for the paper replication.** `ThroughputTimer`
+   is engine-free (`tick(device)`, `reset()`; `lightning_timer` adapts it for R1-R4), and
+   the dry chain gains **CD21**: the `carrasco2021` preset on the plain engine for
+   `steps + 1` steps (`engine.fit` gained an `on_step` hook for the timer), estimated from
+   its initial horizon (a lower bound). `--synthetic` prepares the 100 % file with float32
+   stamps. R1-R4 still run on Lightning: their modules are not ported (plan 4.6, "Cut").

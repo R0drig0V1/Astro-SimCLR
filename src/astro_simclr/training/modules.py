@@ -38,7 +38,6 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Final, cast
 
 import lightning as L
-import numpy as np
 import torch
 from lightning.pytorch.trainer.states import TrainerFn
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
@@ -62,25 +61,25 @@ from astro_simclr.paper_model import PAPER_DROP_RATE
 from astro_simclr.paper_variants import build_paper_model
 from astro_simclr.training.class_augment import (
     DEFAULT_MIN_R2,
-    JITTER_STREAM,
     NOISE_STREAM,
     SYNTHETIC_STREAM,
-    apply_noise,
-    apply_synthetic,
     augment_rng,
     noise_augment,
-    plan_jitter,
-    plan_noise,
-    plan_synthetic,
     synthetic_bogus,
     upload_plan,
 )
-from astro_simclr.training.flux_rescale import FLUX_STREAM, apply_flux, flux_rescale, plan_flux
+from astro_simclr.training.flux_rescale import FLUX_STREAM, flux_rescale
 from astro_simclr.training.metrics import METRIC_NAMES, classification_metrics, confusion_matrix
 from astro_simclr.training.optimizers import (
     PAPER_ADAM_BETAS,
     build_optimizer,
     check_optimizer_name,
+)
+from astro_simclr.training.paper_augment import (
+    AugmentBatch,
+    ClassifierBatch,
+    PaperAugment,
+    check_augment_context,
 )
 
 __all__ = [
@@ -94,10 +93,8 @@ __all__ = [
     "SupervisedCEResNetModule",
 ]
 
-#: A classifier batch: images (B, 3, S, S), features (B, 23), one-hot labels (B, n_classes).
-ClassifierBatch = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-#: A paper-model training batch with the stamp fits (B, 6) of ``class_augment.stamp_fits``.
-AugmentBatch = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+# ClassifierBatch (images, features, one-hot labels) and AugmentBatch (plus the stamp fits)
+# are ``training.paper_augment``'s, imported above.
 #: A training batch followed by its uploaded augmentation plan (``augment_plan``).
 PlannedBatch = tuple[Any, ...]
 #: A SimCLR batch: the two views (B, 3, S, S) of each stamp.
@@ -342,24 +339,6 @@ class SupervisedCEModule(ClassifierModule):
         return out
 
 
-def _check_cd21_augment(
-    synthetic_bogus: float, flux_rescale: float, context: str, n_classes: int
-) -> None:
-    """Refuse C6 / C7 where they cannot apply: with context channels, or not on CD21's classes.
-
-    Raises:
-        ValueError: if ``flux_rescale`` or ``synthetic_bogus`` is set with ``context`` other
-            than ``none``, or with ``n_classes`` other than 5.
-    """
-    if flux_rescale and context != "none":
-        raise ValueError("flux_rescale changes no context channels: needs context='none'")
-    if synthetic_bogus and context != "none":
-        raise ValueError("synthetic_bogus builds no context channels: needs context='none'")
-    if (synthetic_bogus or flux_rescale) and n_classes != N_CLASSES:
-        # C6 and C7 use CD21's label indices (Asteroid and Bogus sources; never Bogus).
-        raise ValueError("synthetic_bogus and flux_rescale need the 5 CD21 classes")
-
-
 class PaperClassifierModule(ClassifierModule):
     """The paper-faithful stamp classifier, ``paper_model.PaperStampClassifier`` (task 2.2a).
 
@@ -453,19 +432,19 @@ class PaperClassifierModule(ClassifierModule):
         if adam_betas not in PAPER_ADAM_BETAS:
             valid = ", ".join(PAPER_ADAM_BETAS)
             raise ValueError(f"adam_betas must be one of {valid}, got {adam_betas!r}")
-        if augment_seed < 0:
-            raise ValueError(f"augment_seed must be >= 0, got {augment_seed}")
-        if not (aug_noise >= 0 and aug_feature_jitter >= 0):
-            raise ValueError("aug_noise and aug_feature_jitter must be >= 0")
-        if not 0 <= synthetic_bogus < 1:
-            raise ValueError(f"synthetic_bogus must be in [0, 1), got {synthetic_bogus}")
-        if not 0 <= aug_min_r2 <= 1:
-            raise ValueError(f"aug_min_r2 must be in [0, 1], got {aug_min_r2}")
-        if not 0 <= flux_rescale <= 1:
-            raise ValueError(f"flux_rescale must be in [0, 1], got {flux_rescale}")
-        if not 0 < flux_k_min <= flux_k_max:
-            raise ValueError("flux_k_min and flux_k_max must satisfy 0 < min <= max")
-        _check_cd21_augment(synthetic_bogus, flux_rescale, context, n_classes)
+        #: The augmentation policy (engine-free, shared with the plain engine's task).
+        self.paper_augment = PaperAugment(
+            seed=augment_seed,
+            rot90=rot90_augment,
+            noise=aug_noise,
+            feature_jitter=aug_feature_jitter,
+            synthetic_bogus=synthetic_bogus,
+            min_r2=aug_min_r2,
+            flux_rescale=flux_rescale,
+            flux_k_min=flux_k_min,
+            flux_k_max=flux_k_max,
+        )
+        check_augment_context(synthetic_bogus, flux_rescale, context, n_classes)
         if paper_arch in CONVNEXT_ARCHS and (aug_noise or synthetic_bogus or flux_rescale):
             # C5's noise, C6 and C7 are defined on the 21x21 crop (ADR 0022).
             raise ValueError(
@@ -483,9 +462,7 @@ class PaperClassifierModule(ClassifierModule):
         self.flux_k_min = flux_k_min
         self.flux_k_max = flux_k_max
         #: Whether any training augmentation is on (the run then plans it on the host).
-        self.augmenting = bool(
-            rot90_augment or aug_noise or aug_feature_jitter or synthetic_bogus or flux_rescale
-        )
+        self.augmenting = self.paper_augment.active
         self.model = build_paper_model(
             paper_arch,
             group_fields=group_fields,
@@ -508,14 +485,12 @@ class PaperClassifierModule(ClassifierModule):
         return out
 
     def rotation_steps(self, n: int, step: int) -> torch.Tensor:
-        """The ``k`` (int64, CPU, values 0..3) of ``n`` training stamps at global step ``step``.
+        """The ``k`` (int64, CPU, 0..3) of ``n`` training stamps at global step ``step``.
 
-        Drawn from a NumPy generator seeded with ``[augment_seed, step]`` only (its
-        ``SeedSequence`` mixes both into the whole state, unlike a 32-bit torch seed), so the
+        ``PaperAugment.rotation_steps``: seeded with ``[augment_seed, step]`` only, so the
         same run on another device, or resumed, rotates the same stamps the same way.
         """
-        rng = np.random.default_rng([self.augment_seed, step])
-        return torch.from_numpy(rng.integers(0, 4, size=n, dtype=np.int64))
+        return self.paper_augment.rotation_steps(n, step)
 
     def training_step(
         self, batch: ClassifierBatch | AugmentBatch | PlannedBatch, batch_idx: int
@@ -556,103 +531,25 @@ class PaperClassifierModule(ClassifierModule):
     def augment_plan(self, batch: ClassifierBatch | AugmentBatch, step: int) -> dict[str, Any]:
         """The host part of the augmentation of a training batch at global step ``step``.
 
-        ``batch`` is on the CPU (the Train rows of the step: crops, features, one-hot
-        targets and, for C5 / C6 / C7, the stamp fits). Every draw and decision of C6, C7,
-        C5's noise, the rotation and the jitter is made here, with the same NumPy calls and
-        float64 arithmetic as the in-step functions (``class_augment.plan_*``,
-        ``flux_rescale.plan_flux``), from ``[augment_seed, step, stream]`` (rotation:
-        ``[augment_seed, step]``): device-independent and exact on resume (ADR 0006, 0007).
-        Returns a dict of CPU tensors (keys ``c6``, ``c7``, ``c5``, ``rot``, ``jitter`` for
-        the augmentations that change the batch), for :meth:`apply_plan`.
-
-        The class-aware augmentation runs **before** the rotation: the stamp fits, and C7's
-        PSF centroid in particular, describe the unrotated crop (``fit_central_psf``), so a
-        rotated off-centre transient would get its rescaled flux at the wrong place (found in
-        review of PR #22). C5 / C6 are rotation-agnostic, so the order only matters for C7.
+        ``PaperAugment.plan`` (``training.paper_augment``, where the order and the seeds are
+        documented): every draw and decision of C6, C7, C5's noise, the rotation and the
+        jitter, on a CPU copy of the batch, as a dict of CPU tensors for :meth:`apply_plan`.
 
         Raises:
-            ValueError: if ``aug_noise``, ``synthetic_bogus`` or ``flux_rescale`` is on and
-                the batch has no stamp fits (a fourth element), or ``flux_rescale`` is on and
-                the fits have no PSF columns.
+            ValueError: if C5's noise, C6 or C7 is on and the batch has no stamp fits, or C7
+                is on and the fits have no PSF columns.
         """
-        images, features = batch[0], batch[1]
-        plan: dict[str, Any] = {}
-        if self.aug_noise or self.synthetic_bogus or self.flux_rescale:
-            if len(batch) != 4:
-                msg = (
-                    "aug_noise, synthetic_bogus and flux_rescale need the stamp fits in the "
-                    "training batches: build the Train TensorSplit with fits="
-                    "class_augment.stamp_fits (plus flux_rescale.fit_central_psf for C7)"
-                )
-                raise ValueError(msg)
-            plan.update(self._class_plan(batch, step))
-        if self.rot90_augment:
-            plan["rot"] = self.rotation_steps(images.shape[0], step)
-        if self.aug_feature_jitter:
-            rng = augment_rng(self.augment_seed, step, JITTER_STREAM)
-            plan["jitter"] = plan_jitter(tuple(features.shape), self.aug_feature_jitter, rng)
-        return plan
-
-    def _class_plan(self, batch: AugmentBatch, step: int) -> dict[str, Any]:
-        """C6, C7 and C5's noise of :meth:`augment_plan`, in that order (host tensors)."""
-        images, features, targets, fits_tensor = batch
-        fits = fits_tensor.numpy()
-        plan: dict[str, Any] = {}
-        replaced = None
-        if self.synthetic_bogus:
-            rng = augment_rng(self.augment_seed, step, SYNTHETIC_STREAM)
-            c6 = plan_synthetic(
-                images, features, targets, fits, self.synthetic_bogus, rng, min_r2=self.aug_min_r2
-            )
-            replaced = c6.pop("replaced")
-            if replaced.any():
-                plan["c6"] = c6
-        if self.flux_rescale:
-            rng = augment_rng(self.augment_seed, step, FLUX_STREAM)
-            c7 = plan_flux(
-                images,
-                features,
-                targets,
-                fits,
-                self.flux_rescale,
-                (self.flux_k_min, self.flux_k_max),
-                rng,
-                skip=replaced,
-            )
-            c7.pop("k")
-            if c7:
-                plan["c7"] = c7
-        if self.aug_noise:
-            rng = augment_rng(self.augment_seed, step, NOISE_STREAM)
-            c5 = plan_noise(
-                fits, images.shape[-1], self.aug_noise, rng, min_r2=self.aug_min_r2, skip=replaced
-            )
-            if c5 is not None:
-                plan["c5"] = c5
-        return plan
+        return self.paper_augment.plan(batch, step)
 
     def apply_plan(
         self, batch: ClassifierBatch | AugmentBatch, plan: dict[str, Any]
     ) -> ClassifierBatch:
         """The device part: :meth:`augment_plan`'s ``plan``, on ``batch``'s device, applied.
 
-        The same torch operations as the in-step functions (``class_augment.apply_*``,
-        ``flux_rescale.apply_flux``, the rotation, the jitter's addition), so the result is
-        bit for bit the in-step one on every device; nothing is copied back to the host.
+        ``PaperAugment.apply``: the same torch operations as the in-step functions, so the
+        result is bit for bit the in-step one on every device.
         """
-        images, features, targets = batch[0], batch[1], batch[2]
-        if "c6" in plan:
-            images, features, targets = apply_synthetic(images, features, targets, plan["c6"])
-        if "c7" in plan:
-            images, features = apply_flux(images, features, plan["c7"])
-        if "c5" in plan and len(batch) == 4:
-            images = apply_noise(images, batch[3], plan["c5"])
-        if "rot" in plan:
-            rotations = torch.stack([torch.rot90(images, j, dims=(2, 3)) for j in range(4)])
-            images = rotations[plan["rot"], torch.arange(images.shape[0], device=images.device)]
-        if "jitter" in plan:
-            features = features + plan["jitter"].to(features.dtype)
-        return images, features, targets
+        return self.paper_augment.apply(batch, plan)
 
     def class_augment(
         self, x_img: torch.Tensor, x_feat: torch.Tensor, targets: torch.Tensor, fits: torch.Tensor

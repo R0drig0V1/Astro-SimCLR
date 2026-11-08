@@ -8,9 +8,9 @@ sessions list completed tasks in their PR body instead of ticking them here.
 |-------|------|--------|
 | 1. Runnable, tested package (refactor legacy code into `src/astro_simclr/`) | [01-runnable-package.md](01-runnable-package.md) | in progress (1.1–1.7 done; 1.9a remains, 1.9b optional) |
 | 2. Replicate and improve the stamp classifier (Carrasco-Davis 2021) | [02-stamp-classifier.md](02-stamp-classifier.md) | in progress: replication **passed** (CD21 faithful, test 0.943 ± 0.004); 2.5 starting |
-| 3. Raw-alert infrastructure and R5 (RJ23 protocol, 5 classes, public sources) | [03-newer-benchmarks.md](03-newer-benchmarks.md) | reviewed (2 rounds, 2026-11-08); 3.1–3.3 running; satellites/C25 out of scope |
-| 4. Modern training platform (plain PyTorch engine, typed config, local run registry, queue) | [04-training-platform.md](04-training-platform.md) | reviewed (round 1, 2026-11-08); Track A (manifest, registry, queue) and Track B (engine ADR) dispatchable; user decisions: plain PyTorch, local tracking |
-| 5. Self-supervised pretraining (SimCLR, ResNet-18 first, then custom) | [05-self-supervised.md](05-self-supervised.md) | reviewed (round 1, 2026-11-08); 5.0b pilot in progress; H1 decided (delegated); download only after the pilot |
+| 3. Raw-alert infrastructure and R5 (RJ23 protocol, 5 classes, public sources) | [03-newer-benchmarks.md](03-newer-benchmarks.md) | in progress: 3.1 fetch-alerts, 3.1b raw-alerts kind, 3.2 metrics, 3.3 RJ23 input, 3.4 RJ23 models, 3.5 R5 builder (code) done; 3.4b regime and the real downloads pending |
+| 4. Modern training platform (plain PyTorch engine, typed config, local run registry, queue) | [04-training-platform.md](04-training-platform.md) | in progress: A0 identity, A1 manifest, A2 registry, B0 ADR, 4.1 engine core, 4.2 nested config, 4.3 data tiers done; A3 queue in review; 4.6 tasks-on-engine in progress |
+| 5. Self-supervised pretraining (SimCLR, ResNet-18 first, then custom) | [05-self-supervised.md](05-self-supervised.md) | in progress: H1 decided (delegated); 5.0b pilot and 5.1a ingest in review; 5.4 evaluation tools in progress; download only after the pilot |
 
 **Priority (user decision, 2026-11-07):** the goal is to replicate the paper (Carrasco-Davis
 et al. 2021), not the 2022 legacy numbers. Phase 2 is the main line. In phase 1, task 1.7

@@ -184,7 +184,22 @@ uv run astro-simclr build-r5 ... --from-snapshot --out /tmp/R5 --expect dataset/
 The recipe and the outputs (deviation and era tables, frozen index) are in
 [docs/data.md](docs/data.md) ("R5") and [ADR 0020](docs/decisions/0020-r5-reconstruction.md).
 
-### 5. Archive corpus (self-supervised pretraining data)
+### 5. The SimCLR pilot (phase 5, task 5.0b)
+
+`simclr-pilot` pretrains SimCLR (ResNet-18 with a CIFAR stem, NT-Xent in paper mode, LARS)
+on the CD21 Train stamps, with checkpoints, diagnostics and a final embedding dump;
+`simclr-embed --random-init` dumps the untrained network's embeddings, `make-label-subsets`
+stores the probe's label subsets and `simclr-probe` scores a linear probe on the screen
+halves. The whole sequence is in [docs/architecture.md](docs/architecture.md) (`simclr`)
+and the decisions in [ADR 0025](docs/decisions/0025-simclr-pilot.md).
+
+```bash
+uv run --no-sync astro-simclr simclr-pilot dataset/prepared/td_ztf_stamp_17_06_20_red-002 \
+    --splits configs/splits/td_ztf_stamp_17_06_20_red-002-grouped.json \
+    --output-dir runs/pilot/ssl --epochs 100 --device cuda
+```
+
+### 6. Archive corpus (self-supervised pretraining data)
 
 `ingest-archive` (phase 5, task 5.1a) streams nightly ZTF public archive tarballs into
 the unlabelled corpus: files, or one night piped in so no tarball is stored. It keeps the
@@ -208,7 +223,8 @@ corpus") and [ADR 0019](docs/decisions/0019-archive-corpus.md).
 ```
 src/astro_simclr/   the package: data, models (paper model, p4/p4m variants), losses,
                     augmentations, training, protocol (splits, gates, comparisons), oracle,
-                    alerts (raw-alert retrieval), r5 (the R5 build), CLI
+                    alerts (raw-alert retrieval), r5 (the R5 build), simclr (the
+                    phase-5 pilot), CLI
 tests/              pytest suite (branch coverage >= 80 %)
 configs/reference/  R1-R4 legacy reference-run configs, with provenance
 configs/splits/     stored phase-2 decision splits (make-splits)
@@ -216,8 +232,8 @@ configs/runs/       nested configs for `astro-simclr run` (ADR 0017)
 results/            phase2/ (replication archive, augmentation inspections); 2021 tuning results
 docs/               architecture.md (one section per module), data.md, evaluation-protocol.md,
                     phases/ (the plan), decisions/ (ADRs), plan-reviews/
-scripts/            check.sh, gpu-preflight.sh, check-torch-wheels.sh, inspection scripts,
-                    characterize/ (legacy fixture generators)
+scripts/            check.sh (+ check-lock.sh), gpu-preflight.sh, check-torch-wheels.sh,
+                    inspection scripts, characterize/ (legacy fixture generators)
 jupyter_examples/   2021 exploratory notebooks (they import the legacy code)
 ```
 
@@ -275,7 +291,11 @@ scripts/check-torch-wheels.sh    # after touching the torch pins, extras or inde
 ```
 
 `scripts/check.sh` is the single definition of green; CI runs exactly that script. It runs
-the tests in parallel, one process per CPU (`PYTEST_XDIST_AUTO_NUM_WORKERS=N` caps it). GitHub
+the tests in parallel with at most 4 processes (`min(4, cores/2)` on macOS, `min(4, cores)`
+elsewhere; `PYTEST_XDIST_AUTO_NUM_WORKERS=N` overrides it), behind a machine-wide lock
+(`~/.cache/mc-sddp/check.lock.d`, shared with another project on the developer's Mac): one
+full check at a time, a lock left by a dead pid is broken, `ASTRO_SIMCLR_CHECK_LOCK=0`
+disables it and GitHub Actions skips it ([scripts/check-lock.sh](scripts/check-lock.sh)). GitHub
 workflows also run zizmor, actionlint, gitleaks, pip-audit, CodeQL and Scorecard. None runs on
 pull requests: the integrator's local `verify-merge.sh` is the PR gate, and CI runs on pushes
 to `main`, weekly and on demand ([ADR 0021](docs/decisions/0021-ci-on-main-pushes-only.md)); security

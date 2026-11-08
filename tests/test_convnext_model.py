@@ -53,6 +53,7 @@ from astro_simclr.paper_variants import (
     paper_input_side,
 )
 from astro_simclr.presets import CARRASCO2021_PRESET, PRESETS, preset_report
+from astro_simclr.tasks.common import check_schedule
 from astro_simclr.training.device_data import float_crops, interim_uint8_crops
 from astro_simclr.training.modules import PaperClassifierModule
 
@@ -365,16 +366,14 @@ def test_settings_refuse_the_crop_only_flags() -> None:
 
 def test_image_size_must_be_the_arch_side() -> None:
     with pytest.raises(ConfigError, match="takes 63x63 images: set image_size=63"):
-        experiments._check_schedule("train-supervised", _settings(paper_arch="convnext_atto"))
+        check_schedule("train-supervised", _settings(paper_arch="convnext_atto"))
     with pytest.raises(ConfigError, match="takes 21x21 images: set image_size=21"):
-        experiments._check_schedule("train-supervised", _settings(image_size=63))
-    experiments._check_schedule(
-        "train-supervised", _settings(paper_arch="convnext_atto", image_size=63)
-    )
+        check_schedule("train-supervised", _settings(image_size=63))
+    check_schedule("train-supervised", _settings(paper_arch="convnext_atto", image_size=63))
     # Another model (the phase-1 stamp classifier) refuses the flag instead of ignoring it.
     phase1 = Settings(paper_arch="convnext_pico", backbone_weights="zoobot")
     with pytest.raises(ConfigError, match="paper_arch, backbone_weights apply only to"):
-        experiments._check_schedule("train-supervised", phase1)
+        check_schedule("train-supervised", phase1)
 
 
 def test_a_run_loads_the_pinned_weights(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

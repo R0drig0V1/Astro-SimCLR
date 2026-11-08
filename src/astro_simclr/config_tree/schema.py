@@ -103,8 +103,9 @@ __all__ = [
     "semantic_config_of",
 ]
 
-#: ``runtime.engine`` values. ``plain`` (ADR 0014) joins when its loop lands (tasks 4.1, 4.6).
-ENGINES: Final = ("lightning",)
+#: ``runtime.engine`` values: ``lightning`` (the default until task 4.7/4.8) or ``plain`` (the
+#: plain-PyTorch engine of ADR 0014, task 4.6: the paper classifier on ``carrasco2021``).
+ENGINES: Final = ("lightning", "plain")
 #: ``model.name`` of the ``resnet`` variant (``models.build_encoder``'s torchvision ResNets).
 RESNETS: Final = ("resnet18", "resnet34", "resnet50", "resnet152")
 
@@ -171,11 +172,7 @@ class Runtime:
             ConfigError: if ``engine`` is not in :data:`ENGINES`.
         """
         if self.engine not in ENGINES:
-            msg = (
-                f"runtime.engine {self.engine!r} is not one of: {', '.join(ENGINES)} "
-                "(the plain engine lands with tasks 4.1 and 4.6)"
-            )
-            raise ConfigError(msg)
+            raise ConfigError(f"runtime.engine {self.engine!r} is not one of: {', '.join(ENGINES)}")
 
 
 @dataclass(frozen=True, kw_only=True)
