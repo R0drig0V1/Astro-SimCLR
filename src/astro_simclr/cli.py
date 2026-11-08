@@ -8,6 +8,13 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
 - data (task 1.2, ``docs/data.md``): ``inspect-data``, ``make-synthetic``, ``prepare-data``
   (``--images float32``, task 2.1), and ``check-features`` (task 2.1: were the stored
   features standardised with M1's statistics? Exit 1 if not);
+- ``run CONFIG [--set section.key=value | key=value ...]`` (task 4.2,
+  :mod:`astro_simclr.config_tree`, ADR 0017): resolve a nested config (its preset or its
+  command's legacy one, the file, the dotted overrides, then the flat ones on the flat
+  view), lower it to the flat settings and train it with ``run_command`` (the Lightning
+  engine). A flat file needs ``--command``; ``--show`` prints the resolved config and its
+  config hash without training; ``--resume`` and ``--splits FILE --fold K | --screen`` as
+  below. The four training subcommands are its aliases until task 4.8;
 - training (task 1.7, :mod:`astro_simclr.experiments`): ``pretrain``, ``linear-eval``,
   ``fine-tune``, ``train-supervised``. Their settings resolve as: the ``Settings``
   defaults, the subcommand's legacy protocol (``hparams.COMMAND_DEFAULTS``), ``--preset``
@@ -360,10 +367,14 @@ def _split_request(args: argparse.Namespace) -> SplitRequest | None:
 
 
 def _train(args: argparse.Namespace) -> int:
+    command: str = args.command
+    return _execute(command, training_settings(command, args), args)
+
+
+def _execute(command: str, settings: Settings, args: argparse.Namespace) -> int:
+    """Run ``command`` with ``settings`` on the Lightning engine and print its summary."""
     from astro_simclr.experiments import METRICS_FILE, run_command
 
-    command: str = args.command
-    settings = training_settings(command, args)
     split = _split_request(args)
     metrics = run_command(command, settings, resume=args.resume, split=split)
     shown = {**metrics, "seconds_per_step": metrics.get("timing", {}).get("seconds_per_step")}
@@ -383,6 +394,61 @@ def _train(args: argparse.Namespace) -> int:
     )
     sys.stdout.write(f"{command}: {summary}; wrote {settings.output_dir / METRICS_FILE}\n")
     return 0
+
+
+def _run(args: argparse.Namespace) -> int:
+    """``astro-simclr run CONFIG``: resolve the nested config, then lower it and train."""
+    from astro_simclr.config_tree import config_sha256, config_to_plain, resolve_config
+
+    config = resolve_config(args.config_file, args.overrides, command=args.flat_command)
+    if args.show:
+        sys.stdout.write(f"# command: {config.command}\n# config hash: {config_sha256(config)}\n")
+        sys.stdout.write(yaml.safe_dump(config_to_plain(config), sort_keys=False))
+        return 0
+    # runtime.engine is "lightning" until the plain engine lands (tasks 4.1, 4.6; ADR 0014):
+    # the config lowers to the flat settings that today's run_command takes.
+    return _execute(config.command, config.to_settings(), args)
+
+
+def _add_run_command(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    run = commands.add_parser(
+        "run",
+        help="train from a nested config (task 4.2; the training subcommands are its aliases)",
+        description="Resolve a nested config (sections run, runtime, data, model, optim, "
+        "schedule, augment, eval; ADR 0017) and train it. Order: its preset (or its "
+        "command's legacy one), the file, --set section.key=value, then --set key=value on "
+        "the flat view. A flat settings file needs --command. The model decides the "
+        "training command; runtime.engine is lightning.",
+    )
+    run.add_argument("config_file", type=Path, metavar="CONFIG", help="nested or flat YAML")
+    run.add_argument(
+        "--set",
+        dest="overrides",
+        action="extend",
+        nargs="+",
+        default=[],
+        metavar="KEY=VALUE",
+        help="section.key=VALUE (an unknown path is an error) or a flat key=VALUE; "
+        "VALUE is parsed as YAML; repeatable",
+    )
+    run.add_argument(
+        "--command",
+        dest="flat_command",
+        choices=COMMANDS,
+        help="the training command of a flat CONFIG (a nested one names its model)",
+    )
+    run.add_argument(
+        "--show",
+        action="store_true",
+        help="print the resolved config and its config hash, and do not train",
+    )
+    run.add_argument(
+        "--resume",
+        metavar="PATH|auto",
+        help="continue from a checkpoint; auto: OUTPUT_DIR/checkpoints/last.ckpt if any",
+    )
+    _add_split_arguments(run)
+    run.set_defaults(handler=_run)
 
 
 #: ``train-supervised --preset`` choices (``presets.PRESETS``; spelled out here so that
@@ -433,7 +499,8 @@ def _add_training_commands(
             help=_TRAINING_HELP[command],
             description=f"{_TRAINING_HELP[command]}. Writes checkpoints, metrics.json and "
             "(classifiers) confusion-matrix figures under the output directory. Dry mode: "
-            "--set max_epochs=1 limit_train_batches=2 limit_val_batches=2.",
+            "--set max_epochs=1 limit_train_batches=2 limit_val_batches=2. An alias of "
+            "'astro-simclr run' on a flat config, kept until task 4.8.",
         )
         add_settings_arguments(sub)
         sub.add_argument(
@@ -1228,6 +1295,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_settings_arguments(show)
     show.set_defaults(handler=_show_config)
     _add_data_commands(commands)
+    _add_run_command(commands)
     _add_training_commands(commands)
     _add_check_commands(commands)
     _add_oracle_commands(commands)

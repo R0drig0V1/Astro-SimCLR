@@ -174,7 +174,67 @@ of one run.
   YAML mapping without checking keys; `settings_to_plain` gives the plain (YAML/JSON) form
   that `show-config` prints and the metrics JSON records.
 
-## `cli` (task 1.1; subcommands from 1.2, 1.7, 3.1 and 3.5)
+## `config_tree` (phase 4, task 4.2; ADR 0017)
+
+`src/astro_simclr/config_tree/`: the nested, typed run configuration that `astro-simclr run`
+reads. It lowers to the flat `Settings` (what today's `run_command` executes, and the view
+the config hash is defined on, ADR 0015 rule 10), so it changes no numbers.
+
+- **`schema`**: `Config`, a frozen dataclass of eight sections. `run` (`seed`,
+  `output_dir`), `runtime` (`engine`, `accelerator`, `devices`, `num_workers`,
+  `deterministic`, `fp32_precision`, `progress_bar_refresh_rate`), `data` (`dir`,
+  `dataset`, `image_size`, `batch_size`, `with_features`) and `eval` (`batch_size`,
+  `limit_batches`) are plain; four are tagged unions on `kind`:
+
+  | Section | `kind` | Fields (flat name when it differs) |
+  |---|---|---|
+  | `model` | `stamp_classifier` | `drop_rate`, `beta_loss` |
+  | | `resnet` | `name` (`supervised_model`: `resnet18/34/50/152`), `beta_loss` |
+  | | `paper_stamp_classifier` | `arch` (`paper_arch`), `backbone_weights`, `group_fields`, `context`, `feature_set`, `input` (`paper_input`), `nan_approximation`, `exclude_leaked_train`, `dropout_active`, `drop_rate`, `beta_loss` |
+  | | `simclr` | `encoder` (`encoder_name`), `projection_dim`, `temperature`, `legacy_denominator` (`nt_xent_legacy_denominator`) |
+  | | `linear_eval` | `pretrained`, `beta_loss` |
+  | | `fine_tune` | `pretrained`, `beta_loss`, `drop_rate`, `lr_factor` (`fine_tune_lr_factor`) |
+  | `optim` | `Adam`, `AdamW` | `lr`, `betas` (`adam_betas`) |
+  | | `SGD` | `lr` |
+  | | `LARS` | `lr`, `legacy_trust_ratio` (`lars_legacy_trust_ratio`) |
+  | `schedule` | `epochs` | `max_epochs`, `monitor`, `early_stopping`, `patience`, `min_delta`, `check_finite`, `divergence_threshold`, `limit_train_batches` |
+  | | `carrasco2021` | `max_steps`, `val_every_n_steps`, `horizon_increment`, `checkpoint_every_n_steps`, `monitor`, `limit_train_batches` (lowers `early_stopping: false`) |
+  | `augment` | `transforms` | `name` (`augmentation`) |
+  | | `paper` | `rot90` (`rot90_augment`), `noise` (`aug_noise`), `feature_jitter`, `synthetic_bogus`, `min_r2` (`aug_min_r2`), `flux_rescale`, `flux_k_min`, `flux_k_max` |
+
+  - The model decides the command (`Config.command`). Every default is the default of the
+    flat field (`Config()` lowers to `Settings()`). `runtime.engine` is `lightning` only
+    (the plain engine joins with 4.1 and 4.6); it is the run id's engine, not hashed.
+  - A `Config` is valid by construction: the tags, `paper_stamp_classifier` ⇔
+    `carrasco2021` schedule ⇔ `paper` augmentation, then the lowered `Settings`' checks,
+    with the flat names in their message mapped to nested paths
+    (`eval_batch_size is eval.batch_size`).
+  - `flat_view(config)` (every `Settings` field), `Config.to_settings()`,
+    `config_sha256(config)` (the flat settings' hash, through
+    `semantic_config_from_plain(complete=True)`), `config_to_plain` /
+    `config_from_mapping` (plain nested values, unknown keys and types refused with their
+    path) and `config_json` (the nested canonical JSON).
+  - `config_from_settings(command, settings)` raises a flat run to the nested form (the
+    shim). It refuses, naming the keys, when a flat field the chosen variants do not hold
+    is not at its default.
+- **`presets`**: `PRESETS`, written out as `Config` objects: `carrasco2021`,
+  `carrasco2021-no-features` and `pretrain-legacy`, `linear-eval-legacy`,
+  `fine-tune-legacy`, `train-supervised-legacy` (`hparams.COMMAND_DEFAULTS`).
+  `LEGACY_PRESETS` maps each command to its legacy preset.
+- **`resolve`**: `resolve_config(path, overrides, command=None)`. A nested file (section
+  keys, each a mapping, and optionally `preset: NAME`) starts from its preset, or from the
+  legacy preset of its `model.kind`'s command; then the file; then the dotted `--set
+  section.key=value` patch; then the flat `--set key=value` items on the flat view. A
+  differing `kind` replaces its section (the tag rule); the dotted items are merged first,
+  so their order does not matter. A flat file needs `command` and resolves as
+  `<command> --config FILE` does.
+- The hash migration test (`tests/test_config_tree_presets.py`): each nested preset has the
+  flat preset's flat view and hash; the nested forms of the A0 cases have the pinned
+  hashes; every committed flat config goes through the shim with its old hash; every
+  `Settings` field has exactly one nested home.
+- `configs/runs/` holds nested configs (`carrasco2021.yaml`: the preset on `cuda`).
+
+## `cli` (task 1.1; subcommands from 1.2, 1.7, 3.1 and 3.5; `run` from 4.2)
 
 The `astro-simclr` console script (`[project.scripts]`). `main(argv)` returns the exit code,
 so tests call it in-process. Every subcommand registers in `build_parser()` and takes the
@@ -188,6 +248,12 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   errors print one `astro-simclr: error: ...` line and exit with 1.
 - `--set` takes one or more `KEY=VALUE` items and may be repeated (`--set max_epochs=1
   limit_train_batches=2`); put it after the positional arguments.
+- **`run CONFIG [--set ...] [--command CMD] [--show] [--resume PATH|auto] [--splits FILE
+  --fold K | --screen]`** (task 4.2, see `config_tree`): resolve a nested config (or a flat
+  one with `--command`), lower it and train it with `run_command` (the Lightning engine).
+  `--set` takes `section.key=value` (an unknown path exits 2) and flat `key=value` items.
+  `--show` prints `# command:`, `# config hash:` and the resolved config as YAML, and
+  does not train. The four training subcommands below are its aliases until 4.8.
 - **Training (1.7):** `pretrain`, `linear-eval`, `fine-tune`, `train-supervised` (see
   `experiments`). Each takes `--config`, `--set`, `--hparams FILE` (a legacy
   `results/hparams_best_*.yaml`, see `hparams`), `--data-dir`, `--output-dir`, `--seed`,
@@ -1895,7 +1961,8 @@ calls `record.start_run` and `RunRecord.end` around the fit (task A1).
     hashed), and fields added later at the value that keeps old hashes: `feature_set: all`
     (ADR 0016).
   - `semantic_config_from_plain(command, view, complete=True)` and `semantic_diff` are the
-    hook of the nested config (4.2): lower to the flat view, then compare hashes.
+    hook of the nested config (4.2): `config_tree.config_sha256` lowers to the flat view
+    and hashes it there (ADR 0017).
   - The pinned hashes of the `carrasco2021` presets, of ten 2.5 variants (`feature_set:
     position` and `none` among them) and of the two
     legacy protocols are in `tests/fixtures/runs/canonical_configs.json`; regenerate them with
