@@ -13,6 +13,13 @@ All inputs are per-stamp arrays of the *same* stamps, in the same order (paired)
   count, because the evaluation sets are balanced by design (100 or 50 per class; the CV
   folds are stratified), so the class mix is not a source of sampling noise. With
   ``metric="balanced_accuracy"`` (the CV metric) the classes weigh equally.
+- :func:`paired_bootstrap_macro_f1`: the same paired, class-stratified resampling for the
+  phase-3 benchmarks' **macro-F1** (task 3.2), which is not a mean of per-stamp scores:
+  each resample recounts every run's confusion matrix and takes the difference of the
+  seed-mean macro-F1s (:mod:`astro_simclr.protocol.benchmark_metrics`).
+- :func:`minimum_detectable_effect`: the smallest difference of a per-item rate (such as one
+  class's recall) that a two-sided test at ``alpha`` detects with probability ``power``, on
+  ``n`` independent items: paired (from the discordant fraction) or unpaired.
 - :func:`adoption_decision`: the **superiority** rule of task 2.3: a flag is adopted only
   if the 95 % interval of its CV difference against the baseline excludes 0 on the
   positive side.
@@ -30,10 +37,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from statistics import NormalDist
 from typing import Any, Final, Literal
 
 import numpy as np
 import numpy.typing as npt
+
+from astro_simclr.protocol.benchmark_metrics import macro_f1_from_counts
 
 __all__ = [
     "MAX_NON_INFERIORITY_MARGIN",
@@ -41,6 +51,7 @@ __all__ = [
     "SCREEN_DROP_THRESHOLD",
     "Adoption",
     "BootstrapCI",
+    "IntervalMetric",
     "McNemar",
     "Metric",
     "Rule",
@@ -48,12 +59,16 @@ __all__ = [
     "balanced_accuracy",
     "check_margin",
     "mcnemar",
+    "minimum_detectable_effect",
     "non_inferiority_decision",
     "paired_bootstrap",
+    "paired_bootstrap_macro_f1",
     "screen_decision",
 ]
 
 Metric = Literal["accuracy", "balanced_accuracy"]
+#: The metric of a :class:`BootstrapCI`: a per-stamp mean (:data:`Metric`) or macro-F1.
+IntervalMetric = Literal["accuracy", "balanced_accuracy", "macro_f1"]
 Adoption = Literal["adopt", "worse", "inconclusive"]
 Screen = Literal["drop", "keep"]
 #: The CV decision rules: ``superiority`` (task 2.3) or ``non-inferiority`` (efficiency rows).
@@ -90,7 +105,7 @@ class McNemar:
 class BootstrapCI:
     """A percentile bootstrap interval of ``metric(variant) - metric(baseline)``."""
 
-    metric: Metric
+    metric: IntervalMetric
     observed: float
     low: float
     high: float
@@ -209,6 +224,129 @@ def paired_bootstrap(
     alpha = 1 - confidence
     low, high = np.quantile(stats, [alpha / 2, 1 - alpha / 2])
     return BootstrapCI(metric, observed, float(low), float(high), confidence, n_boot)
+
+
+def _run_labels(predicted: npt.ArrayLike, n: int, n_classes: int, side: str) -> npt.NDArray[Any]:
+    runs = np.asarray(predicted)
+    if runs.ndim == 1:
+        runs = runs[None, :]
+    if runs.ndim != 2 or runs.shape[0] == 0 or runs.shape[1] != n:
+        raise ValueError(f"{side}: expected (runs, {n}) predicted labels, got {runs.shape}")
+    if not np.issubdtype(runs.dtype, np.integer) or runs.min() < 0 or runs.max() >= n_classes:
+        raise ValueError(f"{side}: predicted labels must be integers in range({n_classes})")
+    return runs.astype(np.int64)
+
+
+def paired_bootstrap_macro_f1(
+    predicted_baseline: npt.ArrayLike,
+    predicted_variant: npt.ArrayLike,
+    labels: npt.ArrayLike,
+    *,
+    n_classes: int,
+    n_boot: int = 10_000,
+    confidence: float = 0.95,
+    seed: int = 0,
+) -> BootstrapCI:
+    """Percentile interval of the seed-mean macro-F1 difference, variant - baseline.
+
+    ``predicted_*`` are the predicted labels of each run (seed), shape ``(runs, N)`` (or
+    ``(N,)`` for one run), of the same N items in the same order; the two sides may have
+    different numbers of runs. The observed value is ``mean_r macro_f1(variant_r) -
+    mean_r macro_f1(baseline_r)``. Each resample draws, within every class, as many items
+    as the class has, with replacement (stratified, as :func:`paired_bootstrap`), and the
+    same draw is applied to every run of both sides (paired by item). Identical sides give
+    exactly ``[0, 0]``. Deterministic for given inputs and ``seed``. The benchmark report
+    (:mod:`astro_simclr.protocol.bench_report`) passes one row per side, the argmax of the
+    **seed-ensembled** probabilities, so the interval is that of the ensembles' macro-F1
+    difference (phase-3 plan review).
+
+    Raises:
+        ValueError: on unpaired or out-of-range inputs, ``n_boot < 1``, a confidence outside
+            (0, 1) or fewer than 2 classes.
+    """
+    if n_classes < 2:
+        raise ValueError(f"need at least 2 classes, got {n_classes}")
+    if n_boot < 1 or not 0 < confidence < 1:
+        raise ValueError(f"need n_boot >= 1 and 0 < confidence < 1, got {n_boot}, {confidence}")
+    truth = np.asarray(labels)
+    if truth.ndim != 1 or truth.size == 0:
+        raise ValueError(f"labels must be a non-empty 1-D array, got shape {truth.shape}")
+    n = truth.size
+    base = _run_labels(predicted_baseline, n, n_classes, "baseline")
+    variant = _run_labels(predicted_variant, n, n_classes, "variant")
+    groups = _class_indices(truth, n)
+    if truth.min() < 0 or truth.max() >= n_classes:
+        raise ValueError(f"labels must be in range({n_classes})")
+    runs = np.concatenate([base, variant])
+    cells = n_classes * n_classes
+    # One indicator column per (run, true class, predicted class): a resample's confusion
+    # counts of every run are then one matrix product with its item multiplicities.
+    codes = truth.astype(np.int64)[None, :] * n_classes + runs
+    indicator = np.zeros((n, runs.shape[0] * cells), dtype=np.float64)
+    columns = codes + (np.arange(runs.shape[0]) * cells)[:, None]
+    indicator[np.tile(np.arange(n), runs.shape[0]), columns.ravel()] = 1.0
+    n_base = base.shape[0]
+
+    def statistic(weights: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        counts = (weights @ indicator).reshape(weights.shape[0], -1, n_classes, n_classes)
+        f1 = macro_f1_from_counts(counts)
+        # Two separate means, so identical sides give exactly 0 (no cancellation error).
+        result: npt.NDArray[np.float64] = f1[:, n_base:].mean(axis=1) - f1[:, :n_base].mean(axis=1)
+        return result
+
+    observed = float(statistic(np.ones((1, n)))[0])
+    rng = np.random.default_rng(seed)
+    stats = np.empty(n_boot, dtype=np.float64)
+    block = max(1, _BLOCK // n)
+    for start in range(0, n_boot, block):
+        rows = min(block, n_boot - start)
+        weights = np.zeros((rows, n), dtype=np.float64)
+        offsets = (np.arange(rows) * n)[:, None]
+        for group in groups:
+            draw = group[rng.integers(0, group.size, size=(rows, group.size))]
+            weights += np.bincount((draw + offsets).ravel(), minlength=rows * n).reshape(rows, n)
+        stats[start : start + rows] = statistic(weights)
+    alpha = 1 - confidence
+    low, high = np.quantile(stats, [alpha / 2, 1 - alpha / 2])
+    return BootstrapCI("macro_f1", observed, float(low), float(high), confidence, n_boot)
+
+
+def minimum_detectable_effect(
+    n: int,
+    *,
+    discordant: float | None = None,
+    rate: float | None = None,
+    alpha: float = 0.05,
+    power: float = 0.8,
+) -> float:
+    """The minimum detectable difference of a rate measured on ``n`` independent items.
+
+    ``(z(1 - alpha/2) + z(power)) x SE``, with the normal approximation:
+
+    - **paired** (``discordant``: the fraction of items on which the two sides disagree,
+      one right and one wrong), ``SE = sqrt(discordant / n)``, as in the power note of
+      ``docs/evaluation-protocol.md``;
+    - **unpaired** (``rate``: the rate of one side), ``SE = sqrt(2 rate (1 - rate) / n)``.
+
+    For a class's recall, ``n`` is best the number of its **objects**, not alerts: the
+    alerts of one object are correlated, so counting them as independent would understate
+    the MDE. A value of 0 means the inputs show no variability (no discordance, or a rate of
+    0 or 1); it is not a real guarantee.
+
+    Raises:
+        ValueError: unless exactly one of ``discordant`` and ``rate`` is given, in [0, 1],
+            with ``n >= 1`` and ``alpha``, ``power`` in (0, 1).
+    """
+    if discordant is not None and rate is None:
+        value, variance = discordant, discordant
+    elif rate is not None and discordant is None:
+        value, variance = rate, 2 * rate * (1 - rate)
+    else:
+        raise ValueError("give exactly one of discordant (paired) and rate (unpaired)")
+    if n < 1 or not 0 <= value <= 1 or not 0 < alpha < 1 or not 0 < power < 1:
+        raise ValueError("need n >= 1, a fraction in [0, 1] and alpha, power in (0, 1)")
+    z = NormalDist().inv_cdf(1 - alpha / 2) + NormalDist().inv_cdf(power)
+    return z * math.sqrt(variance / n)
 
 
 def adoption_decision(interval: BootstrapCI) -> Adoption:
