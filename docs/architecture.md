@@ -12,7 +12,8 @@ cli ──► config
  │
  ├──► data ──────► augmentations (protocol)      registry of transforms (1.5)
  │                                    ▲
- └──► training (Lightning) ──► models, losses, optim
+ └──► training (Lightning 2) ──► models, losses, optim, metrics
+            datamodules ──► data (prepared layout) + augmentations
 ```
 
 Conventions shared by every module:
@@ -307,9 +308,153 @@ count):
   - dropped: the unused `epoch` argument/counter of `step`, the unimplemented
     `classic_momentum=False` and the never-consulted `exclude_from_*` lists; the closure
     runs under `torch.enable_grad()` and the step under `torch.no_grad()`.
+- **Performance note (kept for equivalence):** the trust ratio is moved to the host with
+  `.item()` once per parameter per step, as in the legacy code. On CUDA (and MPS) that is a
+  device-to-host synchronisation per parameter tensor, about 60 per step for a ResNet-18,
+  which stalls the GPU queue. It is kept because the scalar arithmetic then matches the
+  legacy fixtures; a fused, sync-free LARS would be a later-phase optimisation with its own
+  equivalence check.
 
-## Lightning modules (task 1.6)
+## `training` (task 1.6)
 
-Planned (the module name is chosen by 1.6). `SimCLR`, `Linear_classifier`, `Fine_tuning`
-and the supervised cross-entropy modules on Lightning 2, the `LightningDataModule`, and one
-shared implementation of the metrics and the confusion matrix.
+`src/astro_simclr/training/`: the Lightning 2 port of the legacy `utils/training.py`
+(PyTorch Lightning 1.4), plus the data modules and run helpers the CLI (1.7) builds on. A run
+is:
+
+```python
+seed_run(settings)  # L.seed_everything(seed, workers=True)
+module = SimCLRModule(
+    encoder_name="pstamps",
+    image_size=27,
+    projection_dim=300,
+    temperature=0.1791,
+    lr_encoder=0.258,
+    nt_xent_legacy_denominator=settings.nt_xent_legacy_denominator,
+)
+data = ContrastiveDataModule(
+    path, image_size=27, batch_size=550, augmentation="astro7", num_workers=settings.num_workers
+)
+callbacks = build_callbacks(settings, SimCLRModule.MONITORABLE, dirpath=out / "checkpoints")
+build_trainer(settings, callbacks=callbacks).fit(module, datamodule=data)
+```
+
+`seed_run` must come first: building a module draws its initial weights from the global
+generators. Nothing that draws random numbers runs before the network in any module, so a
+seed gives the same initial weights as the bare `models` classes (tested), hence as the
+legacy modules.
+
+**Modules** (`modules.py`):
+
+| Class | Legacy class | Network | Trained parameters |
+|---|---|---|---|
+| `SimCLRModule` | `SimCLR` | `SimCLRNet(build_encoder(encoder_name), ...)` | all, `NT_Xent` |
+| `LinearEvalModule(pretrained)` | `Linear_classifier` | frozen copy of the encoder, `h/‖h‖` ⊕ raw features, `LinearClassifier` | the head only |
+| `FineTuneModule(pretrained)` | `Fine_tuning` | copy of the encoder ⊕ `BatchNorm1d(23)` features; ResNets: `LinearClassifier`, stamp encoders: `ThreeLayerClassifier(·, 64, 64)` | all |
+| `SupervisedCEModule` | `Supervised_Cross_Entropy` | `StampClassifier(drop_rate, with_features)` | all |
+| `SupervisedCEResNetModule` | `Supervised_Cross_Entropy_Resnet` | ResNet ⊕ `BatchNorm1d(23)` features, `LinearClassifier` | all |
+
+- The four classifiers share `ClassifierModule`: `P_stamps_loss(beta_loss)` on one-hot
+  targets; each train/validation/test step appends its detached `argmax(softmax(logits))`,
+  true labels and loss to an **explicit per-stage buffer**, which `on_*_epoch_end` reads and
+  clears (the Lightning 2 replacement of `*_epoch_end(outputs)`). The epoch loss is the mean
+  of the batch losses, as before.
+- Logging is `self.log` (any logger), under the legacy names: `Loss/<Stage>`,
+  `Accuracy/<Stage>`, `Precision/<Stage>`, `Recall/<Stage>` with `<Stage>` in `Train`,
+  `Validation`, `Test`; plus `accuracy_val`, `loss_val` (and `accuracy_test`, `loss_test`)
+  on the progress bar. SimCLR logs `Loss_encoder/Train`, `loss_train_enc`, `lr`,
+  `positive_mean`, `negative_mean`. The x-axis is now Lightning's global step, not the epoch.
+- Validation and test store the row-normalised confusion matrix (on the CPU) in
+  `module.confusion_matrices["val"|"test"]`, for the figures and metrics JSON of 1.7.
+- `MONITORABLE` (class attribute) lists what `Settings.monitor` may select:
+  `accuracy_val`, `loss_val` for the classifiers, `loss_train_enc` for SimCLR (which has no
+  validation loop). The protocol default `accuracy_val` therefore raises `ConfigError` for
+  SimCLR: `pretrain` (1.7) must set `monitor: loss_train_enc`.
+- `LinearEvalModule` and `FineTuneModule` take the pretrained `SimCLRModule` or its
+  hyperparameters. They store `hparams["pretrained"] = dict(pretrained.hparams)` (plain
+  values), so `load_from_checkpoint(path)` rebuilds the encoder architecture and the
+  checkpoint's `state_dict` restores its weights (tested: same logits after a reload). In
+  `setup` they reject a data module whose `image_size` differs from the encoder's.
+- **Optimizers** (`optimizers.py`): `build_optimizer(name, params, lr)` knows `AdamW` and
+  `Adam` (`betas=(0.5, 0.9)`), `SGD` and `LARS` (`weight_decay=0`, momentum 0.9, Nesterov;
+  `legacy_trust_ratio` from the module hparam `lars_legacy_trust_ratio`, default `True`).
+  Every module accepts every name; an unknown name raises `UnknownOptimizerError` at
+  construction, listing the valid ones. SimCLR adds `cosine_warmup_scheduler` with
+  `interval: "epoch"`, `frequency: 1` (tested: `last_epoch` equals the epoch and the lr
+  follows `cosine_warmup_lr` while each epoch has several optimizer steps).
+- `NT_Xent` takes the module hparam `nt_xent_legacy_denominator`, which the caller sets from
+  `Settings.nt_xent_legacy_denominator` (ADR 0002). Both legacy flags are saved in the
+  checkpoint hparams.
+
+**Metrics** (`metrics.py`), the one implementation of the four legacy copies, on
+torchmetrics ≥ 1 with `task="multiclass"`: `classification_metrics(y_pred, y_true)` gives
+**micro** accuracy (explicit `average="micro"`: `MulticlassAccuracy` defaults to macro, and
+every legacy accuracy is micro; tested on fixed, imbalanced predictions, also through a
+module's logged `accuracy_val`), macro precision and macro recall (classes absent from
+predictions and targets left out, as in torchmetrics 0.6); `confusion_matrix(y_pred,
+y_true)` uses `normalize="true"` (an empty row is zeros).
+
+**Data modules** (`datamodules.py`) build their datasets in `setup()` (legacy:
+`prepare_data()`, which runs on one process only), from a prepared layout directory,
+memory-mapped:
+
+- `ClassifierDataModule(path, image_size, batch_size, eval_batch_size=100,
+  augmentation="center_crop", num_workers=0)`: `StampDataset` batches `(image, 23 features,
+  one-hot label)`; Train uses `get_augmentation(augmentation, image_size)` (registry names or
+  legacy aliases), Validation and Test always `center_crop`. Rejects a pretraining file.
+- `ContrastiveDataModule(path, image_size, batch_size, augmentation, num_workers=0)`:
+  `ContrastiveDataset` view pairs of the Train split of any file; no validation loader.
+- Loaders keep the legacy settings: training shuffled, `drop_last=True`,
+  `pin_memory=False`; evaluation unshuffled. A Train split smaller than one batch raises
+  `DataError` in `setup("fit")` (with `drop_last` it would train on nothing); `validate`
+  and `test` do not check it. Invalid names and sizes fail at construction.
+- Hyperparameters are saved into checkpoints with the path as a string, so checkpoints load
+  with `torch.load(weights_only=True)` (tested).
+- With `num_workers > 0` and the `spawn` start method (macOS), each worker gets a pickled
+  copy of the dataset, and a pickled memory map is a full in-memory copy of the split;
+  under `fork` (Linux) the map is shared. To revisit before R3 runs on macOS.
+
+**Run helpers** (`runs.py`):
+
+- `seed_run(settings)`: `L.seed_everything(settings.seed, workers=True)`.
+- `build_callbacks(settings, monitorable, dirpath, filename="best")`: `EarlyStopping` and
+  `ModelCheckpoint(save_top_k=1, enable_version_counter=False)` (the legacy
+  `ModelCheckpoint_V2` overrode a private method to the same effect), both on
+  `settings.monitor` with `patience` and `min_delta` from the settings. `mode` comes from
+  `MONITOR_MODES` (`accuracy_val` max; `loss_val`, `loss_train_enc` min); a monitor the
+  module does not log raises `ConfigError`. Nothing hard-codes `accuracy_val`.
+- `build_trainer(settings, callbacks=..., logger=True, **overrides)`: `accelerator`,
+  `devices`, `max_epochs`, `deterministic` from the settings, `benchmark=not deterministic`
+  (legacy `True`), `default_root_dir=output_dir`. This is the only place a device is chosen.
+
+**Tests** run on the CPU everywhere and on MPS/CUDA when available
+(`tests/_training_support.py: ACCELERATORS`): `fast_dev_run` for every module and variant
+(with/without features; stamp, `pstamps` and ResNet encoders) on the synthetic data
+(`make_synthetic`, then `prepare`; `tests/conftest.py`), followed by a test pass; a seeded
+2-epoch SimCLR run gives the same step losses and epoch loss twice (and a different seed
+does not); the scheduler steps once per epoch; selection on `loss_train_enc` and `loss_val`;
+EarlyStopping stops a flat run; every epoch and every validation pass starts from an empty
+buffer (a module whose predictions flip between passes); downstream checkpoints reload.
+Worker seeding (`num_workers=2`) is covered by the augmentation tests, not repeated here
+because spawned workers cost about 25 s on macOS.
+
+**Behaviour changes against the legacy code** (no result of a valid legacy run changes):
+
+- Loading and loaders moved from the modules to the data modules; the modules' unused
+  arguments are gone (`method`, `batch_size*`, `augmentation`, data paths; `drop_rate` of
+  the linear and ResNet modules).
+- `LinearEvalModule` and `FineTuneModule` copy the pretrained encoder, so training never
+  modifies the module passed in (legacy: the linear module held the caller's SimCLR module,
+  fine-tuning trained the caller's encoder in place). The frozen encoder stays in eval mode
+  through Lightning's `train()` calls (legacy: `eval()` inside `forward`).
+- `FineTuneModule` accepts `stamp<k>` encoders, with the `pstamps` head (legacy: no branch,
+  so the module failed). `SupervisedCEResNetModule` accepts `resnet34`; a non-ResNet name
+  raises `ValueError`.
+- Every optimizer name works in every module; unknown names raise (legacy:
+  `UnboundLocalError`).
+- Every classifier has a test loop (legacy: only linear eval and fine-tuning), and logs
+  `loss_val` (legacy: only those two).
+- SimCLR's logged `lr` is the rate the epoch trained with; the legacy value was read after
+  the epoch's scheduler step, i.e. the next epoch's rate.
+- **Kept, although odd:** `LinearEvalModule` passes `softmax(logits)` to `P_stamps_loss`,
+  which applies its own softmax (legacy `Linear_classifier.prediction_target_loss`). Fixing
+  it changes linear-evaluation results, so it is left to a later phase.
