@@ -85,6 +85,7 @@ from astro_simclr.paper_model import PAPER_CROP
 from astro_simclr.protocol.leakage import train_keep_indices
 from astro_simclr.protocol.split_runs import RunParts
 from astro_simclr.training.class_augment import FIT_COLUMNS
+from astro_simclr.training.flux_rescale import PSF_COLUMNS
 from astro_simclr.training.tiling import PermutationStream, tile_indices
 
 __all__ = [
@@ -121,9 +122,10 @@ class TensorSplit:
             context channels (:data:`IMAGE_CHANNELS`).
         features: float32 (N, 23), the kept alert features.
         labels: int64 (N,), values in ``range(5)``.
-        fits: float32 (N, 6) ``class_augment.stamp_fits`` of the crops, or None (the
-            default). Only a training split that C5 / C6 augment carries them; the
-            training batches then have a fourth element (:class:`DeviceTensorDataModule`).
+        fits: float32 (N, 6) ``class_augment.stamp_fits`` of the crops, or (N, 11) with
+            ``flux_rescale.fit_central_psf`` after them (C7), or None (the default). Only a
+            training split that C5 / C6 / C7 augment carries them; the training batches
+            then have a fourth element (:class:`DeviceTensorDataModule`).
 
     Raises:
         ValueError: if a dtype or shape is wrong, the lengths differ, N is 0 or a label is
@@ -157,11 +159,12 @@ class TensorSplit:
                     f"got {array.dtype} {array.shape}"
                 )
                 raise ValueError(msg)
+        widths = (len(FIT_COLUMNS), len(FIT_COLUMNS) + len(PSF_COLUMNS))
         if self.fits is not None and (
-            self.fits.dtype != np.float32 or self.fits.shape != (n, len(FIT_COLUMNS))
+            self.fits.dtype != np.float32 or self.fits.shape not in {(n, w) for w in widths}
         ):
             msg = (
-                f"TensorSplit.fits must be float32 ({n}, {len(FIT_COLUMNS)}), "
+                f"TensorSplit.fits must be float32 ({n}, {widths[0]}) or ({n}, {widths[1]}), "
                 f"got {self.fits.dtype} {self.fits.shape}"
             )
             raise ValueError(msg)

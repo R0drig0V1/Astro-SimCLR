@@ -66,6 +66,7 @@ from astro_simclr.training.class_augment import (
     noise_augment,
     synthetic_bogus,
 )
+from astro_simclr.training.flux_rescale import FLUX_STREAM, flux_rescale
 from astro_simclr.training.metrics import METRIC_NAMES, classification_metrics, confusion_matrix
 from astro_simclr.training.optimizers import (
     PAPER_ADAM_BETAS,
@@ -311,8 +312,9 @@ class PaperClassifierModule(ClassifierModule):
     never augmented.
 
     The class-aware augmentation of plan rows C5 and C6 (:mod:`training.class_augment`,
-    ADR 0006), after the rotation: ``synthetic_bogus`` replaces that fraction of the batch
-    with synthetic hot-pixel Bogus, ``aug_noise`` adds background noise to the other rows
+    ADR 0006), before the rotation (:meth:`augmented_batch`): ``synthetic_bogus`` replaces
+    that fraction of the batch with synthetic hot-pixel Bogus, ``aug_noise`` adds background
+    noise to the other rows
     (the difference follows the science and the template), ``aug_feature_jitter`` jitters
     the continuous features of every row; ``aug_min_r2`` excludes the stamps whose
     difference the cross-channel fit does not explain. Each has its own generator seeded
@@ -320,12 +322,20 @@ class PaperClassifierModule(ClassifierModule):
     need training batches with the stamp fits as a fourth element (a Train
     ``TensorSplit`` with ``fits``).
 
+    The transient flux rescaling of plan row C7 (:mod:`training.flux_rescale`, ADR 0007),
+    after C6 and before C5's noise: with probability ``flux_rescale`` a non-Bogus row's
+    central transient (a Gaussian fitted to the difference) becomes ``k`` times brighter,
+    ``k`` log-uniform in ``[flux_k_min, flux_k_max]`` raised to keep the row an alert, and
+    ``magpsf`` / ``sigmapsf`` follow. It needs the 11-column fits (``flux_rescale.
+    AUGMENT_COLUMNS``) in the batches, and no context channels.
+
     Raises:
         UnknownOptimizerError: if ``optimizer`` is not a known name.
         ValueError: if ``adam_betas`` is not a key of ``PAPER_ADAM_BETAS``, ``augment_seed``
             or an augmentation strength is negative, ``synthetic_bogus`` is not in [0, 1),
-            ``aug_min_r2`` not in [0, 1], ``synthetic_bogus`` is set with context channels,
-            or the variant is invalid (``build_paper_model``).
+            ``aug_min_r2`` not in [0, 1], ``flux_rescale`` not in [0, 1], not ``0 <
+            flux_k_min <= flux_k_max``, ``synthetic_bogus`` or ``flux_rescale`` is set with
+            context channels, or the variant is invalid (``build_paper_model``).
     """
 
     def __init__(
@@ -347,6 +357,9 @@ class PaperClassifierModule(ClassifierModule):
         aug_feature_jitter: float = 0.0,
         synthetic_bogus: float = 0.0,
         aug_min_r2: float = DEFAULT_MIN_R2,
+        flux_rescale: float = 0.0,
+        flux_k_min: float = 0.5,
+        flux_k_max: float = 1.5,
     ) -> None:
         super().__init__(
             beta_loss=beta_loss, lr=lr, optimizer=optimizer, with_features=with_features
@@ -362,6 +375,12 @@ class PaperClassifierModule(ClassifierModule):
             raise ValueError(f"synthetic_bogus must be in [0, 1), got {synthetic_bogus}")
         if not 0 <= aug_min_r2 <= 1:
             raise ValueError(f"aug_min_r2 must be in [0, 1], got {aug_min_r2}")
+        if not 0 <= flux_rescale <= 1:
+            raise ValueError(f"flux_rescale must be in [0, 1], got {flux_rescale}")
+        if not 0 < flux_k_min <= flux_k_max:
+            raise ValueError("flux_k_min and flux_k_max must satisfy 0 < min <= max")
+        if flux_rescale and context != "none":
+            raise ValueError("flux_rescale changes no context channels: needs context='none'")
         if synthetic_bogus and context != "none":
             raise ValueError("synthetic_bogus builds no context channels: needs context='none'")
         self.adam_betas = adam_betas
@@ -371,6 +390,9 @@ class PaperClassifierModule(ClassifierModule):
         self.aug_feature_jitter = aug_feature_jitter
         self.synthetic_bogus = synthetic_bogus
         self.aug_min_r2 = aug_min_r2
+        self.flux_rescale = flux_rescale
+        self.flux_k_min = flux_k_min
+        self.flux_k_max = flux_k_max
         self.model = build_paper_model(
             paper_arch,
             group_fields=group_fields,
@@ -397,37 +419,55 @@ class PaperClassifierModule(ClassifierModule):
         return torch.from_numpy(rng.integers(0, 4, size=n, dtype=np.int64))
 
     def training_step(self, batch: ClassifierBatch | AugmentBatch, batch_idx: int) -> torch.Tensor:
-        """One optimisation step, on rotated and C5 / C6 augmented stamps when enabled.
+        """One optimisation step, on :meth:`augmented_batch` (the batch itself when all off).
 
         Raises:
-            ValueError: if ``aug_noise`` or ``synthetic_bogus`` is on and the batch has no
-                stamp fits (a fourth element).
+            ValueError: as :meth:`augmented_batch`.
+        """
+        return self._step(self.augmented_batch(batch), "train")
+
+    def augmented_batch(self, batch: ClassifierBatch | AugmentBatch) -> ClassifierBatch:
+        """The training batch after C6 / C7 / C5, the rotation and the jitter, when enabled.
+
+        The class-aware augmentation runs **before** the rotation: the stamp fits, and C7's
+        PSF centroid in particular, describe the unrotated crop (``fit_central_psf``), so a
+        rotated off-centre transient would get its rescaled flux at the wrong place (found in
+        review of PR #22). C5 / C6 are rotation-agnostic, so the order only matters for C7.
+        Draws come from ``[augment_seed, global_step, stream]`` (rotation: ``[augment_seed,
+        global_step]``). Returns ``(images, features, one-hot targets)``; ``batch`` is not
+        modified.
+
+        Raises:
+            ValueError: if ``aug_noise``, ``synthetic_bogus`` or ``flux_rescale`` is on and
+                the batch has no stamp fits (a fourth element), or ``flux_rescale`` is on and
+                the fits have no PSF columns.
         """
         x_img, x_feat, targets = batch[0], batch[1], batch[2]
+        if self.aug_noise or self.synthetic_bogus or self.flux_rescale:
+            if len(batch) != 4:
+                msg = (
+                    "aug_noise, synthetic_bogus and flux_rescale need the stamp fits in the "
+                    "training batches: build the Train TensorSplit with fits="
+                    "class_augment.stamp_fits (plus flux_rescale.fit_central_psf for C7)"
+                )
+                raise ValueError(msg)
+            x_img, x_feat, targets = self.class_augment(x_img, x_feat, targets, batch[3])
         if self.rot90_augment:
             k = self.rotation_steps(x_img.shape[0], self.global_step).to(x_img.device)
             rotations = torch.stack([torch.rot90(x_img, j, dims=(2, 3)) for j in range(4)])
             x_img = rotations[k, torch.arange(x_img.shape[0], device=x_img.device)]
-        if self.aug_noise or self.synthetic_bogus:
-            if len(batch) != 4:
-                msg = (
-                    "aug_noise and synthetic_bogus need the stamp fits in the training "
-                    "batches: build the Train TensorSplit with fits=class_augment.stamp_fits"
-                )
-                raise ValueError(msg)
-            x_img, x_feat, targets = self.class_augment(x_img, x_feat, targets, batch[3])
         if self.aug_feature_jitter:
             rng = augment_rng(self.augment_seed, self.global_step, JITTER_STREAM)
             x_feat = jitter_features(x_feat, self.aug_feature_jitter, rng)
-        return self._step((x_img, x_feat, targets), "train")
+        return x_img, x_feat, targets
 
     def class_augment(
         self, x_img: torch.Tensor, x_feat: torch.Tensor, targets: torch.Tensor, fits: torch.Tensor
     ) -> ClassifierBatch:
-        """C6 then C5's noise on a training batch, drawn for the current global step.
+        """C6, C7, then C5's noise on a training batch, drawn for the current global step.
 
-        Synthetic Bogus rows (``synthetic_bogus``) are not noised again. Returns the new
-        ``(images, features, targets)``; the inputs are not modified.
+        Synthetic Bogus rows (``synthetic_bogus``) are not rescaled nor noised again. Returns
+        the new ``(images, features, targets)``; the inputs are not modified.
         """
         step = self.global_step
         replaced = None
@@ -435,6 +475,18 @@ class PaperClassifierModule(ClassifierModule):
             rng = augment_rng(self.augment_seed, step, SYNTHETIC_STREAM)
             x_img, x_feat, targets, replaced = synthetic_bogus(
                 x_img, x_feat, targets, fits, self.synthetic_bogus, rng, min_r2=self.aug_min_r2
+            )
+        if self.flux_rescale:
+            rng = augment_rng(self.augment_seed, step, FLUX_STREAM)
+            x_img, x_feat, _ = flux_rescale(
+                x_img,
+                x_feat,
+                targets,
+                fits,
+                self.flux_rescale,
+                (self.flux_k_min, self.flux_k_max),
+                rng,
+                skip=replaced,
             )
         if self.aug_noise:
             rng = augment_rng(self.augment_seed, step, NOISE_STREAM)
