@@ -23,7 +23,9 @@ mode               ``rot4``     ``d4``                     ``d4_shift``
 =================  ===========  =========================  ===========================
 C4 pooling         1 view       identity, flip (2)         2 x 9 offsets (18)
 (rot4, p4,
-ConvNeXt)
+ConvNeXt,
+hybrid,
+hybrid_p4)
 D4 pooling (p4m)   1 view       1 view (already D4)        1 x 9 offsets (9)
 none (single)      1 view       the 8 dihedral views       8 x 9 offsets (72)
 =================  ===========  =========================  ===========================
@@ -90,6 +92,17 @@ ARCH_SYMMETRY: Final[Mapping[str, Symmetry]] = {
     "p4": "c4",
     "p4m": "d4",
     **dict.fromkeys(CONVNEXT_ARCHS, "c4"),
+    # The conv-attention hybrids (plan row B9; hybrid_model) are exactly C4-invariant, by
+    # two routes. ``hybrid`` runs its paper trunk and attention on the 4 rotations and
+    # averages the 64-d features after fc1, as rot4 does. ``hybrid_p4`` makes one pass: the
+    # p4 trunk is pooled over its 4 orientations before the attention and the positional
+    # embeddings are tied across the C4 orbits of the 6x6 grid, so a rotated stamp only
+    # permutes the tokens, which the attention and the mean / CLS readout do not see.
+    # Neither is reflection-invariant (the tied positions are C4, not D4, orbits).
+    # tests/test_tta.py proves both: d4 TTA with these 2 views is D4-invariant only if the
+    # model is C4-invariant.
+    "hybrid": "c4",
+    "hybrid_p4": "c4",
 }
 
 #: The crop offsets ``(dy, dx)`` of ``d4_shift``, row-major (the centre is the 5th).

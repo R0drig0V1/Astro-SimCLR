@@ -2488,6 +2488,9 @@ randomness, so no random stream). Modes `TTA_MODES = ("rot4", "d4", "d4_shift")`
   cyclic-pooling: its forward averages the 64-d **features** of the 4 rotations after fc1,
   before the head. The ConvNeXt rows pool their 4 rotations the same way, `p4` its 4
   orientations, `p4m` the 8 of D4 (`ARCH_SYMMETRY`: `c4`, `d4` or `none` for `single`).
+  The B9 hybrids are `c4`: `hybrid` averages the features of its 4 rotations, and
+  `hybrid_p4` pools its p4 orientations before the attention, with positional embeddings
+  tied across C4, so a rotation only permutes its tokens (neither is reflection-invariant).
   A TTA view goes through the whole model, so its extra views are averaged at the
   **logit** level, outside it (`combine_view_logits`: the mean of the views' logits; the
   caller applies the softmax). Re-feeding the rotations to a C4-pooled model would only
@@ -2496,7 +2499,7 @@ randomness, so no random stream). Modes `TTA_MODES = ("rot4", "d4", "d4_shift")`
 
   | Model symmetry | `rot4` | `d4` | `d4_shift` |
   |---|---|---|---|
-  | `c4` (rot4, p4, ConvNeXt) | 1 view | identity, flip (2) | 2 × 9 offsets (18) |
+  | `c4` (rot4, p4, ConvNeXt, hybrid, hybrid_p4) | 1 view | identity, flip (2) | 2 × 9 offsets (18) |
   | `d4` (p4m) | 1 view | 1 view | 1 × 9 offsets (9) |
   | `none` (single) | 1 view | the 8 dihedral views | 8 × 9 offsets (72) |
 

@@ -140,7 +140,9 @@ def test_rot4_is_the_models_own_forward() -> None:
     assert torch.equal(got, expected)
 
 
-@pytest.mark.parametrize("arch", ["rot4", "single", "p4", "p4m", "convnext_atto"])
+@pytest.mark.parametrize(
+    "arch", ["rot4", "single", "p4", "p4m", "convnext_atto", "hybrid", "hybrid_p4"]
+)
 def test_d4_is_invariant_under_every_dihedral_transform(arch: str) -> None:
     model = _model(arch)
     side = 63 if arch.startswith("convnext") else 21
