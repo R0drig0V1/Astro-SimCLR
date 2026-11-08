@@ -2,7 +2,7 @@
 
 The corpus is pretraining data for the stamp classifier (Carrasco-Davis et al. 2021, CD21),
 so it keeps what that classifier sees: **the first alert of an object**, as a full 63x63
-science / reference / difference triplet. ADR 0016 records the rules and their sources.
+science / reference / difference triplet. ADR 0019 records the rules and their sources.
 
 **First detection** (:func:`first_detection_failure`): the object's first alert by ``oid``
 (phase 5, task 5.1a). CD21 uses "only the first alert of an astronomical object" (Sec. 1),

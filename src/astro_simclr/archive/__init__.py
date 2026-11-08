@@ -8,7 +8,7 @@ kept), one shard per night. It never downloads anything: the tarballs are fetche
 separately, after the user approves the bulk download.
 
 Submodules (``docs/data.md`` "Archive corpus" has the layout and the commands,
-``docs/architecture.md`` the design, ADR 0016 the decisions):
+``docs/architecture.md`` the design, ADR 0019 the decisions):
 
 - :mod:`~astro_simclr.archive.stream`: one tarball read as a stream, hashed and bounded;
 - :mod:`~astro_simclr.archive.selection`: the first-alert rules and the exclusions;

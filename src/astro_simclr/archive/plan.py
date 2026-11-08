@@ -1,6 +1,6 @@
 """The night sampling plan of the archive corpus, and its size estimate (``plan-archive-nights``).
 
-**Rule** (seeded, deterministic; ADR 0016). For each calendar year from the archive's first
+**Rule** (seeded, deterministic; ADR 0019). For each calendar year from the archive's first
 night (2018-06-01) to the last one considered, the year's nights within that range are cut
 into ``k`` contiguous strata of near-equal length (``k`` = ``labelled_per_year`` for the
 labelled era 2018-2020, ``later_per_year`` after it), and ``1 + spares`` different nights

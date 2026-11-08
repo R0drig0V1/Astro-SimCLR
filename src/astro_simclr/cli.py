@@ -1328,7 +1328,7 @@ def _add_archive_commands(commands: argparse._SubParsersAction[argparse.Argument
         "'-' reads one night from stdin, so a download can be piped in and no tarball is "
         "stored), parse every avro alert with size limits, keep the first alerts of "
         "objects with 63x63 cutouts that are not excluded, and write them as one shard per "
-        "night under OUT/nights (docs/data.md, 'Archive corpus'; ADR 0016). A complete "
+        "night under OUT/nights (docs/data.md, 'Archive corpus'; ADR 0019). A complete "
         "night is skipped; a night cut short is redone. Downloads nothing.",
     )
     ingest.add_argument(
@@ -1390,7 +1390,7 @@ def _add_archive_commands(commands: argparse._SubParsersAction[argparse.Argument
         help="the seeded night sampling plan of the archive corpus and its size estimate",
         description="Per year, k strata of nights; a primary and SPARES spare nights drawn "
         "in each from the seed, the H1 (2018-2022) and ablation uses, and the pilot nights "
-        "(ADR 0016); then the stamps, storage and download of the primaries, assumed or "
+        "(ADR 0019); then the stamps, storage and download of the primaries, assumed or "
         "measured on an ingested corpus. Downloads nothing.",
     )
     plan.add_argument("--seed", type=int, default=0)

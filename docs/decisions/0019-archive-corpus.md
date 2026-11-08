@@ -1,5 +1,5 @@
-<!-- ADR 0016: how ingest-archive turns ZTF archive tarballs into the unlabelled corpus, and why. -->
-# 0016: The archive corpus: first alerts by oid, no candidate cuts, night shards, a seeded plan
+<!-- ADR 0019: how ingest-archive turns ZTF archive tarballs into the unlabelled corpus, and why. -->
+# 0019: The archive corpus: first alerts by oid, no candidate cuts, night shards, a seeded plan
 
 - **Status:** accepted (2026-11-08, phase 5, task 5.1a; code only, nothing downloaded)
 - **Reviewed by:** a `code-reviewer` pass on 2026-11-08. Its findings are fixed and tested:

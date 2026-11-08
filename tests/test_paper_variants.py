@@ -64,6 +64,8 @@ _FLAG_DEFAULTS: dict[str, object] = {
     "group_fields": None,
     "context": "none",
     "rot90_augment": False,
+    # The features the head reads (ADR 0016).
+    "feature_set": "all",
     # Plan rows C5 and C6 (ADR 0006).
     "aug_noise": 0.0,
     "aug_feature_jitter": 0.0,

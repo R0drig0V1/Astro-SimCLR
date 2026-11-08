@@ -572,7 +572,7 @@ class):
 The unlabelled pretraining corpus comes from the ZTF public alert archive
 (`https://ztf.uw.edu/alerts/public/`): one `ztf_public_YYYYMMDD.tar.gz` per night, one avro
 alert per member. `astro-simclr ingest-archive` turns tarballs into raw 63×63 stamps of
-first alerts, one shard per night. Code: `src/astro_simclr/archive/`; decisions: ADR 0016.
+first alerts, one shard per night. Code: `src/astro_simclr/archive/`; decisions: ADR 0019.
 **Nothing is downloaded by the code**, and the bulk download waits for the user's
 approval (and for the 5.0b go/no-go).
 
@@ -660,7 +660,7 @@ uv run astro-simclr archive-summary DIR [--verify] [--json]   # counts, objects,
 
 ### Sampling plan and budget
 
-`plan-archive-nights [--seed 0] [--out FILE]` draws the nights (ADR 0016, item 7):
+`plan-archive-nights [--seed 0] [--out FILE]` draws the nights (ADR 0019, item 7):
 - **Strata:** each year from 2018-06-01 is cut into equal strata, 24 per year in
   2018–2020 and 8 per year after.
 - **Draws:** each stratum gets a primary night and 2 spares, from
