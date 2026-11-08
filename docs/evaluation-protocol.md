@@ -98,6 +98,14 @@ Other details of the gate:
 
 Exit codes: 0 for PASS (either tier) or REPORT, 1 for FAIL.
 
+The task 2.4 replication runs (5 seeds with features, 5 without) are archived in
+`results/phase2/replication/`: each run's `metrics.json`, confusion matrices and per-stamp
+predictions (the baseline for later paired comparisons), and the gate's output. Its
+`README.md` has the provenance, the per-seed table and the commands. Runs made before task
+2.5-models lack `paper_arch`, `context` and `rot90_augment` in their config, so the gate
+prints a WARN line for each; their defaults are the expected values, and the verdict is
+unchanged.
+
 ## Comparing two variants: `compare-variants` (report)
 
 ```bash

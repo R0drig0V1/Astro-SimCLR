@@ -1,0 +1,15 @@
+CD21: Carrasco-Davis et al. 2021 stamp classifier, paper replication (test accuracy)
+  WARN: results/phase2/replication/with-features/seed-0 differs from the CD21 config: paper_arch=None (expected 'rot4'), context=None (expected 'none'), rot90_augment=None (expected False)
+  WARN: results/phase2/replication/with-features/seed-1 differs from the CD21 config: paper_arch=None (expected 'rot4'), context=None (expected 'none'), rot90_augment=None (expected False)
+  WARN: results/phase2/replication/with-features/seed-2 differs from the CD21 config: paper_arch=None (expected 'rot4'), context=None (expected 'none'), rot90_augment=None (expected False)
+  WARN: results/phase2/replication/with-features/seed-3 differs from the CD21 config: paper_arch=None (expected 'rot4'), context=None (expected 'none'), rot90_augment=None (expected False)
+  WARN: results/phase2/replication/with-features/seed-4 differs from the CD21 config: paper_arch=None (expected 'rot4'), context=None (expected 'none'), rot90_augment=None (expected False)
+  test accuracy: 0.9428 ± 0.0041 (ddof=1; 0.0037 with ddof=0, n=5)
+  paper:         0.941 ± 0.004 (ddof=0, n=5; about 0.0045 with ddof=1)
+  |difference| = 0.0018 (faithful <= 0.005, acceptable <= 0.01)
+  SN test recall: 0.8720 ± 0.0148 (n=5); needs 0.87 ± 0.04 -> ok
+  val_acc_best:   0.9428 ± 0.0027 (n=5); needs 0.950 ± 0.01 -> ok
+  M1 oracle: passed
+  best_step: [18930, 4210, 4540, 4430, 6330]
+  note: a perfect replication misses the faithful tier about 8 % of the time; one confirmatory 5-seed rerun is allowed (plan, task 2.3)
+CD21: PASS (faithful)
