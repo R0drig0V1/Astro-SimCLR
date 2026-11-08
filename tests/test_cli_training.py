@@ -240,6 +240,7 @@ def test_outputs_stay_under_the_output_dir(runs: dict[str, Path]) -> None:
     assert names == {
         "checkpoints",
         "lightning_logs",
+        "manifest.json",  # task A1
         "metrics.json",
         "confusion_matrix_val.png",
         "confusion_matrix_test.png",

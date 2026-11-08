@@ -38,7 +38,9 @@ sample standard deviation (ddof=1), as in the legacy tables.
   replication misses the faithful tier about 8 % of the time, so the plan allows one
   confirmatory 5-seed rerun (judged as its own set). The gate is defined on exactly 5
   seeds: another count gives REPORT (provisional), never PASS. The without-features runs
-  (``with_features: false``) are compared with 0.883 ± 0.006 and only reported (advisory).
+  (``with_features: false``, or ``feature_set: none``; ADR 0016) are compared with
+  0.883 ± 0.006 and only reported (advisory). A ``feature_set: position`` run counts as
+  with features, and its WARN line names the deviation.
 
 Each run's resolved config is also compared with the distinguishing settings of its
 reference config (``Reference.expected``: dataset, features, model, optimizer, protocol);
@@ -49,9 +51,10 @@ the behaviour the run had: the 2.5 flags (ADR 0005, ADR 0006) default to the fai
 so the replication runs of task 2.4 no longer warn about them.
 
 Every gate also prints a WARN line when the runs come from different machines or builds
-(``metrics.json["machine"]``, :func:`machine_signature`), or with different effective
-float32 precisions (ADR 0010): the runs of one comparison use the same machine, build and
-precision (plan, phase 2, "Machines").
+(``metrics.json["machine"]``, :func:`machine_signature`), with different effective
+float32 precisions (ADR 0010), or with different training engines (task A1): the runs of
+one comparison use the same machine, build, precision and engine (plan, phase 2,
+"Machines").
 
 The result is ``PASS`` (for CD21 with its tier), ``FAIL`` or ``REPORT``; :func:`exit_code`
 maps it to 0, 1, 0.
@@ -283,18 +286,21 @@ def load_run(run_dir: Path) -> dict[str, Any]:
 
 
 def machine_signature(run: dict[str, Any]) -> tuple[object, ...] | None:
-    """What must match between runs of one comparison: device type, GPU, torch, CUDA and
-    the effective float32 precision (``ieee`` or ``tf32``; ADR 0010).
+    """What must match between runs of one comparison: device type, GPU, torch, CUDA, the
+    effective float32 precision (``ieee`` or ``tf32``; ADR 0010) and the training engine
+    (``lightning`` or ``plain``; plan task A1, ADR 0015).
 
     Read from ``metrics.json["machine"]`` (written since task 2.3); ``None`` if absent. A
     run written before ADR 0010 has no ``fp32_precision`` and reads as ``ieee``: every such
-    run ran on hardware without TF32 (the GTX 1050, CPU or MPS; ``results/``).
+    run ran on hardware without TF32 (the GTX 1050, CPU or MPS; ``results/``). A run written
+    before task A1 has no ``engine`` and reads as ``lightning``, the only engine there was.
+    So a new-engine variant is compared only with a baseline rerun on the new engine.
     """
     machine = run.get("machine")
     if not isinstance(machine, dict):
         return None
     hardware = tuple(machine.get(key) for key in ("device", "gpu", "torch", "cuda"))
-    return (*hardware, machine.get("fp32_precision", "ieee"))
+    return (*hardware, machine.get("fp32_precision", "ieee"), machine.get("engine", "lightning"))
 
 
 def read_oracle_report(path: Path) -> bool:
@@ -416,12 +422,16 @@ def _machine_warnings(runs: Sequence[dict[str, Any]]) -> list[str]:
         return []
     detail = "; ".join(sorted(map(str, signatures)))
     return [
-        f"  WARN: the runs come from different machines, builds or float32 precisions: {detail}"
+        "  WARN: the runs come from different machines, builds, float32 precisions or "
+        f"engines: {detail}"
     ]
 
 
 def _with_features(run: dict[str, Any]) -> bool:
-    return run.get("config", {}).get("with_features") is not False
+    """Whether the run's model read features: ``with_features`` and a ``feature_set`` not
+    ``none`` (ADR 0016; a key missing from an older run reads as its default)."""
+    config = run.get("config", {})
+    return config.get("with_features") is not False and config.get("feature_set") != "none"
 
 
 def _accuracies(runs: Sequence[dict[str, Any]], key: str) -> list[float] | None:

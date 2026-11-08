@@ -122,13 +122,14 @@ IDENTITY_KEYS: Final[Mapping[str, str]] = {
 #: hold it keep the hash they would have without the field. Two uses:
 #:
 #: - a field added after canonical version 1, at the value that reproduces the behaviour
-#:   before it (none yet), so existing hashes and recorded manifests stay valid;
+#:   before it, so existing hashes and recorded manifests stay valid: ``feature_set: all``
+#:   (ADR 0016; every feature, as before the field);
 #: - ``num_workers`` at 0. With DataLoader workers, Lightning seeds each worker, so the
 #:   worker count decides which augmentations are drawn: 0, 2 and 3 workers are three
 #:   different runs, and a false run-id match would contaminate a comparison, while a
 #:   missed one only costs a rerun. At 0 (the default, and what the carrasco2021 schedule
 #:   requires) it is left out, so the phase-2 and 2.5 hashes do not depend on the field.
-HASH_NEUTRAL_DEFAULTS: Final[Mapping[str, object]] = {"num_workers": 0}
+HASH_NEUTRAL_DEFAULTS: Final[Mapping[str, object]] = {"num_workers": 0, "feature_set": "all"}
 
 _EXCLUDED: Final = frozenset(NON_SEMANTIC_KEYS) | frozenset(IDENTITY_KEYS)
 

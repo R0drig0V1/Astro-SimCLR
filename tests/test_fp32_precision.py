@@ -137,6 +137,7 @@ def test_machine_signature_holds_the_effective_policy() -> None:
         "2.14.0",
         None,
         "tf32",
+        "lightning",
     )
     # A run written before ADR 0010 ran without TF32: it reads as ieee.
     old = machine_signature({"machine": MACHINE})

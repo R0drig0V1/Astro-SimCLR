@@ -1,5 +1,5 @@
 <!-- Phase 5 of the roadmap (docs/phases/README.md); owned by the integrator. Reviewed (round 1,
-docs/plan-reviews/2026-11-08-phase-5.md); amendments applied. H1 awaits the user's approval. -->
+docs/plan-reviews/2026-11-08-phase-5.md); amendments applied. H1 decided under delegation (2026-11-08). -->
 # Phase 5: self-supervised pretraining (SimCLR, ResNet first)
 
 ## Goal
@@ -7,7 +7,7 @@ docs/plan-reviews/2026-11-08-phase-5.md); amendments applied. H1 awaits the user
 The user's goal (2026-11-08): self-supervised pretraining with a standard ResNet encoder
 first, then something custom, on the plain-PyTorch platform of phase 4.
 
-**Pre-registered question** (task 5.0; H1 is proposed and awaits the user's approval). Does
+**Pre-registered question** (task 5.0). H1 was decided by the integrator on 2026-11-08, under the user's explicit delegation ("take the best decision possible"). The user may still revise it before any pretraining run. Does
 SimCLR pretraining on unlabelled ZTF alert stamps improve classification with few labels and
 without the alert features, against the **strongest** baseline?
 
@@ -23,7 +23,7 @@ below about 100k training alerts. A dated literature search replaces any novelty
 
 ### 5.0 Pre-registration (an ADR, merged before any pretraining run)
 
-**H1 (primary), proposed:**
+**H1 (primary), decided (delegated, 2026-11-08):**
 - **Benchmark and metric:** R5 test, with the reweighted macro-F1. If R5 slips, the CD21
   test balanced accuracy.
 - **Setting:** images only, the lowest label budget, fine-tuned.
@@ -156,7 +156,7 @@ tier 3. Phase 5 does not wait for 4.6–4.8.
   Asteroid come from CD21 Validation/Test only (phase 3 to confirm).
 
 ### 5.5 Later, gated by H1 (a separate phase)
-- Custom encoders: p4/p4m and multi-scale.
+- Custom encoders: p4/p4m and multi-scale; a **ViT-Ti with patch 7** (a 9×9 grid at 63 px) pretrained on 1–5M stamps (SimCLR with MoCo-v3 stabilisation for a like-for-like comparison; DINO or iBOT as ViT-native alternatives; MAE only with centre-aware masking). This is a 5090 job.
 - SupCon, as a 100 %-label arm.
 - Ablations: debiased contrastive loss, and multi-epoch positives (two alerts of one object
   as a pair).
