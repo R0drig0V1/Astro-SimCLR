@@ -12,7 +12,8 @@ to exactly one finished attempt, and fails, listing every problem at once, when:
   one that ended last (a legacy attempt has no end time, so it needs ``use``);
 - two copies of one attempt (one key) disagree on their ``metrics.json``;
 - the chosen runs mix machine signatures (device, GPU, torch, CUDA, effective float32
-  precision; ``reference.machine_signature``, ADR 0010), engines (task A1) or numerics
+  precision: ``reference.machine_signature`` without its engine; ADR 0010), engines (the
+  record's, task A1) or numerics
   epochs (ADR 0015; a legacy run's is unknown), unless ``allow_mixed`` names that kind;
 - the chosen runs were trained on different data: two data SHA-256s, or two source pickle
   SHA-256s. This is never allowed.
@@ -23,7 +24,7 @@ Matching finished runs that are outside the cells (another seed, fold, machine o
 file) are not used; the report counts them, so that a spec run on a subset of the seeds
 is visible.
 
-A copy of an attempt in another directory (the same :attr:`RunRecord.key`) is the same
+A copy of an attempt in another directory (the same :attr:`IndexedRun.key`) is the same
 attempt: it is listed, not counted twice.
 """
 
@@ -39,7 +40,7 @@ from typing import Final, Literal, get_args
 
 from astro_simclr.reference import machine_signature
 from astro_simclr.registry.home import RegistryError
-from astro_simclr.registry.readers import RunRecord
+from astro_simclr.registry.readers import IndexedRun
 from astro_simclr.registry.spec_view import ComparisonPlan, PlannedCell
 
 __all__ = [
@@ -78,13 +79,13 @@ class Resolution:
     """A resolved comparison: one attempt per cell, its copies, and what was left out."""
 
     plan: ComparisonPlan
-    chosen: Mapping[PlannedCell, RunRecord]
-    copies: Mapping[PlannedCell, tuple[RunRecord, ...]]
-    outside: tuple[RunRecord, ...]
+    chosen: Mapping[PlannedCell, IndexedRun]
+    copies: Mapping[PlannedCell, tuple[IndexedRun, ...]]
+    outside: tuple[IndexedRun, ...]
     notes: tuple[str, ...]
 
 
-def _matches_use(record: RunRecord, token: str) -> bool:
+def _matches_use(record: IndexedRun, token: str) -> bool:
     if token == record.key or str(record.run_dir) == token:
         return True
     try:
@@ -95,17 +96,17 @@ def _matches_use(record: RunRecord, token: str) -> bool:
     return len(token) >= _MIN_PREFIX and record.key.startswith(token)
 
 
-def _end_time(record: RunRecord) -> datetime | None:
+def _end_time(record: IndexedRun) -> datetime | None:
     return None if record.ended_at is None else datetime.fromisoformat(record.ended_at)
 
 
 def _candidates(
-    plan: ComparisonPlan, records: Iterable[RunRecord]
-) -> tuple[dict[PlannedCell, list[RunRecord]], list[RunRecord]]:
+    plan: ComparisonPlan, records: Iterable[IndexedRun]
+) -> tuple[dict[PlannedCell, list[IndexedRun]], list[IndexedRun]]:
     arm_of = {sha: arm for arm, sha in plan.arms.items()}
     wanted = set(plan.cells)
-    candidates: dict[PlannedCell, list[RunRecord]] = defaultdict(list)
-    outside: list[RunRecord] = []
+    candidates: dict[PlannedCell, list[IndexedRun]] = defaultdict(list)
+    outside: list[IndexedRun] = []
     for record in records:
         arm = arm_of.get(record.config_sha256)
         if record.command != plan.command or arm is None or record.status != "finished":
@@ -123,8 +124,8 @@ def _candidates(
     return candidates, outside
 
 
-def _by_key(records: Sequence[RunRecord]) -> dict[str, list[RunRecord]]:
-    out: dict[str, list[RunRecord]] = defaultdict(list)
+def _by_key(records: Sequence[IndexedRun]) -> dict[str, list[IndexedRun]]:
+    out: dict[str, list[IndexedRun]] = defaultdict(list)
     for record in sorted(records, key=lambda r: str(r.run_dir)):
         out[record.key].append(record)
     return out
@@ -132,7 +133,7 @@ def _by_key(records: Sequence[RunRecord]) -> dict[str, list[RunRecord]]:
 
 def _choose(
     cell: PlannedCell,
-    attempts: dict[str, list[RunRecord]],
+    attempts: dict[str, list[IndexedRun]],
     selected: str | None,
     policy: AttemptPolicy,
     problems: list[str],
@@ -159,7 +160,7 @@ def _choose(
 
 
 def _selections(
-    candidates: Mapping[PlannedCell, list[RunRecord]], use: Sequence[str], problems: list[str]
+    candidates: Mapping[PlannedCell, list[IndexedRun]], use: Sequence[str], problems: list[str]
 ) -> dict[PlannedCell, str]:
     selected: dict[PlannedCell, str] = {}
     for token in use:
@@ -184,18 +185,24 @@ def _selections(
     return selected
 
 
+def _machine(record: IndexedRun) -> str:
+    """The machine signature without its engine, which ``engines`` checks on its own."""
+    if record.machine is None:
+        return repr(None)
+    machine = {key: value for key, value in record.machine.items() if key != "engine"}
+    signature = machine_signature({"machine": machine})
+    return repr(None if signature is None else signature[:-1])
+
+
 def _check_mixed(
-    chosen: Mapping[PlannedCell, RunRecord],
+    chosen: Mapping[PlannedCell, IndexedRun],
     allow_mixed: frozenset[Mixable],
     problems: list[str],
     notes: list[str],
 ) -> None:
     records = list(chosen.values())
     kinds: dict[Mixable, Counter[str]] = {
-        "machines": Counter(
-            repr(machine_signature({"machine": None if r.machine is None else dict(r.machine)}))
-            for r in records
-        ),
+        "machines": Counter(_machine(r) for r in records),
         "engines": Counter(r.engine for r in records),
         "numerics": Counter(
             "unknown (legacy)" if r.numerics_epoch is None else str(r.numerics_epoch)
@@ -224,7 +231,7 @@ def _check_mixed(
 
 def resolve(
     plan: ComparisonPlan,
-    records: Iterable[RunRecord],
+    records: Iterable[IndexedRun],
     *,
     use: Sequence[str] = (),
     attempts: AttemptPolicy = "error",
@@ -240,8 +247,8 @@ def resolve(
     notes: list[str] = []
     candidates, outside = _candidates(plan, records)
     selected = _selections(candidates, use, problems)
-    chosen: dict[PlannedCell, RunRecord] = {}
-    copies: dict[PlannedCell, tuple[RunRecord, ...]] = {}
+    chosen: dict[PlannedCell, IndexedRun] = {}
+    copies: dict[PlannedCell, tuple[IndexedRun, ...]] = {}
     for cell in plan.cells:
         by_key = _by_key(candidates.get(cell, []))
         if not by_key:
@@ -275,7 +282,7 @@ def _stage_rank(metric: str) -> tuple[int, str]:
     return ({"val": 0, "test": 2}.get(stage, 1), metric)
 
 
-def default_metrics(records: Iterable[RunRecord]) -> list[str]:
+def default_metrics(records: Iterable[IndexedRun]) -> list[str]:
     """The balanced accuracy and macro-F1 of every stage all ``records`` have (val first)."""
     common: set[str] | None = None
     for record in records:

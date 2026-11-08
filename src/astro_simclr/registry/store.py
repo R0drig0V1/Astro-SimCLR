@@ -12,7 +12,7 @@ Tables (version 1):
 
 - ``roots``: the directories ``reindex`` scans, remembered so that a bare ``reindex``
   rescans them;
-- ``runs``: one row per run directory (:class:`~astro_simclr.registry.readers.RunRecord`;
+- ``runs``: one row per run directory (:class:`~astro_simclr.registry.readers.IndexedRun`;
   ``split`` as text, ``'screen'`` or the fold's digits; mappings as canonical JSON);
 - ``artefacts``: every file of a run directory, with its kind
   (``runs.layout.classify_artefact``), size, mtime and SHA-256 (presence is the row);
@@ -31,7 +31,7 @@ from types import MappingProxyType
 from typing import Any, Final
 
 from astro_simclr.registry.home import RegistryError
-from astro_simclr.registry.readers import RunRecord
+from astro_simclr.registry.readers import IndexedRun
 from astro_simclr.runs.canonical import canonical_json
 from astro_simclr.runs.identity import SCREEN, SplitPart
 
@@ -224,7 +224,7 @@ def _json(value: object) -> str:
     return canonical_json(value)
 
 
-def record_row(record: RunRecord, root: Path, indexed_at: str) -> dict[str, object]:
+def record_row(record: IndexedRun, root: Path, indexed_at: str) -> dict[str, object]:
     """``record`` as a ``runs`` row (named parameters)."""
     return {
         "run_dir": str(record.run_dir),
@@ -277,9 +277,9 @@ def insert_run(conn: sqlite3.Connection, row: dict[str, object]) -> None:
     conn.execute(_INSERT_RUN, row)
 
 
-def _record(row: sqlite3.Row) -> RunRecord:
+def _record(row: sqlite3.Row) -> IndexedRun:
     machine: Any = None if row["machine_json"] is None else json.loads(row["machine_json"])
-    return RunRecord(
+    return IndexedRun(
         run_dir=Path(row["run_dir"]),
         source=row["source"],
         legacy=bool(row["legacy"]),
@@ -312,7 +312,7 @@ def _record(row: sqlite3.Row) -> RunRecord:
     )
 
 
-def load_records(conn: sqlite3.Connection) -> list[RunRecord]:
+def load_records(conn: sqlite3.Connection) -> list[IndexedRun]:
     """Every indexed record, ordered by run directory."""
     conn.row_factory = sqlite3.Row
     try:

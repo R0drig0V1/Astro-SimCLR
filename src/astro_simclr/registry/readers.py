@@ -1,4 +1,4 @@
-"""One :class:`RunRecord` per run directory: from its manifest, or backfilled (legacy).
+"""One :class:`IndexedRun` per run directory: from its manifest, or backfilled (legacy).
 
 A run directory holds ``manifest.json`` (every run since task A1), or only
 ``metrics.json`` (the archived runs: ``results/phase2/**``, ``~/runs`` on the GPU
@@ -35,7 +35,7 @@ A manifest run is ``flat-1`` too (manifest format 1 records the flat view); its 
 hash is the one the manifest records, which its reader has already verified.
 
 Two directories can hold the same attempt: ``results/phase2/replication`` is a byte-exact
-copy of ``~/runs/replication``. :attr:`RunRecord.key` is the same for both (the run id
+copy of ``~/runs/replication``. :attr:`IndexedRun.key` is the same for both (the run id
 and attempt; for a legacy run, the ``metrics.json`` SHA-256), so a comparison counts one
 attempt, not two.
 """
@@ -62,8 +62,8 @@ __all__ = [
     "CONFIG_FORMATS",
     "DEFAULT_CONFIG_FORMAT",
     "FLAT_1_FILLS",
+    "IndexedRun",
     "RecordError",
-    "RunRecord",
     "Source",
     "is_run_dir",
     "lower_flat_1",
@@ -183,7 +183,7 @@ def metrics_summary(metrics: Mapping[str, Any]) -> dict[str, float]:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class RunRecord:
+class IndexedRun:
     """One run directory as the registry indexes it (module docstring).
 
     ``run_dir`` is absolute. ``config`` is the config as recorded (not lowered);
@@ -259,7 +259,7 @@ def _preset(metrics: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _from_manifest(run_dir: Path) -> RunRecord:
+def _from_manifest(run_dir: Path) -> IndexedRun:
     try:
         manifest = read_manifest(run_dir / MANIFEST_FILE)
     except ManifestError as err:
@@ -269,7 +269,7 @@ def _from_manifest(run_dir: Path) -> RunRecord:
     if (run_dir / METRICS_FILE).is_file():
         metrics, metrics_sha = _read_metrics(run_dir / METRICS_FILE)
     identity = manifest.identity
-    return RunRecord(
+    return IndexedRun(
         run_dir=run_dir,
         source="manifest",
         legacy=False,
@@ -337,7 +337,7 @@ def _legacy_machine_class(machine: Mapping[str, Any] | None) -> str | None:
     return default_machine_class(device, gpu, processor)
 
 
-def _from_metrics(run_dir: Path) -> RunRecord:
+def _from_metrics(run_dir: Path) -> IndexedRun:
     metrics, metrics_sha = _read_metrics(run_dir / METRICS_FILE)
     command, seed, config = metrics.get("command"), metrics.get("seed"), metrics.get("config")
     if not isinstance(command, str) or not isinstance(config, dict):
@@ -356,7 +356,7 @@ def _from_metrics(run_dir: Path) -> RunRecord:
     split, splits_sha = _legacy_split(metrics)
     machine = metrics.get("machine")
     machine = machine if isinstance(machine, dict) else None
-    return RunRecord(
+    return IndexedRun(
         run_dir=run_dir,
         source="metrics",
         legacy=True,
@@ -389,7 +389,7 @@ def _from_metrics(run_dir: Path) -> RunRecord:
     )
 
 
-def read_run_dir(run_dir: Path) -> RunRecord:
+def read_run_dir(run_dir: Path) -> IndexedRun:
     """The record of the run directory ``run_dir`` (made absolute; module docstring).
 
     Raises:

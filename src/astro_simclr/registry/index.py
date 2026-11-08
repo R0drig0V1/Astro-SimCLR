@@ -35,7 +35,7 @@ from typing import Final
 
 from astro_simclr.data.files import sha256_file
 from astro_simclr.registry.home import RegistryError
-from astro_simclr.registry.readers import RecordError, RunRecord, is_run_dir, read_run_dir
+from astro_simclr.registry.readers import IndexedRun, RecordError, is_run_dir, read_run_dir
 from astro_simclr.registry.spec_view import SpecUnavailableError, load_spec_file
 from astro_simclr.registry.store import Artefact, insert_run, record_row, transaction
 from astro_simclr.runs.layout import classify_artefact
@@ -121,7 +121,7 @@ def _scan_root(
     report: ReindexReport,
     hasher: Callable[[Path], str],
 ) -> None:
-    found: list[tuple[RunRecord, list[Artefact]]] = []
+    found: list[tuple[IndexedRun, list[Artefact]]] = []
     for run_dir in find_run_dirs(root):
         try:
             record = read_run_dir(run_dir)

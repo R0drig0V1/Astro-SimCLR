@@ -5,11 +5,14 @@
 - **Status:** accepted (2026-11-08, phase 4, task A2)
 - **Implemented by:** `src/astro_simclr/registry/` (`home.py`, `readers.py`, `store.py`,
   `index.py`, `spec_view.py`, `compare.py`, `parser.py`, `commands.py`); the `runs`
-  subcommand of `cli.py`
+  subcommand of `cli.py`. Its record of a run directory is `IndexedRun`, not to be confused
+  with task A1's writer `runs.record.RunRecord`
 - **Checked by:** `tests/test_registry_readers.py` (on the archived
   `results/phase2/replication/**/metrics.json`), `tests/test_registry_store.py`,
   `tests/test_registry_index.py`, `tests/test_registry_compare.py`,
-  `tests/test_registry_cli.py`, with the builders of `tests/_registry_support.py`
+  `tests/test_registry_cli.py`, with the builders of `tests/_registry_support.py`;
+  `tests/test_cli_training.py` (`test_the_registry_reads_what_runs_write`: the directories
+  task A1's `run_command` writes index as manifest runs)
 
 ## Context
 
@@ -91,8 +94,9 @@ experiment-spec format, in parallel.
    - a cell has more than one attempt without an explicit choice: `--use KEY` names the
      attempt, or `--attempts latest` takes the one that ended last (legacy runs have no end
      time, so they need `--use`);
-   - the chosen runs mix machine signatures (`reference.machine_signature`: device, GPU,
-     torch, CUDA, effective float32 precision), engines (plan A1) or numerics epochs (a
+   - the chosen runs mix machine signatures (`reference.machine_signature` without its
+     engine: device, GPU, torch, CUDA, effective float32 precision), engines (plan A1;
+     checked once, on the record's engine) or numerics epochs (a
      legacy run's is unknown), unless `--allow-mixed machines|engines|numerics` says so;
    - two data SHA-256s or two source-pickle SHA-256s appear among the chosen runs. This
      is never allowed.

@@ -1761,7 +1761,7 @@ fast and the handlers (`commands.py`) load on use.
 - **`home`**: `astro_simclr_home()`, `registry_path()` (refuses a path inside a git working
   tree), `specs_dir()` (`$ASTRO_SIMCLR_HOME/specs`, where A3's queue writes accepted specs).
   `RegistryError` is the package's error (exit 1).
-- **`readers`**: `read_run_dir(path)` returns a `RunRecord`:
+- **`readers`**: `read_run_dir(path)` returns an `IndexedRun`:
   - from `manifest.json` (validated by `runs.manifest.read_manifest`), plus the metrics of
     `metrics.json` once finished;
   - or, backfilled from `metrics.json` alone, `legacy: true`, with null run id, attempt,
@@ -1773,7 +1773,7 @@ fast and the handlers (`commands.py`) load on use.
   (each the pre-field behaviour, with its reason) and refuses unknown or unfillable keys, so
   the archived runs hash like today's presets. `metrics_summary` keeps
   `<stage>.{accuracy,balanced_accuracy,macro_f1}`, `monitor_best`, `best_step`,
-  `last_step` and `seconds_per_step`. `RunRecord.key` is `<run id[:16]>-a<attempt>` or
+  `last_step` and `seconds_per_step`. `IndexedRun.key` is `<run id[:16]>-a<attempt>` or
   `legacy-<metrics SHA[:16]>`; copies of an attempt share it.
 - **`store`**: `open_registry(path)` creates and migrates the file (`SCHEMA_VERSION` in
   `PRAGMA user_version`; `MIGRATIONS` append-only; a newer file is refused). Tables:

@@ -31,7 +31,7 @@ from astro_simclr.registry.compare import (
     resolution_to_plain,
     resolve,
 )
-from astro_simclr.registry.readers import RunRecord, read_run_dir
+from astro_simclr.registry.readers import IndexedRun, read_run_dir
 from astro_simclr.registry.spec_view import (
     ComparisonPlan,
     PlannedCell,
@@ -65,7 +65,7 @@ def _plan(
     return ComparisonPlan(**fields)  # type: ignore[arg-type]
 
 
-def _records(*dirs: Path) -> list[RunRecord]:
+def _records(*dirs: Path) -> list[IndexedRun]:
     return [read_run_dir(d) for d in dirs]
 
 
@@ -218,6 +218,26 @@ def test_mixes_fail_unless_allowed(tmp_path: Path, kind: str, change: dict[str, 
         resolve(_plan(), records)
     resolution = resolve(_plan(), records, allow_mixed=[kind])  # type: ignore[list-item]
     assert any(note.startswith(f"mixed {kind} allowed") for note in resolution.notes)
+
+
+def test_legacy_runs_without_a_machine_record(tmp_path: Path) -> None:
+    records = _records(legacy_run(tmp_path / "s0", seed=0), legacy_run(tmp_path / "s1", seed=1))
+    bare = [dataclasses.replace(r, machine=None, machine_class=None) for r in records]
+    assert len(resolve(_plan(machine_class=None), bare).chosen) == 2
+    with pytest.raises(ComparisonError, match="mix machines"):
+        resolve(_plan(machine_class=None), [bare[0], records[1]])
+
+
+def test_an_engine_mix_is_not_also_a_machine_mix(tmp_path: Path) -> None:
+    plain = {**MACHINE, "engine": "plain"}  # metrics.json["machine"] records it (task A1)
+    records = _records(
+        manifest_run(tmp_path / "s0", seed=0, machine={**MACHINE, "engine": "lightning"}),
+        manifest_run(tmp_path / "s1", seed=1, engine="plain", machine=plain),
+    )
+    with pytest.raises(ComparisonError) as err:
+        resolve(_plan(), records)
+    assert "mix engines" in _problems(err) and "mix machines" not in _problems(err)
+    assert resolve(_plan(), records, allow_mixed=["engines"])
 
 
 def test_legacy_and_manifest_runs_mix_numerics(tmp_path: Path) -> None:

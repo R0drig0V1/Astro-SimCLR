@@ -42,7 +42,7 @@ from astro_simclr.registry.compare import (
 )
 from astro_simclr.registry.home import RegistryError, registry_path, specs_dir
 from astro_simclr.registry.index import reindex
-from astro_simclr.registry.readers import RunRecord
+from astro_simclr.registry.readers import IndexedRun
 from astro_simclr.registry.spec_view import (
     ComparisonPlan,
     SpecUnavailableError,
@@ -78,11 +78,11 @@ def _reindex(args: argparse.Namespace) -> int:
     return 0
 
 
-def _split_text(record: RunRecord) -> str:
+def _split_text(record: IndexedRun) -> str:
     return "-" if record.split is None else str(record.split)
 
 
-def record_to_plain(record: RunRecord) -> dict[str, object]:
+def record_to_plain(record: IndexedRun) -> dict[str, object]:
     """``record`` as JSON values (``runs ls --json``, ``runs show --json``)."""
     return {
         "key": record.key,
@@ -119,7 +119,7 @@ def record_to_plain(record: RunRecord) -> dict[str, object]:
     }
 
 
-def _records(args: argparse.Namespace) -> list[RunRecord]:
+def _records(args: argparse.Namespace) -> list[IndexedRun]:
     conn = _connect(args)
     try:
         return load_records(conn)
@@ -165,7 +165,7 @@ def _ls(args: argparse.Namespace) -> int:
     return 0
 
 
-def _find(records: Sequence[RunRecord], token: str) -> list[RunRecord]:
+def _find(records: Sequence[IndexedRun], token: str) -> list[IndexedRun]:
     path = Path(token).expanduser()
     if path.is_dir():
         resolved = path.resolve()

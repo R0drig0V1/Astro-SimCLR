@@ -7,7 +7,7 @@ cannot rebuild from them.
 
 - :mod:`~astro_simclr.registry.home`: where the registry lives, and the refusal to put it
   inside a git worktree;
-- :mod:`~astro_simclr.registry.readers`: one :class:`~astro_simclr.registry.readers.RunRecord`
+- :mod:`~astro_simclr.registry.readers`: one :class:`~astro_simclr.registry.readers.IndexedRun`
   per run directory, read from its ``manifest.json`` (task A1) or, for an archived run
   without one, backfilled from its ``metrics.json`` (``legacy``); the readers of the
   recorded config are versioned on ``config_format``;
