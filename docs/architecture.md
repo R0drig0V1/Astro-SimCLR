@@ -74,7 +74,9 @@ of one run.
 - **Task 1.7 fields** (flat, so every one can be `--set`): EarlyStopping `check_finite`
   (default true, Lightning's default) and `divergence_threshold` (null: never; R1 uses
   0.1); `limit_train_batches` / `limit_val_batches` (null: every batch; the dry mode sets
-  2); and the hyperparameters of the training subcommands. Each subcommand reads only its
+  2); `progress_bar_refresh_rate` (added by audit item 2; default 50: redraw Lightning's
+  progress bar every 50 batches; 0 hides it; no effect on the numbers, not a preset key);
+  and the hyperparameters of the training subcommands. Each subcommand reads only its
   own; the others are recorded in the run's metrics but unused:
 
   | Field | Default | Read by |
@@ -747,7 +749,17 @@ legacy modules.
   `module.confusion_matrices["val"|"test"]`, the labels `(y_pred, y_true)` in
   `module.predictions["val"|"test"]`, for the figures and metrics JSON of 1.7, and the
   softmax probabilities (N, 5) in `module.probabilities["val"|"test"]`, for the per-stamp
-  predictions files of task 2.3.
+  predictions files of task 2.3. The validations inside `trainer.fit` skip all three
+  (`trainer.state.fn == FITTING`; audit item 2): they only feed the monitor, and every
+  output of a run comes from `trainer.validate` / `trainer.test(ckpt_path=best)` after the
+  fit, so a 30,000-step `carrasco2021` run no longer builds 3,000 confusion matrices nor
+  copies them, the labels and the probabilities to the host, only to throw them away. The
+  epoch metrics pass
+  `validate_args=False` (the labels are argmaxes, always in range), which skips
+  torchmetrics' value checks and their host sync on a GPU. Neither changes a number:
+  `tests/test_fit_validation.py` runs a short `carrasco2021` schedule with the old
+  behaviour patched back in and compares `metrics.json` (except `timing`), the predictions
+  files and the best weights.
 - `MONITORABLE` (class attribute) lists what `Settings.monitor` may select:
   `accuracy_val`, `loss_val` for the classifiers, `loss_train_enc` for SimCLR (which has no
   validation loop). The protocol default `accuracy_val` therefore raises `ConfigError` for
@@ -776,7 +788,10 @@ module's logged `accuracy_val`), macro precision and macro recall (classes absen
 predictions and targets left out, as in torchmetrics 0.6); `confusion_matrix(y_pred,
 y_true)` uses `normalize="true"` (an empty row is zeros). Added in 1.7 for the metrics JSON:
 `confusion_counts` (not normalised) and `macro_f1` (classes absent from predictions and
-targets left out, like precision and recall).
+targets left out, like precision and recall). `classification_metrics(...,
+validate_args=False)` skips torchmetrics' dtype and range checks of the label values (same
+numbers; for labels known to be in range, like the modules' argmaxes); its own shape check
+always runs.
 
 **Data modules** (`datamodules.py`) build their datasets in `setup()` (legacy:
 `prepare_data()`, which runs on one process only), from a prepared layout directory,
@@ -817,6 +832,9 @@ memory-mapped:
   `devices`, `max_epochs`, `deterministic`, and (when set) `limit_train_batches` /
   `limit_val_batches` from the settings, `benchmark=not deterministic`
   (legacy `True`), `default_root_dir=output_dir`. This is the only place a device is chosen.
+  The progress bar is a `TQDMProgressBar(refresh_rate=progress_bar_refresh_rate)` (default
+  50 batches; Lightning's 1 cost ~0.4 ms a step of the loop's ~1.3 ms on the CPU, audit
+  item 2); a rate of 0, or `enable_progress_bar=False` in the overrides, hides it.
 
 **Tests** run on the CPU everywhere and on MPS/CUDA when available
 (`tests/_training_support.py: ACCELERATORS`): `fast_dev_run` for every module and variant

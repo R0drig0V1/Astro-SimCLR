@@ -136,6 +136,10 @@ class Settings:
     limit_train_batches: int | float | None = None
     #: ``Trainer(limit_val_batches=...)``, as ``limit_train_batches``.
     limit_val_batches: int | float | None = None
+    #: Redraw Lightning's progress bar every this many batches (``TQDMProgressBar``); 0
+    #: hides it. Lightning's default, 1, costs ~0.4 ms a step on a 30,000-step run
+    #: (``carrasco2021``); no effect on the numbers.
+    progress_bar_refresh_rate: int = 50
 
     # --- Data and model hyperparameters of the training subcommands (task 1.7) -------------
 
@@ -272,7 +276,7 @@ class Settings:
         for name in ("max_epochs", "eval_batch_size"):
             if getattr(self, name) < 1:
                 raise ConfigError(f"{name} must be >= 1, got {getattr(self, name)}")
-        for name in ("num_workers", "patience", "seed"):
+        for name in ("num_workers", "patience", "seed", "progress_bar_refresh_rate"):
             if getattr(self, name) < 0:
                 raise ConfigError(f"{name} must be >= 0, got {getattr(self, name)}")
         if self.min_delta < 0:
