@@ -460,6 +460,8 @@ within noise). The prototypes are hand-written p4/p4m layers that run as plain `
 | C5 | **Class-preserving augmentation** (training only): per-channel Gaussian noise scaled to each crop's own background σ, then the per-channel min-max again; small jitter on the continuous features | SN has 1,396 Train stamps against ~14.5k for AGN and VS, so tiling repeats each SN about 10×. Noise makes the copies differ. Validation SN recall is 0.876, the weakest class |
 | C6 | **Synthetic hot-pixel Bogus**: the template of a real stamp; science = template + noise + a 1–2 px spike at the centre (sharper than the PSF); difference = noise + the same spike; the features of a real Bogus plus jitter | Half the inspected Bogus are this type. The spike must stay sharper than the PSF, or the synthetic Bogus look like Asteroids (same empty template) |
 
+| C7 | **Transient flux rescaling** (all classes but Bogus; training only): fit a Gaussian PSF to the central source of the difference; add `(k−1)·PSF` to the difference and `(k−1)·PSF/a` to the science (the noise is untouched, so the S/N really changes); update `magpsf` and `sigmapsf` to match; keep it an alert (`magpsf' ≤ diffmaglim`, S/N ≥ 5) | Real SN, AGN, VS and Asteroids vary in brightness. Scaling the whole difference would do nothing, because the min-max is scale-invariant. Headroom to the detection limit (median): AGN 0.35 mag, SN 0.96, VS 2.18, Asteroid 0.92 |
+
 C5 and C6 come from a visual inspection of the Train stamps per class and channel and the
 replication's **validation** confusion matrix (2026-11-08):
 - SN → Asteroid 37 and SN → Bogus 25 of 2,500;
@@ -471,6 +473,8 @@ cosmic ray is still an SN. Later idea: fake SN injected on real host galaxies (t
 standard technique), aimed at SN → Asteroid.
 
 **C5/C6 implemented** (PR #20, ADR 0006): flags `aug_noise`, `aug_feature_jitter`, `synthetic_bogus` and `aug_min_r2`; the difference is recomputed from the per-stamp fit `diff ≈ a·sci + b·tmpl + c`; C6 sources are positive alerts, never SN.
+
+**C7 origin (2026-11-08).** The replication's errors on the screen's *selection* half (the decision half stays untouched): SN → Asteroid are SN with no host in the 21-px crop, one with its host just outside it (the B1′ context targets that case), one on the ecliptic. 27 % of the Train SN (380) are already hostless, with median |ecl_lat| 28° against 6.6° for Asteroids, so synthetic hostless SN are **not** planned: they would mostly trade Asteroid recall for SN recall.
 
 **User decision (2026-11-08):** C5 and C6 run alongside the architecture line, not only if
 it plateaus.
