@@ -1,4 +1,4 @@
-"""The plain-PyTorch training engine (phase 4, ADR 0012): contracts only, no loop yet.
+"""The plain-PyTorch training engine (phase 4, ADR 0013): contracts only, no loop yet.
 
 Task B0 of ``docs/phases/04-training-platform.md`` freezes the interfaces that the engine
 core (4.1), the typed config (4.2) and the data layer (4.3) are built against, so that those
@@ -15,7 +15,7 @@ tasks can proceed in parallel and the 4.7 equivalence gate has a fixed target:
 - :mod:`.data`: the batch tuple format and the three data tiers;
 - :mod:`.randomness`: the seeded per-step generators (host and device).
 
-**Engine-free rule** (ADR 0012, CLAUDE.md): nothing in this package imports Lightning, so a
+**Engine-free rule** (ADR 0013, CLAUDE.md): nothing in this package imports Lightning, so a
 flag written against these contracts works on both engines until Lightning is removed (4.8).
 ``tests/test_engine_contracts.py`` checks it.
 """

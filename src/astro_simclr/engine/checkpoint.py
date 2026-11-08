@@ -13,7 +13,7 @@ stream definition to check. ``last`` is written after the validation of its step
 policy update, so a resume owes no validation (the reason ``HorizonCallback`` writes it
 there).
 
-The resume order (ADR 0012, "Resume") is: :func:`check_resumable`; seed; build the task on
+The resume order (ADR 0013, "Resume") is: :func:`check_resumable`; seed; build the task on
 the CPU; load ``model``; move to the device; build the optimizer and load ``optimizer``;
 ``task``; ``policy``; check ``stream``; restore ``rng`` last, just before the first step.
 
@@ -132,7 +132,7 @@ def check_resumable(checkpoint: Mapping[str, Any]) -> None:
     if _LIGHTNING_KEY in checkpoint:
         msg = (
             "this is a Lightning checkpoint: the plain engine does not resume Lightning runs "
-            "(finish them on Lightning, ADR 0012)"
+            "(finish them on Lightning, ADR 0013)"
         )
         raise ConfigError(msg)
     engine = checkpoint.get("engine")

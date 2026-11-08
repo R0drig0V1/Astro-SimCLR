@@ -1,4 +1,4 @@
-"""The batch format and the three data tiers of the plain engine (ADR 0012, task 4.3).
+"""The batch format and the three data tiers of the plain engine (ADR 0013, task 4.3).
 
 **Batch format** (frozen in B0): :data:`Batch` is ``(images, features, one-hot labels)``
 and :data:`TrainBatch` adds the per-stamp fits that C5-C7 need, exactly

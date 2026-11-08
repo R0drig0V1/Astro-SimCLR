@@ -29,6 +29,7 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  ├──► reference (compare-reference: the gates of R1-R4 and CD21)
  ├──► protocol (make-splits, compare-variants: the phase-2 evaluation protocol) ──► data
  ├──► oracle (fetch-m1, m1-oracle: the published M1 vs our input path) ──► paper_model, data
+ ├──► alerts (fetch-alerts, alerts-summary: raw alerts from ALeRCE) ──► data (prepared, m1_features)
  │    (training ──► paper_variants: rot4 / single / p4 / p4m ──► paper_model, group_conv)
  ├──► preflight ──► experiments, data (inspection, manifest)
  └──► engine (phase 4: the plain-PyTorch loop's contracts; imports no Lightning) ──► config
@@ -39,7 +40,7 @@ Conventions shared by every module:
 - **Settings** come from `config.Settings`, never from module-level constants.
 - **Randomness:** the global streams come from `lightning.seed_everything(seed,
   workers=True)`; per-step draws (augmentations) come from generators keyed by
-  `(seed, step, stream)` (ADR 0006, ADR 0012: `engine.randomness`), never from an unseeded
+  `(seed, step, stream)` (ADR 0006, ADR 0013: `engine.randomness`), never from an unseeded
   or global generator.
 - **Devices:** no module hard-codes CUDA. The accelerator comes from the settings, and tensors
   follow their module's device.
@@ -82,7 +83,9 @@ of one run.
 - **Task 1.7 fields** (flat, so every one can be `--set`): EarlyStopping `check_finite`
   (default true, Lightning's default) and `divergence_threshold` (null: never; R1 uses
   0.1); `limit_train_batches` / `limit_val_batches` (null: every batch; the dry mode sets
-  2); and the hyperparameters of the training subcommands. Each subcommand reads only its
+  2); `progress_bar_refresh_rate` (added by audit item 2; default 50: redraw Lightning's
+  progress bar every 50 batches; 0 hides it; no effect on the numbers, not a preset key);
+  and the hyperparameters of the training subcommands. Each subcommand reads only its
   own; the others are recorded in the run's metrics but unused:
 
   | Field | Default | Read by |
@@ -161,7 +164,7 @@ of one run.
   YAML mapping without checking keys; `settings_to_plain` gives the plain (YAML/JSON) form
   that `show-config` prints and the metrics JSON records.
 
-## `cli` (task 1.1; subcommands from 1.2 and 1.7)
+## `cli` (task 1.1; subcommands from 1.2, 1.7 and 3.1)
 
 The `astro-simclr` console script (`[project.scripts]`). `main(argv)` returns the exit code,
 so tests call it in-process. Every subcommand registers in `build_parser()` and takes the
@@ -207,6 +210,14 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   of mixed machines exit 2, an unusable table, splits file or predictions file exits 1.
 - `fetch-m1` and `m1-oracle --data-dir DIR [--out DIR]` (task 2.2b, see `oracle`): exit
   0 if the oracle passed, else 1.
+- `fetch-alerts --dataset NAME --split S [--data-dir DIR] [--out DIR] [--rate 1.5]
+  [--limit N] [--resume] [--batch-size 100] [--cooldown 300] [--from-snapshot RAW_DIR]
+  [--quiet]` and `alerts-summary RAW_DIR [--split S]... [--json]` (task 3.1, see
+  `alerts`). `fetch-alerts` exits 0 when the run ends. It turns SIGTERM, SIGHUP and Ctrl-C
+  into a stop flag polled between rows (exit 128 + the signal; a second signal forces the
+  exit), and restores the previous handlers. A store that exists without `--resume` is a
+  data error (1); an out-of-range option is 2. `alerts-summary` exits 0 if every split
+  shown meets the acceptance, else 1.
 - `preflight (--synthetic | --data-dir DIR) [--accelerator cuda] [--runs R1,R2,R3,R4]
   [--set ...]` (see `preflight`): exit 0 if no step failed, else 1.
   `scripts/gpu-preflight.sh` is a thin `uv run --no-sync` wrapper.
@@ -363,6 +374,44 @@ Task 3.3 adds RJ23's input path on raw cutouts (`docs/data.md`, "RJ23 inputs"; A
 - numpy only (a test checks that importing it does not import torch); not wired into a
   data module yet: that waits for task 3.1b's `raw-alerts` kind.
 
+Task 3.1b adds the `raw-alerts` kind (`docs/data.md`, "Raw-alert layout"; ADR 0012):
+
+```
+fetcher (3.1): cutouts + per-row table [+ features] ──write_raw_alerts──► DIR/<name>/*.npy + meta.json
+                                                                                  │
+                                  RawAlerts ◄──load_raw_alerts (mmap, no pickle)───┘
+   (cutouts, index, label_names, features; n_classes)
+       ├──► protocol.alerts.alert_table_from_raw ──► object splits, benchmark report (3.2)
+       └──► rows_of(split candids) ──► 3.3 input path ──► N-class model
+```
+
+- `raw_alerts`: `INDEX_DTYPE` (the per-row structured dtype), `make_index` (columns → the
+  table, with kind and width checks, never a silent cast or truncation), `write_raw_alerts`
+  (the builder; atomic and deterministic like `write_prepared`; optional `features`, the 23
+  `CD21_FEATURES` not standardised), `load_raw_alerts` → `RawAlerts` (cutouts and features
+  memory-mapped, the index read and checked: dtypes, shapes, label range, unique `candid`,
+  field ranges, counts; `rows_of(candids)`), `verify_raw_alerts` (SHA-256),
+  `label_names_of` (the label names from `meta.json` alone) and `check_label_names`. The
+  `_*_problem` functions hold the rules, and both the writer and the loader call them, so
+  the writer never writes what the loader refuses. No split and no mask is stored: the
+  splits are task 3.2's (by `oid` group, ADR 0008), the mask a function of the cutouts.
+- `protocol.alerts.alert_table_from_raw(data, group=None)`: task 3.2's `AlertTable` from a
+  loaded layout. The index's `oid` character set, `candid` and `jd` rules are the
+  table's, so every stored row is accepted (tested).
+- Task 3.3's `rj23_input.rj23_views(data.cutouts[rows])` and
+  `unit_sphere(data.index["ra"][rows], data.index["dec"][rows])` read a loaded layout as
+  it is (tested); a data module that feeds them to the RJ23 models is task 3.4's.
+- `prepared`: `read_meta_file` reads `meta.json` of either kind (format check only),
+  `layout_kind` returns its kind without raising, and `read_meta` / `load_prepared` refuse
+  a `raw-alerts` layout with a message naming `load_raw_alerts`. Versions 1 and 2 are
+  unchanged, and the writer still writes version 2.
+- `inspection`: `summarize` dispatches on the kind; a `raw-alerts` summary has the row
+  count, both files, the counts per class (under the layout's own names) and per
+  `label_source`. `preflight.prepared_dirs` leaves `raw-alerts` layouts out (its steps and
+  manifest read splits).
+- `synthetic.synthetic_raw_alerts(label_names, n_per_class, seed)`: raw-count cutouts with
+  NaN corners and inf pixels and a valid per-row table, for tests and for the fetcher's.
+
 The CLI imports these modules inside its handlers, so `show-config` does not import them;
 `data/__init__.py` does not re-export the torch datasets.
 
@@ -426,7 +475,7 @@ legacy initial weights.
 |---|---|---|
 | `StampEncoder(k)` | `Stamp_encoder` (`stamp<k>`) | widths `int(32k)`/`2·int(32k)`, 5×5 kernels, `out_features = int(128k)`, mean of the 4 rotations after ReLU |
 | `PStampsEncoder(k=1.0)` | `P_stamps_net_SimCLR_v2` from `b357b43^` (`pstamps`) | 3×3 kernels, `fc1` without bias, rotation mean through `bn1` |
-| `StampClassifier(drop_rate, with_features)` | `Stamp_classifier` | Carrasco-Davis et al. 2021; 23 features through `bn1`, 5 logits |
+| `StampClassifier(drop_rate, with_features, n_classes=5)` | `Stamp_classifier` | Carrasco-Davis et al. 2021; 23 features through `bn1`, `n_classes` logits |
 | `SimCLRNet(encoder, input_size, projection_size)` | `CLR` | 3-layer projector on `h / ‖h‖`; returns `(h_i, h_j, z_i, z_j)` |
 | `LinearClassifier`, `ThreeLayerClassifier` | `Linear_classifier`, `Three_layers_classifier` | heads; `LinearClassifier` keeps the `model.` key prefix |
 | `Identity` | `Identity` | alias of `torch.nn.Identity` |
@@ -440,6 +489,32 @@ the legacy `SimCLR`. Names: `stamp<k>` (any positive `k`, e.g. `stamp1`, `stamp0
 `pstamps`, `resnet18`, `resnet34`, `resnet50`, `resnet152` (torchvision, no pretrained
 weights, `fc` replaced by `Identity`). `out_features` is what the encoder declares: the
 stamp encoders' `out_features`, the ResNets' `fc.in_features`.
+
+**N classes (task 3.1b).** `N_CLASSES = 5` (CD21's AGN, SN, VS, Asteroid, Bogus) is now the
+*default* class count, not a constant of the networks. Every classifier takes
+`n_classes`, checked by `check_n_classes` (an integer ≥ 2), and only its last layer
+depends on it:
+
+- the networks: `StampClassifier`, `paper_model.PaperStampClassifier`,
+  `paper_variants.PaperHead` / `GroupStampClassifier` / `build_paper_model`;
+- the Lightning modules: `ClassifierModule` (it sizes the metrics and the confusion
+  matrices), `SupervisedCEModule`, `PaperClassifierModule`, `SupervisedCEResNetModule`,
+  `LinearEvalModule`, `FineTuneModule`;
+- the data: `device_data.TensorSplit.n_classes` (the one-hot width and the label range;
+  `DeviceTensorDataModule` refuses splits that disagree), `protocol.predictions`
+  (`Predictions` takes any K ≥ 2 columns, `load_predictions(path, n_classes=5)` checks the
+  count, `check_paired` refuses runs with different counts).
+
+An N-class run reads the count from its dataset, `len(data.raw_alerts.label_names_of(path))`,
+and passes it down. **The phase-2 path is byte-identical:** with the default, the layers
+are built in the same order and draw the same weights, and the modules record `n_classes`
+in their hyperparameters only when it is not 5, so `hparams.yaml` and checkpoints are what
+they were (`tests/test_n_classes.py` pins the seeded weights, the hyperparameter names and
+the bytes of a predictions file, computed before the parameter existed). CD21-specific code
+stays 5-class: `schema.LABEL_NAMES`, the pickle loader and the split layouts, the protocol's
+splits and leakage, the M1 oracle, the CLI's metrics, and C6 (`synthetic_bogus` needs
+`n_classes=5`, it draws from CD21's Bogus and Asteroid). The training CLI does not build
+N-class runs yet: RJ23's input path and models are tasks 3.3 and 3.4.
 
 **Input size.** The stamp networks accept only (N, 3, 27, 27): `fc1` is sized for that
 crop. Anything else raises `ValueError` naming the expected shape. The ResNets accept 27
@@ -526,11 +601,19 @@ runs one `F.conv2d`, so it works on CPU, CUDA and MPS, and costs what a plain CN
   `(field, g)` order.
 - `LiftingConv(group, in_channels, out_fields, k, padding)`: image → regular map;
   `GroupConv(group, in_fields, out_fields, k, padding)`: regular → regular, with the input
-  orientations permuted by `h → g⁻¹h` for output `g` (a stack of slices, not an advanced
-  index: the index's backward has no deterministic MPS kernel); `GroupReadout(group,
+  orientations permuted by `h → g⁻¹h` for output `g`; `GroupReadout(group,
   in_fields, out_fields, k)`: a valid `GroupConv` covering the whole k×k map (the paper's
   fc1); `orientation_mean(x, order)`: the invariant mean over the orientations of each
   field. Biases: one per field.
+- **Expansion = one gather** (ADR 0005, decision 8): each layer computes once, from the
+  transforms applied to an `arange` of its weight's shape, the flat source index of every
+  expanded entry and keeps it as a non-persistent buffer (it follows `.to()`, stays out of
+  `state_dict`). `expanded()` is one `index_select` of the flattened weight through
+  `_KernelGather`, whose backward gathers each entry's `|G|` copies with an inverse index
+  and adds them from the last output orientation to the first. Not `index_select`'s own
+  backward: that is an `index_add_` scatter, with no deterministic MPS kernel, and it sums
+  in another order. Values and gradients are bit-equal to the transform-by-transform
+  expansion it replaced (~200 `select`/`rot90`/`stack` ops per p4 training step).
 - **Glorot fans** (the initialisation of the faithful model, defined for group layers):
   those of the expanded linear map. Convolutions use Keras' convention on the expanded
   kernel, `fan_in = in_channels·k²`, `fan_out = out_fields·|G|·k²` (= `xavier_uniform_`'s
@@ -543,7 +626,11 @@ runs one `F.conv2d`, so it works on CPU, CUDA and MPS, and costs what a plain CN
 - **Tested** (`tests/test_group_conv.py`): the group axioms and the table against the
   transforms; the equivariance law `layer(T_g x) = T_g(layer(x))` with the orientation
   permutation, for every element, kernel parity and padding, in float64 with random
-  biases; the readout's invariance after the orientation mean; the fans and bounds.
+  biases; the readout's invariance after the orientation mean; the fans and bounds; the
+  gathered kernel and its gradient bit-equal to the transform expansion (kept in the test
+  as the reference) for every group layer of the p4 and p4m paper models and a few odd
+  shapes, on CPU and on MPS / CUDA when present, also under
+  `torch.use_deterministic_algorithms(True)`; the buffers out of `state_dict`.
 
 ## `paper_variants` (task 2.5-models)
 
@@ -586,10 +673,12 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
   gathers the 6-channel images by pool index like the 3-channel ones (tested in
   `tests/test_split_runs.py`).
 - `scripts/bench_paper_models.py`: parameters, MACs, CPU latency (batch 1) and
-  throughput (batch 512, default threads and 1 thread) and, on the accelerator torch
-  reports, batch 1 / 512 / 4096, for every variant (`--out FILE` writes JSON). The group
-  layers re-expand their kernels on every call, which shows in the batch-1 latency, not in
-  the throughput; an exported, constant-folded model does not pay it.
+  throughput (batch 512, default threads and 1 thread), a batch-64 training step (forward
+  and backward of the summed logits, train mode, no optimiser step) and, on the
+  accelerator torch reports, batch 1 / 512 / 4096 and the training step, for every variant
+  (`--out FILE` writes JSON). The group layers re-expand their kernels on every call,
+  which shows in the batch-1 latency and the training step more than in the throughput; an
+  exported, constant-folded model does not pay it.
 - **Tested** (`tests/test_paper_variants.py`): once per new flag, the faithful preset with
   that flag at its default reproduces the golden fixture (parameter count, every initial
   tensor's sum, float64 logits); every invariant configuration (`rot4`, `p4`, `p4` 16/32,
@@ -673,6 +762,94 @@ and no ALeRCE code or weights in the repository (the pipeline repository has no 
 - Tests (`tests/test_oracle_*.py`) use synthetic checkpoints and event files written by
   `tests/_tf_writer.py` (from the format description, with knobs that break one property at
   a time), random M1-shaped weights, `file://` downloads and the synthetic prepared data.
+
+## `alerts` (task 3.1)
+
+`src/astro_simclr/alerts/`: recovers the raw ZTF alerts behind a prepared split from
+ALeRCE's public services, verifies them against the stored stamps and stores them with
+their provenance. Method, layout, statuses and the acceptance are in
+[`docs/data.md`](data.md), "Raw alerts"; the format and dependency choices in ADR 0011.
+Nothing in the package imports torch.
+
+```
+prepared split ──targets (destandardise)──► fetch_row ──► AlerceClient ──► Recorder ──► Fetcher ──► urllib
+                                              │  match_detections, ties   (cache, snapshot)  (rate limit,
+                                              │  parse_alert (fastavro, FITS)                 retries)
+                                              │  verify_cutouts (alerce_normalise)
+                                              ▼
+                         batch ──_commit──► shard-NNNNN.npz (ok cutouts + raw responses), then index.csv lines
+                                                    ▲
+                     Snapshot (offline RawFetch) ───┘  fetch-alerts --from-snapshot
+```
+
+- `transport`: `RateLimiter` (request starts at least `1/rate` apart; one limiter covers
+  both hosts), and `Fetcher.get(url, max_bytes)`.
+  - Retries timeouts, `OSError`, `http.client.HTTPException`, 5xx and 429: 5 attempts,
+    backoff `2·2^(k-1)` s capped at 60 s, but at least a numeric `Retry-After` (up to
+    600 s), no jitter (a single sequential client).
+  - Other statuses raise `HttpError` at once.
+  - `urllib_opener` opens only `https://` and follows redirects only to `https://`
+    (`_HttpsRedirects`). It reads at most `max_bytes` in chunks within a 300 s total
+    deadline (`TimeoutError`, retried), and sends the generic `USER_AGENT`.
+- `snapshot`: `Recorder` is the `Getter` between the client and a `RawFetch`
+  (`online_fetch(fetcher)` or `store.Snapshot.fetch`).
+  - It caches cone searches and detection lists by URL (an LRU bounded at 256 MB of
+    bodies), and keeps every new response (url, kind, UTC time, SHA-256, bytes) as
+    `pending()` until a commit has made it durable (`drop_pending(n)`).
+  - It lists the responses each row used (`row_refs`, as `kind:sha256`).
+- `alerce`: `AlerceClient.objects_near`, `detections` and `alert_avro` (the URLs of the
+  module docstring), and `make_client(rate)`, the production stack (the CLI's seam for
+  tests).
+  - The JSON is validated: `items` of ZTF-shaped `oid`s, and detections with an integer
+    `candid` (string or int) and numeric `magpsf`/`sigmapsf`. Others are skipped, and a
+    wrong shape raises `ResponseError`.
+  - An `oid` is checked against `ZTF\d{2}[a-z]{7}` before it goes into a URL. Size caps:
+    16 MB of JSON, 1 MB of avro.
+- `parse`: `check_container` walks the avro container before fastavro reads it.
+  - It accepts the `null`, `deflate` and `snappy` codecs, and bounds the decompressed
+    size to 4 MB: the snappy preamble length, or deflate inflated with an output limit.
+  - `check_schema` refuses a writer schema that is not a record, or that has an array or
+    map of zero-size items (`null`, empty records, `fixed` of size 0). Every other item
+    takes at least one byte, so the decoding work is bounded by the data.
+  - `parse_alert` then reads exactly one record with the embedded writer schema (ALeRCE's
+    record names differ from ZTF's). It checks `objectId`, `candid` and the required
+    candidate fields and types, and keeps the scalar fields, non-finite floats as `null`.
+  - The three cutouts are parsed by `fits.read_fits_image`, and CCD-edge ones repaired
+    with `repair_non_squared_stamp`.
+- `fits`: `gunzip` (a gzip stream with an output cap), and `read_fits_image`, a strict
+  reader of one 2D `BITPIX -32/-64` image, at most 256 px per side, without scaling. It
+  returns native float32 `(NAXIS2, NAXIS1)`, NaN kept, with no flip. It replaces a FITS
+  library for the one layout ZTF uses.
+- `fetch`:
+  - `targets`, `interleaved_order` (round-robin over the classes) and `match_detections`
+    (distinct candids within 1e-4 on both magnitudes);
+  - `alerce_normalise` (`crop_then_normalise` at 63 without the NaN approximation) and
+    `verify_cutouts`;
+  - `fetch_row` (never raises for a miss);
+  - `fetch_alerts`: resume (an `ok` row whose shard is missing is fetched again), and
+    batches of `batch_size` rows. A full batch is detached before `_commit`, so a failed
+    commit is never retried by the `finally`. The run stops between rows when `stop()`
+    turns true. The cooldown follows 3 consecutive *transient* failures
+    (`RowResult.transient`). `fetch.json`'s data identity and every status-deciding
+    setting (radius, tolerances, `max_candidates`) must match on `--resume`.
+- `store`: the layout and its readers. `IndexRow` and `COLUMNS`; `IndexWriter`
+  (append, fsync, repairs a truncated last line); `read_index` and `latest_rows`;
+  `write_shard` / `read_shard` (atomic; `allow_pickle=False`); `load_recovered` (the `ok`
+  alerts, by row); `Snapshot` (URL → stored body, SHA-256 checked); `summarize` /
+  `Summary` / `format_summary` (counts, groups, ghosts, the recovery of non-ghost rows,
+  CCD-edge counts, costs, the 98 % acceptance); `duplicates` / `format_duplicates` (a
+  candid stored for several rows, within or across splits).
+
+Tests (`tests/test_alerts_*.py`, offline): `_alerts_support` writes FITS and avro files
+(fastavro, all three codecs) and runs a fake ALeRCE on an in-memory sky with one Validation
+row per status. They cover:
+- ties decided by the stamp check;
+- two objects in the cone, and cache hits on a shared object;
+- resume, and the retry of `http_error` only;
+- orphan shards, a truncated index, and an interrupt mid-batch;
+- the cooldown, the offline rebuild, and duplicates across splits;
+- backoff and `Retry-After` on a fake clock;
+- the size caps and malformed inputs.
 
 ## `optim` (task 1.5)
 
@@ -761,7 +938,17 @@ legacy modules.
   `module.confusion_matrices["val"|"test"]`, the labels `(y_pred, y_true)` in
   `module.predictions["val"|"test"]`, for the figures and metrics JSON of 1.7, and the
   softmax probabilities (N, 5) in `module.probabilities["val"|"test"]`, for the per-stamp
-  predictions files of task 2.3.
+  predictions files of task 2.3. The validations inside `trainer.fit` skip all three
+  (`trainer.state.fn == FITTING`; audit item 2): they only feed the monitor, and every
+  output of a run comes from `trainer.validate` / `trainer.test(ckpt_path=best)` after the
+  fit, so a 30,000-step `carrasco2021` run no longer builds 3,000 confusion matrices nor
+  copies them, the labels and the probabilities to the host, only to throw them away. The
+  epoch metrics pass
+  `validate_args=False` (the labels are argmaxes, always in range), which skips
+  torchmetrics' value checks and their host sync on a GPU. Neither changes a number:
+  `tests/test_fit_validation.py` runs a short `carrasco2021` schedule with the old
+  behaviour patched back in and compares `metrics.json` (except `timing`), the predictions
+  files and the best weights.
 - `MONITORABLE` (class attribute) lists what `Settings.monitor` may select:
   `accuracy_val`, `loss_val` for the classifiers, `loss_train_enc` for SimCLR (which has no
   validation loop). The protocol default `accuracy_val` therefore raises `ConfigError` for
@@ -790,7 +977,10 @@ module's logged `accuracy_val`), macro precision and macro recall (classes absen
 predictions and targets left out, as in torchmetrics 0.6); `confusion_matrix(y_pred,
 y_true)` uses `normalize="true"` (an empty row is zeros). Added in 1.7 for the metrics JSON:
 `confusion_counts` (not normalised) and `macro_f1` (classes absent from predictions and
-targets left out, like precision and recall).
+targets left out, like precision and recall). `classification_metrics(...,
+validate_args=False)` skips torchmetrics' dtype and range checks of the label values (same
+numbers; for labels known to be in range, like the modules' argmaxes); its own shape check
+always runs.
 
 **Data modules** (`datamodules.py`) build their datasets in `setup()` (legacy:
 `prepare_data()`, which runs on one process only), from a prepared layout directory,
@@ -839,6 +1029,9 @@ memory-mapped:
   `devices`, `max_epochs`, `deterministic`, and (when set) `limit_train_batches` /
   `limit_val_batches` from the settings, `benchmark=not deterministic`
   (legacy `True`), `default_root_dir=output_dir`. This is the only place a device is chosen.
+  The progress bar is a `TQDMProgressBar(refresh_rate=progress_bar_refresh_rate)` (default
+  50 batches; Lightning's 1 cost ~0.4 ms a step of the loop's ~1.3 ms on the CPU, audit
+  item 2); a rate of 0, or `enable_progress_bar=False` in the overrides, hides it.
 
 **Tests** run on the CPU everywhere and on MPS/CUDA when available
 (`tests/_training_support.py: ACCELERATORS`): `fast_dev_run` for every module and variant
@@ -1101,13 +1294,13 @@ module (training only), the settings and the preset deviation; a p4 run on every
 accelerator; and in `tests/test_split_runs.py` an augmented fold run (the fits are the
 fold's training part's) and its exact resume.
 
-## `engine` (phase 4, task B0; ADR 0012)
+## `engine` (phase 4, task B0; ADR 0013)
 
 `src/astro_simclr/engine/`: the contracts of the plain-PyTorch training loop that replaces
 Lightning (phase 4). B0 freezes them; the loop (4.1), the typed config (4.2) and the data
 tiers (4.3) are built against them, and the 4.7 gate compares the two engines. **Nothing in
 the package imports Lightning** (checked in a fresh interpreter), so a flag written against
-it works on both engines until 4.8. ADR 0012 lists, with file and line, every hidden
+it works on both engines until 4.8. ADR 0013 lists, with file and line, every hidden
 Lightning behaviour the loop reproduces (C1-C11) and the test that pins each.
 
 | Module | Contract |

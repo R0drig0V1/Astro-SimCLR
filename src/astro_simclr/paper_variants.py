@@ -62,7 +62,7 @@ from astro_simclr.group_conv import (
     LiftingConv,
     orientation_mean,
 )
-from astro_simclr.models import N_CLASSES, N_FEATURES
+from astro_simclr.models import N_CLASSES, N_FEATURES, check_n_classes
 from astro_simclr.paper_model import (
     PAPER_CROP,
     PAPER_DROP_RATE,
@@ -132,17 +132,23 @@ class PaperHead(nn.Module):
     features, ``bn_features`` (``BatchNorm1d(23, eps=1e-3, momentum=0.0)``, running
     statistics frozen at (0, 1)) is concatenated (64 + 23 = 87); fc2 and fc3 to 64 with
     ReLU and a dropout layer each (applied only when ``dropout_active``, in train mode);
-    then the 5 logits. Glorot-uniform weights, Glorot-uniform fc2/fc3 biases, zero logits
-    bias.
+    then the ``n_classes`` logits (default 5). Glorot-uniform weights, Glorot-uniform
+    fc2/fc3 biases, zero logits bias.
 
     Raises:
         ValueError: in ``forward``, with features, if ``x_feat`` is missing or not (N, 23).
     """
 
     def __init__(
-        self, *, with_features: bool, dropout_active: bool, drop_rate: float = PAPER_DROP_RATE
+        self,
+        *,
+        with_features: bool,
+        dropout_active: bool,
+        drop_rate: float = PAPER_DROP_RATE,
+        n_classes: int = N_CLASSES,
     ) -> None:
         super().__init__()
+        check_n_classes(n_classes)
         self.dropout_active = dropout_active
         self.bn_features = (
             nn.BatchNorm1d(N_FEATURES, eps=_BN_EPS, momentum=0.0) if with_features else None
@@ -151,7 +157,7 @@ class PaperHead(nn.Module):
         self.drop2 = nn.Dropout(drop_rate)
         self.fc3 = nn.Linear(_HIDDEN, _HIDDEN)
         self.drop3 = nn.Dropout(drop_rate)
-        self.logits = nn.Linear(_HIDDEN, N_CLASSES)
+        self.logits = nn.Linear(_HIDDEN, n_classes)
 
     def reset_parameters(self) -> None:
         """The paper's initialisation, in network order (fc2, fc3, logits, BN)."""
@@ -167,7 +173,7 @@ class PaperHead(nn.Module):
         return layer(x) if self.dropout_active else x
 
     def forward(self, h: torch.Tensor, x_feat: torch.Tensor | None) -> torch.Tensor:
-        """(N, 64) and, with features, (N, 23) -> (N, 5) logits."""
+        """(N, 64) and, with features, (N, 23) -> (N, n_classes) logits."""
         n = h.shape[0]
         if self.bn_features is not None:
             if x_feat is None or tuple(x_feat.shape) != (n, N_FEATURES):
@@ -195,7 +201,8 @@ class GroupStampClassifier(nn.Module):
 
     Raises:
         ValueError: at construction, for an unknown group, ``group_fields < 1``,
-            ``in_channels < 1`` or ``drop_rate`` outside [0, 1); in ``forward``, for images
+            ``in_channels < 1``, ``n_classes < 2`` or ``drop_rate`` outside [0, 1); in
+            ``forward``, for images
             that are not (N, ``in_channels``, 21, 21), or with features, a missing or
             misshapen ``x_feat``.
     """
@@ -209,6 +216,7 @@ class GroupStampClassifier(nn.Module):
         dropout_active: bool = False,
         drop_rate: float = PAPER_DROP_RATE,
         in_channels: int = PAPER_IN_CHANNELS,
+        n_classes: int = N_CLASSES,
     ) -> None:
         super().__init__()
         if not 0 <= drop_rate < 1:
@@ -235,7 +243,10 @@ class GroupStampClassifier(nn.Module):
         self.fc1 = GroupReadout(g, wide, _HIDDEN, kernel_size=_LAST_SIDE)
         self.drop1 = nn.Dropout(drop_rate)
         self.head = PaperHead(
-            with_features=with_features, dropout_active=dropout_active, drop_rate=drop_rate
+            with_features=with_features,
+            dropout_active=dropout_active,
+            drop_rate=drop_rate,
+            n_classes=n_classes,
         )
         self.reset_parameters()
 
@@ -248,7 +259,7 @@ class GroupStampClassifier(nn.Module):
         self.head.reset_parameters()
 
     def forward(self, x_img: torch.Tensor, x_feat: torch.Tensor | None = None) -> torch.Tensor:
-        """Crops and, with features, ``x_feat`` -> (N, 5) logits; ``x_feat`` ignored without."""
+        """Crops and, with features, ``x_feat`` -> (N, n_classes) logits; no features: ignored."""
         check_paper_images(x_img, self.in_channels, type(self).__name__)
         x = self.pad(x_img)
         x = F.relu(self.conv1(x))
@@ -271,11 +282,13 @@ def build_paper_model(
     with_features: bool = True,
     dropout_active: bool = False,
     drop_rate: float = PAPER_DROP_RATE,
+    n_classes: int = N_CLASSES,
 ) -> nn.Module:
-    """The paper model or one of its 2.5 variants (module docstring).
+    """The paper model or one of its 2.5 variants (module docstring), with ``n_classes`` logits.
 
     The defaults build exactly the faithful ``PaperStampClassifier`` (the same layers and
-    the same draws from the global torch generator).
+    the same draws from the global torch generator). ``n_classes`` only resizes the last
+    layer; 5 (the default) is the phase-2 model.
 
     Raises:
         ValueError: for an ``arch`` not in :data:`PAPER_ARCHS`, a ``context`` not in
@@ -293,6 +306,7 @@ def build_paper_model(
             dropout_active=dropout_active,
             drop_rate=drop_rate,
             in_channels=in_channels,
+            n_classes=n_classes,
         )
     if group_fields is not None:
         raise ValueError(f"group_fields applies to {' and '.join(GROUPS)} only, not {arch!r}")
@@ -302,6 +316,7 @@ def build_paper_model(
         drop_rate=drop_rate,
         in_channels=in_channels,
         rotation_mean=arch == "rot4",
+        n_classes=n_classes,
     )
 
 

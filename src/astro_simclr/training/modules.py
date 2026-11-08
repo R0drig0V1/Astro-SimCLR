@@ -40,6 +40,7 @@ from typing import Any, ClassVar, Final
 import lightning as L
 import numpy as np
 import torch
+from lightning.pytorch.trainer.states import TrainerFn
 from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch import nn
 
@@ -52,6 +53,7 @@ from astro_simclr.models import (
     StampClassifier,
     ThreeLayerClassifier,
     build_encoder,
+    check_n_classes,
 )
 from astro_simclr.optim import cosine_warmup_scheduler
 from astro_simclr.paper_model import PAPER_DROP_RATE
@@ -85,7 +87,7 @@ __all__ = [
     "SupervisedCEResNetModule",
 ]
 
-#: A classifier batch: images (B, 3, S, S), features (B, 23), one-hot labels (B, 5).
+#: A classifier batch: images (B, 3, S, S), features (B, 23), one-hot labels (B, n_classes).
 ClassifierBatch = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 #: A paper-model training batch with the stamp fits (B, 6) of ``class_augment.stamp_fits``.
 AugmentBatch = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
@@ -98,6 +100,17 @@ _STAGE_NAMES: Final = {"train": "Train", "val": "Validation", "test": "Test"}
 _FINE_TUNE_HIDDEN: Final = 64
 
 
+def _hparams_ignore(n_classes: int, *names: str) -> list[str]:
+    """The ``save_hyperparameters(ignore=...)`` list of a classifier with ``n_classes``.
+
+    ``n_classes`` is recorded only when it is not the default (5): the hyperparameters of
+    the phase-2 modules, and so their ``hparams.yaml`` and checkpoints, stay exactly what
+    they were before the parameter existed, and ``load_from_checkpoint`` rebuilds them with
+    the default. An N-class module records it, and reloads with it.
+    """
+    return [*names, *(["n_classes"] if n_classes == N_CLASSES else [])]
+
+
 @dataclass(frozen=True, slots=True)
 class _StepOutput:
     """What one classifier step leaves in its epoch buffer (all detached)."""
@@ -105,7 +118,7 @@ class _StepOutput:
     y_pred: torch.Tensor
     y_true: torch.Tensor
     loss: torch.Tensor
-    #: softmax of the logits (B, 5): the per-stamp outputs of the comparisons (task 2.3).
+    #: softmax of the logits (B, n_classes): the per-stamp outputs of the comparisons (2.3).
     probabilities: torch.Tensor
 
 
@@ -121,22 +134,34 @@ class ClassifierModule(L.LightningModule):
     ``accuracy_val`` / ``loss_val`` (``accuracy_test`` / ``loss_test``) on the progress bar,
     and store the row-normalised confusion matrix, on the CPU, in
     ``confusion_matrices["val"]`` / ``["test"]`` (the labels in ``predictions``, the
-    probabilities in ``probabilities``).
+    probabilities in ``probabilities``), except in the validations inside ``fit``: those
+    only feed the monitor, and ``trainer.validate`` / ``trainer.test`` fill these.
 
     Subclasses define ``forward(x_img, x_feat)``, and may override :meth:`compute_loss`
-    and :meth:`trainable_parameters`.
+    and :meth:`trainable_parameters`. ``n_classes`` (default 5, CD21's classes) sizes the
+    metrics and the confusion matrices; each subclass builds its network with it.
 
     Raises:
         UnknownOptimizerError: if ``optimizer`` is not a known name (at construction, not
             when training starts).
+        ValueError: if ``n_classes`` is not an integer >= 2.
     """
 
     #: Metrics that ``Settings.monitor`` may name for this module.
     MONITORABLE: ClassVar[frozenset[str]] = frozenset({"accuracy_val", "loss_val"})
 
-    def __init__(self, *, beta_loss: float, lr: float, optimizer: str, with_features: bool) -> None:
+    def __init__(
+        self,
+        *,
+        beta_loss: float,
+        lr: float,
+        optimizer: str,
+        with_features: bool,
+        n_classes: int = N_CLASSES,
+    ) -> None:
         super().__init__()
         check_optimizer_name(optimizer)
+        self.n_classes = check_n_classes(n_classes)
         self.beta_loss = beta_loss
         self.lr = lr
         self.optimizer_name = optimizer
@@ -148,7 +173,7 @@ class ClassifierModule(L.LightningModule):
         #: The last ``(y_pred, y_true)`` of each evaluation stage, on the CPU (for the
         #: metrics JSON of the CLI: macro-F1 and the confusion-matrix counts).
         self.predictions: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
-        #: The last softmax probabilities (N, 5) of each evaluation stage, on the CPU, in
+        #: The last softmax probabilities (N, n_classes) of each evaluation stage, on the CPU, in
         #: loader order (the per-stamp predictions files of the CLI, task 2.3).
         self.probabilities: dict[str, torch.Tensor] = {}
 
@@ -216,7 +241,11 @@ class ClassifierModule(L.LightningModule):
         y_pred = torch.cat([out.y_pred for out in outputs])
         y_true = torch.cat([out.y_true for out in outputs])
         loss = torch.stack([out.loss for out in outputs]).mean()
-        metrics = classification_metrics(y_pred, y_true)
+        # The labels are argmaxes of n_classes-wide tensors, always in range: skip
+        # torchmetrics' value checks (extra kernels and, on a GPU, a sync every validation).
+        metrics = classification_metrics(
+            y_pred, y_true, num_classes=self.n_classes, validate_args=False
+        )
         name = _STAGE_NAMES[stage]
         self.log(f"Loss/{name}", loss)
         for key in METRIC_NAMES:
@@ -225,7 +254,13 @@ class ClassifierModule(L.LightningModule):
             # The legacy monitor names, on the progress bar only (as in the legacy code).
             self.log(f"accuracy_{stage}", metrics["accuracy"], logger=False, prog_bar=True)
             self.log(f"loss_{stage}", loss, logger=False, prog_bar=True)
-            self.confusion_matrices[stage] = confusion_matrix(y_pred, y_true).cpu()
+            if self.trainer.state.fn == TrainerFn.FITTING:
+                # The fit's validations only select: the run's outputs come from
+                # validate/test(ckpt_path=best), so their copies would be thrown away.
+                return
+            self.confusion_matrices[stage] = confusion_matrix(
+                y_pred, y_true, num_classes=self.n_classes
+            ).cpu()
             self.predictions[stage] = (y_pred.cpu(), y_true.cpu())
             self.probabilities[stage] = torch.cat([out.probabilities for out in outputs]).cpu()
 
@@ -280,17 +315,40 @@ class SupervisedCEModule(ClassifierModule):
         lr: float,
         optimizer: str,
         with_features: bool = True,
+        n_classes: int = N_CLASSES,
     ) -> None:
         super().__init__(
-            beta_loss=beta_loss, lr=lr, optimizer=optimizer, with_features=with_features
+            beta_loss=beta_loss,
+            lr=lr,
+            optimizer=optimizer,
+            with_features=with_features,
+            n_classes=n_classes,
         )
-        self.model = StampClassifier(drop_rate, with_features)
-        self.save_hyperparameters()
+        self.model = StampClassifier(drop_rate, with_features, n_classes)
+        self.save_hyperparameters(ignore=_hparams_ignore(n_classes))
 
     def forward(self, x_img: torch.Tensor, x_feat: torch.Tensor) -> torch.Tensor:
-        """Images and features -> (B, 5) logits."""
+        """Images and features -> (B, n_classes) logits."""
         out: torch.Tensor = self.model(x_img, x_feat if self.with_features else None)
         return out
+
+
+def _check_cd21_augment(
+    synthetic_bogus: float, flux_rescale: float, context: str, n_classes: int
+) -> None:
+    """Refuse C6 / C7 where they cannot apply: with context channels, or not on CD21's classes.
+
+    Raises:
+        ValueError: if ``flux_rescale`` or ``synthetic_bogus`` is set with ``context`` other
+            than ``none``, or with ``n_classes`` other than 5.
+    """
+    if flux_rescale and context != "none":
+        raise ValueError("flux_rescale changes no context channels: needs context='none'")
+    if synthetic_bogus and context != "none":
+        raise ValueError("synthetic_bogus builds no context channels: needs context='none'")
+    if (synthetic_bogus or flux_rescale) and n_classes != N_CLASSES:
+        # C6 and C7 use CD21's label indices (Asteroid and Bogus sources; never Bogus).
+        raise ValueError("synthetic_bogus and flux_rescale need the 5 CD21 classes")
 
 
 class PaperClassifierModule(ClassifierModule):
@@ -335,7 +393,8 @@ class PaperClassifierModule(ClassifierModule):
             or an augmentation strength is negative, ``synthetic_bogus`` is not in [0, 1),
             ``aug_min_r2`` not in [0, 1], ``flux_rescale`` not in [0, 1], not ``0 <
             flux_k_min <= flux_k_max``, ``synthetic_bogus`` or ``flux_rescale`` is set with
-            context channels, or the variant is invalid (``build_paper_model``).
+            context channels or with ``n_classes`` other than 5, ``n_classes`` is not an
+            integer >= 2, or the variant is invalid (``build_paper_model``).
     """
 
     def __init__(
@@ -360,9 +419,14 @@ class PaperClassifierModule(ClassifierModule):
         flux_rescale: float = 0.0,
         flux_k_min: float = 0.5,
         flux_k_max: float = 1.5,
+        n_classes: int = N_CLASSES,
     ) -> None:
         super().__init__(
-            beta_loss=beta_loss, lr=lr, optimizer=optimizer, with_features=with_features
+            beta_loss=beta_loss,
+            lr=lr,
+            optimizer=optimizer,
+            with_features=with_features,
+            n_classes=n_classes,
         )
         if adam_betas not in PAPER_ADAM_BETAS:
             valid = ", ".join(PAPER_ADAM_BETAS)
@@ -379,10 +443,7 @@ class PaperClassifierModule(ClassifierModule):
             raise ValueError(f"flux_rescale must be in [0, 1], got {flux_rescale}")
         if not 0 < flux_k_min <= flux_k_max:
             raise ValueError("flux_k_min and flux_k_max must satisfy 0 < min <= max")
-        if flux_rescale and context != "none":
-            raise ValueError("flux_rescale changes no context channels: needs context='none'")
-        if synthetic_bogus and context != "none":
-            raise ValueError("synthetic_bogus builds no context channels: needs context='none'")
+        _check_cd21_augment(synthetic_bogus, flux_rescale, context, n_classes)
         self.adam_betas = adam_betas
         self.rot90_augment = rot90_augment
         self.augment_seed = augment_seed
@@ -400,11 +461,12 @@ class PaperClassifierModule(ClassifierModule):
             with_features=with_features,
             dropout_active=dropout_active,
             drop_rate=drop_rate,
+            n_classes=n_classes,
         )
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=_hparams_ignore(n_classes))
 
     def forward(self, x_img: torch.Tensor, x_feat: torch.Tensor) -> torch.Tensor:
-        """Crops (B, C, 21, 21) and features -> (B, 5) logits (C: 3, or 6 with context)."""
+        """Crops (B, C, 21, 21) and features -> (B, n_classes) logits (C: 3, or 6 with context)."""
         out: torch.Tensor = self.model(x_img, x_feat if self.with_features else None)
         return out
 
@@ -527,20 +589,25 @@ class SupervisedCEResNetModule(ClassifierModule):
         optimizer: str,
         with_features: bool = True,
         resnet_model: str = "resnet18",
+        n_classes: int = N_CLASSES,
     ) -> None:
         super().__init__(
-            beta_loss=beta_loss, lr=lr, optimizer=optimizer, with_features=with_features
+            beta_loss=beta_loss,
+            lr=lr,
+            optimizer=optimizer,
+            with_features=with_features,
+            n_classes=n_classes,
         )
         if not resnet_model.startswith("resnet"):
             msg = f"resnet_model must be a ResNet (resnet18/34/50/152), got {resnet_model!r}"
             raise ValueError(msg)
         encoder = build_encoder(resnet_model)
-        head = LinearClassifier(_n_inputs(encoder.out_features, with_features), N_CLASSES)
+        head = LinearClassifier(_n_inputs(encoder.out_features, with_features), n_classes)
         self.model = EncoderClassifier(encoder.module, head, with_features=with_features)
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=_hparams_ignore(n_classes))
 
     def forward(self, x_img: torch.Tensor, x_feat: torch.Tensor) -> torch.Tensor:
-        """Images and features -> (B, 5) logits."""
+        """Images and features -> (B, n_classes) logits."""
         out: torch.Tensor = self.model(x_img, x_feat)
         return out
 
@@ -682,7 +749,7 @@ class _DownstreamModule(ClassifierModule):
     def _save_pretrained_spec(self, pretrained: SimCLRModule) -> None:
         # The module itself cannot go into the hyperparameters (it is not a plain value);
         # its own hyperparameters are enough to rebuild its architecture on load.
-        self.save_hyperparameters(ignore=["pretrained"])
+        self.save_hyperparameters(ignore=_hparams_ignore(self.n_classes, "pretrained"))
         self.hparams["pretrained"] = dict(pretrained.hparams)
 
     def setup(self, stage: str) -> None:
@@ -709,7 +776,8 @@ class LinearEvalModule(_DownstreamModule):
     The encoder is a frozen copy of ``pretrained.encoder``: it stays in eval mode (also
     while training) and runs without gradient. Its output is divided by its L2 norm and,
     with features, concatenated with the 23 raw features (no batch norm, as in the legacy
-    code); ``LinearClassifier`` maps that to 5 logits and is the only thing trained.
+    code); ``LinearClassifier`` maps that to ``n_classes`` logits and is the only thing
+    trained.
 
     **Legacy loss, kept:** the legacy module passed ``softmax(logits)``, not the logits, to
     ``P_stamps_loss``, which applies its own softmax. :meth:`compute_loss` does the same, so
@@ -733,15 +801,20 @@ class LinearEvalModule(_DownstreamModule):
         lr: float,
         optimizer: str,
         with_features: bool,
+        n_classes: int = N_CLASSES,
     ) -> None:
         super().__init__(
-            beta_loss=beta_loss, lr=lr, optimizer=optimizer, with_features=with_features
+            beta_loss=beta_loss,
+            lr=lr,
+            optimizer=optimizer,
+            with_features=with_features,
+            n_classes=n_classes,
         )
         pretrained = _as_pretrained(pretrained)
         self.image_size = pretrained.image_size
         self.encoder = copy.deepcopy(pretrained.encoder).requires_grad_(False).eval()
         n_inputs = _n_inputs(pretrained.n_features_encoder, with_features)
-        self.classifier = LinearClassifier(n_inputs, N_CLASSES)
+        self.classifier = LinearClassifier(n_inputs, n_classes)
         self._save_pretrained_spec(pretrained)
 
     def train(self, mode: bool = True) -> LinearEvalModule:
@@ -751,7 +824,7 @@ class LinearEvalModule(_DownstreamModule):
         return self
 
     def forward(self, x_img: torch.Tensor, x_feat: torch.Tensor) -> torch.Tensor:
-        """Images and features -> (B, 5) logits of the linear head."""
+        """Images and features -> (B, n_classes) logits of the linear head."""
         with torch.no_grad():
             h = self.encoder(x_img)
             h = h * (1 / torch.norm(h, dim=1, keepdim=True))
@@ -795,25 +868,30 @@ class FineTuneModule(_DownstreamModule):
         lr: float,
         optimizer: str,
         with_features: bool = True,
+        n_classes: int = N_CLASSES,
     ) -> None:
         super().__init__(
-            beta_loss=beta_loss, lr=lr, optimizer=optimizer, with_features=with_features
+            beta_loss=beta_loss,
+            lr=lr,
+            optimizer=optimizer,
+            with_features=with_features,
+            n_classes=n_classes,
         )
         pretrained = _as_pretrained(pretrained)
         self.image_size = pretrained.image_size
         n_inputs = _n_inputs(pretrained.n_features_encoder, with_features)
         head: nn.Module
         if pretrained.encoder_name.startswith("resnet"):
-            head = LinearClassifier(n_inputs, N_CLASSES)
+            head = LinearClassifier(n_inputs, n_classes)
         else:
             head = ThreeLayerClassifier(
-                n_inputs, _FINE_TUNE_HIDDEN, _FINE_TUNE_HIDDEN, N_CLASSES, drop_rate
+                n_inputs, _FINE_TUNE_HIDDEN, _FINE_TUNE_HIDDEN, n_classes, drop_rate
             )
         encoder = copy.deepcopy(pretrained.encoder)
         self.model = EncoderClassifier(encoder, head, with_features=with_features)
         self._save_pretrained_spec(pretrained)
 
     def forward(self, x_img: torch.Tensor, x_feat: torch.Tensor) -> torch.Tensor:
-        """Images and features -> (B, 5) logits."""
+        """Images and features -> (B, n_classes) logits."""
         out: torch.Tensor = self.model(x_img, x_feat)
         return out

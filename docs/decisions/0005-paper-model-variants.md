@@ -69,11 +69,17 @@ must never pass for the replication. Several choices below would otherwise puzzl
    (its scale would depend on pixels outside the crop differently from the crop channels);
    a separate NaN flag for the context (two inconsistent views of the same pixels).
 8. **Hand-written group layers, no escnn.** They run as one `F.conv2d` each on every
-   backend (the portability rule; escnn's `py3nj` needs Fortran), and the orientation
-   permutation is a stack of slices because an advanced index's backward has no
-   deterministic MPS kernel. The kernels are re-expanded on every call (no cache, which
-   could go stale after `load_state_dict` or an optimizer step in eval mode); this costs
-   batch-1 latency, not throughput, and an exported constant-folded model does not pay it.
+   backend (the portability rule; escnn's `py3nj` needs Fortran). An advanced index's (or
+   `index_select`'s) backward is an accumulating scatter with no deterministic MPS kernel,
+   so the expansion was first a stack of slices and transforms (~200 ops per p4 training
+   step). *Amended 2026-11-08 (perf audit, item 4):* it is now one `index_select` of the
+   flattened weight with a precomputed, non-persistent index buffer, inside a custom
+   autograd function whose backward gathers each entry's `|G|` copies with an inverse index
+   and adds them in a fixed order, the one autograd used for the stack: no scatter, still
+   deterministic on MPS, and values and gradients bit-equal to the stack (tested). The
+   kernels are re-expanded on every call (no cache, which could go stale after
+   `load_state_dict` or an optimizer step in eval mode); an exported constant-folded model
+   does not pay it.
 
 ## Consequences
 

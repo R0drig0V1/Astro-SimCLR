@@ -1,5 +1,5 @@
-<!-- ADR 0012: the plain-PyTorch training engine (phase 4, task B0): what the loop reproduces from Lightning, its frozen contracts, the data tiers and the equivalence gate. -->
-# 0012: A plain-PyTorch training loop, held to Lightning's behaviour by a checklist and a gate
+<!-- ADR 0013: the plain-PyTorch training engine (phase 4, task B0): what the loop reproduces from Lightning, its frozen contracts, the data tiers and the equivalence gate. -->
+# 0013: A plain-PyTorch training loop, held to Lightning's behaviour by a checklist and a gate
 
 - **Status:** accepted (2026-11-08, phase 4, task B0; plan review
   `docs/plan-reviews/2026-11-08-phase-4.md`, findings F1, F5, F6, F12, F14)
@@ -20,9 +20,10 @@ behaviours, each verified in the sources rather than remembered, and the replace
 pass a gate before Lightning goes (4.7, 4.8).
 
 Every item below was read in the installed **Lightning 2.6.6** and in this repository at
-`096b525`. Paths: `PL/` is `.venv/lib/python3.12/site-packages/lightning/pytorch/`, `FAB/`
-is `.../lightning/fabric/`, `torch/` is the installed torch 2.14.1; ours are relative to `src/astro_simclr/`. Lightning facts that
-were not obvious from the code are also pinned by tests now
+`813935c` (`origin/main` when this ADR was written). Paths: `PL/` is
+`.venv/lib/python3.12/site-packages/lightning/pytorch/`, `FAB/` is `.../lightning/fabric/`,
+`torch/` is the installed torch 2.14.1; ours are relative to `src/astro_simclr/`. Lightning
+facts that were not obvious from the code are also pinned by tests now
 (`tests/test_engine_contracts.py`), so a Lightning upgrade that changes one fails before
 the 4.7(a) test is written against it.
 
@@ -37,11 +38,11 @@ phase 3's `rj23` schedule and phase 5. The legacy modules (ResNet and stamp
 
 **C1. Seeding, then build on the CPU, then move to the device.**
 - Today: `apply_fp32_precision` first (`experiments.py:1003`, ADR 0010); `seed_run` calls
-  `L.seed_everything(seed, workers=True)` (`training/runs.py:117`), which seeds `random`,
+  `L.seed_everything(seed, workers=True)` (`training/runs.py:118`), which seeds `random`,
   NumPy's global generator and torch (CPU and every CUDA device) (`FAB/utilities/seed.py:59-65`);
   the module is built right after, on the CPU (`experiments.py:508-509`), so its initial
   weights do not depend on the device. The data are built and moved at the `setup` hook
-  (`PL/trainer/trainer.py:1039`, `training/device_data.py:193-195`); the model is moved by
+  (`PL/trainer/trainer.py:1039`, `training/device_data.py:196-198`); the model is moved by
   `strategy.setup` (`trainer.py:1053`, `PL/strategies/strategy.py:155`) and the optimizer is
   built after the move (`strategy.py:159`).
 - Nothing else on the path draws from the global streams: the augmentations use per-step
@@ -128,10 +129,10 @@ fit, `inference_mode` in the final evaluation.**
 
 **C6. Augmentation seeds keyed by the optimizer steps done before the step.**
 - Inside `training_step`, `self.global_step` has not been incremented yet (C5), so it is
-  the steps done before this one: `rotation_steps(n, global_step)` (`training/modules.py:456`,
-  `:418`) and `augment_rng(seed, global_step, stream)` (`modules.py:460`, `:472`;
+  the steps done before this one: `rotation_steps(n, global_step)` (`training/modules.py:518`,
+  `:480`) and `augment_rng(seed, global_step, stream)` (`modules.py:522`, `:534`;
   `training/class_augment.py:178-184`). The batch of that step is stream batch
-  `global_step` (`device_data.py:247-251`, `:413-415`; `training/tiling.py:94-98`).
+  `global_step` (`device_data.py:250-254`, `:420-422`; `training/tiling.py:94-98`).
 - Plain loop: `Task.train_step(batch, step=steps_done)` and `BatchSource.batch(steps_done)`.
 - Pinned by: `test_lightning_validation_grid_and_epochs` (`global_step` in the steps is
   0, 1, 2, ...), `test_rot90_augmentation_is_seeded_by_step_and_rotates_training_batches`
@@ -140,8 +141,8 @@ fit, `inference_mode` in the final evaluation.**
   (`tests/test_split_runs.py:638`), `test_host_generator_is_augment_rng`.
 
 **C7. The monitor value: the float32 mean of the batch losses, compared with a strict `<`.**
-- `ClassifierModule._log_epoch` logs `loss_val = torch.stack(losses).mean()` (`modules.py:218`,
-  `:227`), the batch means weighing equally (TF's "mean of batch-64 means"; the last batch
+- `ClassifierModule._log_epoch` logs `loss_val = torch.stack(losses).mean()` (`modules.py:243`,
+  `:256`), the batch means weighing equally (TF's "mean of batch-64 means"; the last batch
   has 52 stamps). Lightning passes it on unchanged: the epoch-end value is accumulated as
   `0 + v·1` and divided by 1 (`PL/trainer/connectors/logger_connector/result.py:234`, `:251`),
   the batch size being 1 because the batch reference is cleared after every batch
@@ -155,7 +156,7 @@ fit, `inference_mode` in the final evaluation.**
 
 **C8. Determinism flags.**
 - `build_trainer` passes `deterministic` and `benchmark=not deterministic`
-  (`training/runs.py:213-214`); the Trainer's constructor applies them
+  (`training/runs.py:221-222`); the Trainer's constructor applies them
   (`PL/trainer/connectors/accelerator_connector.py:111`, `:571-593`):
   `cudnn.benchmark = not deterministic`; `torch.use_deterministic_algorithms(deterministic)`,
   called with `False` too; `CUBLAS_WORKSPACE_CONFIG=":4096:8"` set only when deterministic
@@ -181,7 +182,7 @@ fit, `inference_mode` in the final evaluation.**
 - Lightning's checkpoint (`PL/trainer/connectors/checkpoint_connector.py:415-500`): `epoch`,
   `global_step`, `pytorch-lightning_version`, `state_dict`, `loops` (the progress counters
   and the training loader's state: the stream definition and a split run's identity,
-  `device_data.py:253-258`), `callbacks` (`HorizonCallback.state_dict`: monitor, mode,
+  `device_data.py:256-261`), `callbacks` (`HorizonCallback.state_dict`: monitor, mode,
   horizon, best score, step and epoch, the best weights on the CPU, `schedule.py:209-225`),
   `optimizer_states`, `lr_schedulers` and the hyperparameters. **It holds no RNG state**:
   the `carrasco2021` resume is exact only because nothing draws from the global streams

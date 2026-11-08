@@ -1,7 +1,7 @@
 """The schedule policies of the plain loop: monitor, validation grid, horizon, stop, keep.
 
 Each policy is a frozen dataclass whose pure rule is the contract that 4.1's loop follows
-and that the 4.7(a) differential test checks against Lightning (ADR 0012):
+and that the 4.7(a) differential test checks against Lightning (ADR 0013):
 
 - :class:`Monitor`: a strict improvement (``<`` for ``min``, ``>`` for ``max``); NaN never
   improves; the first finite value always does (``HorizonCallback._improves``);
@@ -140,7 +140,7 @@ class EarlyStop:
     An improvement is ``current + min_delta < best`` (``min``; ``current - min_delta > best``
     for ``max``), the wait count resets on it; ``check_finite`` stops on a non-finite value;
     ``divergence_threshold`` stops as soon as the value is worse than it
-    (``lightning/pytorch/callbacks/early_stopping.py``, ADR 0012). A contract only: the
+    (``lightning/pytorch/callbacks/early_stopping.py``, ADR 0013). A contract only: the
     first user is task 3.4b's ``rj23`` schedule (patience 5, strict, ``min_delta`` 0).
 
     Raises:

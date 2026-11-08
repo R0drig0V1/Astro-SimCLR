@@ -1,7 +1,7 @@
 """The device policy of the plain engine: one device, determinism flags, float32 precision.
 
 What Lightning's ``Trainer(accelerator, devices, deterministic, benchmark)`` decided
-implicitly is one frozen record here (ADR 0012, "Determinism"):
+implicitly is one frozen record here (ADR 0013, "Determinism"):
 
 - **one device**: ``world_size > 1`` is refused (multi-GPU is out of scope);
 - ``cudnn.benchmark = not deterministic`` (``training.runs.build_trainer``);
@@ -42,7 +42,7 @@ class DevicePolicy:
         world_size: processes in the run; only 1 is supported.
 
     Raises:
-        ConfigError: for ``world_size != 1`` (multi-GPU is out of scope, ADR 0012), an
+        ConfigError: for ``world_size != 1`` (multi-GPU is out of scope, ADR 0013), an
             unknown accelerator or an unknown precision.
     """
 
@@ -55,7 +55,7 @@ class DevicePolicy:
         if self.world_size != 1:
             msg = (
                 f"world_size {self.world_size}: the plain engine trains on one device only "
-                "(multi-GPU is out of scope, ADR 0012)"
+                "(multi-GPU is out of scope, ADR 0013)"
             )
             raise ConfigError(msg)
         if self.accelerator not in ("cpu", "cuda", "mps"):

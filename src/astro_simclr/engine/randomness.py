@@ -1,4 +1,4 @@
-"""Seeded per-step generators: the engine's only sources of training randomness (ADR 0012).
+"""Seeded per-step generators: the engine's only sources of training randomness (ADR 0013).
 
 Two kinds, by what the draw is for:
 
