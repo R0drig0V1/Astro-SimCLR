@@ -39,6 +39,9 @@ received files:
    al. 2021: 51,594 alerts, Validation and Test balanced at 100 per class).
 2. `..._red.pkl` removes duplicate stamps (L2 distance < 1e-5) within each split. Its 50,582
    Train stamps are all distinct. One Train stamp also appears in Validation or Test.
+   Distinct alerts of one object were kept: within 1.5", 24 Validation and 27 Test alerts
+   share a position with a Train alert, and Train has groups of up to 16 alerts
+   (`astro-simclr leakage-audit`; `docs/evaluation-protocol.md`, "Leakage").
 3. `..._sup_100.pkl` is `red`'s Train split balanced by oversampling. Duplicates are drawn
    at random to bring each class up to the largest one: 5 × 14,542 = 72,710 stamps, which
    matches the size of the truncated file.

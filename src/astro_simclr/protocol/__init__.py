@@ -5,8 +5,12 @@ The rules themselves (what may decide what, the power note) are in
 
 - :mod:`~astro_simclr.protocol.leakage`: stamps duplicated across splits, and the Train
   stamps to drop because of them (from Train only);
+- :mod:`~astro_simclr.protocol.groups`: object groups (alerts within 1.5" of each other,
+  or with the same external id), an exact numpy neighbour search and union-find;
 - :mod:`~astro_simclr.protocol.splits`: the stored decision splits (the 250/250 screen of
-  Validation and the stratified 5-fold CV on Train + Validation), ``make-splits``;
+  Validation and the stratified 5-fold CV on Train + Validation, grouped by object since
+  format version 2), ``make-splits``;
+- :mod:`~astro_simclr.protocol.audit`: ``leakage-audit``, the objects shared across splits;
 - :mod:`~astro_simclr.protocol.predictions`: the per-stamp probabilities every classifier
   run writes, and seed ensembling;
 - :mod:`~astro_simclr.protocol.stats`: McNemar, the paired stratified bootstrap, balanced
