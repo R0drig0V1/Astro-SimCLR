@@ -6,6 +6,8 @@
 - **Implemented by:** the contracts in `src/astro_simclr/engine/` (`task.py`, `policies.py`,
   `checkpoint.py`, `device.py`, `data.py`, `randomness.py`); the loop itself in task 4.1,
   the config in 4.2, the data tiers in 4.3, the tasks in 4.6
+- **Amended by:** ADR 0018 (the data tiers, task 4.3: section 3's `pinned` tier pins the
+  staging buffers, not the dataset; the shuffle granularity; the stream definition)
 - **Checked by:** `tests/test_engine_contracts.py` (the contracts, and the Lightning
   reference facts of the checklist); the existing tests named in the checklist; the 4.7
   equivalence gate once it exists
@@ -254,7 +256,9 @@ definition and `s`, so all three give the same batches and the same resume.
 | 2. `pinned` | float32 in pinned host memory; a per-step gather on the host and a non-blocking upload, one step ahead | exact: the same float32 values reach the same ops |
 | 3. `memmap` | float32 in a disk memmap, read in shards (phase 5, data larger than host memory) | exact, for the same reason |
 
-The tier is chosen by the config, never by the engine. Storing `uint8` or `float16` to make
+Implemented in task 4.3; ADR 0018 records the details (one dataset API over the prepared
+kinds, pinned staging buffers rather than a pinned dataset, the shuffle granularity, the
+stream definition). The tier is chosen by the config, never by the engine. Storing `uint8` or `float16` to make
 data fit is a `TierChoice` with `is_deviation` true: a recorded preset deviation, **never an
 automatic fallback** (plan finding F6: the uint8 path quantises the stamps).
 

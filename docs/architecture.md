@@ -33,7 +33,7 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  │    (training ──► paper_variants: rot4 / single / p4 / p4m ──► paper_model, group_conv;
  │     paper_model ──► feature_sets: all / position / none)
  ├──► preflight ──► experiments, data (inspection, manifest)
- └──► engine (phase 4: the plain-PyTorch loop's contracts; imports no Lightning) ──► config
+ └──► engine (phase 4: the loop's contracts, the data tiers; imports no Lightning) ──► config, data
  └──► runs (phase 4, A0: run identity, manifest.json, layout, retention) ──► config, data
 
 rj23_model (engine-free nn.Modules, not wired yet: task 3.4b) ──► data.rj23_input
@@ -1163,7 +1163,8 @@ workers fork), not repeated here because spawned workers cost about 25 s on macO
 
 ALeRCE's training procedure as Lightning pieces, all under `src/astro_simclr/training/`.
 
-**Tiling** (`tiling.py`). `tile_indices(labels)` is ALeRCE's
+**Tiling** (`tiling.py`, a re-export of `engine/stream.py` since task 4.3, so the plain
+engine shares the stream without importing Lightning). `tile_indices(labels)` is ALeRCE's
 `balance_data_by_replication` on indices: classes in sorted label order; a smaller class
 becomes `max // n` full copies of its indices (file order) plus their first `max % n`; the
 largest class is kept. Every class then has `max` entries (`red`: 5 × 14,542 = 72,710).
@@ -1428,6 +1429,67 @@ Lightning behaviour the loop reproduces (C1-C11) and the test that pins each.
 gradient `None` at validation, `no_grad` in the fit's validations and `inference_mode` in
 `trainer.validate`, the epoch numbering of `metrics.json`), so an upgrade that changes one
 fails here.
+
+### The data layer (task 4.3; ADR 0018)
+
+One dataset API and three tiers that serve identical bytes, so the tier is a memory versus
+bandwidth choice that cannot change a result.
+
+| Module | What it does |
+|---|---|
+| `dataset` | `Dataset`: float32 `images` of any per-row shape (possibly a memory map), optional in-memory `features` / `labels` (+ `n_classes`) / `fits`, and an optional `rows` selection (`select` composes; `materialised` copies). Adapters: `prepared_split(path, split)` (`classifier`; `unlabelled` for a pretraining `Train`; refuses layouts without `images_f32.npy`), `raw_alerts_dataset(path, candids=...)` (raw cutouts, labels from the index, the 23 CD21 features as float32), or the constructor (`arrays`). |
+| `stream` | `tile_indices` and `PermutationStream` (moved from `training/tiling.py`); `BlockShuffleStream`; `TrainOrder` (tiling, then the stream over its positions; per-pass row orders cached; `state()` = the stream keys plus `rows_sha256`). |
+| `tiers` | `open_train(dataset, TierChoice, StreamSpec, device) -> TrainSource` (`batch(step)`, the frozen `TrainBatch`; `columns(step)` by name, for unlabelled kinds; `state()`, `resume(state, steps_done)`, `describe()` for the manifest) and `open_eval(...) -> EvalBatches` (consecutive batches, the last partial; `iter_columns()`). |
+| `bench` | `python -m astro_simclr.engine.bench`: batches/s per tier and device, interleaved rounds, median. |
+
+- **`device`:** the materialised dataset on the device; each pass's row order is uploaded
+  once and sliced, so a step makes no host-to-device copy. Its batches are `torch.equal` to
+  `DeviceTensorDataModule`'s (tested), and the stream keys are the Lightning loader's.
+- **`pinned`:** the dataset in pageable host memory; the step's rows are gathered into one
+  of two pinned staging buffers and uploaded `non_blocking` on the current stream, one step
+  ahead; a buffer is refilled only after the event behind its last upload completes. On a
+  CPU device nothing is staged or prefetched.
+- **`memmap`:** the images stay in their file; a batch is read sorted by file offset and
+  scattered into the staging buffer, then uploaded as in `pinned`. float32 only.
+- **Shuffle granularity** (`StreamSpec.shuffle`): `row` (default; a uniform permutation per
+  pass, the paper's, the only one with `balance`) or `block` (`block_rows`-row blocks
+  permuted, then positions shuffled within windows of `window_blocks` blocks; a batch reads
+  at most two windows of contiguous ranges, but file neighbours share batches far more
+  often). It is part of the stream definition, served identically by every tier.
+- **The stream definition** (`TrainSource.state()`, the checkpoint's `stream`): `n`,
+  `batch_size`, `seed`, the block parameters when used, `rows_sha256` and `storage_dtype`.
+  Not the tier: a resume may move to another tier and stays exact (tested). The only
+  mutable state is the position (`steps_done`).
+- **Storage dtype:** `float16` / `uint8` images (`TierChoice.storage_dtype`) are quantised
+  once and dequantised on the device after the gather; `describe()["deviation"]` is true,
+  a resume under another dtype is refused, and the `memmap` tier refuses them.
+
+**Tested** (`tests/test_engine_tiers.py`, on CPU and on MPS or CUDA when present): `pinned`
+and `memmap` `torch.equal` to `device` for 40 steps across pass boundaries, balanced and
+not, with fits and a scrambled selection, and in evaluation (partial last batch, two
+passes); `block` identical on every tier; `device` equal to `DeviceTensorDataModule`; exact
+resume mid-pass on every tier and onto another tier; out-of-order steps; resume refusals
+(seed, batch size, balance, storage dtype); the quantised values and their record;
+unlabelled columns. `tests/test_engine_stream.py` and `tests/test_engine_dataset.py` test
+the stream and the adapters on the synthetic prepared and raw-alerts layouts.
+
+**Throughput** (`python -m astro_simclr.engine.bench`, Apple M4, torch 2.14.1, 2026-11-08,
+batch 64, 300 timed batches × 7 interleaved rounds, median; the Mac was shared with other
+agents, load average about 40-50, so the rounds spread by 2-3×; the memmap file is in the
+page cache). Results: `results/phase4/data-tiers-bench-{crop21,stamp63}.json`.
+
+| Rows | Device | `device` | `pinned` | `memmap` |
+|---|---|---|---|---|
+| 3×21×21 (the paper's crops), n = 20,000 | CPU | 6,180 batches/s | 7,611 | 5,128 |
+| | MPS | 7,460 | 1,440 | 1,451 |
+| 3×63×63 (phase 5's stamps), n = 10,000 | CPU | 1,398 (4.3 GB/s) | 1,615 | 929 |
+| | MPS | 2,873 (8.8 GB/s) | 666 (2.0 GB/s) | 589 (1.8 GB/s) |
+
+Every tier serves more than 580 batches/s of 63-px stamps (under 1.7 ms per batch, a
+fraction of a SimCLR step). On MPS the host tiers cost about 0.7 ms per batch against
+0.13 ms for `device`: with unified memory there is nothing to gain from them, so `device` is
+the choice whenever the data fit; `pinned` and `memmap` exist for CUDA machines and the
+phase-5 corpus. Their CUDA and cold-disk numbers are measured on the GPU machine.
 
 ## `presets` (task 2.2c)
 

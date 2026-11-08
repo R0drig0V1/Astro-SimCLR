@@ -19,6 +19,10 @@ pure function of the stream definition and ``s``:
 Quantised storage (``uint8``, ``float16``) is never chosen by the engine to make data fit:
 it is a :class:`TierChoice` with a non-float32 ``storage_dtype``, which is a recorded preset
 deviation (:attr:`TierChoice.is_deviation`), never an automatic fallback.
+
+The tiers are implemented in :mod:`astro_simclr.engine.tiers` (task 4.3, ADR 0018, which
+amends the ``pinned`` tier: the per-step staging buffers are pinned, the dataset itself
+stays in pageable host memory).
 """
 
 from __future__ import annotations
