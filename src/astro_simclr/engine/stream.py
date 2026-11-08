@@ -24,7 +24,7 @@ sees the same batches as an uninterrupted one. This is a documented exception to
 "randomness comes from ``seed_everything``" (``docs/architecture.md``): the stream takes the
 run seed explicitly.
 
-**Shuffle granularity** (ADR 0016), the one choice that changes which items share a batch:
+**Shuffle granularity** (ADR 0018), the one choice that changes which items share a batch:
 
 - ``row`` (:class:`PermutationStream`, the default and the paper's): every pass is a uniform
   permutation of all positions, so any two items are equally likely to share a batch. On

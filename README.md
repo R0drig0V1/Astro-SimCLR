@@ -131,6 +131,10 @@ uv run astro-simclr compare-variants --splits $SPLITS \
 Both are described in [docs/evaluation-protocol.md](docs/evaluation-protocol.md)
 ("Running a decision end to end").
 
+The same split runs answer the feature diagnostic (ADR 0016): `--set feature_set=position`
+keeps only the 6 sky coordinates of the 23 features, `--set feature_set=none` the images
+only (the same model as `with_features: false`).
+
 ### 4. Raw alerts
 
 `fetch-alerts` (task 3.1) recovers the raw alerts behind a prepared split from ALeRCE's

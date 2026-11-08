@@ -1,4 +1,4 @@
-"""The three data tiers: where a dataset lives while a run trains (task 4.3, ADR 0014, 0016).
+"""The three data tiers: where a dataset lives while a run trains (task 4.3, ADR 0014, 0018).
 
 Every tier serves the same thing: the training stream of :class:`TrainSource` (the batch of
 step ``s`` is a pure function of the stream definition and ``s``) and the evaluation passes
@@ -18,7 +18,7 @@ the bytes are, and how they reach the device, changes:
    compute that reads it, so the values and their order are those of tier 1: the batches
    are ``torch.equal``. The dataset itself stays in pageable memory: the gather is a CPU
    copy, which pinning would not speed up, and pinning gigabytes would lock them out of the
-   page cache (ADR 0016).
+   page cache (ADR 0018).
 3. ``memmap``: the images stay in their file (a read-only ``np.memmap``, data larger than
    host memory, phase 5's corpus). Per step the batch's rows are read **sorted by file
    offset** (one forward sweep through the shards the batch touches) and scattered into the

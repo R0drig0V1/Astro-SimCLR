@@ -31,7 +31,7 @@ __all__ = ["RESERVED_STREAMS", "device_generator", "host_generator"]
 
 #: Stream numbers in use (the third ``SeedSequence`` word), by augmentation. ``rot90``
 #: keeps the two-word ``[seed, step]`` of task 2.5-models and has no number (the same two
-#: words as the ``row`` training stream's passes, ``engine.stream``; ADR 0016).
+#: words as the ``row`` training stream's passes, ``engine.stream``; ADR 0018).
 #: ``block_shuffle`` is the ``block`` training stream's pass word (``[seed, pass, 5]``),
 #: task 4.3. Phase 5's SimCLR views take new numbers here.
 RESERVED_STREAMS: Final = MappingProxyType(

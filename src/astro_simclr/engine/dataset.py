@@ -1,4 +1,4 @@
-"""One dataset API over the prepared kinds, for every data tier (task 4.3, ADR 0016).
+"""One dataset API over the prepared kinds, for every data tier (task 4.3, ADR 0018).
 
 A :class:`Dataset` is a set of row-aligned arrays, the only thing the tiers (:mod:`.tiers`)
 read:

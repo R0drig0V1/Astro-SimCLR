@@ -1,6 +1,6 @@
-<!-- ADR 0016: the engine's data layer (task 4.3): one dataset API over the prepared kinds, the
+<!-- ADR 0018: the engine's data layer (task 4.3): one dataset API over the prepared kinds, the
      three tiers and how they stay exact, the stream definition and the shuffle granularity. -->
-# 0016: The data tiers: one dataset API, exact tiers, and the shuffle granularity
+# 0018: The data tiers: one dataset API, exact tiers, and the shuffle granularity
 
 - **Status:** accepted (2026-11-08, phase 4, task 4.3). Implements and amends ADR 0014,
   section 3 ("The data tiers").

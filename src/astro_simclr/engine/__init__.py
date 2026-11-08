@@ -15,7 +15,7 @@ tasks can proceed in parallel and the 4.7 equivalence gate has a fixed target:
 - :mod:`.data`: the batch tuple format and the three data tiers;
 - :mod:`.randomness`: the seeded per-step generators (host and device).
 
-Task 4.3 (ADR 0016) implements the data layer against them:
+Task 4.3 (ADR 0018) implements the data layer against them:
 
 - :mod:`.dataset`: :class:`~.dataset.Dataset`, one API over the prepared kinds
   (classifier, unlabelled, raw-alerts) and in-memory arrays;
