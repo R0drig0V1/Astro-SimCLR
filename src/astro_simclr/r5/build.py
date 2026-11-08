@@ -1,6 +1,6 @@
 """Build R5: the selection, its grouped splits, the first-stamp view and the frozen outputs.
 
-Task 3.5 of ``docs/phases/03-newer-benchmarks.md``; ADR 0016 has the reasons. One build:
+Task 3.5 of ``docs/phases/03-newer-benchmarks.md``; ADR 0018 has the reasons. One build:
 
 1. **Select** (:func:`astro_simclr.r5.select.evaluate`) on the response snapshots; online,
    fetch what is missing (:func:`~astro_simclr.alerts.by_oid.fetch_by_oid`, the polite

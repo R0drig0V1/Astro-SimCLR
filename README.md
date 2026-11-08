@@ -37,7 +37,7 @@ The [roadmap](docs/phases/README.md) is the authority on what is done and what r
 
 ## Install
 
-Requires [uv](https://docs.astral.sh/uv/); it installs Python 3.12 and the exact versions of
+Requires [uv](https://docs.astral.sh/uv/); it installs Python 3.13 and the exact versions of
 `uv.lock`.
 
 ```bash
@@ -131,6 +131,10 @@ uv run astro-simclr compare-variants --splits $SPLITS \
 Both are described in [docs/evaluation-protocol.md](docs/evaluation-protocol.md)
 ("Running a decision end to end").
 
+The same split runs answer the feature diagnostic (ADR 0016): `--set feature_set=position`
+keeps only the 6 sky coordinates of the 23 features, `--set feature_set=none` the images
+only (the same model as `with_features: false`).
+
 ### 4. Raw alerts
 
 `fetch-alerts` (task 3.1) recovers the raw alerts behind a prepared split from ALeRCE's
@@ -162,7 +166,7 @@ uv run astro-simclr build-r5 ... --from-snapshot --out /tmp/R5 --expect dataset/
 ```
 
 The recipe and the outputs (deviation and era tables, frozen index) are in
-[docs/data.md](docs/data.md) ("R5") and [ADR 0016](docs/decisions/0016-r5-reconstruction.md).
+[docs/data.md](docs/data.md) ("R5") and [ADR 0018](docs/decisions/0018-r5-reconstruction.md).
 
 ## Repository map
 

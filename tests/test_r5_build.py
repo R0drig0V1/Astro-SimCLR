@@ -206,7 +206,7 @@ def test_the_result_does_not_depend_on_what_else_was_fetched(
 
 
 def test_every_class_fills_every_split(built: tuple[R5World, Path, Path]) -> None:
-    """The balance of constrained classes is reported, not verified (ADR 0016): check it."""
+    """The balance of constrained classes is reported, not verified (ADR 0018): check it."""
     _, _, out = built
     for r in rows(out / "split_counts.csv"):
         train, val, test = int(r["Train"]), int(r["Validation"]), int(r["Test"])

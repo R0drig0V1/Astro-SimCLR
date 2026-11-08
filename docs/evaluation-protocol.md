@@ -490,7 +490,7 @@ phase-2-style decisions (select the checkpoint on one half, decide on the other)
 possible on the imbalanced 6-class set. `grouping.grouped_halves` does the same on any
 per-row arrays.
 
-**Constraints** (task 3.5, ADR 0016). `make_object_splits(..., allowed={group: splits})`
+**Constraints** (task 3.5, ADR 0018). `make_object_splits(..., allowed={group: splits})`
 restricts named groups to some splits. This is how R5 applies the matrix below: a group that
 holds a CD21 Train row goes only to R5 Train, and one with a CD21 Validation or Test row only
 to Validation or Test.

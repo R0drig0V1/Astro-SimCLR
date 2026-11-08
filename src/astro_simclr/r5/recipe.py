@@ -2,7 +2,7 @@
 
 R5 is the 5-class, object-level benchmark of phase 3 (``docs/phases/03-newer-benchmarks.md``,
 task 3.5), rebuilt under RJ23's recipe (Reyes-Jainaga et al. 2023) from public sources only.
-Everything here is fixed *before* any data is seen (the plan's pre-registration); ADR 0016
+Everything here is fixed *before* any data is seen (the plan's pre-registration); ADR 0018
 gives the reasons and the interpretations.
 
 **The time cutoff.** :data:`JD_MAX` is the Julian date of 2022-12-31T23:59:59 UTC, an

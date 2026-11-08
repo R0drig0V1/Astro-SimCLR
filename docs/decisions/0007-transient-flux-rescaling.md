@@ -65,8 +65,10 @@ transient's flux.
    `configs/phase2/carrasco2021*.yaml` at their defaults (a C7 run is a recorded
    deviation), rejected for other models, needing the float input path and `context: none`
    (the pooled context would keep the old flux). In `training_step`
-   (`PaperClassifierModule.augmented_batch`): C6, C7, C5's noise, then the rotation of
-   `rot90_augment`, then the feature jitter.
+   (`PaperClassifierModule.augment_plan` / `apply_plan`): C6, C7, C5's noise, then the rotation of
+   `rot90_augment`, then the feature jitter. Generator stream 4 of
+   `class_augment.augment_rng` (`[seed, global_step, 4]`), two fixed-size draws per batch
+   (which rows, and `k`).
 8. **C7 runs before the rotation.** The PSF centroid is fitted once on the unrotated crop
    and may be up to 2 px off centre; adding `(k - 1) * PSF` to an already rotated crop
    would put the extra flux where the transient was, not where it is: a fake companion
@@ -76,8 +78,12 @@ transient's flux.
    rotation-agnostic (the cross-channel fit, the border sigmas and the centre spike are
    invariant), move with it. A run with `rot90_augment` and C5 / C6 now draws the same
    augmentations but applies the rotation after them, so it differs from the same run made
-   before this change; runs without `rot90_augment` are unchanged. Generator stream 4 of `class_augment.augment_rng`
-   (`[seed, global_step, 4]`), two fixed-size draws per batch (which rows, and `k`).
+   before this change; runs without `rot90_augment` are unchanged.
+9. **Prefetch** (ADR 0006, item 10): C7's host part (`flux_rescale.plan_flux`: the draws,
+   the alert floors and the rescaled crops, computed in float64 on the host as before) is
+   planned by the training loader ahead of the step; the step only assigns the built rows
+   and updates `magpsf` / `sigmapsf` on the device (`apply_flux`). Bit for bit the in-step
+   result.
 
 ## Consequences
 

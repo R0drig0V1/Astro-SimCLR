@@ -43,7 +43,7 @@ inside herdr (https://herdr.dev).
 scripts/check.sh                   # lint + types + tests; must stay green (edit it per project)
 scripts/integrator.sh              # launch the integrator agent (inside herdr, main worktree)
 /multi-agent-herdr:dispatch <type>/<name> <task>   # integrator: start a development agent
-uv sync --locked                   # .venv with the package and dev tools (Python 3.12)
+uv sync --locked                   # .venv with the package and dev tools (Python 3.13)
 uv sync --locked --extra cpu       # CPU torch (CI); then UV_NO_SYNC=1 for every uv run (ADR 0001)
 uv run astro-simclr --help         # the CLI (src/astro_simclr/cli.py)
 scripts/gpu-preflight.sh --synthetic   # GPU machine check (astro-simclr preflight; ADR 0001)
@@ -72,6 +72,20 @@ uvx copier@9.19.1 update           # pull python-template improvements (clean tr
 - **Typing:** mypy strict; `# type: ignore[override]` only on Lightning hook overrides.
 - **Python changes semantics, not only style:** keep training results reproducible (seeds,
   splits, augmentations) unless the PR says otherwise.
+- **New training flags are engine-free** (ADR 0014) until Lightning is removed (task 4.8).
+  Checklist for the author of a flag (a model variant, augmentation, sampler or schedule):
+  1. Write it as a pure function or a policy object outside both engines: no
+     `lightning` import, no `self.global_step` / `self.trainer` / `self.log` inside it. It
+     takes `step` (optimizer steps done before the step) as an argument.
+  2. Draw its randomness from `engine.randomness.host_generator` (per-sample parameters) or
+     `device_generator` (per-pixel fields, recorded as device-dependent), with a new
+     number in `RESERVED_STREAMS`; never from a global or unseeded generator.
+  3. Wire it into each engine with a thin adapter (today: the Lightning module; with 4.1:
+     the plain `Task`), and test the pure function directly.
+  4. Add it to the 4.7(a) CPU differential test's parametrisation once that test exists:
+     the flag must give bit-identical runs on both engines.
+  5. If it changes the numbers of an existing config, say so in the PR (and bump
+     `numerics_epoch` once task A0 lands); a non-faithful default is a preset deviation.
 
 ## Plan and workflow
 

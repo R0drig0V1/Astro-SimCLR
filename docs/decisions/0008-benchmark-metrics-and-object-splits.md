@@ -80,7 +80,7 @@ made against these choices, changing them would invalidate those runs.
    - The function returns the 3 × 3 matrix of shared counts, from which the pretraining
      exclusion lists are built. The group id is the `oid` where matched, otherwise a 1.5″
      position group built across both benchmarks, by another task.
-   - *Amended by ADR 0016 (task 3.5):* the splits may now be drawn under per-group
+   - *Amended by ADR 0018 (task 3.5):* the splits may now be drawn under per-group
      constraints (object-splits format version 2), which is how R5 satisfies this matrix
      against CD21.
 10. **The per-class MDE is computed on objects, not alerts.** The alerts of one object are

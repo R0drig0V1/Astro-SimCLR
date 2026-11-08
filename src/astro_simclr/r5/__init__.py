@@ -1,6 +1,6 @@
 """R5: the phase-3, 5-class object-level benchmark under RJ23's recipe, from public sources.
 
-Task 3.5 of ``docs/phases/03-newer-benchmarks.md``; ADR 0016 has the decisions and
+Task 3.5 of ``docs/phases/03-newer-benchmarks.md``; ADR 0018 has the decisions and
 ``docs/data.md`` ("R5") the layout and the commands. Submodules:
 
 - :mod:`~astro_simclr.r5.recipe`: the pre-registered constants (``JD_MAX``, the targets and

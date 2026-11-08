@@ -15,7 +15,9 @@ aliases. Loaders keep the legacy settings: shuffled training batches with
 
 With ``num_workers > 0`` under the ``spawn`` start method (the macOS default) each worker
 receives a pickled copy of the dataset, and a pickled memory map is a full in-memory copy
-of the split. Under ``fork`` (Linux) workers share the map.
+of the split. Under ``fork`` (the Linux default up to Python 3.13) workers share the map.
+Python 3.14 makes ``forkserver`` the Linux default, which pickles like ``spawn``: moving to
+3.14 needs an explicit ``multiprocessing_context`` here first.
 """
 
 from __future__ import annotations

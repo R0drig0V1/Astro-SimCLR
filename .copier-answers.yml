@@ -10,5 +10,5 @@ license: MIT
 package_name: astro_simclr
 project_name: Astro-SimCLR
 project_slug: astro-simclr
-python_version: '3.12'
+python_version: '3.13'
 visibility: public

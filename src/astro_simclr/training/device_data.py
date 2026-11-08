@@ -83,7 +83,7 @@ from astro_simclr.models import N_CLASSES, N_FEATURES, check_n_classes
 from astro_simclr.paper_model import PAPER_CROP
 from astro_simclr.protocol.leakage import train_keep_indices
 from astro_simclr.protocol.split_runs import RunParts
-from astro_simclr.training.class_augment import FIT_COLUMNS
+from astro_simclr.training.class_augment import FIT_COLUMNS, upload_plan
 from astro_simclr.training.flux_rescale import PSF_COLUMNS
 from astro_simclr.training.tiling import PermutationStream, tile_indices
 
@@ -109,6 +109,10 @@ IMAGE_CHANNELS = (3, 6)
 Batch = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 #: A training batch: a :data:`Batch`, plus the stamp fits when the Train split has them.
 TrainBatch = Batch | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+#: A :data:`TrainBatch` followed by its uploaded augmentation plan.
+PlannedTrainBatch = tuple[Any, ...]
+#: ``planner(host_batch, step) -> plan``: ``PaperClassifierModule.augment_plan``.
+Planner = Callable[[Any, int], dict[str, Any]]
 _TRAIN, _VALIDATION, _TEST = SPLITS
 
 
@@ -214,6 +218,12 @@ class _StreamLoader:
     global step and ``end`` the next multiple of ``len(self)``. Each pass's permutation is
     moved to the device once; a batch is a slice of it (or of two, across a pass boundary)
     and a gather on the device.
+
+    With a ``planner`` (and ``host``, the Train split on the CPU), each batch also gets its
+    augmentation plan: the same rows are gathered on the host, ``planner(host_batch, b)``
+    makes every draw and decision of step ``b`` there, and the plan is uploaded
+    (``class_augment.upload_plan``: pinned, ``non_blocking`` on CUDA) and yielded as a last
+    element. The step itself then makes no host round trip (ADR 0006, "Prefetch").
     """
 
     def __init__(
@@ -223,6 +233,9 @@ class _StreamLoader:
         stream: PermutationStream,
         position: Callable[[], int],
         identity: Mapping[str, object] | None = None,
+        *,
+        host: _DeviceSplit | None = None,
+        planner: Planner | None = None,
     ) -> None:
         self._split = split
         self._tiled = tiled
@@ -230,6 +243,9 @@ class _StreamLoader:
         self._position = position
         self._identity = None if identity is None else dict(identity)
         self._passes: dict[int, torch.Tensor] = {}
+        self._host_passes: dict[int, torch.Tensor] = {}
+        self._host = host
+        self._planner = planner
 
     def __len__(self) -> int:
         return self._stream.batches_per_pass
@@ -242,16 +258,35 @@ class _StreamLoader:
             self._passes[index] = torch.from_numpy(order).to(self._split.images.device)
         return self._passes[index]
 
+    def _host_pass(self, index: int) -> torch.Tensor:
+        if index not in self._host_passes:
+            self._host_passes = {k: v for k, v in self._host_passes.items() if k >= index - 1}
+            order = self._tiled[self._stream.permutation(index)]
+            self._host_passes[index] = torch.from_numpy(order)
+        return self._host_passes[index]
+
     def indices(self, batch: int) -> torch.Tensor:
         """The (device) indices into the split of stream batch ``batch``."""
         parts = [self._pass(index)[start:stop] for index, start, stop in self._stream.span(batch)]
         return parts[0] if len(parts) == 1 else torch.cat(parts)
 
-    def __iter__(self) -> Iterator[TrainBatch]:
+    def host_indices(self, batch: int) -> torch.Tensor:
+        """The same indices as :meth:`indices`, on the CPU."""
+        spans = self._stream.span(batch)
+        parts = [self._host_pass(index)[start:stop] for index, start, stop in spans]
+        return parts[0] if len(parts) == 1 else torch.cat(parts)
+
+    def __iter__(self) -> Iterator[TrainBatch | PlannedTrainBatch]:
         start = self._position()
         end = (start // len(self) + 1) * len(self)
+        device = self._split.images.device
         for batch in range(start, end):
-            yield self._split.gather(self.indices(batch))
+            gathered = self._split.gather(self.indices(batch))
+            if self._planner is None or self._host is None:
+                yield gathered
+                continue
+            plan = self._planner(self._host.gather(self.host_indices(batch)), batch)
+            yield (*gathered, upload_plan(plan, device))
 
     def state_dict(self) -> dict[str, Any]:
         """The stream definition, plus a split run's identity (saved in every checkpoint)."""
@@ -333,8 +368,11 @@ class DeviceTensorDataModule(L.LightningDataModule):
     (the paper) tiles the Train split (:func:`tiling.tile_indices`); False streams it as
     it is. ``seed`` defines the training stream (normally ``Settings.seed``).
     ``run_identity`` is a split run's ``SplitRun.identity()`` (``None`` for a normal run),
-    kept in the training loader's checkpoint state and checked on resume. There are no
-    worker processes: everything happens on the training device.
+    kept in the training loader's checkpoint state and checked on resume. ``planner``
+    (``PaperClassifierModule.augment_plan``, when the run augments) makes the training
+    loader plan each step's augmentation on the host, from a CPU copy of the Train split
+    kept for that, and yield the uploaded plan with the batch (:class:`_StreamLoader`).
+    There are no worker processes: everything else happens on the training device.
 
     Raises:
         ValueError: at construction, for a non-positive batch size or a negative seed.
@@ -354,6 +392,7 @@ class DeviceTensorDataModule(L.LightningDataModule):
         seed: int = 0,
         balance: bool = True,
         run_identity: Mapping[str, object] | None = None,
+        planner: Planner | None = None,
     ) -> None:
         super().__init__()
         for name, value in (("batch_size", batch_size), ("eval_batch_size", eval_batch_size)):
@@ -367,9 +406,11 @@ class DeviceTensorDataModule(L.LightningDataModule):
         self.seed = seed
         self.balance = balance
         self._identity = run_identity
+        self._planner = planner
         # Plain values only, so checkpoints load with torch.load(weights_only=True). The
         # identity is not a hyperparameter: it lives in the loader state (module docstring).
-        self.save_hyperparameters(ignore=["source", "run_identity"])
+        # The planner is a bound method of the module: runtime wiring, not a setting.
+        self.save_hyperparameters(ignore=["source", "run_identity", "planner"])
         self._splits: dict[str, _DeviceSplit] | None = None
         self._train: _StreamLoader | None = None
         #: The tiled Train order (indices into the Train split), set by ``setup``.
@@ -406,8 +447,17 @@ class DeviceTensorDataModule(L.LightningDataModule):
             self._train = None
             if len(tiled) >= self.batch_size:
                 stream = PermutationStream(len(tiled), self.batch_size, self.seed)
+                host = None
+                if self._planner is not None:
+                    host = _DeviceSplit.of(splits[_TRAIN], torch.device("cpu"))
                 self._train = _StreamLoader(
-                    self._splits[_TRAIN], tiled, stream, self._global_step, self._identity
+                    self._splits[_TRAIN],
+                    tiled,
+                    stream,
+                    self._global_step,
+                    self._identity,
+                    host=host,
+                    planner=self._planner,
                 )
         if stage == "fit" and self._train is None:
             n = 0 if self.tiled_indices is None else len(self.tiled_indices)

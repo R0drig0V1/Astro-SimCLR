@@ -1,4 +1,4 @@
-"""Tests of constrained grouped splits (task 3.5's cross-benchmark rule, ADR 0016).
+"""Tests of constrained grouped splits (task 3.5's cross-benchmark rule, ADR 0018).
 
 Without constraints the draw must be unchanged number for number; with them every
 constrained group lands in an allowed part, and the stored file round-trips and verifies.
