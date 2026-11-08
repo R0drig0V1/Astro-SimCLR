@@ -6,15 +6,33 @@ against the engine contracts (ADR 0014: per-step generators, steps done as the o
 but not on the engine loop: it was written before that loop landed (task 4.1, PR #52),
 and 5.3 moves the same pure functions onto it. Nothing here imports Lightning.
 
-**Data** (:func:`load_pilot_data`, tier 1 or 2 of ``engine.data``): a prepared classifier
-layout's Train stamps, float32 (``images_f32.npy``; a uint8-only layout is read as
-``images / 255`` and recorded as a deviation), as (N, 3, 63, 63). With ``splits`` (a
-stored splits file, verified against the layout), the Train stamps a screened run may not
-use (``screen_training_excluded``: the leaked stamp and the stamps grouped with
-Validation) are left out of pretraining, and the kNN monitor queries the screen's
-**selection** half. The **decision** half is never read here. ``tier="device"`` keeps the
-stamps on the training device (2.4 GB for CD21 Train); ``"host"`` keeps them in host memory
-and uploads each batch.
+**Data** (:func:`load_pilot_data`): ``data`` is a prepared classifier layout or a corpus
+index file (``build-corpus-index``, task 5.1).
+
+- **A layout** (the 5.0b pilot): its Train stamps, float32 (``images_f32.npy``; a
+  uint8-only layout is read as ``images / 255`` and recorded as a deviation), as (N, 3, 63,
+  63), are both the pretraining stamps and the evaluation's. With ``splits`` (a stored
+  splits file, verified against the layout), the Train stamps a screened run may not use
+  (``screen_training_excluded``: the leaked stamp and the stamps grouped with Validation)
+  are left out of pretraining, and the kNN monitor queries the screen's **selection**
+  half. The **decision** half is never read here.
+- **A corpus index**: the pretraining stamps are the index's archive rows
+  (:class:`~astro_simclr.archive.reader.CorpusStamps`), raw cutouts normalised exactly
+  like the stored stamps (per-channel min-max over the 63 px with NaN -> 0,
+  ``archive.reader.normalise_stamps``). Evaluation stays on CD21: ``eval_data`` (default:
+  the layout the index excluded, as recorded in it; its source SHA-256 must be that one)
+  gives the Train stamps of the kNN bank and of the embedding dump, and Validation, with
+  ``splits`` as above. ``archive`` (default: the recorded archive) must hold the indexed
+  nights unchanged (``corpus_index.check_archive``). The noise view needs per-stamp fits,
+  not computed for the corpus, so ``noise_scale`` must be 0.
+
+**Tiers** of the pretraining stamps (ADR 0018's tiers, in this loop): ``"device"`` keeps
+them on the training device (2.4 GB for CD21 Train; refused for a corpus, about 18.6 GB for
+390k stamps); ``"host"`` keeps them in host memory (a corpus is read and normalised once,
+refused above ``host_cap_gb``) and uploads each batch; ``"memmap"`` (a corpus only) reads
+each batch from the night shards, sorted by file offset, normalises it on the host into a
+pinned buffer (CUDA) and uploads it without blocking. The tiers give the same batches: the
+tier is not part of the numbers.
 
 **Stream** (:class:`BatchOrder`): pass ``p`` over the pretraining stamps is the permutation
 ``default_rng([seed, p, simclr_batch_order])``; step ``s`` takes batch ``s mod
@@ -58,7 +76,8 @@ import json
 import os
 import platform
 from collections.abc import Iterator
-from dataclasses import asdict, dataclass, field
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import asdict, dataclass, field, fields, replace
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any, Final, Literal, cast
@@ -67,12 +86,15 @@ import numpy as np
 import numpy.typing as npt
 import torch
 
+from astro_simclr.archive.corpus_index import check_archive, read_corpus_index
+from astro_simclr.archive.reader import CorpusStamps
 from astro_simclr.config import ConfigError
 from astro_simclr.data.files import sha256_file
 from astro_simclr.data.prepared import load_prepared, read_meta
 from astro_simclr.data.schema import LABEL_NAMES, DataError
 from astro_simclr.engine.device import DevicePolicy
 from astro_simclr.engine.randomness import RESERVED_STREAMS, host_generator
+from astro_simclr.protocol.groups import DEFAULT_RADIUS_ARCSEC
 from astro_simclr.protocol.splits import ScreenSplit, read_splits, verify_splits
 from astro_simclr.simclr.diagnostics import (
     alignment,
@@ -105,9 +127,12 @@ __all__ = [
     "CKPT_FORMAT",
     "EMBEDDINGS_FORMAT",
     "BatchOrder",
+    "CorpusPretrain",
+    "MemmapStamps",
     "PilotConfig",
     "PilotData",
     "PilotRun",
+    "TensorStamps",
     "diagnose",
     "dump_embeddings",
     "embed",
@@ -124,7 +149,8 @@ EMBEDDINGS_FORMAT: Final = "astro-simclr-embeddings"
 _EMBEDDINGS_VERSION: Final = 1
 _MATMUL_PRECISION: Final = {"ieee": "highest", "tf32": "high"}
 
-Tier = Literal["device", "host"]
+Tier = Literal["device", "host", "memmap"]
+_TIERS: Final = ("device", "host", "memmap")
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +179,10 @@ class PilotConfig:
     fp32_precision: Literal["ieee", "tf32"] = "ieee"
     deterministic: bool = False
     tier: Tier = "device"
+    archive: str | None = None
+    eval_data: str | None = None
+    host_cap_gb: float = 24.0
+    allow_weak_index: bool = False
     log_every: int = 50
     checkpoint_every: int = 1000
     diagnostics_every: int = 1000
@@ -183,8 +213,10 @@ class PilotConfig:
             raise ConfigError("need temperature > 0, lr_per_256 > 0 and weight_decay >= 0")
         if self.warmup_epochs < 0 or self.lr_min < 0 or self.noise_scale < 0 or self.seed < 0:
             raise ConfigError("warmup_epochs, lr_min, noise_scale and seed must be >= 0")
-        if self.fp32_precision not in ("ieee", "tf32") or self.tier not in ("device", "host"):
-            raise ConfigError("fp32_precision must be ieee|tf32 and tier device|host")
+        if self.fp32_precision not in ("ieee", "tf32") or self.tier not in _TIERS:
+            raise ConfigError("fp32_precision must be ieee|tf32 and tier device|host|memmap")
+        if not self.host_cap_gb > 0:
+            raise ConfigError(f"host_cap_gb must be > 0, got {self.host_cap_gb}")
 
     def to_plain(self) -> dict[str, Any]:
         """The config as a JSON-ready dict (every field)."""
@@ -197,17 +229,34 @@ class PilotConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class CorpusPretrain:
+    """The pretraining stamps of a corpus run (module docstring, "Data").
+
+    Attributes:
+        stamps: the index's archive rows, memory-mapped.
+        record: what ``pilot.json`` records about them (the index, its SHA-256, the
+            archive, the exclusion SHA-256 and counts).
+    """
+
+    stamps: CorpusStamps
+    record: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
 class PilotData:
     """The stamps of a pilot run, on the host (module docstring, "Data").
 
     Attributes:
-        train: float32 (N_train, 3, 63, 63), every Train stamp in file order.
+        train: float32 (N_train, 3, 63, 63), every Train stamp in file order (the
+            evaluation layout's, for a corpus run).
         validation: float32 (N_val, 3, 63, 63), every Validation stamp.
-        rows: int64, sorted, the Train indices pretraining uses.
+        rows: int64, sorted, the Train indices a screened run may use: the pretraining
+            stamps of a layout run, and the kNN bank's candidates in both kinds of run.
         train_labels: int64 (N_train,), or ``None`` for an unlabelled layout.
         validation_labels: int64 (N_val,), or ``None``.
         screen: the screen halves of ``splits``, or ``None`` without a splits file.
         record: what ``pilot.json`` records about the data.
+        corpus: the pretraining stamps of a corpus run, or ``None`` (a layout run).
     """
 
     train: torch.Tensor
@@ -217,6 +266,7 @@ class PilotData:
     validation_labels: npt.NDArray[np.int64] | None
     screen: ScreenSplit | None
     record: dict[str, Any] = field(default_factory=dict)
+    corpus: CorpusPretrain | None = None
 
 
 def _channels_first(split_images: npt.NDArray[Any], *, float32: bool) -> torch.Tensor:
@@ -227,14 +277,32 @@ def _channels_first(split_images: npt.NDArray[Any], *, float32: bool) -> torch.T
 
 
 def load_pilot_data(config: PilotConfig) -> PilotData:
-    """Read the layout (and the splits file) of ``config`` into host memory.
+    """Read the data of ``config`` (a layout or a corpus index) and the splits file.
+
+    The layout's stamps go into host memory; a corpus is memory-mapped (module docstring,
+    "Data").
 
     Raises:
-        DataError: if the layout or the splits file is unusable, or the splits file was
-            made for other data (``verify_splits``).
-        ConfigError: if fewer stamps remain than one batch.
+        DataError: if the layout, the index, the archive or the splits file is unusable,
+            the splits file was made for other data (``verify_splits``), the evaluation
+            layout is not the one the index excluded, or the archive changed since the
+            index was built.
+        ConfigError: if fewer stamps remain than one batch, or a corpus run asks for the
+            noise view.
     """
     path = Path(config.data)
+    if path.is_file():
+        return _load_corpus_data(config, path)
+    data = _load_layout(config, path)
+    if data.rows.size < config.batch_size:
+        raise ConfigError(
+            f"{data.rows.size} pretraining stamps, fewer than a batch of {config.batch_size}"
+        )
+    return data
+
+
+def _load_layout(config: PilotConfig, path: Path) -> PilotData:
+    """The layout's Train and Validation stamps, labels, screen and record."""
     meta = read_meta(path)
     data = load_prepared(path)
     train, val = data.splits["Train"], data.splits["Validation"]
@@ -257,10 +325,6 @@ def load_pilot_data(config: PilotConfig) -> PilotData:
         excluded = splits.screen_training_excluded()
         rows = np.setdiff1d(rows, np.asarray(excluded, dtype=np.int64))
         splits_sha = sha256_file(splits_path)
-    if rows.size < config.batch_size:
-        raise ConfigError(
-            f"{rows.size} pretraining stamps, fewer than a batch of {config.batch_size}"
-        )
     record = {
         "path": str(path),
         "source_sha256": meta["source"]["sha256"],
@@ -272,6 +336,58 @@ def load_pilot_data(config: PilotConfig) -> PilotData:
         "splits_sha256": splits_sha,
     }
     return PilotData(train_images, val_images, rows, train.labels, val.labels, screen, record)
+
+
+def _weak_rules(rules: dict[str, Any]) -> list[str]:
+    """How an index's rules fall short of the plan's exclusion (task 5.1), if they do."""
+    weak = []
+    if not rules.get("radius_arcsec", 0) >= DEFAULT_RADIUS_ARCSEC:
+        weak.append(f'radius {rules.get("radius_arcsec")}" < {DEFAULT_RADIUS_ARCSEC}"')
+    if rules.get("near_duplicates") is None:
+        weak.append("no near-duplicate check")
+    return weak
+
+
+def _load_corpus_data(config: PilotConfig, path: Path) -> PilotData:
+    """A corpus run's data: the index's archive rows, and CD21 for the evaluation."""
+    if config.noise_scale > 0:
+        raise ConfigError("the noise view needs stamp fits, not computed for a corpus")
+    index = read_corpus_index(path)
+    weak = _weak_rules(index.meta["rules"])
+    if weak and not config.allow_weak_index:
+        raise ConfigError(
+            f"{path} was built with weaker exclusions ({'; '.join(weak)}): evaluation objects "
+            "may be in it. Rebuild it, or pass allow_weak_index (--allow-weak-index; recorded)"
+        )
+    layout_record = index.meta["exclusion_inputs"][0]
+    eval_path = Path(config.eval_data or layout_record["path"])
+    evaluation = _load_layout(config, eval_path)
+    if evaluation.record["source_sha256"] != layout_record["source_sha256"]:
+        raise DataError(
+            f"{eval_path} is not the layout {path} excluded (source SHA-256 "
+            f"{layout_record['source_sha256'][:12]}...): its stamps may be in the corpus"
+        )
+    archive = Path(config.archive or index.meta["archive"]["path"])
+    check_archive(index, archive)
+    stamps = CorpusStamps(archive, index.rows)
+    if len(stamps) < config.batch_size:
+        raise ConfigError(
+            f"{len(stamps)} pretraining stamps, fewer than a batch of {config.batch_size}"
+        )
+    pretrain = {
+        "kind": "archive-corpus",
+        "index": str(path),
+        "index_sha256": sha256_file(path),
+        "archive": str(archive),
+        "n": len(stamps),
+        "input": "raw cutouts, per-channel min-max over 63 px, NaN -> 0 (normalise_stamps)",
+        "exclusion_sha256": index.meta["exclusion_sha256"],
+        "counts": index.meta["counts"],
+        "rules": index.meta["rules"],
+        "weak_rules": _weak_rules(index.meta["rules"]),
+    }
+    record = {**evaluation.record, "n_pretrain": len(stamps), "pretrain": pretrain}
+    return replace(evaluation, record=record, corpus=CorpusPretrain(stamps, pretrain))
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,6 +409,97 @@ class BatchOrder:
         perm = host_generator(self.seed, pass_index, RESERVED_STREAMS["simclr_batch_order"])
         order = perm.permutation(self.n)
         return order[i * self.batch_size : (i + 1) * self.batch_size].astype(np.int64)
+
+
+@dataclass(frozen=True, slots=True)
+class TensorStamps:
+    """Pretraining stamps held in a tensor, on the host or the training device (tiers 1, 2).
+
+    Attributes:
+        images: float32 (N, 3, 63, 63).
+        rows: int64, the rows of ``images`` the stream draws from.
+    """
+
+    images: torch.Tensor
+    rows: npt.NDArray[np.int64]
+
+    def take(self, stored: npt.NDArray[np.int64]) -> torch.Tensor:
+        """``images[stored]``, gathered where ``images`` is."""
+        return self.images[torch.from_numpy(stored).to(self.images.device)]
+
+
+class MemmapStamps:
+    """A corpus's stamps read per batch from the archive (the ``memmap`` tier).
+
+    Each :meth:`take` reads the rows sorted by file offset
+    (:meth:`~astro_simclr.archive.reader.CorpusStamps.read`), normalises them on the host
+    and returns them channels first, in a pinned tensor when ``device`` is CUDA, so the
+    upload that follows can be asynchronous. A fresh tensor per batch: torch's caching
+    host allocator reuses pinned blocks only after the copies that read them are done.
+
+    **Prefetch, one batch ahead** (as the engine's tier 3): :meth:`prefetch` starts the read
+    of the next step's rows in one worker thread while the current step runs on the device
+    (a batch of 256 takes about 66 ms to read and normalise on the loaded 5090 host, and
+    LARS synchronises with the device at every step, so an unhidden read adds to each
+    step). A :meth:`take` of the same rows returns it; any other rows (the diagnostics'
+    sample) are read at once and leave it pending. The values are the same either way.
+    """
+
+    def __init__(self, stamps: CorpusStamps, device: torch.device) -> None:
+        self.stamps = stamps
+        self.rows = np.arange(len(stamps), dtype=np.int64)
+        self._pin = device.type == "cuda"
+        self._pool: ThreadPoolExecutor | None = None
+        self._pending: tuple[bytes, Future[torch.Tensor]] | None = None
+
+    def _read(self, stored: npt.NDArray[np.int64]) -> torch.Tensor:
+        out = torch.empty((stored.size, 3, 63, 63), dtype=torch.float32, pin_memory=self._pin)
+        out.numpy()[...] = self.stamps.normalised(stored).transpose(0, 3, 1, 2)
+        return out
+
+    def take(self, stored: npt.NDArray[np.int64]) -> torch.Tensor:
+        """The normalised stamps (B, 3, 63, 63) of corpus positions ``stored``, on the host."""
+        pending = self._pending
+        if pending is not None and pending[0] == stored.tobytes():
+            self._pending = None
+            return pending[1].result()
+        return self._read(stored)
+
+    def prefetch(self, stored: npt.NDArray[np.int64]) -> None:
+        """Start reading ``stored`` in the worker thread (replacing any pending read)."""
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="corpus-prefetch")
+        rows = np.array(stored, dtype=np.int64)
+        self._pending = (rows.tobytes(), self._pool.submit(self._read, rows))
+
+    def close(self) -> None:
+        """Wait for the worker and stop it (a later :meth:`prefetch` starts a new one)."""
+        self._pending = None
+        if self._pool is not None:
+            self._pool.shutdown(wait=True)
+            self._pool = None
+
+
+Stamps = TensorStamps | MemmapStamps
+
+
+def _corpus_in_memory(corpus: CorpusPretrain, cap_gb: float, chunk_rows: int) -> torch.Tensor:
+    """Every corpus stamp normalised into one host tensor (the ``host`` tier of a corpus).
+
+    Raises:
+        ConfigError: if the stamps exceed ``cap_gb`` gigabytes.
+    """
+    stamps = corpus.stamps
+    if stamps.nbytes > cap_gb * 1e9:
+        raise ConfigError(
+            f"the corpus holds {stamps.nbytes / 1e9:.1f} GB of stamps, above the host cap of "
+            f"{cap_gb} GB: use --tier memmap, or raise --host-cap-gb"
+        )
+    images = torch.empty((len(stamps), 3, 63, 63), dtype=torch.float32)
+    target = images.numpy()
+    for positions, normalised in stamps.chunks(np.arange(len(stamps)), chunk_rows):
+        target[positions] = normalised.transpose(0, 3, 1, 2)
+    return images
 
 
 def resolve_device(name: str) -> torch.device:
@@ -377,24 +584,27 @@ def _knn_bank(data: PilotData, config: PilotConfig) -> npt.NDArray[np.int64] | N
 def diagnose(
     model: SimCLRNetwork,
     data: PilotData,
-    images: torch.Tensor,
+    stamps: Stamps,
+    train_images: torch.Tensor,
     config: PilotConfig,
     device: torch.device,
 ) -> dict[str, Any]:
     """The diagnostics of the model now (module docstring), as a JSON-ready dict.
 
-    The sample (``diag_samples`` pretraining stamps) is drawn from ``(seed, 0,
-    simclr_diagnostics)`` and its two views from ``(seed, 1, simclr_diagnostics)``, without
-    noise: the same stamps and views at every call, so the values are comparable along the
-    run. The kNN monitor (``knn_selection_bacc``) needs labels and a splits file; it is
-    ``None`` otherwise.
+    The sample (``diag_samples`` of the pretraining ``stamps``' rows) is drawn from
+    ``(seed, 0, simclr_diagnostics)`` and its two views from ``(seed, 1,
+    simclr_diagnostics)``, without noise: the same stamps and views at every call, so the
+    values are comparable along the run. The kNN monitor (``knn_selection_bacc``) needs
+    labels and a splits file; it is ``None`` otherwise. Its bank is drawn from the CD21
+    Train stamps ``train_images`` (``data.rows``), whatever the pretraining data.
     """
     was_training = model.training
     model.eval()
     stream = RESERVED_STREAMS["simclr_diagnostics"]
-    size = min(config.diag_samples, data.rows.size)
-    sample = np.sort(host_generator(config.seed, 0, stream).choice(data.rows, size, replace=False))
-    x = images[torch.from_numpy(sample).to(images.device)].to(device)
+    size = min(config.diag_samples, stamps.rows.size)
+    generator = host_generator(config.seed, 0, stream)
+    sample = np.sort(generator.choice(stamps.rows, size, replace=False))
+    x = stamps.take(sample).to(device)
     params = draw_view_params(config.seed, 1, size, stream=stream)
     v1, v2 = make_views(x, params, ViewConfig())
     _, z1 = model(v1)
@@ -412,7 +622,7 @@ def diagnose(
     bank = _knn_bank(data, config)
     if bank is not None and data.screen is not None and data.validation_labels is not None:
         assert data.train_labels is not None  # noqa: S101 - a bank needs labels
-        bank_h, _ = embed(model, images, bank, device, config.embed_batch)
+        bank_h, _ = embed(model, train_images, bank, device, config.embed_batch)
         query = data.screen.selection
         query_h, _ = embed(model, data.validation, query, device, config.embed_batch)
         result["knn_selection_bacc"] = knn_balanced_accuracy(
@@ -489,6 +699,28 @@ def _save(payload: dict[str, Any], path: Path) -> None:
     tmp.replace(path)
 
 
+def _pretraining_stamps(config: PilotConfig, data: PilotData, device: torch.device) -> Stamps:
+    """The pretraining stamps of ``data`` on ``config.tier`` (module docstring, "Tiers").
+
+    Raises:
+        ConfigError: for the ``device`` tier with a corpus, the ``memmap`` tier with a
+            layout, or a corpus above ``host_cap_gb`` on the ``host`` tier.
+    """
+    if data.corpus is None:
+        if config.tier == "memmap":
+            raise ConfigError("the memmap tier reads a corpus index; a layout uses device|host")
+        images = data.train.to(device) if config.tier == "device" else data.train
+        return TensorStamps(images, data.rows)
+    if config.tier == "device":
+        raise ConfigError(
+            "a corpus is not kept on the training device (ADR 0018): use --tier memmap or host"
+        )
+    if config.tier == "host":
+        images = _corpus_in_memory(data.corpus, config.host_cap_gb, config.embed_batch)
+        return TensorStamps(images, np.arange(images.shape[0], dtype=np.int64))
+    return MemmapStamps(data.corpus.stamps, device)
+
+
 class PilotRun:
     """One pilot run: model, optimizer, stream and state (module docstring)."""
 
@@ -497,7 +729,8 @@ class PilotRun:
         self.config = config
         self.data = data
         self.device = device
-        self.order = BatchOrder(int(data.rows.size), config.batch_size, config.seed)
+        self.stamps = _pretraining_stamps(config, data, device)
+        self.order = BatchOrder(int(self.stamps.rows.size), config.batch_size, config.seed)
         per_pass = self.order.steps_per_pass
         self.total_steps = config.epochs * per_pass if config.epochs is not None else 0
         if config.steps is not None:
@@ -512,12 +745,18 @@ class PilotRun:
         self.optimizer = build_lars(self.model, lr=self.base_lr, weight_decay=config.weight_decay)
         self.loss = SimCLRLoss(config.temperature)
         self.steps_done = 0
-        self.images = data.train.to(device) if config.tier == "device" else data.train
-        self.rows = torch.from_numpy(data.rows)
+        # The CD21 Train stamps of the kNN bank: the pretraining tensor itself in a layout
+        # run (no second copy), the host tensor in a corpus run.
+        stamps = self.stamps
+        self.train_images = (
+            stamps.images
+            if data.corpus is None and isinstance(stamps, TensorStamps)
+            else data.train
+        )
         self.fits: torch.Tensor | None = None
         if config.views.noise:
             fits = stamp_fits(data.train.numpy())
-            self.fits = torch.from_numpy(fits).to(self.images.device)
+            self.fits = torch.from_numpy(fits).to(self.train_images.device)
 
     def schedule(self) -> dict[str, Any]:
         """The run's length and rates, for ``pilot.json``."""
@@ -542,9 +781,13 @@ class PilotRun:
     def step(self, step: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
         """Train on the batch of step ``step``; returns ``(loss, pos, neg, lr)`` (no sync)."""
         config = self.config
-        index = self.rows[torch.from_numpy(self.order.batch(step))].to(self.images.device)
-        x = self.images[index].to(self.device, non_blocking=True)
-        fits = None if self.fits is None else self.fits[index].to(self.device)
+        stored = self.stamps.rows[self.order.batch(step)]
+        x = self.stamps.take(stored).to(self.device, non_blocking=True)
+        if isinstance(self.stamps, MemmapStamps) and step + 1 < self.total_steps:
+            self.stamps.prefetch(self.stamps.rows[self.order.batch(step + 1)])
+        fits = None
+        if self.fits is not None:
+            fits = self.fits[torch.from_numpy(stored).to(self.fits.device)].to(self.device)
         generator = noise_generator(config.seed, step, self.device) if config.views.noise else None
         params = draw_view_params(config.seed, step, config.batch_size)
         v1, v2 = make_views(x, params, config.views, fits=fits, generator=generator)
@@ -580,11 +823,31 @@ class PilotRun:
         """
         if payload.get("format") != CKPT_FORMAT or payload.get("format_version") != _CKPT_VERSION:
             raise ConfigError("not a pilot checkpoint of this version")
-        if payload["config"] != self.config.to_plain():
+        if _with_defaults(payload["config"]) != self.config.to_plain():
             raise ConfigError("the checkpoint was written with another config; refusing to resume")
+        # The same paths may now hold other data (an index rebuilt with --overwrite).
+        saved, current = payload["data"].get("pretrain"), self.data.record.get("pretrain")
+        keys = ("index_sha256", "exclusion_sha256", "n")
+        if (saved is None) != (current is None) or (
+            saved is not None
+            and current is not None
+            and any(saved.get(k) != current.get(k) for k in keys)
+        ):
+            raise ConfigError("the checkpoint was trained on another corpus index; refusing")
         self.model.load_state_dict(payload["model"])
         self.optimizer.load_state_dict(payload["optimizer"])
         self.steps_done = int(payload["steps_done"])
+
+
+def _with_defaults(saved: dict[str, Any]) -> dict[str, Any]:
+    """A saved config with the fields added since it was written at their defaults.
+
+    The fields of task 5.1 (``archive``, ``eval_data``, ``host_cap_gb``,
+    ``allow_weak_index``) do not change a
+    layout run's numbers, so a checkpoint written before them resumes.
+    """
+    defaults = {f.name: f.default for f in fields(PilotConfig)}
+    return {**{k: defaults[k] for k in defaults if k not in saved}, **saved}
 
 
 def load_checkpoint(path: Path) -> dict[str, Any]:
@@ -647,7 +910,9 @@ def _after_step(
             row = {"step": done, "loss": value, "pos": float(pos), "neg": float(neg), "lr": lr}
             _append_jsonl(out_dir / "metrics.jsonl", row)
         elif event == "diagnostics":
-            diag = diagnose(run.model, run.data, run.images, run.config, run.device)
+            diag = diagnose(
+                run.model, run.data, run.stamps, run.train_images, run.config, run.device
+            )
             _append_jsonl(out_dir / "diagnostics.jsonl", {"step": done, **diag})
         elif event == "checkpoint":
             _save(run.checkpoint(), out_dir / "ckpt" / "last.pt")
@@ -694,8 +959,12 @@ def train_pilot(
         _truncate_jsonl(out_dir / name, run.steps_done)
     (out_dir / "pilot.json").write_text(json.dumps(_record(run, flags), indent=1) + "\n")
     end = run.total_steps if stop_at is None else min(stop_at, run.total_steps)
-    for step in range(run.steps_done, end):
-        _after_step(run, out_dir, step + 1, run.step(step))
+    try:
+        for step in range(run.steps_done, end):
+            _after_step(run, out_dir, step + 1, run.step(step))
+    finally:
+        if isinstance(run.stamps, MemmapStamps):
+            run.stamps.close()
     if run.steps_done < run.total_steps:
         _save(run.checkpoint(), last)
         return run

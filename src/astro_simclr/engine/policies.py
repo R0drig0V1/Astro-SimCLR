@@ -6,12 +6,16 @@ and that the 4.7(a) differential test checks against Lightning (ADR 0014):
 - :class:`Monitor`: a strict improvement (``<`` for ``min``, ``>`` for ``max``); NaN never
   improves; the first finite value always does (``HorizonCallback._improves``);
 - :class:`ValidationGrid`: validate after the optimizer steps that are multiples of the
-  interval, never at step 0, never because an epoch ended, and never forced after the last
-  step (Lightning's ``(total_batch_idx + 1) % val_check_batch == 0``);
+  interval, never because an epoch ended, and never forced after the last step
+  (Lightning's ``(total_batch_idx + 1) % val_check_batch == 0``); at step 0 (the initial
+  weights) only with ``at_start`` (the ``rj23`` schedule's "iteration 0 included");
 - :class:`Horizon`: a new best after ``s`` steps sets the horizon to
   ``max(horizon, s + increment)``; a resume keeps ``max(initial, saved)``;
-- :class:`EarlyStop`: Lightning's ``EarlyStopping`` semantics, counted in validations (the
-  ``rj23`` schedule of task 3.4b; no current run uses it);
+- :class:`EarlyStop`: Lightning's ``EarlyStopping`` semantics, counted in validations (no
+  current run uses it);
+- :class:`StopRule`: a stop rule on the whole history of monitored values, decided by an
+  engine-free policy object (``rj23_regime.RJ23Schedule``, task 3.4b, as it is: the
+  Lightning adapter calls the same ``decide``);
 - :data:`Keep`: which weights a run ends with, ``best`` (restored, CD21) or ``stop`` (the
   last, RJ23's primary); ``rj23`` reports both from one run.
 
@@ -22,6 +26,7 @@ themselves stay here, pure, so a test can check each against Lightning's.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -36,6 +41,8 @@ __all__ = [
     "Monitor",
     "MonitorMode",
     "Schedule",
+    "StopDecision",
+    "StopRule",
     "ValidationGrid",
     "ValidationTrigger",
 ]
@@ -90,13 +97,16 @@ class ValidationGrid:
     batch ``total_batch_idx + 1`` is the steps done. So the epoch boundary (1,136 steps
     for ``red``) triggers nothing, and the last step is validated only when it is on the
     grid (always for the presets: 30,000 and ``s + 10,000`` with ``s`` on the grid).
-    Task 3.4b may add a field (default off) for RJ23's "iteration 0 included".
+    ``at_start`` (default off) also validates the initial weights of a fresh fit, before
+    its first step (RJ23's "iteration 0 included", task 3.4b): :meth:`due` stays the rule
+    after a step, the loop adds the step-0 validation.
 
     Raises:
         ConfigError: if ``every_n_steps`` is not positive.
     """
 
     every_n_steps: int = 10
+    at_start: bool = False
 
     def __post_init__(self) -> None:
         if isinstance(self.every_n_steps, bool) or self.every_n_steps < 1:
@@ -190,15 +200,38 @@ class EarlyStop:
         return best, wait_count, wait_count >= self.patience
 
 
+class StopDecision(Protocol):
+    """What a :class:`StopRule` decides after a validation (``rj23_regime.RJ23Decision``)."""
+
+    @property
+    def stop(self) -> bool:
+        """End the run now."""
+
+
+class StopRule(Protocol):
+    """A stop rule on the whole history of the monitored values (``RJ23Schedule``).
+
+    The loop appends each fit validation's value to the history, then calls
+    :meth:`decide` with the steps done; the history is in the checkpoint, so a resume
+    recomputes the same decision (a resumed run that had stopped trains nothing).
+    """
+
+    def decide(self, step: int, history: Sequence[float]) -> StopDecision:
+        """The decision after ``step`` optimizer steps, ``history`` the values so far."""
+
+
 @dataclass(frozen=True, slots=True)
 class Schedule:
     """Everything that decides when a run validates, extends, stops and what it keeps.
 
     The ``carrasco2021`` preset is ``Schedule()`` (``loss_val``/``min``, every 10 steps,
-    horizon 30,000 + 10,000, ``keep=("best",)``, ``last`` every 1,000 steps).
+    horizon 30,000 + 10,000, ``keep=("best",)``, ``last`` every 1,000 steps). The ``rj23``
+    schedule (``tasks.rj23``) is ``macro_f1_val``/``max`` every 500 steps from step 0, a
+    fixed horizon (the cap), ``stop_rule`` its ``RJ23Schedule`` and ``keep=("stop", "best")``.
 
     Raises:
-        ConfigError: for an empty or repeated ``keep``, or a ``checkpoint_every_n_steps``
+        ConfigError: for an empty or repeated ``keep``, both ``early_stop`` and
+            ``stop_rule``, or a ``checkpoint_every_n_steps``
             that is not a positive multiple of the validation interval (a ``last``
             checkpoint is written after a validation, so a resume owes none).
     """
@@ -209,8 +242,11 @@ class Schedule:
     early_stop: EarlyStop | None = None
     keep: tuple[Keep, ...] = ("best",)
     checkpoint_every_n_steps: int | None = 1_000
+    stop_rule: StopRule | None = None
 
     def __post_init__(self) -> None:
+        if self.early_stop is not None and self.stop_rule is not None:
+            raise ConfigError("a schedule takes early_stop or stop_rule, not both")
         if not self.keep or len(set(self.keep)) != len(self.keep):
             raise ConfigError(f"keep must name 'stop' and/or 'best' once each, got {self.keep}")
         if any(choice not in ("stop", "best") for choice in self.keep):

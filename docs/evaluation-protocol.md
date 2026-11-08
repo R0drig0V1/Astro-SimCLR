@@ -36,6 +36,8 @@ comparison**. The code helps with this:
   `astro_simclr.protocol.compare`) only accept predictions on the screen's decision half or
   on a CV fold's evaluation part. They check the stamp indices, so test or full-Validation
   predictions are refused.
+- `ensemble-eval` (plan row D4, below) evaluates stored runs on their evaluation part, and
+  reads Test only with an explicit `--test`.
 
 The same principle applies to validation: **a decision never uses the metric of the stamps
 that chose the checkpoint.** The replication itself (task 2.4) is the exception. It keeps
@@ -330,6 +332,56 @@ astro-simclr compare-variants --splits $SPLITS \
 Exit codes follow `compare-reference`: 0 for a pass (ADOPT, KEEP), 1 for a fail (NOT
 ADOPTED, DROP) and for unusable data, 2 for invalid arguments or runs that cannot be
 compared.
+
+## Seed ensembles and test-time augmentation: `ensemble-eval` (plan row D4)
+
+`ensemble-eval` evaluates the stored selected weights of finished split runs of one arm,
+without retraining, alone and as a seed ensemble, with a test-time augmentation
+(`docs/architecture.md`, "`tta` and `ensemble_eval`"):
+
+```bash
+# One fold of one arm: 5 seeds, the paper's own evaluation (rot4, the default).
+astro-simclr ensemble-eval runs/cv/base/fold0-seed{0..4} --splits $SPLITS --fold 0 \
+    --out runs/ensembles/base-rot4/fold0.json
+# The same members with the 8 dihedral views and the 1-px crop shifts.
+astro-simclr ensemble-eval runs/cv/base/fold0-seed{0..4} --splits $SPLITS --fold 0 \
+    --tta d4_shift --out runs/ensembles/base-d4_shift/fold0.json
+```
+
+- **Modes.** `rot4` is the run's own evaluation (bit for bit on the device it trained
+  on); `d4` adds the reflections (the 8 elements of D4); `d4_shift` adds the 9 crop
+  offsets of 0 or ±1 px. The extra views are averaged at the logit level; the paper
+  model's own rotation mean stays at the feature level.
+- **Report.** Each member's balanced accuracy on the part's evaluation stamps (the
+  run's stored value next to it), the mean of the members, and the ensemble's (the mean of
+  their softmax probabilities, stamp by stamp), with `ensemble − mean`. The pre-registered
+  D4 hypothesis: a 5-seed ensemble beats the mean of its own members by at least 0.4
+  points, and the extended TTA alone adds at least 0.1.
+- **Refusals.** The members must be finished `train-supervised` runs of the paper
+  classifier on the asked fold (or the screen) of the asked splits file, with one config
+  hash, engine, data, machine class, numerics epoch and training machine, one run per
+  seed. Anything else exits 2 before any data is read.
+- **The ensemble as an arm.** The `--out` JSON (with its
+  `<stem>.predictions_evaluation.npz`) is read by `compare-variants --splits` as a run:
+  its `seed` is the member's for one member and the sorted list of seeds for an ensemble.
+  So a TTA'd run pairs with its own run (`--baseline runs/cv/base/fold*` against one
+  `ensemble-eval --tta d4_shift` output per run: the TTA alone), and two ensembles of the
+  same seeds pair cell by cell (one output per fold and arm: ensemble against ensemble).
+  The cells must match on both sides, as for runs.
+- **Test needs `--test`.** Without it Test is never read. With it, the output also has
+  the Test split's predictions (`predictions.test`, 500 stamps for `red`) and results.
+  Like every Test number, they are reported once per pre-registered comparison and are
+  never a decision input; decisions use the evaluation parts.
+- **Machines.** By default the evaluation runs on the device the members trained on, with
+  their float32 precision; on another device the probabilities differ from the runs' own
+  by float rounding and the output says so (`WARN`). The output's `machine` is the
+  members' training machine, which `compare-variants` checks; where `ensemble-eval` ran
+  is `evaluation_machine`.
+- **Outputs.** `--out` is never inside a member's run directory and never replaces an
+  existing file without `--overwrite`; the JSON is written last, after its predictions.
+- **Weights.** It reads each run's selected weights (`ckpt/best.pt`, or Lightning's
+  `checkpoints/best.ckpt`), which the retention policy of `runs.layout` would drop for a
+  finished classifier once it is applied: keep them for the runs an ensemble needs.
 
 ## The results report: `report-phase2` (task 2.6)
 

@@ -6,7 +6,10 @@ handlers import torch and the pilot lazily, so ``--help`` stays fast.
 - ``simclr-pilot DATA --output-dir OUT [--splits FILE] (--epochs N | --steps N) ...``: the
   pilot's pretraining (:func:`~astro_simclr.simclr.pilot.train_pilot`); ``--resume``
   continues ``OUT/ckpt/last.pt``; ``--stop-at N`` ends the call after N steps (a
-  time-boxed job). Exit 0 when the call ends.
+  time-boxed job). DATA is a prepared layout, or a corpus index (``build-corpus-index``,
+  task 5.1) with ``--archive DIR`` and ``--eval-data LAYOUT`` defaulting to the ones it
+  records; ``--tier`` defaults to ``device`` for a layout and ``memmap`` for an index.
+  Exit 0 when the call ends.
 - ``simclr-embed DATA --output-dir OUT (--checkpoint FILE | --random-init) [--seed N]``:
   the embedding dump of a checkpoint, or of the randomly initialised network (the
   random-init probe of the go/no-go), without training.
@@ -49,7 +52,11 @@ def _pilot(args: argparse.Namespace) -> int:
         device=args.device,
         fp32_precision=args.fp32_precision,
         deterministic=args.deterministic,
-        tier=args.tier,
+        tier=args.tier or ("memmap" if args.data.is_file() else "device"),
+        archive=None if args.archive is None else str(args.archive),
+        eval_data=None if args.eval_data is None else str(args.eval_data),
+        host_cap_gb=args.host_cap_gb,
+        allow_weak_index=args.allow_weak_index,
         log_every=args.log_every,
         checkpoint_every=args.checkpoint_every,
         diagnostics_every=args.diagnostics_every,
@@ -180,11 +187,17 @@ def _add_pilot(commands: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         "simclr-pilot",
         help="the 5.0b SimCLR pilot: pretrain ResNet-18 on a prepared layout's Train stamps",
         description="Pretrain SimCLR (ResNet-18 with a CIFAR stem, NT-Xent in paper mode, "
-        "LARS) on the Train stamps of a prepared layout, with checkpoints, diagnostics and a "
-        "final embedding dump (ADR 0025). With --splits, the stamps a screened run may not "
-        "use are left out and the kNN monitor queries the screen's selection half.",
+        "LARS) on the Train stamps of a prepared layout, or on the archive rows of a corpus "
+        "index (evaluated on CD21), with checkpoints, diagnostics and a final embedding dump "
+        "(ADR 0025). With --splits, the stamps a screened run may not use are left out and "
+        "the kNN monitor queries the screen's selection half.",
     )
-    pilot.add_argument("data", type=Path, metavar="DATA", help="a prepared layout directory")
+    pilot.add_argument(
+        "data",
+        type=Path,
+        metavar="DATA",
+        help="a prepared layout directory, or a corpus index file (build-corpus-index)",
+    )
     pilot.add_argument("--output-dir", type=Path, required=True, help="the run directory")
     pilot.add_argument("--splits", type=Path, help="a stored splits file of DATA")
     length = pilot.add_mutually_exclusive_group()
@@ -199,7 +212,32 @@ def _add_pilot(commands: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     pilot.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda", "mps"))
     pilot.add_argument("--fp32-precision", default="ieee", choices=("ieee", "tf32"))
     pilot.add_argument("--deterministic", action="store_true")
-    pilot.add_argument("--tier", default="device", choices=("device", "host"))
+    pilot.add_argument(
+        "--tier",
+        choices=("device", "host", "memmap"),
+        help="where the pretraining stamps live (default: device for a layout, memmap for a "
+        "corpus index; a corpus is never kept on the device)",
+    )
+    pilot.add_argument(
+        "--archive", type=Path, help="the archive corpus of an index (default: the recorded one)"
+    )
+    pilot.add_argument(
+        "--eval-data",
+        type=Path,
+        help="the CD21 layout evaluating a corpus run (default: the one the index excluded)",
+    )
+    pilot.add_argument(
+        "--allow-weak-index",
+        action="store_true",
+        help='accept an index built with a radius below 1.5" or without the near-duplicate '
+        "check (recorded; never for a result)",
+    )
+    pilot.add_argument(
+        "--host-cap-gb",
+        type=float,
+        default=24.0,
+        help="largest corpus held in host memory by --tier host (default 24)",
+    )
     pilot.add_argument("--log-every", type=int, default=50)
     pilot.add_argument("--checkpoint-every", type=int, default=1000)
     pilot.add_argument("--diagnostics-every", type=int, default=1000)

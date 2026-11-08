@@ -3,7 +3,10 @@
 Task 3.4b. The rules live in engine-free objects (the phase-4 rule): the schedule policy,
 the class-uniform sampler, Keras' Adam and the evaluation in :mod:`astro_simclr.rj23_regime`,
 the parts of a run in :mod:`astro_simclr.rj23_data`, the classifiers in
-:mod:`astro_simclr.rj23_model`. This module only wires them into Lightning:
+:mod:`astro_simclr.rj23_model`; what needs no engine (the request, the inputs, the stream
+check, the records and ``metrics.json``) is :mod:`astro_simclr.tasks.rj23`'s, shared with
+the plain engine's adapter there, so both engines write the same files. This module only
+wires them into Lightning:
 
 - :class:`RJ23Module`: the scenario's :class:`~astro_simclr.rj23_model.RJ23Classifier`,
   unweighted cross-entropy, :func:`~astro_simclr.rj23_regime.keras_adam` with the
@@ -50,8 +53,8 @@ schedule's record (``schedule``: the history of ``[step, macro-F1]``, ``stopped_
 **Resume** (``--resume PATH|auto``) restores the weights, the optimizer, the step and the
 callback's history and snapshots, and the batch stream continues exactly. Lightning does not
 restore the global torch generator, so the dropout masks after a resume differ from an
-uninterrupted run's (the plain engine's checkpoint holds every RNG stream, ADR 0013 of
-phase 4). An interrupted run (Ctrl-C) ends with an error that says to resume it.
+uninterrupted run's (the plain engine's checkpoint holds every RNG stream: its resume is
+exact, ``tasks.rj23``). An interrupted run (Ctrl-C) ends with an error that says to resume it.
 """
 
 from __future__ import annotations
@@ -60,10 +63,9 @@ import dataclasses
 import json
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import Any, cast
 
 import lightning as L
 import numpy as np
@@ -71,26 +73,20 @@ import torch
 import torch.nn.functional as F
 from lightning.pytorch.callbacks import Callback
 
-from astro_simclr.config import RJ23, RJ23_MONITOR, ConfigError, Settings, settings_to_plain
-from astro_simclr.data.raw_alerts import RawAlerts, load_raw_alerts
-from astro_simclr.data.rj23_input import LargeValues, ViewName
+from astro_simclr.config import RJ23, RJ23_MONITOR, ConfigError, Settings
+from astro_simclr.data.rj23_input import ViewName
 from astro_simclr.data.schema import DataError
 from astro_simclr.experiments import (
     CHECKPOINT_DIR,
     LAST_CHECKPOINT,
     METRICS_FILE,
     check_accelerator,
-    dataset_path,
     machine_record,
     resolve_resume,
 )
-from astro_simclr.presets import preset_report
-from astro_simclr.protocol.alerts import read_alert_table
-from astro_simclr.protocol.benchmark_metrics import confusion_counts, macro_f1
-from astro_simclr.protocol.object_splits import read_object_splits
-from astro_simclr.protocol.predictions import Predictions, predictions_file, save_predictions
-from astro_simclr.protocol.split_runs import SplitRequest, file_sha256
-from astro_simclr.rj23_data import MODE_PARTS, MODES, RJ23Mode, RJ23Part, RunPlan, rj23_parts
+from astro_simclr.protocol.benchmark_metrics import macro_f1
+from astro_simclr.protocol.split_runs import SplitRequest
+from astro_simclr.rj23_data import RJ23Part
 from astro_simclr.rj23_model import BNPosition, build_rj23_classifier
 from astro_simclr.rj23_regime import (
     KEEPS,
@@ -102,7 +98,18 @@ from astro_simclr.rj23_regime import (
     predict_probabilities,
 )
 from astro_simclr.runs.record import start_run
-from astro_simclr.tasks.results import finite
+from astro_simclr.tasks.rj23 import (
+    RUN_IDENTITY_STATE,
+    DevicePart,
+    RJ23Inputs,
+    RJ23Request,
+    check_stream_state,
+    keep_record,
+    regime_schedule,
+    rj23_inputs,
+    rj23_metrics,
+    schedule_record,
+)
 from astro_simclr.training.runs import apply_fp32_precision, build_trainer, seed_run
 
 __all__ = [
@@ -114,8 +121,6 @@ __all__ = [
     "run_rj23",
 ]
 
-#: The key of the run identity in the training loader's checkpoint state.
-RUN_IDENTITY_STATE: Final = "rj23_run"
 #: A batch: images (B, C, H, W), positions (B, 3), int64 labels (B,).
 Batch = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 
@@ -160,29 +165,12 @@ class RJ23Module(L.LightningModule):
         return keras_adam(self.parameters(), self.lr)
 
 
-@dataclass(frozen=True, slots=True)
-class _DevicePart:
-    images: torch.Tensor
-    positions: torch.Tensor
-    labels: torch.Tensor
-    part: RJ23Part
-
-    @classmethod
-    def of(cls, part: RJ23Part, device: torch.device) -> _DevicePart:
-        return cls(
-            images=torch.from_numpy(np.ascontiguousarray(part.images)).to(device),
-            positions=torch.from_numpy(np.ascontiguousarray(part.positions)).to(device),
-            labels=torch.from_numpy(np.ascontiguousarray(part.labels)).to(device),
-            part=part,
-        )
-
-
 class _ClassUniformLoader:
     """The training batches of one logging epoch, from the Trainer's global step on."""
 
     def __init__(
         self,
-        part: _DevicePart,
+        part: DevicePart,
         stream: ClassUniformStream,
         position: Callable[[], int],
         identity: Mapping[str, object],
@@ -214,20 +202,7 @@ class _ClassUniformLoader:
             ConfigError: if the checkpoint is from another splits file, mode or scenario.
             DataError: if its stream (items, class counts, batch size, seed) differs.
         """
-        stored = state.get(RUN_IDENTITY_STATE)
-        if stored != self._identity:
-            msg = (
-                f"the checkpoint is from the RJ23 run {stored}, this run is {self._identity}: "
-                "a resume must continue the same run (use another --output-dir or no --resume)"
-            )
-            raise ConfigError(msg)
-        stream = {key: value for key, value in state.items() if key != RUN_IDENTITY_STATE}
-        if stream != self._stream.state():
-            msg = (
-                f"the checkpoint was trained on the stream {stream}, but this run's is "
-                f"{self._stream.state()}: resume with the same data, batch_size and seed"
-            )
-            raise DataError(msg)
+        check_stream_state(state, self._stream, self._identity)
 
 
 class RJ23DataModule(L.LightningDataModule):
@@ -261,7 +236,7 @@ class RJ23DataModule(L.LightningDataModule):
         self._train_name = train
         self._identity = dict(identity)
         self.stream = ClassUniformStream(parts[train].labels, batch_size, seed, n_classes=n_classes)
-        self._device_parts: dict[str, _DevicePart] | None = None
+        self._device_parts: dict[str, DevicePart] | None = None
 
     def _device(self) -> torch.device:
         trainer = self.trainer
@@ -273,10 +248,10 @@ class RJ23DataModule(L.LightningDataModule):
         current = self._device_parts
         if current is None or current[self._train_name].images.device != device:
             self._device_parts = {
-                name: _DevicePart.of(part, device) for name, part in self._parts.items()
+                name: DevicePart.of(part, device) for name, part in self._parts.items()
             }
 
-    def part(self, name: str) -> _DevicePart:
+    def part(self, name: str) -> DevicePart:
         """The device-resident part ``name``.
 
         Raises:
@@ -443,59 +418,16 @@ class RJ23ScheduleCallback(Callback):
             self.decision = self.schedule.decide(last, self.history)
 
 
-@dataclass(frozen=True, slots=True)
-class RJ23Request:
-    """What an RJ23 run trains on besides its settings.
-
-    Attributes:
-        splits: the object-splits file (``make-object-splits``) of the layout's alerts.
-        mode: ``replication`` (the paper protocol) or ``decision`` (``--screen``).
-        alerts: the alert table CSV the splits were drawn from; None: the layout's own
-            (grouped by ``oid``).
-
-    Raises:
-        ConfigError: for an unknown ``mode``.
-    """
-
-    splits: Path
-    mode: RJ23Mode = "replication"
-    alerts: Path | None = None
-
-    def __post_init__(self) -> None:
-        if self.mode not in MODES:
-            raise ConfigError(f"mode must be one of {MODES}, got {self.mode!r}")
-
-
-def _evaluation(
-    labels: np.ndarray[Any, Any], predicted: np.ndarray[Any, Any], names: Sequence[str]
-) -> dict[str, Any]:
-    counts = confusion_counts(labels, predicted, len(names))
-    rows = counts.sum(axis=1)
-    recalls = {
-        name: (float(counts[i, i] / rows[i]) if rows[i] else None) for i, name in enumerate(names)
-    }
-    present = [value for value in recalls.values() if value is not None]
-    return {
-        "n": int(labels.size),
-        "accuracy": float(np.mean(labels == predicted)),
-        "balanced_accuracy": sum(present) / len(present),
-        "macro_f1": macro_f1(labels, predicted, len(names)),
-        "recall_per_class": recalls,
-        "confusion_counts": counts.tolist(),
-    }
-
-
 def _evaluate_keeps(
     module: RJ23Module,
     datamodule: RJ23DataModule,
     callback: RJ23ScheduleCallback,
-    plan: RunPlan,
+    inputs: RJ23Inputs,
     settings: Settings,
-    names: Sequence[str],
 ) -> dict[str, Any]:
     """Predict the evaluated parts with both kept weights; write the weights and files."""
     out = settings.output_dir
-    primary = settings.rj23_keep
+    primary = cast(Keep, settings.rj23_keep)
     result: dict[str, Any] = {"primary": primary}
     for keep in KEEPS:
         weights = callback.snapshots[keep]
@@ -510,67 +442,23 @@ def _evaluate_keeps(
             out / checkpoint,
         )
         module.model.load_state_dict(weights)
-        evaluation: dict[str, Any] = {}
-        predictions: dict[str, Any] = {}
-        for part_name, stage in plan.evaluated:
+        probabilities: dict[str, np.ndarray[Any, Any]] = {}
+        for part_name, _ in inputs.plan.evaluated:
             part = datamodule.part(part_name)
             module.model.to(part.images.device)
-            probabilities = predict_probabilities(
+            probabilities[part_name] = predict_probabilities(
                 module.model, part.images, part.positions, settings.eval_batch_size
             ).numpy()
-            stored = Predictions(probabilities, part.part.labels, part.part.candids, len(names))
-            file = predictions_file(stage if keep == primary else f"{stage}_{keep}")
-            save_predictions(stored, out / file)
-            predictions[stage] = {"file": file, "split": part_name, "n": len(part.part)}
-            evaluation[stage] = _evaluation(part.part.labels, stored.predicted, names)
-        result[keep] = {
-            "step": callback.snapshot_steps[keep],
-            "checkpoint": checkpoint,
-            "evaluation": evaluation,
-            "predictions": predictions,
-        }
+        result[keep] = keep_record(
+            out,
+            keep,
+            primary,
+            inputs,
+            probabilities,
+            step=callback.snapshot_steps[keep],
+            checkpoint=checkpoint,
+        )
     return result
-
-
-def _schedule_record(callback: RJ23ScheduleCallback) -> dict[str, Any]:
-    decision = callback.decision
-    assert decision is not None  # noqa: S101 (run_rj23 checked that the run stopped)
-    schedule = callback.schedule
-    return {
-        "name": RJ23,
-        "eval_every": schedule.eval_every,
-        "patience": schedule.patience,
-        "max_steps": schedule.max_steps,
-        "selection": callback.selection,
-        "stopped_by": decision.reason,
-        "capped": decision.capped,
-        "stop_step": callback.snapshot_steps["stop"],
-        "best_step": callback.snapshot_steps["best"],
-        "history": [
-            [schedule.validation_step(i), value] for i, value in enumerate(callback.history)
-        ],
-    }
-
-
-def _parts_record(parts: Mapping[str, RJ23Part], n_classes: int) -> dict[str, Any]:
-    return {
-        name: {
-            "n": len(part),
-            "class_counts": np.bincount(part.labels, minlength=n_classes).tolist(),
-        }
-        for name, part in parts.items()
-    }
-
-
-def _data_record(path: Path, data: RawAlerts) -> dict[str, Any]:
-    meta = json.loads((path / "meta.json").read_text(encoding="utf-8"))
-    return {
-        "path": str(path),
-        "kind": meta["kind"],
-        "source": meta["source"],
-        "label_names": list(data.label_names),
-        "class_counts": data.class_counts(),
-    }
 
 
 def run_rj23(
@@ -599,51 +487,32 @@ def run_rj23(
         raise ConfigError(f"run_rj23 needs schedule={RJ23}, got {settings.schedule}")
     check_accelerator(settings.accelerator)
     apply_fp32_precision(settings)
-    path = dataset_path(settings)
-    data = load_raw_alerts(path)
+    inputs = rj23_inputs(settings, request)
     ckpt_path = resolve_resume(resume, settings.output_dir)
-    splits = read_object_splits(request.splits)
-    table = None if request.alerts is None else read_alert_table(request.alerts, data.label_names)
-    scenario = cast(ViewName, settings.rj23_scenario)
-    parts = rj23_parts(
-        data,
-        splits,
-        scenario,
-        mode=request.mode,
-        table=table,
-        large_values=cast(LargeValues, settings.rj23_large_values),
-    )
-    plan = MODE_PARTS[request.mode]
-    splits_sha256 = file_sha256(request.splits)
-    identity = {"splits_sha256": splits_sha256, "mode": request.mode, "scenario": scenario}
+    plan, n_classes = inputs.plan, inputs.data.n_classes
 
     seed_run(settings)
     module = RJ23Module(
-        scenario=scenario,
-        n_classes=data.n_classes,
+        scenario=cast(ViewName, settings.rj23_scenario),
+        n_classes=n_classes,
         bn_position=cast(BNPosition, settings.rj23_bn_position),
         lr=settings.lr,
     )
     datamodule = RJ23DataModule(
-        parts,
+        inputs.parts,
         train=plan.train,
         batch_size=settings.batch_size,
         seed=settings.seed,
-        n_classes=data.n_classes,
-        identity=identity,
-    )
-    schedule = RJ23Schedule(
-        eval_every=settings.val_every_n_steps,
-        patience=settings.patience,
-        max_steps=settings.max_steps,
+        n_classes=n_classes,
+        identity=inputs.identity,
     )
     out = settings.output_dir
     (out / CHECKPOINT_DIR).mkdir(parents=True, exist_ok=True)
     callback = RJ23ScheduleCallback(
-        schedule,
+        regime_schedule(settings),
         datamodule,
         selection=plan.selection,
-        n_classes=data.n_classes,
+        n_classes=n_classes,
         eval_batch_size=settings.eval_batch_size,
         last_checkpoint=out / CHECKPOINT_DIR / LAST_CHECKPOINT,
         last_every_n_steps=settings.checkpoint_every_n_steps,
@@ -662,7 +531,7 @@ def run_rj23(
     record = start_run(
         "train-supervised",
         settings,
-        data=path,
+        data=inputs.path,
         machine=machine_record(trainer),
         split=SplitRequest(request.splits, None) if decision else None,
         object_splits=None if decision else request.splits,
@@ -670,12 +539,7 @@ def run_rj23(
     )
     try:
         cleaned = _fit_and_report(
-            settings,
-            request,
-            trainer,
-            (module, datamodule, callback),
-            (path, data, parts),
-            ckpt_path,
+            settings, request, trainer, (module, datamodule, callback), inputs, ckpt_path
         )
         cleaned["run"] = record.summary()
         text = json.dumps(cleaned, indent=2, allow_nan=False) + "\n"
@@ -696,7 +560,7 @@ def _fit_and_report(
     request: RJ23Request,
     trainer: L.Trainer,
     built: tuple[RJ23Module, RJ23DataModule, RJ23ScheduleCallback],
-    data: tuple[Path, RawAlerts, Mapping[str, RJ23Part]],
+    inputs: RJ23Inputs,
     ckpt_path: Path | None,
 ) -> dict[str, Any]:
     """Fit until the policy stops, evaluate both keeps; return the JSON-safe metrics.
@@ -705,9 +569,7 @@ def _fit_and_report(
         ConfigError: if the fit ended before the schedule stopped it (interrupted).
     """
     module, datamodule, callback = built
-    path, raw, parts = data
     out = settings.output_dir
-    plan = MODE_PARTS[request.mode]
     started = time.perf_counter()
     trainer.fit(module, datamodule=datamodule, ckpt_path=ckpt_path)
     seconds = time.perf_counter() - started
@@ -717,32 +579,11 @@ def _fit_and_report(
             f"it (interrupted?): continue it with --resume auto (last.ckpt in {out})"
         )
         raise ConfigError(msg)
-    names = raw.label_names
-    keep = _evaluate_keeps(module, datamodule, callback, plan, settings, names)
-    primary = keep[settings.rj23_keep]
+    keep = _evaluate_keeps(module, datamodule, callback, inputs, settings)
     # No on_train_start when Lightning skips the fit (a resume at the cap): no step ran.
     start = callback.start_step
     steps = 0 if start is None else trainer.global_step - start
-    metrics: dict[str, Any] = {
-        "command": "train-supervised",
-        "seed": settings.seed,
-        "best_step": callback.snapshot_steps["best"],
-        "stop_step": callback.snapshot_steps["stop"],
-        "last_step": trainer.global_step,
-        "monitor": RJ23_MONITOR,
-        "monitor_best": callback.decision.best_value if callback.decision else None,
-        "labels": list(names),
-        "schedule": _schedule_record(callback),
-        "keep": keep,
-        "evaluation": primary["evaluation"],
-        "predictions": primary["predictions"],
-        "benchmark": {
-            "splits": str(request.splits),
-            "splits_sha256": file_sha256(request.splits),
-            "mode": request.mode,
-            "alerts": None if request.alerts is None else str(request.alerts),
-            "parts": _parts_record(parts, raw.n_classes),
-        },
+    engine: dict[str, Any] = {
         "checkpoints": {
             "last": f"{CHECKPOINT_DIR}/{LAST_CHECKPOINT}",
             **{name: keep[name]["checkpoint"] for name in KEEPS},
@@ -754,9 +595,6 @@ def _fit_and_report(
         },
         "accelerator": type(trainer.accelerator).__name__,
         "machine": machine_record(trainer),
-        "data": _data_record(path, raw),
-        "config": settings_to_plain(settings),
-        "preset": preset_report(settings),
         "resumed_from": None if ckpt_path is None else str(ckpt_path),
         "timing": {
             "fit_seconds": seconds,
@@ -764,4 +602,12 @@ def _fit_and_report(
             "seconds_per_step": seconds / steps if steps else None,
         },
     }
-    return cast(dict[str, Any], finite(metrics))
+    return rj23_metrics(
+        settings,
+        request,
+        inputs,
+        schedule=schedule_record(callback.schedule, callback.selection, callback.history),
+        keep=keep,
+        last_step=trainer.global_step,
+        engine=engine,
+    )

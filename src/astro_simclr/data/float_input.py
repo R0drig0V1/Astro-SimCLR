@@ -54,6 +54,13 @@ the pooled image, rather than pooling the stored [0, 1] stamp, keeps both the cr
 the context channels on [0, 1] with minimum 0 and maximum 1. The block means are
 accumulated in float64, so the context commutes exactly with the rotations and flips.
 :func:`context_split` runs it over a whole split (ADR 0005, ``docs/data.md``).
+
+**Shifted crops (plan row D4).** ``offset=(dy, dx)`` moves the crop window by ``dy`` rows
+and ``dx`` columns inside the stamp (rows ``[21 + dy, 42 + dy)``), then normalises it the
+same way; the extended test-time augmentation ``d4_shift`` (:mod:`astro_simclr.tta`)
+evaluates the crops at ``dy, dx`` in ``{-1, 0, 1}``. The stamp's 21-pixel margin around the
+crop means no padding is ever needed. ``offset=(0, 0)``, the default, is the paper's crop
+through the same code.
 """
 
 from __future__ import annotations
@@ -122,7 +129,11 @@ def former_nan_mask(stamps: npt.NDArray[np.floating[Any]]) -> npt.NDArray[np.boo
 
 
 def crop_then_normalise[F: np.floating[Any]](
-    stamps: npt.NDArray[F], crop: int = PAPER_CROP, *, nan_approximation: bool = True
+    stamps: npt.NDArray[F],
+    crop: int = PAPER_CROP,
+    *,
+    nan_approximation: bool = True,
+    offset: tuple[int, int] = (0, 0),
 ) -> npt.NDArray[F]:
     """Centre-crop, min-max normalise each channel on the crop (no epsilon), NaN -> 0.
 
@@ -132,22 +143,40 @@ def crop_then_normalise[F: np.floating[Any]](
     unless the crop is constant or all NaN, in which case it is all 0. The arithmetic is
     ALeRCE's (module docstring), in the input dtype. With ``nan_approximation``, the
     former NaNs of :func:`former_nan_mask`, counted over the full stamp, are excluded from
-    the minimum and maximum and become 0. The input is never modified.
+    the minimum and maximum and become 0. ``offset`` ``(dy, dx)`` moves the window by ``dy``
+    rows and ``dx`` columns (module docstring, "Shifted crops"). The input is never modified.
 
     Raises:
         ValueError: if ``stamps`` is not floating point, has fewer than 3 dimensions, is
-            not square, or ``crop`` does not fit (see :func:`crop_bounds`).
+            not square, ``crop`` does not fit (see :func:`crop_bounds`), or the shifted
+            window leaves the stamp.
     """
     if not np.issubdtype(stamps.dtype, np.floating):
         raise ValueError(f"stamps must be floating point, got dtype {stamps.dtype}")
     if stamps.ndim < 3 or stamps.shape[-3] != stamps.shape[-2]:
         raise ValueError(f"stamps must be (..., H, W, C) with H == W, got {stamps.shape}")
-    begin, end = crop_bounds(stamps.shape[-3], crop)
-    window = (..., slice(begin, end), slice(begin, end), slice(None))
+    rows, cols = _shifted_window(stamps.shape[-3], crop, offset)
+    window = (..., rows, cols, slice(None))
     cropped: npt.NDArray[F] = np.array(stamps[window], copy=True)
     if nan_approximation:
         cropped[former_nan_mask(stamps)[window]] = np.nan
     return _min_max_nan_to_zero(cropped)
+
+
+def _shifted_window(side: int, crop: int, offset: tuple[int, int]) -> tuple[slice, slice]:
+    """The row and column slices of the centre crop moved by ``offset`` ``(dy, dx)``.
+
+    Raises:
+        ValueError: if ``crop`` does not fit (:func:`crop_bounds`) or the moved window
+            leaves the ``side`` x ``side`` stamp.
+    """
+    begin, end = crop_bounds(side, crop)
+    dy, dx = offset
+    for name, shift in (("dy", dy), ("dx", dx)):
+        integer = isinstance(shift, int) and not isinstance(shift, bool)
+        if not integer or begin + shift < 0 or end + shift > side:
+            raise ValueError(f"offset {name}={shift!r} moves the crop out of the stamp")
+    return slice(begin + dy, end + dy), slice(begin + dx, end + dx)
 
 
 def _min_max_nan_to_zero[F: np.floating[Any]](images: npt.NDArray[F]) -> npt.NDArray[F]:
@@ -243,17 +272,18 @@ def crop_split(
     *,
     nan_approximation: bool = True,
     chunk: int = _CHUNK,
+    offset: tuple[int, int] = (0, 0),
 ) -> npt.NDArray[np.float32]:
     """:func:`crop_then_normalise` over a whole split, ``chunk`` stamps at a time.
 
     ``images`` is a float32 ``(N, 63, 63, 3)`` array, usually the read-only memory map of
     ``images_f32.npy``. Working in chunks keeps the temporaries small; the result,
     ``(N, crop, crop, 3)`` float32, is the same as one call on the whole array (the
-    operations are per stamp).
+    operations are per stamp). ``offset`` is :func:`crop_then_normalise`'s.
 
     Raises:
-        ValueError: if ``images`` is not float32 ``(N, 63, 63, 3)``, ``chunk < 1``, or
-            ``crop`` does not fit.
+        ValueError: if ``images`` is not float32 ``(N, 63, 63, 3)``, ``chunk < 1``,
+            ``crop`` does not fit, or the shifted window leaves the stamp.
     """
     if images.dtype != np.float32 or images.shape[1:] != STAMP_SHAPE:
         raise ValueError(
@@ -262,12 +292,12 @@ def crop_split(
         )
     if chunk < 1:
         raise ValueError(f"chunk must be >= 1, got {chunk}")
-    crop_bounds(STAMP_SHAPE[0], crop)
+    _shifted_window(STAMP_SHAPE[0], crop, offset)
     out = np.empty((len(images), crop, crop, STAMP_SHAPE[2]), dtype=np.float32)
     for start in range(0, len(images), chunk):
         block = np.asarray(images[start : start + chunk])
         out[start : start + chunk] = crop_then_normalise(
-            block, crop, nan_approximation=nan_approximation
+            block, crop, nan_approximation=nan_approximation, offset=offset
         )
     return out
 

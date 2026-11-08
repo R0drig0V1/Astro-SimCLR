@@ -6,8 +6,9 @@ tasks can proceed in parallel and the 4.7 equivalence gate has a fixed target:
 
 - :mod:`.task`: the :class:`~.task.Task` protocol (``train_step``, ``eval_step``, ``state``)
   and :func:`~.task.mean_of_batch_losses`, the monitored value;
-- :mod:`.policies`: the monitor rule, the validation grid, the horizon, early stopping and
-  the ``keep`` choice, as frozen dataclasses with the pure rules that define them;
+- :mod:`.policies`: the monitor rule, the validation grid, the horizon, early stopping, the
+  ``keep`` choice and the stop-rule protocol, as frozen dataclasses with the pure rules
+  that define them;
 - :mod:`.checkpoint`: the checkpoint key set, every RNG stream, the stream position and the
   run identity, and the refusal of a cross-engine resume;
 - :mod:`.device`: the device policy (one device only, the determinism flags, ADR 0010's
@@ -66,6 +67,7 @@ from astro_simclr.engine.device import CUBLAS_WORKSPACE_CONFIG, DevicePolicy
 from astro_simclr.engine.loop import (
     Evaluation,
     FitResult,
+    Score,
     TrainStream,
     Validation,
     evaluate,
@@ -78,6 +80,8 @@ from astro_simclr.engine.policies import (
     Keep,
     Monitor,
     Schedule,
+    StopDecision,
+    StopRule,
     ValidationGrid,
     ValidationTrigger,
 )
@@ -119,6 +123,9 @@ __all__ = [
     "RngState",
     "ScalarLog",
     "Schedule",
+    "Score",
+    "StopDecision",
+    "StopRule",
     "StreamSpec",
     "Task",
     "TierChoice",
