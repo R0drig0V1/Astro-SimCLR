@@ -260,7 +260,10 @@ each stamp, re-normalised per channel on the crop. ALeRCE's code
 `image_normalize_by_image` → `image_nan_to_num`: rows and columns 21–41, `x -= nanmin`,
 `x = x / nanmax`, **no epsilon** (a constant or all-NaN crop becomes 0), then NaN → 0.
 `astro_simclr.data.float_input.crop_then_normalise(stamps, crop=21)` is that pipeline, and
-`crop_split(images_f32)` applies it to a whole split in chunks.
+`crop_split(images_f32)` applies it to a whole split in chunks. Both take
+`offset=(dy, dx)` (plan row D4): the same crop moved by `dy` rows and `dx` columns, normalised
+on its own pixels, which the `d4_shift` test-time augmentation of `ensemble-eval` reads at
+`dy, dx ∈ {-1, 0, 1}`; the default `(0, 0)` is the paper's crop.
 
 Our pickles hold the stamps after the same normalisation over the full 63×63 stamp, with
 NaN → 0. Min-max is affine-invariant, so re-normalising a stored crop gives ALeRCE's input
