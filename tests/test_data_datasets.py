@@ -14,7 +14,7 @@ from astro_simclr.data.synthetic import CLASSIFIER_FILES, PRETRAINING_FILE, make
 
 
 class _CentreCrop:
-    """Deterministic stand-in for the legacy ``without_aug`` (centre crop + ToTensor)."""
+    """Deterministic stand-in for ``center_crop`` (legacy ``without_aug``: crop + ToTensor)."""
 
     def __init__(self, size: int = 27) -> None:
         self.size = size
@@ -106,11 +106,11 @@ def test_datasets_batch_through_a_dataloader(prepared: Path) -> None:
 # The real registry of task 1.5: the datasets work with any of its augmentations.
 
 
-def test_stamp_dataset_with_without_aug_is_the_legacy_resize_img(prepared: Path) -> None:
+def test_stamp_dataset_with_center_crop_is_the_legacy_resize_img(prepared: Path) -> None:
     # Legacy Dataset_stamps_v2 without augmentation: img_float2int, ToPILImage, then
     # Resize_img (CenterCrop + ToTensor). The stamps are already uint8 here.
     split = _split(prepared, CLASSIFIER_FILES[0], "Validation")
-    dataset = StampDataset(split, get_augmentation("without_aug", 27))
+    dataset = StampDataset(split, get_augmentation("center_crop", 27))
     image, _, _ = dataset[4]
     expected = torch.from_numpy(np.array(split.images[4, 18:45, 18:45])).permute(2, 0, 1)
     torch.testing.assert_close(image, expected.float() / 255, rtol=0, atol=1e-6)
