@@ -14,8 +14,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
+from _training_support import N_PER_SPLIT
 
 from astro_simclr import preflight
 from astro_simclr.cli import main
@@ -305,6 +307,75 @@ def test_manifest_written_then_verified(data_copy: Path) -> None:
     assert check_manifest(data_copy).status == "FAIL"
     manifest.write_text("[]")
     assert check_manifest(data_copy).status == "FAIL"
+
+
+def test_manifest_migration_to_float32(data_copy: Path, tmp_path: Path) -> None:
+    # Task 2.1: re-preparing with --images float32 adds images_f32.npy to every split. The
+    # recorded manifest then fails, naming the new files and the command that re-creates it;
+    # a uint8-only re-prepare gives the same entry and still matches.
+    from astro_simclr.data import prepare
+    from astro_simclr.data.prepared import read_meta
+    from astro_simclr.data.synthetic import make_synthetic
+
+    assert check_manifest(data_copy).status == "PASS"  # written
+    raw = tmp_path / "raw"
+    make_synthetic(raw, n_per_split=N_PER_SPLIT, seed=0)  # the seed of synthetic_prepared
+    prepare(raw / f"{FULL}.pkl", data_copy, overwrite=True)
+    assert check_manifest(data_copy).status == "PASS"
+
+    prepare(raw / f"{FULL}.pkl", data_copy, overwrite=True, images="float32")
+    step = check_manifest(data_copy)
+    text = "\n".join(step.lines)
+    assert step.status == "FAIL"
+    assert f"{FULL}: differs from the manifest" in text
+    assert "  Train/images_f32.npy: new (prepared with --images float32)" in text
+    manifest = data_copy / "data-manifest.json"
+    assert f"rm {manifest} && astro-simclr preflight --data-dir {data_copy}" in text
+    manifest.unlink()
+    assert check_manifest(data_copy).status == "PASS"
+    assert check_manifest(data_copy).status == "PASS"
+
+    # The RAM estimate counts float32 as 4 bytes per value.
+    meta = read_meta(data_copy / FULL)
+    expected = sum(
+        int(np.prod(info["shape"])) * np.dtype(info["dtype"]).itemsize
+        for split in meta["splits"].values()
+        for info in split["files"].values()
+    )
+    assert preflight._array_bytes(meta) == expected
+
+
+def test_manifest_differences_are_listed() -> None:
+    current = {
+        "kind": "classifier",
+        "source": {"sha256": "a"},
+        "splits": {
+            "Train": {"n": 2, "class_counts": [1, 1], "files": {"images.npy": "x", "new.npy": "y"}},
+            "Test": {"n": 1, "class_counts": [1], "files": {}},
+        },
+    }
+    recorded = {
+        "kind": "pretraining",
+        "source": {"sha256": "a"},
+        "splits": {
+            "Train": {"n": 3, "class_counts": [1, 1], "files": {"images.npy": "z", "old.npy": "w"}},
+            "Validation": {},
+        },
+    }
+    assert preflight._manifest_differences(recorded, current) == [
+        "kind changed",
+        "Test: split added",
+        "Train: n changed",
+        "Train/images.npy: SHA-256 changed",
+        "Train/new.npy: new",
+        "Train/old.npy: removed",
+        "Validation: split removed",
+    ]
+    assert preflight._manifest_differences([], current) == ["the recorded entry is not an object"]
+    assert preflight._manifest_differences(
+        {"kind": "classifier", "source": {"sha256": "a"}}, current
+    ) == ["the recorded splits are not an object"]
+    assert preflight._manifest_differences(current, current) == ["the entry differs"]
 
 
 # --- Steps 5-6 and the whole preflight -----------------------------------------------------

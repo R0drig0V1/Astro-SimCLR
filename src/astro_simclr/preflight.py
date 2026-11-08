@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -49,6 +50,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Literal, TextIO
 
+import numpy as np
 import torch
 from lightning.pytorch.callbacks import Callback
 
@@ -412,7 +414,7 @@ def _array_bytes(meta: dict[str, Any]) -> int:
             n = 1
             for dim in info["shape"]:
                 n *= int(dim)
-            total += n * (1 if info["dtype"] == "uint8" else 8)
+            total += n * np.dtype(info["dtype"]).itemsize  # uint8, float32 or 64-bit
     return total
 
 
@@ -510,12 +512,45 @@ def build_manifest(data_dir: Path) -> dict[str, Any]:
     return {"format": _MANIFEST_FORMAT, "format_version": 1, "datasets": datasets}
 
 
+def _manifest_differences(recorded: Any, current: dict[str, Any]) -> list[str]:
+    """What changed in one dataset's manifest entry, one line per file or field."""
+    if not isinstance(recorded, dict):
+        return ["the recorded entry is not an object"]
+    lines = [f"{key} changed" for key in ("kind", "source") if recorded.get(key) != current[key]]
+    old_splits = recorded.get("splits")
+    if not isinstance(old_splits, dict):
+        return [*lines, "the recorded splits are not an object"]
+    for split in sorted(set(old_splits) | set(current["splits"])):
+        old, new = old_splits.get(split), current["splits"].get(split)
+        if not isinstance(old, dict) or new is None:
+            lines.append(f"{split}: split {'added' if new is not None else 'removed'}")
+            continue
+        lines.extend(
+            f"{split}: {key} changed" for key in ("n", "class_counts") if old.get(key) != new[key]
+        )
+        recorded_files = old.get("files")
+        old_files: dict[str, Any] = recorded_files if isinstance(recorded_files, dict) else {}
+        for name in sorted(set(old_files) | set(new["files"])):
+            if name not in old_files:
+                why = " (prepared with --images float32)" if name == "images_f32.npy" else ""
+                lines.append(f"{split}/{name}: new{why}")
+            elif name not in new["files"]:
+                lines.append(f"{split}/{name}: removed")
+            elif old_files[name] != new["files"][name]:
+                lines.append(f"{split}/{name}: SHA-256 changed")
+    return lines or ["the entry differs"]
+
+
 def check_manifest(data_dir: Path, output_dir: Path | None = None) -> StepResult:
     """Step 4: write ``data-manifest.json`` on the first run, verify against it afterwards.
 
-    A dataset of the manifest that is missing or differs fails; a dataset not in the
-    manifest only warns (delete the manifest to record the new set). ``output_dir`` is
-    unused (the steps share one signature).
+    A dataset of the manifest that is missing or differs fails, with the files that
+    changed and the command that re-creates the manifest (delete it and run the preflight
+    again). That is the migration when a dataset is re-prepared on purpose, for example
+    with ``prepare-data --images float32`` (task 2.1), which adds ``images_f32.npy`` to
+    every split; re-preparing uint8-only gives the same entry, so it still matches. A
+    dataset not in the manifest only warns. ``output_dir`` is unused (the steps share one
+    signature).
     """
     step = StepResult("manifest", "PASS")
     path = data_dir / MANIFEST_NAME
@@ -540,12 +575,27 @@ def check_manifest(data_dir: Path, output_dir: Path | None = None) -> StepResult
             step.status = "FAIL"
         elif current["datasets"][name] != entry:
             step.lines.append(f"{name}: differs from the manifest (changed or re-prepared)")
+            step.lines.extend(
+                f"  {line}" for line in _manifest_differences(entry, current["datasets"][name])
+            )
             step.status = "FAIL"
         else:
             step.lines.append(f"{name}: matches the manifest")
     for name in sorted(set(current["datasets"]) - set(recorded.get("datasets", {}))):
         step.warn(f"WARN: {name} is not in the manifest (delete {path.name} to re-create)")
+    if step.status == "FAIL":
+        step.lines.append(
+            "if the change is intended (a re-prepare, e.g. with --images float32), re-create "
+            f"the manifest: {_manifest_command(data_dir)}"
+        )
     return step
+
+
+def _manifest_command(data_dir: Path) -> str:
+    """The shell command that re-creates the manifest of ``data_dir``."""
+    quoted = shlex.quote(str(data_dir))
+    manifest = shlex.quote(str(data_dir / MANIFEST_NAME))
+    return f"rm {manifest} && astro-simclr preflight --data-dir {quoted}"
 
 
 # --- Steps 5-6: dry chain and throughput ---------------------------------------------------

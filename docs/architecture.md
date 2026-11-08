@@ -164,7 +164,7 @@ only on this protocol, never on a concrete transform.
   whose weight init consumed torch random numbers at construction (the transforms' outputs
   for a given generator state are unchanged).
 
-## `data` (task 1.2)
+## `data` (task 1.2; float input path in 2.1)
 
 `src/astro_simclr/data/`. File schemas, provenance and the workflow are in
 [`docs/data.md`](data.md).
@@ -213,6 +213,28 @@ pickle ──read_pickle──► validate ──► StampData ──write_prepa
 - `inspection`: `summarize` / `format_summary`, behind `inspect-data [--json]`. Inspecting
   is also a full check (schema validation, or `meta.json` plus hashes). The preflight's
   data manifest (1.7) is built from these summaries.
+
+Task 2.1 adds the paper's float input path (`docs/data.md`, "Float input path"):
+
+- `SplitData.images_f32` (float32, `None` by default): the stored stamps without the uint8
+  rounding. `load_pickle(path, float32=True)` fills it (values checked to lie in [0, 1]),
+  and `prepare(..., images="float32")` / `prepare-data --images float32` writes it as
+  `images_f32.npy`. `meta.json` is format version 2 (adds `images` and the optional file);
+  `read_meta` accepts 1 and 2, so older layouts load as uint8-only.
+- `float_input`: `crop_then_normalise(stamps, crop=21, *, nan_approximation=True)` is
+  ALeRCE's crop → per-channel min-max (no epsilon) → NaN → 0, on `(..., H, W, C)` in the
+  input dtype; `former_nan_mask` (zeros of channels with more than one exact zero over the
+  full stamp), `approximated_stamps` (stamps where a masked zero is inside the crop),
+  `crop_split` (a whole float32 split, chunked, for 2.2a's precomputed crops) and
+  `crop_bounds` (ALeRCE's crop arithmetic: `(21, 42)` for 21 on 63). Golden fixture:
+  `tests/fixtures/data/alerce_crop.npz`, from ALeRCE's own functions
+  (`scripts/characterize/data/alerce_crop.py`).
+- `m1_features`: `M1_FEATURE_NORM_STATS` (M1's 23 means and stds, recorded as constants
+  with provenance; `scripts/characterize/data/m1_feature_stats.py` re-derives them with
+  `pickletools`), `destandardise`, and `check_destandardisation`, behind
+  `check-features DIR [--json]` (exit 1 on a failed test).
+
+Neither module imports torch. The uint8 path (`images.npy`, `StampDataset`) is unchanged.
 
 The CLI imports these modules inside its handlers, so `show-config` does not import them;
 `data/__init__.py` does not re-export the torch datasets.
@@ -626,7 +648,11 @@ a failed step 2-4, stops it.
    hashes.
 4. **Manifest:** `data-manifest.json` in the data directory (per dataset: kind, source,
    per-split counts and file SHA-256s). Written on the first run; later runs fail on a
-   missing or changed dataset and warn on a new one. Never written if step 3 failed.
+   missing or changed dataset and warn on a new one. Never written if step 3 failed. A
+   changed dataset lists what changed (for example `Train/images_f32.npy: new (prepared
+   with --images float32)`, task 2.1), and the step prints the command that re-creates the
+   manifest (`rm DIR/data-manifest.json && astro-simclr preflight --data-dir DIR`). Step 2
+   sizes each array by its dtype (float32: 4 bytes).
 5. **Dry chain:** the configs of `configs/reference/` (R3 pretrain → R3 linear-eval and
    fine-tune on that checkpoint → R1, R2, R4; `--runs` selects) through `run_command`, with
    `max_epochs=1`, `limit_train_batches=steps+1`, `limit_val_batches=2`, at the reference

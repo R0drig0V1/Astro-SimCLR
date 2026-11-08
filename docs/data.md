@@ -1,5 +1,6 @@
 <!-- Data files of the project: schemas, provenance and workflow. Code: src/astro_simclr/data/
-     (docs/architecture.md, section `data`). Checked against the real files on 2026-11-07. -->
+     (docs/architecture.md, section `data`). Checked against the real files on 2026-11-07;
+     the float input and feature sections on 2026-11-08 (task 2.1). -->
 # Data
 
 The ZTF stamp datasets are pickles, kept untracked in `dataset/` (`.gitignore`:
@@ -120,20 +121,36 @@ not make an untrusted pickle safe.
 
 ## Prepared layout
 
-`astro-simclr prepare-data PKL --out DIR` (default `--out`: the `data_dir` setting) writes:
+`astro-simclr prepare-data PKL --out DIR [--images uint8|float32]` (default `--out`: the
+`data_dir` setting; default `--images uint8`) writes:
 
 ```
 DIR/<pickle stem>/
     meta.json
     Train/images.npy        uint8   (N, 63, 63, 3)
+    Train/images_f32.npy    float32 (N, 63, 63, 3)  only with --images float32
     Train/labels.npy        int64   (N,)        not in the pretraining Train split
     Train/features.npy      float64 (N, 26)     not in the pretraining Train split; all 26
     Validation/...  Test/...
 ```
 
-`meta.json` records the format (`astro-simclr-prepared`, version 1), the kind, the source
-(name, size, SHA-256), the schema (stamp shape, label and feature names), and per split the
-count, the counts per class and each file's dtype, shape and SHA-256. Stamps are converted
+`meta.json` records the format (`astro-simclr-prepared`, version 2), the kind, the image
+dtypes (`images`: `["uint8"]` or `["uint8", "float32"]`), the source (name, size,
+SHA-256), the schema (stamp shape, label and feature names), and per split the count, the
+counts per class and each file's dtype, shape and SHA-256.
+
+**Format versions.** Version 1 (task 1.2) had no `images_f32.npy` and no `images` key.
+Version 2 (task 2.1) adds both. The writer always writes version 2, and the readers accept
+1 and 2, so layouts prepared before 2.1 still load (as uint8-only). A uint8-only version-2
+layout has the same array files, byte for byte, as version 1: re-preparing without
+`--images float32` changes only `meta.json`.
+
+**`images_f32.npy`** holds the stored stamps unchanged (float32, finite, in [0, 1]; a
+float64 stamp of the pretraining file is rounded to float32), for the paper's float input
+path ([below](#float-input-path)). It is 4× the size of `images.npy`: `red` takes 2.9 GB
+prepared with it, and `prepare-data` then peaks at about 3.2 GB of RSS on the M4 (16 s).
+On the three complete real files, `images.npy` is exactly `round(255 · images_f32.npy)`,
+and its bytes are identical to the version-1 layouts. Stamps are converted
 with the legacy `img_float2int` arithmetic in the *stored* dtype. The prepared arrays are
 bit-identical to applying the legacy function to every stored stamp, which was checked on
 all three complete real files. The features keep float64, and the datasets cast them to
@@ -144,6 +161,73 @@ read again and the stamps are paged in on demand: `red` takes 596 MB prepared, a
 2.49 GB as a pickle. `prepare-data` needs about the pickle's size in RAM (the
 pretraining set: 14–29 GB). The preflight (task 1.7) warns about pickles in the data
 directory that do not fit in RAM, and checks the RAM for the prepared arrays.
+
+## Float input path
+
+The paper's model (Carrasco-Davis et al. 2021; M1 of phase 2) reads a 21×21 centre crop of
+each stamp, re-normalised per channel on the crop. ALeRCE's code
+(`alercebroker/pipeline@a3705ac`, `ztf_preprocessor.py`) does `image_crop_at_center` →
+`image_normalize_by_image` → `image_nan_to_num`: rows and columns 21–41, `x -= nanmin`,
+`x = x / nanmax`, **no epsilon** (a constant or all-NaN crop becomes 0), then NaN → 0.
+`astro_simclr.data.float_input.crop_then_normalise(stamps, crop=21)` is that pipeline, and
+`crop_split(images_f32)` applies it to a whole split in chunks.
+
+Our pickles hold the stamps after the same normalisation over the full 63×63 stamp, with
+NaN → 0. Min-max is affine-invariant, so re-normalising a stored crop gives ALeRCE's input
+(to one float32 ulp), except where the raw stamp had NaNs: they are now 0, the same value as
+the stamp's minimum, and would pull the crop's minimum down.
+
+**The NaN approximation** (`nan_approximation=True`, the default): a zero pixel counts as a
+former NaN when its channel, **counted over the 63×63 stamp**, has more than one exact zero
+(a channel without NaNs has exactly one, its minimum). Those zeros are excluded from the
+crop's minimum and maximum, and become 0 again. It is exact unless the channel's real
+minimum also lies inside the crop (or is tied), in which case the minimum is masked too and
+the crop's second-smallest value becomes its zero. `nan_approximation=False` treats every
+stored zero as real (diagnostic 3 of task 2.4).
+
+On `red`, every channel of every stamp has at least one exact zero. Of the 151,746 Train
+channels, 133,141 have exactly one, 6 have two and 18,599 three or more (Validation and
+Test: one, or four or more). The approximation touches (a masked zero inside the crop):
+
+| Split | Stamps | AGN | SN | VS | Asteroid | Bogus |
+|---|---|---|---|---|---|---|
+| Train | 3,679 / 50,582 | 336 | 26 | 924 | 285 | 2,108 |
+| Validation | 41 / 500 | 0 | 4 | 6 | 4 | 27 |
+| Test | 34 / 500 | 1 | 2 | 6 | 2 | 23 |
+
+(`float_input.approximated_stamps`; only these stamps' inputs differ between the two
+settings.) The golden fixture `tests/fixtures/data/alerce_crop.npz` was produced once by
+running ALeRCE's own three functions (`scripts/characterize/data/alerce_crop.py`, which
+downloads the file pinned by commit and SHA-256 and never copies it) on synthetic raw
+stamps with NaNs, constant channels and all-NaN crops: on raw stamps the port is
+bit-identical, and from the stored stamps the approximation reproduces ALeRCE's input to
+1.2e-7 on every case except the documented one (a NaN and the minimum both inside the
+crop).
+
+The 21×21 crop is concentric with the phase-1 uint8 crop of 27 (torchvision's
+`CenterCrop`, rows 18–44): it is that crop minus 3 pixels per side, which the paper's model
+zero-pads back to 27 (task 2.2a). `tests/test_data_float_input.py` checks the pixel
+alignment.
+
+## Features and M1's normalisation
+
+The stored features are standardised. `astro-simclr check-features DIR [--json]` checks
+that they were standardised with **M1's own statistics**
+(`astro_simclr.data.m1_features.M1_FEATURE_NORM_STATS`: the mean and std, ddof 0, of the 23
+kept features, from M1's `feature_norm_stats.pkl` at `alercebroker/pipeline@a3705ac`,
+SHA-256 `65a5611c…8064`, read with `pickletools` and never unpickled;
+`scripts/characterize/data/m1_feature_stats.py` re-derives them). After `x · std + mean`:
+`ndethist`, `ncovhist` and `non_detections` must be integers, the clipped `sgscore1–3` and
+`distpsnr1–3` must have a floor of −1, and `isdiffpos` must be 0 or 1 (its M1 mean is 0: it
+is scaled only). It exits with 1 if any test fails.
+
+On 2026-11-08 `red-002`, `sup_10` and `sup_1` pass in all three splits: the counts are
+integers to 5e-13, the six clipped features reach exactly −1 (in Train) and never go
+below, and `isdiffpos` is exactly {0, 1}. A std wrong in the sixth digit would already break
+`ncovhist` (std 425), so the files were standardised with exactly M1's statistics. Two
+observations for later tasks: the Train means of the stored features (except `isdiffpos`)
+are up to 3e-4 in absolute value, not 0 (M1's Train is the set before the 12 duplicates
+were removed), and `non_detections` reaches −190 in Train (ALeRCE does not clip it at 0).
 
 ## Workflow and manifest
 
@@ -166,6 +250,13 @@ directory that do not fit in RAM, and checks the RAM for the prepared arrays.
    the new set). The chain
    source hash → `meta.json` → manifest means a run can be traced to its data, and a
    changed or re-prepared file is noticed, without hashing the multi-GB pickles again.
+
+   **Migration to float32 (task 2.1).** Re-preparing a dataset with `--images float32`
+   adds `images_f32.npy` to every split, so a manifest recorded before fails. The preflight
+   lists what changed (`Train/images_f32.npy: new (prepared with --images float32)`) and
+   names the command that re-creates the manifest:
+   `rm DIR/data-manifest.json && astro-simclr preflight --data-dir DIR`. Re-preparing
+   uint8-only gives the same manifest entry, so it still matches.
 
 Without the real data, `astro-simclr make-synthetic --out DIR --n-per-split N --seed S`
 writes all four files (`td_ztf_stamp_17_06_20{_red-002,_sup_10,_sup_1}.pkl` and
