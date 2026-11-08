@@ -11,16 +11,21 @@ implicitly is one frozen record here (ADR 0014, "Determinism"):
 - the float32 precision of ADR 0010 (``ieee`` | ``tf32``), applied by
   ``training.runs.apply_fp32_precision`` before any module is built and recorded.
 
-Applying the flags is the loop's job (4.1); :meth:`DevicePolicy.torch_flags` states what it
-applies, so a test can compare it with Lightning's.
+:meth:`DevicePolicy.torch_flags` states what the loop applies, so a test can compare it with
+Lightning's; :meth:`DevicePolicy.apply` applies it (task 4.1), with the precision, before any
+module is built and before any CUDA work (so the cuBLAS setting takes effect).
 """
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Final, Literal
 
+import torch
+
 from astro_simclr.config import ConfigError
+from astro_simclr.engine.precision import apply_fp32_precision
 
 __all__ = ["CUBLAS_WORKSPACE_CONFIG", "DevicePolicy", "Fp32Precision"]
 
@@ -80,3 +85,24 @@ class DevicePolicy:
             "use_deterministic_algorithms": self.deterministic,
             "CUBLAS_WORKSPACE_CONFIG": CUBLAS_WORKSPACE_CONFIG if self.deterministic else None,
         }
+
+    @property
+    def device(self) -> torch.device:
+        """The training device (the current CUDA device for ``cuda``)."""
+        return torch.device(self.accelerator)
+
+    def apply(self) -> None:
+        """Set the precision (ADR 0010) and the determinism flags of :meth:`torch_flags`.
+
+        Process-global, as Lightning's ``Trainer`` sets them: ``cudnn.benchmark``,
+        ``torch.use_deterministic_algorithms`` (``False`` too) and, when deterministic,
+        ``CUBLAS_WORKSPACE_CONFIG``, never unset. Nothing here touches the device: an
+        unavailable accelerator is the caller's to refuse (``experiments.check_accelerator``).
+        """
+        apply_fp32_precision(self.fp32_precision)
+        flags = self.torch_flags()
+        torch.backends.cudnn.benchmark = bool(flags["cudnn.benchmark"])
+        torch.use_deterministic_algorithms(self.deterministic)
+        workspace = flags["CUBLAS_WORKSPACE_CONFIG"]
+        if isinstance(workspace, str):
+            os.environ["CUBLAS_WORKSPACE_CONFIG"] = workspace

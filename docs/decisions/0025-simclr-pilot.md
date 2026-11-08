@@ -16,7 +16,8 @@
 Phase 5 asks whether SimCLR pretraining on ZTF stamps helps classification with few
 labels. Before the user is asked to approve a corpus download (about 20 TB of archive),
 task 5.0b runs a pilot on the 50.6k CD21 Train stamps, with no download and without
-waiting for the plain engine's loop (task 4.1). The pilot is judged by a probe on the CD21
+waiting for the plain engine's loop (task 4.1; it landed with PR #52 after this pilot was
+written, and 5.3 moves the pilot onto it). The pilot is judged by a probe on the CD21
 screen halves only (CV is out: its pool's Train stamps are pretrained on).
 
 The package's SimCLR (`training.modules.SimCLRModule`, Lightning) cannot be the pilot.

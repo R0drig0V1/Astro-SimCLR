@@ -3,8 +3,8 @@
 Phase 5's task 5.0b runs SimCLR on the 50.6k CD21 Train stamps before any download, to
 decide whether the corpus download is worth asking for. This module is that run, written
 against the engine contracts (ADR 0014: per-step generators, steps done as the only clock)
-but not on the engine loop, which does not exist yet (task 4.1); 5.3 moves the same pure
-functions onto it. Nothing here imports Lightning.
+but not on the engine loop: it was written before that loop landed (task 4.1, PR #52),
+and 5.3 moves the same pure functions onto it. Nothing here imports Lightning.
 
 **Data** (:func:`load_pilot_data`, tier 1 or 2 of ``engine.data``): a prepared classifier
 layout's Train stamps, float32 (``images_f32.npy``; a uint8-only layout is read as
