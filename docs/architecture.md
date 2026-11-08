@@ -810,7 +810,8 @@ uv run --no-sync astro-simclr prepare-data dataset/td_ztf_stamp_17_06_20_red-002
     --images float32 --out dataset --overwrite      # once: adds images_f32.npy
 uv run --no-sync astro-simclr train-supervised --preset carrasco2021 --accelerator cuda \
     --data-dir dataset --seed 0 --output-dir outputs/phase2/carrasco2021/seed-0
-uv run --no-sync astro-simclr compare-reference outputs/phase2/carrasco2021/seed-0 --ref CD21
+uv run --no-sync astro-simclr compare-reference outputs/phase2/carrasco2021/seed-0 --ref CD21 \
+    --oracle-report results/phase2/replication/m1_oracle.json   # the faithful tier needs it
 ```
 
 ## `hparams` (task 1.7)

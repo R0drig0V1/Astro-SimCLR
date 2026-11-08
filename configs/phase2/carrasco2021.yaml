@@ -7,7 +7,8 @@
 #   astro-simclr train-supervised --config configs/phase2/carrasco2021.yaml \
 #       --accelerator cuda --seed S --output-dir OUT/carrasco2021/seed-S
 # Gate (5 seeds): astro-simclr compare-reference OUT/carrasco2021/seed-* --ref CD21 \
-#       [--oracle-report M1_ORACLE.json]   (faithful tier needs the oracle, task 2.2b)
+#       --oracle-report results/phase2/replication/m1_oracle.json   (the faithful tier
+#       needs the M1 oracle of task 2.2b, which passed)
 #
 # Provenance (docs/phases/02-stamp-classifier.md, "Starting point"; ADR 0003). Where the
 # paper text and ALeRCE's TF1 code (alercebroker/pipeline@a3705ac,

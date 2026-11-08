@@ -30,7 +30,7 @@ from astro_simclr.presets import (
     preset_for,
     preset_report,
 )
-from astro_simclr.reference import REFERENCES, compare_reference
+from astro_simclr.reference import REFERENCES, compare_reference, read_oracle_report
 from astro_simclr.training.device_data import (
     TensorSplit,
     float_crops,
@@ -39,7 +39,10 @@ from astro_simclr.training.device_data import (
 )
 from astro_simclr.training.modules import PaperClassifierModule
 
-CONFIGS = Path(__file__).resolve().parents[1] / "configs" / "phase2"
+ROOT = Path(__file__).resolve().parents[1]
+CONFIGS = ROOT / "configs" / "phase2"
+#: The committed M1 oracle report (task 2.2b), what the pilot's gate reads.
+ORACLE_REPORT = ROOT / "results" / "phase2" / "replication" / "m1_oracle.json"
 
 #: A short schedule for the synthetic data (2-step epochs at batch 4).
 SHORT = {
@@ -258,6 +261,10 @@ def test_cli_smoke_run_and_cd21_gate(
     assert "best_step: [" in text
     assert "differs from the CD21 config: batch_size=4" in text
     assert main(["compare-reference", str(out), "--ref", "CD21"]) == 0
+    # With the committed M1 oracle report the faithful tier becomes reachable.
+    assert read_oracle_report(ORACLE_REPORT) is True
+    with_oracle = compare_reference("CD21", [out], oracle_report=ORACLE_REPORT)
+    assert "  M1 oracle: passed" in with_oracle.lines
 
 
 def test_cli_no_features_variant_and_a_diagnostic(classifier_f32_dir: Path, tmp_path: Path) -> None:
