@@ -333,6 +333,22 @@ Task 2.1 adds the paper's float input path (`docs/data.md`, "Float input path"):
 
 Neither module imports torch. The uint8 path (`images.npy`, `StampDataset`) is unchanged.
 
+Task 3.3 adds RJ23's input path on raw cutouts (`docs/data.md`, "RJ23 inputs"; ADR 0009):
+
+- `rj23_input`: `normalise(stamps, *, large_values="paper", chunk_size=1000)` takes
+  `(N, 63, 63, 3)` raw floats with NaN/inf and returns `(N, 63, 63, 6)` float32 (the
+  |x|-min-p99 normalisation clipped to ±2, then the 3 mask channels); `invalid_mask`,
+  `channel_statistics` (`min|x|`, `p99|x|` per stamp and channel, one sort per chunk, equal
+  to `np.nanpercentile`). `large_values="code"` is RJ23's code behaviour for `|x| > 1e10`.
+- The views: `full_view`, `cropped_view` (24:40), `lowres_view` (one 4×4 TF-'same'
+  pooling), `multiscale_view` (8×8×24, scale-major 1″/2″/4″/8″), and `rj23_views`, which
+  runs the normalisation and the requested views chunk by chunk into preallocated outputs.
+  `tf_same_avg_pool` is TF's `AveragePooling2D(k, padding='same')` (valid-pixel means,
+  float64 sums); `crop_offset` is RJ23's `⌈(n − size) / 2⌉`.
+- `unit_sphere(ra, dec)` (degrees → `(N, 3)` float32) and `channels_first`.
+- numpy only (a test checks that importing it does not import torch); not wired into a
+  data module yet: that waits for task 3.1b's `raw-alerts` kind.
+
 The CLI imports these modules inside its handlers, so `show-config` does not import them;
 `data/__init__.py` does not re-export the torch datasets.
 

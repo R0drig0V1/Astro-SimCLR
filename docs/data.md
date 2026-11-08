@@ -1,6 +1,7 @@
 <!-- Data files of the project: schemas, provenance and workflow. Code: src/astro_simclr/data/
      (docs/architecture.md, section `data`). Checked against the real files on 2026-11-07;
-     the float input and feature sections on 2026-11-08 (task 2.1). -->
+     the float input and feature sections on 2026-11-08 (task 2.1); RJ23 inputs written
+     2026-11-08 (task 3.3). -->
 # Data
 
 The ZTF stamp datasets are pickles, kept untracked in `dataset/` (`.gitignore`:
@@ -238,6 +239,65 @@ It is ours, not ALeRCE's. The decisions (ADR 0005):
 float_crops(..., context=True)` concatenates it to the crops (6 channels, about 270 MB more
 for `red`). Only the float input path has it: `context` with `paper_input: uint8` is an
 error.
+
+## RJ23 inputs
+
+Phase 3 (task 3.3) reproduces the input of Reyes-Jainaga et al. 2023 (RJ23,
+arXiv:2304.13080) from **raw** cutouts: `(N, 63, 63, 3)` floats, channels science,
+reference, difference, NaN and ±inf kept (the raw-alert kind of task 3.1b will store them;
+the CD21 pickles cannot be used, their stamps are already min-max normalised).
+`astro_simclr.data.rj23_input` is a numpy-only reimplementation, from the paper and the
+description of RJ23's MIT code (`alercebroker/multiscale_stamps`, `src/data_loader.py`);
+the open points are settled in ADR 0009.
+
+**Normalisation and mask** (`normalise`, `invalid_mask`, `channel_statistics`), per stamp
+and channel on the full 63×63, before any crop or pooling:
+
+- `(x − min|x|) / (p99|x| − min|x| + 1e-8)`, clipped to [−2, 2]. The statistics skip NaN,
+  ±inf and `|x| > 1e10`; p99 is numpy's linear percentile (`np.nanpercentile`). The centre
+  is `min|x|`, not 0, so zero is preserved only when some pixel is 0, and a constant
+  negative channel saturates at −2.
+- The invalid pixels become 0; a channel with no pixel left for the statistics is all 0.
+- The mask is 1.0 on invalid pixels. **`large_values`** decides about `|x| > 1e10`:
+  `"paper"` (default) masks and zeroes them; `"code"` (RJ23's code) only leaves them out of
+  the statistics, then normalises and clips them, unmasked.
+- Output `(N, 63, 63, 6)` float32, channels `sci, ref, diff, m_sci, m_ref, m_diff`.
+
+**Views** (`rj23_views(stamps, views, *, large_values, chunk_size)` from raw cutouts, or
+`full_view` / `cropped_view` / `lowres_view` / `multiscale_view` from the normalised
+stamps); all channels last, float32:
+
+| View | Shape | Built as |
+|---|---|---|
+| `full` | 63×63×6 | the normalised stamp |
+| `cropped` | 16×16×6 | rows and columns 24:40 |
+| `lowres` | 16×16×6 | **one** 4×4, stride-4 average pooling, TF `'same'` padding |
+| `multiscale` | 8×8×24 | 8×8 crops at 1″ (28:36 of 63), 2″ (12:20 of 32), 4″ (4:12 of 16), 8″ (all of 8) |
+
+- TF `'same'` pooling (`tf_same_avg_pool`): output `⌈n / k⌉`, padding `⌊total / 2⌋`
+  before and the rest after (on 63: one pixel at the end), each output the mean of the
+  window's valid pixels. It equals torch's `avg_pool2d(..., ceil_mode=True)` when TF pads
+  at most one pixel (tested), not otherwise (62 by 4).
+- The multi-scale view pools iteratively by 2×2 after the normalisation (63 → 32 → 16 → 8),
+  masks included (fractional at coarse scales). Channels are scale-major: `6s : 6s + 6`
+  is scale 1″, 2″, 4″, 8″ for s = 0..3 (fields of view 8″, 16″, 32″, 63″).
+- The crops start at `⌈(n − size) / 2⌉`, so they are centred on pixel 31.5 while the
+  source is at 31: in every crop the source pixel sits at local (7, 7) of 16 or (3, 3) of 8.
+  A rotation or flip of the stamp therefore moves the crop window by one pixel, and the
+  pooled views change in their last row or column; the full view, the normalisation and
+  the mask commute exactly with the 8 rotations and flips.
+
+**Position** (`unit_sphere(ra, dec)`, degrees): `(cos ra cos dec, sin ra cos dec,
+sin dec)`, `(N, 3)` float32; RJ23 use it instead of CD21's 23 features.
+
+**Layout and memory.** `channels_first` gives `(N, C, H, W)` for torch
+(`torch.from_numpy` takes it as is); the module never imports torch. Chunks of
+`chunk_size` stamps (default 1000) bound the float64 intermediates (peak about 0.7 GB for
+1000 stamps with all four views, measured); results do not depend on the chunk size. Per
+stamp the float32 views take 95 KB (full) and 6 KB each (cropped, low-res, multi-scale).
+
+C25 (Carvajal et al. 2025) use the same 6-channel stamps. Their FFT channel is not built:
+C25's satellite labels cannot be rebuilt from public data (plan review round 2).
 
 ## Features and M1's normalisation
 
