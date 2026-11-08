@@ -32,6 +32,8 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  ├──► alerts (fetch-alerts, alerts-summary: raw alerts from ALeRCE) ──► data (prepared, m1_features)
  │    (training ──► paper_variants: rot4 / single / p4 / p4m ──► paper_model, group_conv)
  └──► preflight ──► experiments, data (inspection, manifest)
+
+rj23_model (engine-free nn.Modules, not wired yet: task 3.4b) ──► data.rj23_input
 ```
 
 Conventions shared by every module:
@@ -685,6 +687,58 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
   (the check can fail); invariance through the input path (rotate the 63×63 stamp, then
   crop and pool); the counts; the settings checks; CPU (and MPS/CUDA when present) training
   smoke runs through `run_command`.
+
+## `rj23_model` (task 3.4)
+
+`src/astro_simclr/rj23_model.py`: the stamp classifiers of Reyes-Jainaga et al. 2023 (RJ23)
+for the four scenarios of `data.rj23_input` (full 63², cropped 16², low-resolution 16²,
+multi-scale 8×8×24), rebuilt from the paper's Table 2 and Appendix A because RJ23's
+`models.py` is not public. ADR 0013 pins every detail the paper leaves open, with its
+source. **Engine-free** (the phase-4 rule): plain `nn.Module` builders that import torch
+and `rj23_input`'s constants only, no Lightning (a test checks it); task 3.4b wires them
+into training.
+
+- `RJ23_TABLE2`: scenario → `RJ23Architecture(scenario, layers, dense, dropout,
+  learning_rate, first_kernel_size=3)`, Table 2 as published (cited in code); `layers`
+  lists the convolution widths and `MAXPOOL` markers in order. `input_shape` is the
+  channels-first view shape, `representation_size` `8·8·c_L`.
+
+| Scenario | Trunk (3×3 'same' convs, 2×2 TF-'same' max-pools) | Dropout | FC | Parameters (K = 5) |
+|---|---|---|---|---|
+| `full` | 37, pool, 60, pool, 29, pool, 26 (63 → 32 → 16 → 8) | 0.71726 | 31 | 99,778 |
+| `cropped` | 112, 27, pool, 92, 121 (16 → 8) | 0.866799 | 133 | 1,202,808 |
+| `lowres` | 63, 31, pool, 108, 14 (16 → 8) | 0.73065 | 22 | 86,648 |
+| `multiscale` | 76, 18, 54, 28 (8) | 0.8478 | 69 | 179,124 |
+
+- `RJ23Classifier(architecture, *, n_classes=5, bn_position="after_concat")` and
+  `build_rj23_classifier(scenario, ...)`: `forward(x_img, x_pos)` takes the view
+  `(N, C, H, W)` (`rj23_input.channels_first`) and the unit-sphere position `(N, 3)`
+  (`rj23_input.unit_sphere`) and returns `(N, K)` logits. `dihedral_views` stacks the 8
+  views (4 counter-clockwise rotations, then the up-down flip of each) as one batch of
+  8N through `trunk` (ReLU after every convolution); `representation` flattens and
+  averages over the views (`(N, 64·c_L)`, exactly D4-invariant on the view); `head`:
+  `dropout`, concat(x, y, z), `bn`, `fc`, ReLU, `logits`. `bn_position="before_concat"`
+  is the pre-registered sensitivity arm (BN on the representation only).
+- TF-default parity: `TFSameMaxPool2d(kernel_size, stride)` (TF 'same' padding from
+  `tf_same_padding`, filled with −∞); `KerasBatchNorm1d` (momentum 0.99 as torch's 0.01,
+  eps 1e-3, moving variance from the biased batch variance as Keras' non-fused path);
+  `init_keras_defaults` (Glorot-uniform kernels, zero biases, BN gamma 1 and beta 0,
+  drawn from the global generator after the constructor's own default draws). The Adam
+  epsilon 1e-7 and Table 2's learning rates belong to the training regime (3.4b).
+- `rj23_parameter_count(architecture, *, n_classes, bn_position)`: the formula of the
+  module docstring, `Σ (k_l² c_{l−1} + 1) c_l + 2(D + 3) + (D + 4) F + (F + 1) K`.
+- **Tested** (`tests/test_rj23_model.py`): Table 2's values; output and trunk shapes per
+  scenario on `rj23_views` outputs (5 and 6 classes); the parameter counts, hand-computed
+  and by formula, for both BN positions; golden tests for TF 'same' padding and max-pooling
+  (negative inputs, padding before, the gradient), Keras BN (one hand-computed step,
+  against torch's unbiased update, output and gradient equal to torch's) and the Glorot
+  bounds; the representation's invariance under all 8 D4 elements on the view (float64,
+  random biases), on the raw stamp for the full scenario (all 8) and every scenario (the
+  transpose), the cropped scenario seeing the mirrored 23:39 window of a rotated stamp
+  (ADR 0009) and the pooled scenarios not invariant to a raw 90° rotation; the head order
+  and the arm; seeded determinism of builds, losses and gradients under
+  `use_deterministic_algorithms`; eval logits and a training step on MPS and CUDA where
+  present against the CPU.
 
 ## `oracle` (task 2.2b)
 
