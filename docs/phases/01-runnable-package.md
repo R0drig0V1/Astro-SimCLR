@@ -543,7 +543,22 @@ This design was verified with uv 0.11 on toy projects (plan review, round 2).
   candidate for 1.9a). The checkpoints in `../weights` are still not found.
 - **SupCon:** port it from history (`a187828`) in phase 1, or in the backlog? The default
   is the backlog.
-- **GPU for 1.9b:** which machine, and who runs it? Research (2026-11-07) estimates R1–R4 at
+- **GPU for 1.9b, decided 2026-11-07 (user):**
+  - The user's Windows PC, through WSL2 (Ubuntu 26.04, reachable over Tailscale), runs
+    R1, R2, R4 and the phase-2 replication. It has a GTX 1050 with 4 GB (Pascal, compute
+    capability 6.1), Windows driver 582.53, 12 GB RAM plus 8 GB swap in WSL, and 4 CPUs.
+    Verified by agent `foundations`: `uv sync --locked --extra cu126` gives torch
+    2.14.1+cu126, CUDA available, and `check.sh` green. R2 at 63 px still has to pass the
+    preflight (4 GB VRAM).
+  - R3 (SimCLR) needs a larger GPU. An RTX 5090 (Blackwell, sm_120) may be available from
+    2026-11-08; it must use the default build (`uv sync --locked`, CUDA 13, driver ≥ 580),
+    because cu126 has no sm_120.
+  - **ADR 0001 gap, to fix in task 1.7.** Rule 6 picks the extra by driver only, which
+    is wrong for pre-Turing GPUs with a new driver (this PC). The rule must also check
+    compute capability: < 7.5 → `cu126`. Blackwell needs the default build and a driver
+    ≥ 580. Windows-native torch from PyPI is CPU-only; use WSL2. The preflight (1.7, step
+    1) checks the same thing through `torch.cuda.get_device_capability()`.
+- (Superseded by the entry above.) **GPU for 1.9b:** which machine, and who runs it? Research (2026-11-07) estimates R1–R4 at
   about 8–30 T4-hours, because the work is bound by per-step overhead, so an A100 is barely
   faster. The cheapest options, in order:
   1. the old lab servers;
