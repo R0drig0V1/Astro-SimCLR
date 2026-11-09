@@ -8,13 +8,16 @@
   (`loop.py`, `precision.py`, `scalars.py`, `record.py`; amendment below), the config in
   4.2, the data tiers in 4.3, the tasks in 4.6 (`src/astro_simclr/tasks/`; amendment below),
   the `rj23` schedule's extension points in 3.4b (amendment below),
-  `Task.after_step` in plan row D3 (amendment below)
+  `Task.after_step` in plan row D3 (amendment below); Lightning removed in task 4.8
+  (amendment "4.8: Lightning removed")
 - **Amended by:** ADR 0018 (the data tiers, task 4.3: section 3's `pinned` tier pins the
   staging buffers, not the dataset; the shuffle granularity; the stream definition)
 - **Checked by:** `tests/test_engine_contracts.py` (the contracts, and the Lightning
   reference facts of the checklist); the existing tests named in the checklist;
   `tests/test_engine_loop.py` (the loop); `tests/test_engine_differential.py` (the 4.7(a)
-  gate and the three resume tests, ported); `tests/test_tasks_plain.py` (task 4.6)
+  gate and the three resume tests, ported) until task 4.8, then
+  `tests/test_engine_regression.py` (the golden regression set) and
+  `tests/test_engine_resume.py`; `tests/test_tasks_plain.py` (task 4.6)
 
 ## Context
 
@@ -492,3 +495,63 @@ method, the only change to the interface:
   `optimizer.step()`, `after_step(step)`. Checked by `tests/test_engine_loop.py` (called
   once per step with the steps done before it) and by the D3 cases of
   `tests/test_engine_differential.py`, which fail on either engine without it.
+
+
+## Amendment: 4.8: Lightning removed (2026-11-09)
+
+The 4.7 gate passed ((a) in CI; (b) bit-exact on the RTX 5090, the GTX 1050 being retired;
+(c) within the noise floor; results in `docs/phases/04-training-platform.md`, "4.7
+results"), and every new run has used `runtime.engine=plain` since 2026-11-08. Task 4.8
+removes Lightning from the package:
+
+1. **The tag.** `lightning-final` (main `36bfb75`) is the last commit with Lightning. Every
+   Lightning result, the legacy commands (`pretrain`, `linear-eval`, `fine-tune`) and the
+   stamp and ResNet `SupervisedCE*` baselines (frozen there by plan 4.6) are re-run from a
+   checkout of it. No compatibility shim runs Lightning; a path that needed it is refused
+   with a message that names the tag (`config.LIGHTNING_TAG`): `runtime.engine: lightning`,
+   the three legacy subcommands (exit 2), the preflight's R1-R4 dry runs, a spec with
+   `engine: lightning` in the queue (`runs.spec.check_trainable`), a Lightning checkpoint
+   given to `--resume` (no cross-engine resume, section 5 and the 4.1 amendment).
+2. **Removed:** `experiments`, the Lightning modules, data modules, callbacks and Trainer
+   helpers of `training` (`modules`, `datamodules`, `device_data`, `runs`, `schedule`,
+   `rj23`), the PIL augmentations and torch datasets that only the legacy data modules used
+   (`augmentations`, `data.datasets`), and the dependencies `lightning`, `torchmetrics` and
+   `tensorboard`. The engine-free helpers they held had already moved (`engine.precision`,
+   `engine.record`, `tasks.common`, `training.tensor_splits`); `training.metrics` computes
+   the confusion matrices and macro-F1 in plain torch, with torchmetrics' operations in
+   their order and dtypes (checked equal on 20,000 random cases before torchmetrics went).
+3. **Defaults.** `runtime.engine` is `plain` by default and the only value it accepts;
+   experiment specs default to `engine: plain`. Neither is a config-hash component, so the
+   config hashes and run ids of plain runs are unchanged
+   (`tests/test_lightning_retired.py` recomputes both for a stored plain run of
+   `configs/runs/carrasco2021.yaml`). The run identity keeps `lightning` as a valid engine:
+   stored Lightning manifests stay valid, and a spec that says `engine: lightning` still
+   parses, so `runs compare` resolves its run ids.
+4. **Stored Lightning runs stay readable.** `ensemble-eval`, `compare-variants`,
+   `report-phase2`, the registry and `queue sync` read their `manifest.json`, `metrics.json`,
+   predictions and `checkpoints/{best,last}.ckpt`, the latter as torch pickles with
+   `torch.load(weights_only=True)`, never through Lightning. `tests/test_lightning_runs.py`
+   checks it on `tests/fixtures/lightning_run/`, a small split run written by the Lightning
+   path before its removal (`scripts/characterize/lightning_run/generate.py`).
+5. **Section 6's gate (a) becomes a golden regression set.** The differential test cannot
+   run without Lightning. Before the removal, while it passed, the plain engine's outputs of
+   each of its cases were recorded (`tests/fixtures/engine_golden/<platform>/`): the initial
+   weights, every validation (step, value, a SHA-256 of the weights), `metrics.json` (less
+   what names the engine, machine, run and paths) and every predictions array.
+   `tests/test_engine_regression.py` asserts them bit for bit; its cases
+   (`tests/_engine_cases.py`) are the differential test's, every 2.5 and D3 flag, both
+   split modes and the rj23 scenarios. CPU kernels round differently across instruction
+   sets, so a golden holds on the platform it was recorded on (`<sys.platform>-<machine>-
+   <torch CPU capability>`); elsewhere the cases are skipped, naming the platform. The
+   goldens were recorded on `darwin-arm64-default`; a Linux CI runner checks them once its
+   platform's goldens are recorded (`ASTRO_SIMCLR_RECORD_GOLDEN=1`). The resume tests
+   compare each resume with the uninterrupted plain run (`tests/test_engine_resume.py`).
+6. **Section 7's rule** becomes the plain-engine rule (CLAUDE.md, "New training flags"): a
+   new flag is a pure function or policy object of the engine's tasks, draws from the
+   engine's seeded streams, and joins the golden regression set with a recorded golden. A
+   flag that changes the numbers of an existing case says so in its PR, records the golden
+   again and bumps `NUMERICS_EPOCH`.
+
+The consequences' "two engines coexist until 4.8" ends here; the reference facts of the
+checklist that `tests/test_engine_contracts.py` pinned against Lightning are now explicit
+expected values (the monitor and early-stopping tables, the device flags).
