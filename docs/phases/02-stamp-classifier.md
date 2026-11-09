@@ -514,6 +514,16 @@ Raw logs: `~/runs/p25/cv/` on the 5090. The test set was not used.
 - **Why 0.999:** an averaging window of about 1,000 steps (1.6 passes over a fold's training part); the warmup ramp keeps the early shadow from holding the random initial weights.
 - **Arms and test:** 5 folds × seeds {0, 1}, plain engine, RTX 5090, against the stored rot4-plain CV (same engine, machine and build). The registered hypothesis: `compare-variants --rule non-inferiority --margin 0.001` (mean at least baseline − 0.1 pts), plus a fold-to-fold std at least 20 % smaller and a lower mean ECE (secondary, reported). One trial: no other decay or length is tried before this result is recorded.
 
+**D3 results (2026-11-09, the declared single trial).**
+
+| Comparison | Pooled | Δ (95 % CI) | Decision |
+|---|---|---|---|
+| D3 (EMA 0.999, cosine 15k, final weights) vs rot4-plain | 0.9365 → 0.9235 | **−1.30 [−1.60, −1.01] pts** | **not adopted** (worse on every fold, −0.8 to −2.1; fails non-inferiority at −0.1) |
+
+- Secondary: fold-to-fold std 0.0081 against 0.0040 (larger, not 20 % smaller); ECE 0.2230 ± 0.0030 against 0.2288 ± 0.0100 (about the same mean, much less spread across runs).
+- Exploratory, no CI: McNemar on the seed ensembles favours D3 on plain accuracy (790 stamps right only with D3 against 537 only with rot4), while balanced accuracy drops. So the final weights of the fixed schedule trade minority-class recall for majority-class accuracy; checkpoint selection on the validation loss protected the minority classes. Per-class recalls would tell which classes; not pursued under this row.
+- D3 stays closed: the protocol declared one trial.
+
 **Improvement rows from the literature (research, 2026-11-08).** The full ranked report
 (18 ideas, every claim marked verified or inferred) is in the scratchpad `improvements.md`.
 
