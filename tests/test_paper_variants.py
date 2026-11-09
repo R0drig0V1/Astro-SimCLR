@@ -14,7 +14,9 @@
    accelerator runs in float64 on CUDA, where cuDNN's float32 Winograd convolutions move
    the logits by ~1e-5 under a rotation (the comment in the test has the measurements).
 3. Parameter and MAC counts, the initialisation, the head's equivalence with the paper's,
-   the settings, the context data path and a CPU training smoke run.
+   the settings, the context data path, the rotation augmentation of the plain engine's
+   paper task (``tasks.paper``) and a training smoke run (``tasks.plain.run_plain``) on
+   each accelerator.
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ from torch import nn
 from astro_simclr.config import ConfigError, Settings, settings_from_mapping
 from astro_simclr.data.float_input import context_split, crop_split, crop_then_normalise
 from astro_simclr.data.float_input import context_then_normalise as context_of
-from astro_simclr.experiments import paper_module, run_command
+from astro_simclr.engine.checkpoint import load_best
 from astro_simclr.group_conv import GroupReadout
 from astro_simclr.paper_model import PaperStampClassifier
 from astro_simclr.paper_variants import (
@@ -56,8 +58,11 @@ from astro_simclr.presets import (
     PRESETS,
     preset_report,
 )
-from astro_simclr.training.device_data import TensorSplit, float_crops
-from astro_simclr.training.modules import PaperClassifierModule
+from astro_simclr.tasks.common import check_schedule
+from astro_simclr.tasks.paper import PaperTask, build_paper_task
+from astro_simclr.tasks.plain import run_plain
+from astro_simclr.training.paper_augment import PaperAugment
+from astro_simclr.training.tensor_splits import TensorSplit, float_crops
 
 FIXTURE = Path(__file__).parent / "fixtures" / "paper_model" / "faithful.npz"
 
@@ -94,9 +99,9 @@ def faithful() -> Iterator[dict[str, np.ndarray]]:
         yield {key: npz[key] for key in npz.files}
 
 
-def _module(preset: str, **changes: object) -> PaperClassifierModule:
+def _task(preset: str, **changes: object) -> PaperTask:
     torch.manual_seed(0)
-    return paper_module(settings_from_mapping({**PRESETS[preset], **changes}))
+    return build_paper_task(settings_from_mapping({**PRESETS[preset], **changes}), {})
 
 
 # --- 1. The faithful model is unchanged --------------------------------------------------
@@ -110,8 +115,7 @@ def _module(preset: str, **changes: object) -> PaperClassifierModule:
 def test_each_flag_at_its_default_keeps_the_faithful_model(
     flag: str, preset: str, case: str, faithful: dict[str, np.ndarray]
 ) -> None:
-    module = _module(preset, **{flag: _FLAG_DEFAULTS[flag]})
-    model = module.model
+    model = _task(preset, **{flag: _FLAG_DEFAULTS[flag]}).net.model
     assert type(model) is PaperStampClassifier
     assert count_parameters(model) == int(faithful[f"{case}_params"])
     assert count_parameters(model) == (441_075 if case == "features" else 439_557)
@@ -448,40 +452,42 @@ def test_settings_validate_the_variant_flags() -> None:
 @pytest.mark.parametrize("name", list(VARIANTS))
 def test_every_named_variant_builds(name: str) -> None:
     variant = VARIANTS[name]
-    module = _module(CARRASCO2021_PRESET, **variant.overrides)
+    task = _task(CARRASCO2021_PRESET, **variant.overrides)
     settings = _preset(**variant.overrides)
-    assert module.rot90_augment == settings.rot90_augment
+    assert task.augment.rot90 == settings.rot90_augment
     channels = paper_in_channels(settings.context)
     side = paper_input_side(settings.paper_arch)
     assert settings.image_size == side
-    assert module(torch.zeros(2, channels, side, side), torch.zeros(2, 23)).shape == (2, 5)
+    assert task.net(torch.zeros(2, channels, side, side), torch.zeros(2, 23)).shape == (2, 5)
     assert variant.description
 
 
 def test_rot90_augmentation_is_seeded_by_step_and_rotates_training_batches() -> None:
-    module = _module(CARRASCO2021_PRESET, paper_arch="single", rot90_augment=True, seed=3)
-    first = module.rotation_steps(64, 5)
-    assert torch.equal(first, module.rotation_steps(64, 5))
-    assert not torch.equal(first, module.rotation_steps(64, 6))
+    task = _task(CARRASCO2021_PRESET, paper_arch="single", rot90_augment=True, seed=3)
+    augment = task.augment
+    first = augment.rotation_steps(64, 5)
+    assert torch.equal(first, augment.rotation_steps(64, 5))
+    assert not torch.equal(first, augment.rotation_steps(64, 6))
     assert set(first.tolist()) == {0, 1, 2, 3}
-    other_seed = _module(CARRASCO2021_PRESET, paper_arch="single", rot90_augment=True, seed=4)
-    assert not torch.equal(first, other_seed.rotation_steps(64, 5))
+    other_seed = _task(CARRASCO2021_PRESET, paper_arch="single", rot90_augment=True, seed=4)
+    assert not torch.equal(first, other_seed.augment.rotation_steps(64, 5))
     with pytest.raises(ValueError, match="augment_seed"):
-        PaperClassifierModule(beta_loss=0.5, lr=1e-3, optimizer="Adam", augment_seed=-1)
+        PaperAugment(seed=-1)
 
     images, features = _inputs(3, torch.float32, n=6)
     targets = torch.eye(5)[torch.tensor([0, 1, 2, 3, 4, 0])]
-    k = module.rotation_steps(6, 0)  # no Trainer: global step 0
-    expected = torch.stack([torch.rot90(images[i], int(k[i]), dims=(1, 2)) for i in range(6)])
-    module.train()
-    loss = module.training_step((images, features, targets), 0)
-    torch.testing.assert_close(loss, module.compute_loss(module(expected, features), targets))
-    plain = _module(CARRASCO2021_PRESET, paper_arch="single")
-    plain.load_state_dict(module.state_dict())
-    plain.train()
+    for step in (0, 7):  # the step's rotations
+        k = augment.rotation_steps(6, step)
+        expected = torch.stack([torch.rot90(images[i], int(k[i]), dims=(1, 2)) for i in range(6)])
+        net = task.net.train()
+        loss = task.train_step((images, features, targets), step)
+        torch.testing.assert_close(loss, net.criterion(net(expected, features), targets))
+    plain = _task(CARRASCO2021_PRESET, paper_arch="single")
+    plain.net.load_state_dict(task.net.state_dict())
+    net = plain.net.train()
     torch.testing.assert_close(
-        plain.training_step((images, features, targets), 0),
-        plain.compute_loss(plain(images, features), targets),
+        plain.train_step((images, features, targets), 0),
+        net.criterion(net(images, features), targets),
     )
 
 
@@ -534,11 +540,11 @@ def _smoke_settings(classifier_f32_dir: Path, out: Path, **changes: Any) -> Sett
     [VARIANTS["p4-context"].overrides, VARIANTS["single-aug"].overrides, VARIANTS["p4m"].overrides],
     ids=["p4-context", "single-aug", "p4m"],
 )
-def test_variants_train_through_run_command(
+def test_variants_train_on_the_plain_engine(
     overrides: dict[str, object], accelerator: str, classifier_f32_dir: Path, tmp_path: Path
 ) -> None:
     settings = _smoke_settings(classifier_f32_dir, tmp_path, accelerator=accelerator, **overrides)
-    metrics = run_command("train-supervised", settings, progress_bar=False)
+    metrics = run_plain("train-supervised", settings)
     assert metrics["last_step"] == 4
     for key, value in overrides.items():
         assert metrics["config"][key] == value
@@ -547,10 +553,9 @@ def test_variants_train_through_run_command(
     assert set(metrics["preset"]["deviations"]) - smoke == set(overrides)
     on_disk = json.loads((tmp_path / "metrics.json").read_text(encoding="utf-8"))
     assert on_disk["config"]["paper_arch"] == overrides["paper_arch"]
-    # The best checkpoint loads back into the same variant.
-    checkpoint = torch.load(tmp_path / "checkpoints" / "best.ckpt", weights_only=True)
-    restored = PaperClassifierModule(**checkpoint["hyper_parameters"])
-    restored.load_state_dict(checkpoint["state_dict"])
+    # The best weights load back into the same variant.
+    restored = build_paper_task(settings, {})
+    restored.net.load_state_dict(load_best(tmp_path / "ckpt" / "best.pt")["model"])
 
 
 def test_variant_flags_need_the_paper_model(classifier_f32_dir: Path, tmp_path: Path) -> None:
@@ -562,5 +567,6 @@ def test_variant_flags_need_the_paper_model(classifier_f32_dir: Path, tmp_path: 
         paper_arch="p4",
         rot90_augment=True,
     )
+    # The schedule check every run makes (``run_plain``, ``ensemble-eval``).
     with pytest.raises(ConfigError, match="paper_arch, rot90_augment apply only to"):
-        run_command("train-supervised", settings, progress_bar=False)
+        check_schedule("train-supervised", settings)

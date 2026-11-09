@@ -1,11 +1,11 @@
 """Plan row D3: the weight EMA, the learning-rate schedule, the final-weights selection, ECE.
 
 The pure pieces against hand computations (``training.ema``, ``training.lr_schedule``,
-``protocol.calibration``), the ``Settings`` rules, and runs on the synthetic float32 data
-(``classifier_f32_dir``): the EMA and the scheduler state are in the checkpoints of both
-engines and a resume restores them exactly; ``checkpoint_selection: final`` scores the last
-weights and lets the validation decide nothing. The bit-for-bit agreement of the two engines
-on every D3 flag is ``test_engine_differential.py``'s.
+``protocol.calibration``), the ``Settings`` rules, and runs of the plain engine
+(``tasks.plain.run_plain``) on the synthetic float32 data (``classifier_f32_dir``): the EMA
+and the scheduler state are in the checkpoints and a resume restores them exactly;
+``checkpoint_selection: final`` scores the last weights and lets the validation decide
+nothing. The bit-for-bit runs of every D3 flag are ``test_engine_regression.py``'s goldens.
 """
 
 from __future__ import annotations
@@ -15,18 +15,15 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-import lightning as L
 import numpy as np
 import pytest
 import torch
 from _training_support import ACCELERATORS
-from lightning.pytorch.callbacks import Callback
 from torch import nn
 
 from astro_simclr.config import ConfigError, Settings
-from astro_simclr.engine import evaluate, load_checkpoint, seed_everything
+from astro_simclr.engine import Task, Validation, evaluate, load_checkpoint, seed_everything
 from astro_simclr.engine.loop import _Fit
-from astro_simclr.experiments import run_command
 from astro_simclr.losses import P_stamps_loss
 from astro_simclr.protocol.calibration import expected_calibration_error
 from astro_simclr.protocol.phase2_report import _replication_arm, find_arms
@@ -359,47 +356,43 @@ def test_settings_accept_ema_with_the_horizon_rule(tmp_path: Path) -> None:
 # --- runs -------------------------------------------------------------------------------------
 
 
-class _CopyLightningLast(Callback):
-    """After step ``step``'s validation, copy ``last.ckpt`` (written just before) to ``dst``."""
+class _CopyLast:
+    """An ``on_validation`` hook: after step ``step``'s validation, copy ``src`` to ``dst``.
+
+    ``ckpt/last.pt`` is written in the validation of a checkpoint step, before the hook.
+    """
 
     def __init__(self, step: int, src: Path, dst: Path) -> None:
         self.step, self.src, self.dst = step, src, dst
 
-    def on_validation_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
-        if trainer.global_step == self.step and not trainer.sanity_checking:
+    def __call__(self, record: Validation, task: Task) -> None:
+        if record.steps_done == self.step:
             self.dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(self.src, self.dst)
 
 
 def _last_state(out: Path) -> dict[str, torch.Tensor]:
-    checkpoint = torch.load(out / "checkpoints" / "last.ckpt", weights_only=True)
-    state: dict[str, torch.Tensor] = checkpoint["state_dict"]
-    return state
+    return load_checkpoint(out / "ckpt" / "last.pt")["model"]
 
 
-def test_lightning_resume_restores_the_ema_and_schedule_exactly(
+def test_a_resume_restores_the_ema_and_schedule_exactly(
     classifier_f32_dir: Path, tmp_path: Path
 ) -> None:
     whole, resumed = tmp_path / "whole", tmp_path / "resumed"
-    saved = resumed / "checkpoints" / "last.ckpt"
-    copy = _CopyLightningLast(6, whole / "checkpoints" / "last.ckpt", saved)
-    expected = run_command(
-        "train-supervised",
-        _settings(classifier_f32_dir, whole, **_D3),
-        callbacks=[copy],
-        progress_bar=False,
+    saved = resumed / "ckpt" / "last.pt"
+    copy = _CopyLast(6, whole / "ckpt" / "last.pt", saved)
+    expected = run_plain(
+        "train-supervised", _settings(classifier_f32_dir, whole, **_D3), on_validation=copy
     )
-    checkpoint = torch.load(saved, weights_only=True)
-    assert checkpoint["global_step"] == 6
-    shadow = [key for key in checkpoint["state_dict"] if key.startswith("ema.shadow.")]
-    assert shadow and len(shadow) * 2 == len(checkpoint["state_dict"])  # model + its EMA
-    assert checkpoint["lr_schedulers"][0]["last_epoch"] == 6
-    metrics = run_command(
-        "train-supervised",
-        _settings(classifier_f32_dir, resumed, **_D3),
-        resume="auto",
-        progress_bar=False,
+    checkpoint = load_checkpoint(saved)
+    assert checkpoint["steps_done"] == 6
+    shadow = [key for key in checkpoint["model"] if key.startswith("ema.shadow.")]
+    assert shadow and len(shadow) * 2 == len(checkpoint["model"])  # model + its EMA
+    assert checkpoint["task"]["lr_scheduler"]["last_epoch"] == 6
+    metrics = run_plain(
+        "train-supervised", _settings(classifier_f32_dir, resumed, **_D3), resume="auto"
     )
+    assert metrics["resumed_from"] is not None
     assert metrics["evaluation"] == expected["evaluation"]
     last_whole, last_resumed = _last_state(whole), _last_state(resumed)
     assert last_whole.keys() == last_resumed.keys()
