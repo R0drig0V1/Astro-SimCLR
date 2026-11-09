@@ -94,6 +94,29 @@ pre-registered tables whatever the result is. A dated literature search is recor
     protocol when it ends; the monitors give the curve meanwhile (diagnostics, never a
     selector). Batch size stays 256 for this comparison; batch {256, 1024, 2048} goes to
     the fine grid (user, 2026-11-09).
+  - **Corpus result (2026-11-09): no gain over the CD21-only pilot.** The run ended at
+    19:35 (60,850 steps, 50 passes, 3.6 h on the 5090; the abort check passed). Final
+    monitors: kNN on the selection half 0.716 (pilot 0.704), online probe 0.772 (0.76),
+    effective rank of `h` 53.7 (41.5). The same probe protocol as the pilot (the same 20
+    subsets per budget, the decision half):
+
+  | Paired comparison (corpus SSL probe − baseline) | 10 per class | 100 per class |
+  |---|---|---|
+  | Corpus SSL probe (mean ± sd) | 0.568 ± 0.044 | 0.721 ± 0.025 |
+  | − CD21-only pilot SSL probe (0.571 / 0.734) | −0.3 [−2.8, +2.1] pts | −1.3 [−3.7, +1.1] pts |
+  | − scratch ResNet-18 (0.434 / 0.680) | +13.4 [+10.0, +16.8] pts | +4.1 [+0.5, +7.6] pts |
+  | − random-init probe (0.417 / 0.515) | +15.1 [+11.2, +19.0] pts | +20.6 [+16.2, +25.1] pts |
+
+    - Reading: 6× more unlabelled stamps, never including CD21 Train, give the same probe
+      as pretraining on CD21 Train itself, which the pilot also evaluates on (the
+      transductive advantage of the pilot is not measurable at this size). Both still beat
+      the scratch model by the declared margin at 10 per class. The decision half has 250
+      stamps: differences under about ±2.5 points are not resolved.
+    - Not separated by this run: the number of steps (61k vs 19.7k), the passes over each
+      stamp (50 vs 100) and the corpus's class mix. Data volume is not the bottleneck of
+      this recipe; the batch-size grid {256, 1024, 2048} and the views are the next levers
+      (exploratory, 5.0c rules). Artifacts: the server's run directory `p5/corpus/`
+      (`probe-corpus-{10,100}.json`, `corpus-vs-{pilot,scratch,random}-{10,100}.json`).
   - Caveats: the scratch model barely beats the random-init probe at 10 per class, so it
     is a weak bar; it is the declared one for this gate only. H1 is decided against the
     strongest baseline of 5.4 (paper model, ImageNet and Zoobot ConvNeXt), fine-tuned, on
