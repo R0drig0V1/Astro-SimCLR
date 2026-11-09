@@ -3,7 +3,10 @@
 The acceptance of task 4.3: the ``pinned`` tier (and the ``memmap`` one) give batches
 ``torch.equal`` to the ``device`` tier for the same seed and stream, on every accelerator
 present; a resumed stream continues with exactly the batches of an uninterrupted one (on
-any tier); the ``device`` tier gives today's ``DeviceTensorDataModule`` batches.
+any tier); the ``device`` tier serves the class-balanced tiled stream, batch by batch, as
+Lightning's ``DeviceTensorDataModule`` did until task 4.8 (the rows of
+``tile_indices(labels)[PermutationStream(...).batch(step)]``, the evaluation splits in file
+order).
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ from astro_simclr.config import ConfigError
 from astro_simclr.data.schema import DataError
 from astro_simclr.engine.data import BatchSource, DataTier, EvalSource, StorageDtype, TierChoice
 from astro_simclr.engine.dataset import Dataset
-from astro_simclr.engine.stream import tile_indices
+from astro_simclr.engine.stream import PermutationStream, tile_indices
 from astro_simclr.engine.tiers import (
     StreamSpec,
     TrainSource,
@@ -28,7 +31,6 @@ from astro_simclr.engine.tiers import (
     open_eval,
     open_train,
 )
-from astro_simclr.training.device_data import DeviceTensorDataModule, TensorSplit
 
 _N = 257  # not a multiple of the batch: the stream crosses pass boundaries mid-batch
 _STEPS = 40  # > 4 passes of the 211-row selection at batch 16 (13 batches per pass)
@@ -133,35 +135,44 @@ def test_block_shuffle_is_served_identically_by_every_tier(
     _assert_same(per_tier[2], per_tier[0])
 
 
-def test_device_tier_equals_the_lightning_device_data_module() -> None:
+def test_device_tier_serves_the_tiled_stream() -> None:
     rng = np.random.default_rng(4)
     n = 90
-    split = TensorSplit(
-        images=_images(n),
-        features=rng.random((n, 23), dtype=np.float32),
-        labels=(rng.permutation(n) % 5).astype(np.int64),
-        fits=rng.random((n, 6), dtype=np.float32),
-    )
-    module = DeviceTensorDataModule(
-        {"Train": split, "Validation": split, "Test": split}, batch_size=8, seed=11
-    )
-    module.setup("fit")
-    loader = module.train_dataloader()
-    expected = [_cpu(loader._split.gather(loader.indices(step))) for step in range(40)]
-    dataset = Dataset(
-        images=split.images,
-        features=split.features,
-        labels=split.labels,
-        fits=split.fits,
-        n_classes=split.n_classes,
-    )
+    images = _images(n)
+    features = rng.random((n, 23), dtype=np.float32)
+    labels = (rng.permutation(n) % 5).astype(np.int64)
+    fits = rng.random((n, 6), dtype=np.float32)
+    dataset = Dataset(images=images, features=features, labels=labels, fits=fits, n_classes=5)
     source = open_train(dataset, TierChoice(), StreamSpec(batch_size=8, seed=11), "cpu")
-    assert source.batches_per_pass == len(loader)
-    assert {k: v for k, v in source.state().items() if k in loader.state_dict()} == (
-        loader.state_dict()
-    )
+    # Class balance by tiling (each class repeated up to the largest), then one seeded
+    # permutation per pass of the tiled rows, in batches of 8 (drop_last).
+    tiled = tile_indices(labels)
+    stream = PermutationStream(len(tiled), 8, 11)
+    assert source.batches_per_pass == stream.batches_per_pass == len(tiled) // 8
+    assert {k: source.state()[k] for k in ("n", "batch_size", "seed")} == {
+        "n": len(tiled),
+        "batch_size": 8,
+        "seed": 11,
+    }
+    one_hot = torch.nn.functional.one_hot(torch.from_numpy(labels), 5)
+    expected: list[tuple[torch.Tensor, ...]] = []
+    for step in range(40):  # > 3 passes
+        rows = tiled[stream.batch(step)]
+        expected.append(
+            (
+                torch.from_numpy(images[rows]),
+                torch.from_numpy(features[rows]),
+                one_hot[torch.from_numpy(rows)],
+                torch.from_numpy(fits[rows]),
+            )
+        )
     _assert_same(_train_batches(source, range(40)), expected)
-    reference = [_cpu(batch) for batch in module.val_dataloader()]
+    # Evaluation: every row once, in file order, in batches of 64 (the last one partial).
+    order = torch.arange(n)
+    reference: list[tuple[torch.Tensor, ...]] = [
+        (torch.from_numpy(images[part]), torch.from_numpy(features[part]), one_hot[part])
+        for part in (order[:64].numpy(), order[64:].numpy())
+    ]
     _assert_same([_cpu(batch) for batch in open_eval(dataset, TierChoice(), "cpu")], reference)
 
 

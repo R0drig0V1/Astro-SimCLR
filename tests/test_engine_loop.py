@@ -5,7 +5,9 @@ from torch's global generator at every step, unlike the faithful paper model) an
 frozen submodule kept in ``eval``. That makes two checklist items observable: a resume is
 exact only if every global RNG stream is checkpointed and restored last (C10), and a
 validation restores each submodule's own mode instead of calling ``train()`` (C3). The
-paper model on both engines is ``test_engine_differential.py``'s.
+rules the loop took from Lightning (early stopping, ``seed_everything``, the device flags)
+are stated here as explicit values since task 4.8 removed Lightning. The paper model's full
+runs are the golden set's (``test_engine_regression.py``).
 """
 
 from __future__ import annotations
@@ -20,12 +22,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-import lightning as L
 import numpy as np
 import pytest
 import torch
 from _training_support import ACCELERATORS
-from lightning.pytorch.callbacks import EarlyStopping
 from torch import nn
 
 from astro_simclr.config import ConfigError, Settings
@@ -287,47 +287,130 @@ def test_evaluate_refuses_an_empty_source() -> None:
         evaluate(ToyTask(), {"x": _Empty()})
 
 
-# --- early stopping: Lightning's rule ---------------------------------------------------
+# --- early stopping: the rule of Lightning's EarlyStopping ------------------------------
 
 
-_SEQUENCES = [
-    [3.0, 2.0, 2.0, 2.5, 1.0, 1.0, 1.0, 1.0],
-    [1.0, 0.95, 0.94, 0.80, 0.79, 0.78, 0.77],
-    [1.0, math.nan, 0.5],
-    [1.0, 2.0, 50.0, 0.1],
-    [math.inf, 1.0],
+def _f32(value: float) -> float:
+    """``value`` as the loop holds a monitored value: the Python float of a float32."""
+    return float(torch.tensor(value, dtype=torch.float32))
+
+
+_TIES = [3.0, 2.0, 2.0, 2.5, 1.0, 1.0, 1.0, 1.0]
+_SMALL_STEPS = [1.0, 0.95, 0.94, 0.80, 0.79, 0.78, 0.77]
+_PATIENT = EarlyStop(patience=2)
+_DELTA = EarlyStop(patience=1, min_delta=0.05)
+_DIVERGENCE = EarlyStop(patience=3, check_finite=False, divergence_threshold=10.0)
+
+#: (values, mode, rule, expected (stop, wait count, best) after each value until the stop).
+#: The rule of Lightning 2.6's ``EarlyStopping._evaluate_stopping_criteria``, which these
+#: values were recorded from before task 4.8 removed it.
+_EARLY_STOP_CASES: list[Any] = [
+    pytest.param(
+        _TIES,
+        "min",
+        _PATIENT,
+        [(False, 0, 3.0), (False, 0, 2.0), (False, 1, 2.0), (True, 2, 2.0)],
+        id="ties-do-not-improve",
+    ),
+    pytest.param(
+        _TIES,
+        "min",
+        _DELTA,
+        [(False, 0, 3.0), (False, 0, 2.0), (True, 1, 2.0)],
+        id="min-delta",
+    ),
+    pytest.param(
+        _TIES,
+        "min",
+        _DIVERGENCE,
+        [
+            (False, 0, 3.0),
+            (False, 0, 2.0),
+            (False, 1, 2.0),
+            (False, 2, 2.0),
+            (False, 0, 1.0),  # an improvement resets the count
+            (False, 1, 1.0),
+            (False, 2, 1.0),
+            (True, 3, 1.0),
+        ],
+        id="patience-resets",
+    ),
+    pytest.param(
+        _TIES,
+        "max",
+        _PATIENT,
+        [(False, 0, 3.0), (False, 1, 3.0), (True, 2, 3.0)],
+        id="max",
+    ),
+    # In max mode a value below divergence_threshold diverges: a stop, no best recorded.
+    pytest.param(_TIES, "max", _DIVERGENCE, [(True, 0, None)], id="divergence-max"),
+    pytest.param(
+        _SMALL_STEPS,
+        "min",
+        _PATIENT,
+        [(False, 0, _f32(value)) for value in _SMALL_STEPS],
+        id="every-step-improves",
+    ),
+    pytest.param(
+        _SMALL_STEPS,
+        "min",
+        _DELTA,
+        [(False, 0, 1.0), (True, 1, 1.0)],
+        id="improvement-below-min-delta",
+    ),
+    pytest.param(
+        [1.0, math.nan, 0.5],
+        "min",
+        _PATIENT,
+        [(False, 0, 1.0), (True, 0, 1.0)],
+        id="nan-stops",
+    ),
+    pytest.param(
+        [1.0, math.nan, 0.5],
+        "min",
+        _DIVERGENCE,
+        [(False, 0, 1.0), (False, 1, 1.0), (False, 0, 0.5)],
+        id="nan-unchecked-waits",
+    ),
+    pytest.param(
+        [1.0, 2.0, 50.0, 0.1],
+        "min",
+        _DIVERGENCE,
+        [(False, 0, 1.0), (False, 1, 1.0), (True, 1, 1.0)],
+        id="divergence-min",
+    ),
+    pytest.param(
+        [1.0, 2.0, 50.0, 0.1],
+        "max",
+        _PATIENT,
+        [(False, 0, 1.0), (False, 0, 2.0), (False, 0, 50.0), (False, 1, 50.0)],
+        id="max-improves",
+    ),
+    pytest.param([math.inf, 1.0], "min", _PATIENT, [(True, 0, None)], id="inf-stops"),
+    pytest.param(
+        [math.inf, 1.0],
+        "max",
+        _DIVERGENCE,
+        [(False, 0, math.inf), (True, 0, math.inf)],
+        id="inf-unchecked-max",
+    ),
 ]
 
 
-@pytest.mark.parametrize("values", _SEQUENCES)
-@pytest.mark.parametrize("mode", ["min", "max"])
-@pytest.mark.parametrize(
-    "rule",
-    [
-        EarlyStop(patience=2),
-        EarlyStop(patience=1, min_delta=0.05),
-        EarlyStop(patience=3, check_finite=False, divergence_threshold=10.0),
-    ],
-)
-def test_early_stop_is_lightning_s(values: list[float], mode: str, rule: EarlyStop) -> None:
-    reference = EarlyStopping(
-        "loss_val",
-        min_delta=rule.min_delta,
-        patience=rule.patience,
-        mode=mode,
-        check_finite=rule.check_finite,
-        divergence_threshold=rule.divergence_threshold,
-    )
-    best, wait = None, 0
+@pytest.mark.parametrize(("values", "mode", "rule", "expected"), _EARLY_STOP_CASES)
+def test_early_stop_rule(
+    values: list[float],
+    mode: str,
+    rule: EarlyStop,
+    expected: list[tuple[bool, int, float | None]],
+) -> None:
+    best, wait, seen = None, 0, []
     for value in values:
-        current = torch.tensor(value, dtype=torch.float32)
-        expected_stop, _ = reference._evaluate_stopping_criteria(current)
-        best, wait, stop = rule.update(float(current), best, wait, mode)  # type: ignore[arg-type]
-        assert (stop, wait) == (expected_stop, reference.wait_count), value
-        initial = math.inf if mode == "min" else -math.inf
-        assert (initial if best is None else best) == float(reference.best_score)
+        best, wait, stop = rule.update(_f32(value), best, wait, mode)  # type: ignore[arg-type]
+        seen.append((stop, wait, best))
         if stop:
             break
+    assert seen == expected
 
 
 def test_early_stop_ends_the_run(tmp_path: Path) -> None:
@@ -579,7 +662,7 @@ def test_resume_refusals(tmp_path: Path) -> None:
             resume=last,
         )
     lightning = tmp_path / "lightning.ckpt"
-    torch.save({"pytorch-lightning_version": L.__version__, "state_dict": {}}, lightning)
+    torch.save({"pytorch-lightning_version": "2.6.6", "state_dict": {}}, lightning)
     with pytest.raises(ConfigError, match="Lightning checkpoint"):
         _fit(None, resume=lightning)
 
@@ -642,16 +725,20 @@ def test_save_checkpoint_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 # --- seeding, flags, precision ---------------------------------------------------------
 
 
-def test_seed_everything_is_lightning_s() -> None:
-    L.seed_everything(123, verbose=False)
-    lightning = (random.getstate(), np.random.get_state()[1].copy(), torch.get_rng_state())
+def test_seed_everything_seeds_the_three_global_generators() -> None:
+    # Lightning's seed_everything(123): random.seed, np.random.seed, torch.manual_seed.
+    random.seed(123)
+    np.random.seed(123)
+    torch.manual_seed(123)
+    expected = (random.getstate(), np.random.get_state()[1].copy(), torch.get_rng_state())
     random.seed(0)
     np.random.seed(0)
     torch.manual_seed(0)
     assert seed_everything(123) == 123
-    assert random.getstate() == lightning[0]
-    assert np.array_equal(np.random.get_state()[1], lightning[1])
-    assert torch.equal(torch.get_rng_state(), lightning[2])
+    assert random.getstate() == expected[0]
+    assert np.array_equal(np.random.get_state()[1], expected[1])
+    assert torch.equal(torch.get_rng_state(), expected[2])
+    assert seed_everything(2**32 - 1) == 2**32 - 1  # the largest seed
     for bad in (-1, 2**32, True):
         with pytest.raises(ValueError, match="seed must be"):
             seed_everything(bad)
