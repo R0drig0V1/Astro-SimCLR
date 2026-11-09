@@ -14,6 +14,8 @@ engine of phase 4 once its loop exists (task 5.3). Modules:
 - :mod:`.diagnostics`: effective rank, per-dimension std, alignment, uniformity, kNN;
 - :mod:`.probe`: stored label subsets per class and the logistic-regression probe on
   frozen ``h``;
+- :mod:`.monitor`: the probe monitors of pretraining (a periodic budget probe with the
+  abort rule, and a stop-gradient online probe), images only, on the selection half;
 - :mod:`.pilot`: the pilot's minimal pretraining loop, checkpoints and embedding dump;
 - :mod:`.commands`: the ``simclr-*`` subcommands of the CLI.
 """

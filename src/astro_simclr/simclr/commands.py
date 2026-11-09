@@ -6,7 +6,9 @@ handlers import torch and the pilot lazily, so ``--help`` stays fast.
 - ``simclr-pilot DATA --output-dir OUT [--splits FILE] (--epochs N | --steps N) ...``: the
   pilot's pretraining (:func:`~astro_simclr.simclr.pilot.train_pilot`); ``--resume``
   continues ``OUT/ckpt/last.pt``; ``--stop-at N`` ends the call after N steps (a
-  time-boxed job). DATA is a prepared layout, or a corpus index (``build-corpus-index``,
+  time-boxed job); ``--probe-every K --label-budgets FILE``, ``--abort-if-probe-below-random
+  EPOCH`` and ``--online-probe`` turn on the probe monitors (:mod:`~astro_simclr.simclr.
+  monitor`). DATA is a prepared layout, or a corpus index (``build-corpus-index``,
   task 5.1) with ``--archive DIR`` and ``--eval-data LAYOUT`` defaulting to the ones it
   records; ``--tier`` defaults to ``device`` for a layout and ``memmap`` for an index.
   Exit 0 when the call ends.
@@ -33,6 +35,14 @@ from typing import Any
 from astro_simclr.config import ConfigError
 
 __all__ = ["add_simclr_commands"]
+
+# The monitors' defaults, as in ``simclr.monitor`` (kept here so that building the parser
+# does not import torch; a test checks that they agree).
+PROBE_BUDGETS = (10, 100)
+DEFAULT_PART = "fold0"
+DEFAULT_REPEAT = 0
+ONLINE_BATCH = 256
+ONLINE_LR = 1e-3
 
 
 def _pilot(args: argparse.Namespace) -> int:
@@ -61,8 +71,25 @@ def _pilot(args: argparse.Namespace) -> int:
         checkpoint_every=args.checkpoint_every,
         diagnostics_every=args.diagnostics_every,
         knn_bank_per_class=args.knn_bank_per_class,
+        probe_every=args.probe_every,
+        label_budgets=None if args.label_budgets is None else str(args.label_budgets),
+        probe_budgets=tuple(args.probe_budgets),
+        probe_part=args.probe_part,
+        probe_repeat=args.probe_repeat,
+        abort_if_probe_below_random=args.abort_if_probe_below_random,
+        online_probe=args.online_probe,
+        online_probe_batch=args.online_probe_batch,
+        online_probe_lr=args.online_probe_lr,
     )
     run = train_pilot(config, args.output_dir, resume=args.resume, stop_at=args.stop_at)
+    if run.status == "aborted":
+        assert run.abort is not None  # noqa: S101 - set by the abort rule
+        sys.stdout.write(
+            f"simclr-pilot: aborted at step {run.steps_done}: {run.abort['key']} "
+            f"{run.abort['value']:.4f} <= random init {run.abort['random_init']:.4f} "
+            f"({args.output_dir}/pilot.json)\n"
+        )
+        return 0
     sys.stdout.write(f"simclr-pilot: {run.steps_done} steps done in {args.output_dir}\n")
     return 0
 
@@ -242,11 +269,61 @@ def _add_pilot(commands: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     pilot.add_argument("--checkpoint-every", type=int, default=1000)
     pilot.add_argument("--diagnostics-every", type=int, default=1000)
     pilot.add_argument("--knn-bank-per-class", type=int, default=1000)
+    _add_monitor_arguments(pilot)
     pilot.add_argument("--resume", action="store_true", help="continue OUT/ckpt/last.pt")
     pilot.add_argument(
         "--stop-at", type=int, help="end this call after this many steps (resume later)"
     )
     pilot.set_defaults(handler=_pilot)
+
+
+def _add_monitor_arguments(pilot: argparse.ArgumentParser) -> None:
+    """The probe monitors' options (``simclr.monitor``; all off by default)."""
+    monitors = pilot.add_argument_group(
+        "probe monitors",
+        "Linear probes on h of the eval view (centre crop, eval mode, no augmentation, no "
+        "features), scored on the screen's selection half only: diagnostics and an abort "
+        "input, never a checkpoint selector.",
+    )
+    monitors.add_argument(
+        "--probe-every",
+        type=int,
+        metavar="K",
+        help="the periodic budget probe every K passes and at the final step (needs "
+        "--splits and --label-budgets)",
+    )
+    monitors.add_argument(
+        "--label-budgets",
+        type=Path,
+        help="a stored label-budget file drawn from --splits (make-label-budgets)",
+    )
+    monitors.add_argument(
+        "--probe-budgets",
+        type=int,
+        nargs="+",
+        default=list(PROBE_BUDGETS),
+        help=f"objects per class (default {' '.join(map(str, PROBE_BUDGETS))})",
+    )
+    monitors.add_argument(
+        "--probe-part", default=DEFAULT_PART, help=f"the file's part (default {DEFAULT_PART})"
+    )
+    monitors.add_argument(
+        "--probe-repeat", type=int, default=DEFAULT_REPEAT, help="the file's repeat (default 0)"
+    )
+    monitors.add_argument(
+        "--abort-if-probe-below-random",
+        type=int,
+        metavar="EPOCH",
+        help="stop cleanly after pass EPOCH unless the largest budget's probe beats the "
+        "random-init probe",
+    )
+    monitors.add_argument(
+        "--online-probe",
+        action="store_true",
+        help="train a stop-gradient Linear(512 -> 5) head on labelled Train side-batches",
+    )
+    monitors.add_argument("--online-probe-batch", type=int, default=ONLINE_BATCH)
+    monitors.add_argument("--online-probe-lr", type=float, default=ONLINE_LR, help="Adam rate")
 
 
 def add_simclr_commands(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:

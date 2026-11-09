@@ -210,3 +210,116 @@ the current ones. An index rebuilt at the same path is therefore refused, not mi
 `PilotConfig` gains `archive`, `eval_data`, `host_cap_gb` and `allow_weak_index`. They do
 not change a layout run's numbers, so a checkpoint written before them resumes with them at
 their defaults.
+
+## Amendment (2026-11-09, tasks 5.0b/5.0c/5.3): probe monitors during pretraining
+
+**Context.** The kNN monitor of section 6 can mislead. In the first pilot it rose while the
+linear probe on frozen `h` scored below the random-init network (0.586 against 0.618). The
+user wants the downstream metric visible while the run trains, and the 5.3 abort rule
+stated on it. Two monitors are added in `simclr.monitor`, both off by default. Off, a run's
+files are those of before: `pilot.json`, the checkpoints, `metrics.jsonl`,
+`diagnostics.jsonl` and the embeddings were compared with `main`'s and are identical but
+for the paths. The record and the checkpoint config leave the new fields out at their
+defaults.
+
+**Inputs (user decision, 2026-11-08).** Images only: the probe input is the encoder's `h`
+of the centred 57-pixel crop, in eval mode. No alert feature, position or anything else
+of the candidate, and no augmentation (no noise, dihedral view or shift), for both
+monitors. A test checks that the probe input equals the encoder's output on
+`centre_crop(x)`.
+
+**Role (5.0c).** Both curves are diagnostics and an abort input, **never a checkpoint
+selector**: the epoch count is fixed and the final checkpoint is kept.
+
+### The periodic budget probe
+
+- **When:** `--probe-every K` passes, at the abort check, and at the final step.
+- **The probe:** 5.4's (`protocol.probe.fit_probe`), not a new one. Standardised `h`, plain
+  cross-entropy, L2 `DEFAULT_WEIGHT_DECAY = 1e-3`, full-batch L-BFGS in float64 on the CPU:
+  deterministic, with nothing to tune. The class balance comes from the subsets (`b`
+  objects of every class), not from a weighted loss, so the monitor's number is the one 5.4
+  computes on the same rows.
+- **Labels:** the stored label-budget file (`make-label-budgets`). It must be drawn from
+  the run's splits file (`verify_label_budgets`). The probe uses repeat 0 of part `fold0`
+  at 10 and 100 objects per class. Nothing is drawn, so no stream is added.
+- **Train stamps only.** A CV fold's training part is a part of the pool, Train plus
+  Validation, so a stored subset can hold Validation stamps, even of the screen's decision
+  half. On CD21 `fold0`:
+
+  | Budget | Validation stamps in the subset | Of them in the decision half | Train stamps kept |
+  |---|---|---|---|
+  | 10 | 1 | 0 | 49 |
+  | 100 | 11 | 6 | 492 |
+
+  Training on them would read the decision half, and evaluating on the selection half
+  would score stamps the probe had trained on. So the monitor keeps only the subset's Train
+  stamps that the screened run may use, and records what it dropped and the per-class
+  counts left. No Train stamp of the subset was screen-excluded on CD21.
+- **Evaluation:** the screen's **selection** half only, the kNN monitor's data. Its `h`
+  is embedded once per point and shared with the kNN. The decision half, the CV evaluation
+  parts (the training part excludes its fold's evaluation part, and no Validation stamp is
+  trained on) and Test (never loaded by the pilot) are not read. A test poisons every
+  Validation stamp outside the selection half with NaN, records every row the monitors
+  embed, and checks both.
+- **Keys:** `probe_b10_selection_bacc` and `probe_b100_selection_bacc` in
+  `diagnostics.jsonl`, `null` on the lines that are not probe points.
+- **Cost on CPU:** about 10 s per point on a loaded laptop (9-12 s over three points, 4
+  threads). That is the 250 selection stamps and the 492 Train stamps embedded, plus two
+  fits. The whole Train set is not embedded.
+
+### The abort rule (5.3)
+
+- **Opt-in:** `--abort-if-probe-below-random EPOCH`.
+- **The baseline:** the same probe on the network as initialised. It is computed once,
+  before the first step, and kept in the checkpoint, so a resume does not recompute it.
+- **The check:** at the end of pass EPOCH, the run stops unless the largest budget's probe
+  beats the baseline strictly (a tie aborts).
+- **A clean stop:**
+  - `ckpt/last.pt` keeps the state;
+  - `pilot.json` records `status: aborted` and the check's values;
+  - neither `final.pt` nor the embeddings are written;
+  - the CLI exits 0 with a message;
+  - a resume is refused.
+
+The plan's 5.3 rule states the kNN; the probe replaces it as the abort input because the
+kNN is the metric that misled.
+
+### The online probe
+
+- **Opt-in:** `--online-probe`.
+- **The head:** `Linear(512, 5)` on `h.detach()`, initialised at zero so that it draws
+  nothing from the global generator (it is also built under `fork_rng`).
+- **The optimizer:** its own Adam, lr 1e-3, no weight decay, on class-balanced
+  cross-entropy with weights `N / (C n_c)` of the usable Train stamps.
+- **The side-batch:** each step, before the training forward, 256 of the usable Train stamps
+  (`PilotData.rows`; the evaluation layout's with a corpus as DATA), drawn from
+  `host_generator(seed, step, simclr_online_probe)`. That is the **new stream 12**,
+  assigned by the integrator.
+- **The forward:** the eval view, with the encoder in eval mode under `no_grad`, so its
+  BatchNorm statistics do not move. The encoder's weights, gradients and losses are
+  bit-identical with the probe on and off (tests).
+- **Keys:** `online_probe_train_acc` (the running accuracy on the side-batches since the
+  previous diagnostics line) and `online_probe_selection_bacc`, at each diagnostics point.
+- **What it is:** a 100 %-label trend monitor. It lags the final probe, since it is trained
+  online on a moving encoder.
+- **Cost:** about 4.6 s per step on the laptop CPU, against about 35 s for the training
+  step at B = 256.
+
+### State and resume
+
+With a monitor on, the checkpoint gains `monitor`:
+
+- the baseline;
+- the abort outcome;
+- the head, its optimizer and the running counts.
+
+The format version stays 1: the entry is absent without a monitor, and the config
+equality already ties it to the run. A resume continues exactly, and the existing
+truncation of the log lines keeps `diagnostics.jsonl` free of duplicates (a test).
+`pilot.json` gains `status` (`running`, `stopped`, `aborted`, `complete`) and `monitors`.
+
+### Engine-free
+
+Both monitors are pure functions or small objects outside every engine. There is no
+Lightning import, and the only draw is keyed by `(seed, step)`. 5.3 moves them onto the
+plain engine with the rest of the pilot.

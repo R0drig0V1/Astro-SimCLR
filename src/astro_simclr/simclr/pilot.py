@@ -56,7 +56,10 @@ exactly the run's length, and the warmup is ``warmup_epochs`` passes (at most
   cosine, and rate;
 - ``diagnostics.jsonl``: every ``diagnostics_every`` steps and at the end
   (:func:`diagnose`): the effective rank of ``cov(h)``, the per-dimension std of ``z``,
-  alignment and uniformity on a fixed sample with fixed views, and the kNN monitor;
+  alignment and uniformity on a fixed sample with fixed views, and the kNN monitor; with
+  the probe monitors on (:mod:`.monitor`: ``probe_every``, ``abort_if_probe_below_random``,
+  ``online_probe``; all off by default, and then every file is as before), also at the
+  probe points, with their keys;
 - ``ckpt/last.pt`` every ``checkpoint_every`` steps and at the end, ``ckpt/step-NNNNNNN.pt``
   every ``keep_every_epochs`` passes, ``ckpt/final.pt`` at the end (:data:`CKPT_FORMAT`:
   plain values, read with ``weights_only=True``);
@@ -95,6 +98,12 @@ from astro_simclr.data.schema import LABEL_NAMES, DataError
 from astro_simclr.engine.device import DevicePolicy
 from astro_simclr.engine.randomness import RESERVED_STREAMS, host_generator
 from astro_simclr.protocol.groups import DEFAULT_RADIUS_ARCSEC
+from astro_simclr.protocol.label_budgets import (
+    cv_parts,
+    cv_source,
+    read_label_budgets,
+    verify_label_budgets,
+)
 from astro_simclr.protocol.splits import ScreenSplit, read_splits, verify_splits
 from astro_simclr.simclr.diagnostics import (
     alignment,
@@ -102,6 +111,21 @@ from astro_simclr.simclr.diagnostics import (
     effective_rank,
     knn_balanced_accuracy,
     uniformity,
+)
+from astro_simclr.simclr.monitor import (
+    DEFAULT_PART,
+    DEFAULT_REPEAT,
+    ONLINE_BATCH,
+    ONLINE_LR,
+    PROBE_BUDGETS,
+    BudgetRows,
+    OnlineProbe,
+    budget_train_rows,
+    eval_h,
+    probe_balanced_accuracy,
+    probe_beats_baseline,
+    probe_key,
+    side_batch,
 )
 from astro_simclr.simclr.network import PROJECTION_DIM, REPRESENTATION_DIM, SimCLRNetwork
 from astro_simclr.simclr.objective import SimCLRLoss
@@ -190,6 +214,16 @@ class PilotConfig:
     diag_samples: int = 512
     knn_bank_per_class: int = 1000
     embed_batch: int = 1024
+    # The probe monitors (simclr.monitor; off by default: the record omits them then).
+    probe_every: int | None = None
+    label_budgets: str | None = None
+    probe_budgets: tuple[int, ...] = PROBE_BUDGETS
+    probe_part: str = DEFAULT_PART
+    probe_repeat: int = DEFAULT_REPEAT
+    abort_if_probe_below_random: int | None = None
+    online_probe: bool = False
+    online_probe_batch: int = ONLINE_BATCH
+    online_probe_lr: float = ONLINE_LR
 
     def __post_init__(self) -> None:
         if (self.epochs is None) == (self.steps is None):
@@ -205,6 +239,10 @@ class PilotConfig:
             "diag_samples": (self.diag_samples, 2),  # a covariance needs two
             "knn_bank_per_class": (self.knn_bank_per_class, 1),
             "embed_batch": (self.embed_batch, 1),
+            "probe_every": (self.probe_every, 1),
+            "probe_repeat": (self.probe_repeat, 0),
+            "abort_if_probe_below_random": (self.abort_if_probe_below_random, 1),
+            "online_probe_batch": (self.online_probe_batch, 1),
         }
         bad = [f"{k} >= {low}" for k, (v, low) in minimum.items() if v is not None and v < low]
         if bad:
@@ -217,15 +255,55 @@ class PilotConfig:
             raise ConfigError("fp32_precision must be ieee|tf32 and tier device|host|memmap")
         if not self.host_cap_gb > 0:
             raise ConfigError(f"host_cap_gb must be > 0, got {self.host_cap_gb}")
+        self._check_monitors()
+
+    def _check_monitors(self) -> None:
+        if self.probe_every is not None and (self.label_budgets is None or self.splits is None):
+            raise ConfigError("probe_every needs label_budgets and splits (a stored splits file)")
+        if self.abort_if_probe_below_random is not None and self.probe_every is None:
+            raise ConfigError("abort_if_probe_below_random needs the probe monitor (probe_every)")
+        budgets = list(self.probe_budgets)
+        if not budgets or any(b < 1 for b in budgets) or budgets != sorted(set(budgets)):
+            raise ConfigError(f"probe_budgets must be increasing positive integers: {budgets}")
+        if not self.online_probe_lr > 0:
+            raise ConfigError(f"online_probe_lr must be > 0, got {self.online_probe_lr}")
 
     def to_plain(self) -> dict[str, Any]:
-        """The config as a JSON-ready dict (every field)."""
-        return asdict(self)
+        """The config as a JSON-ready dict: every field, but a monitor field at its default.
+
+        The monitors' fields are left out while they hold their defaults, so a run without
+        the monitors writes the same record and checkpoint config as before they existed.
+        """
+        plain = asdict(self)
+        for name in _MONITOR_FIELDS:
+            if plain[name] == _DEFAULTS[name]:
+                del plain[name]
+        return plain
+
+    @property
+    def monitors(self) -> bool:
+        """Whether a probe monitor (periodic or online) is on."""
+        return self.probe_every is not None or self.online_probe
 
     @property
     def views(self) -> ViewConfig:
         """The training views' configuration."""
         return ViewConfig(self.noise_scale, self.noise_min_r2)
+
+
+#: The probe monitors' fields (:meth:`PilotConfig.to_plain` omits them at their defaults).
+_MONITOR_FIELDS: Final = (
+    "probe_every",
+    "label_budgets",
+    "probe_budgets",
+    "probe_part",
+    "probe_repeat",
+    "abort_if_probe_below_random",
+    "online_probe",
+    "online_probe_batch",
+    "online_probe_lr",
+)
+_DEFAULTS: Final = {f.name: f.default for f in fields(PilotConfig)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -588,6 +666,8 @@ def diagnose(
     train_images: torch.Tensor,
     config: PilotConfig,
     device: torch.device,
+    *,
+    query_h: torch.Tensor | None = None,
 ) -> dict[str, Any]:
     """The diagnostics of the model now (module docstring), as a JSON-ready dict.
 
@@ -597,6 +677,8 @@ def diagnose(
     values are comparable along the run. The kNN monitor (``knn_selection_bacc``) needs
     labels and a splits file; it is ``None`` otherwise. Its bank is drawn from the CD21
     Train stamps ``train_images`` (``data.rows``), whatever the pretraining data.
+    ``query_h``, if given, is ``h`` of the selection half already embedded (by the probe
+    monitors, :func:`~.monitor.eval_h`: the same view and mode), so it is not embedded twice.
     """
     was_training = model.training
     model.eval()
@@ -624,7 +706,8 @@ def diagnose(
         assert data.train_labels is not None  # noqa: S101 - a bank needs labels
         bank_h, _ = embed(model, train_images, bank, device, config.embed_batch)
         query = data.screen.selection
-        query_h, _ = embed(model, data.validation, query, device, config.embed_batch)
+        if query_h is None:
+            query_h, _ = embed(model, data.validation, query, device, config.embed_batch)
         result["knn_selection_bacc"] = knn_balanced_accuracy(
             bank_h,
             torch.from_numpy(data.train_labels[bank]),
@@ -745,6 +828,8 @@ class PilotRun:
         self.optimizer = build_lars(self.model, lr=self.base_lr, weight_decay=config.weight_decay)
         self.loss = SimCLRLoss(config.temperature)
         self.steps_done = 0
+        #: ``running``, then ``stopped`` (``stop_at``), ``aborted`` or ``complete``.
+        self.status = "running"
         # The CD21 Train stamps of the kNN bank: the pretraining tensor itself in a layout
         # run (no second copy), the host tensor in a corpus run.
         stamps = self.stamps
@@ -757,6 +842,51 @@ class PilotRun:
         if config.views.noise:
             fits = stamp_fits(data.train.numpy())
             self.fits = torch.from_numpy(fits).to(self.train_images.device)
+        self._init_monitors()
+
+    def _init_monitors(self) -> None:
+        """The probe monitors' rows, baseline slot, abort step and online head (if on).
+
+        Raises:
+            ConfigError: if a monitor lacks labels or a splits file, the abort epoch is past
+                the run's end, or the label-budget file does not fit the run's budgets.
+            DataError: if the label-budget file is unreadable or not drawn from the splits.
+        """
+        config, data = self.config, self.data
+        per_pass = self.order.steps_per_pass
+        self.probe_rows: BudgetRows | None = None
+        self.probe_record: dict[str, Any] | None = None
+        #: The random-init probe scores (computed once, before the first step).
+        self.random_init: dict[str, float] | None = None
+        #: The abort check's outcome, once it ran.
+        self.abort: dict[str, Any] | None = None
+        self.probe_steps = None if config.probe_every is None else config.probe_every * per_pass
+        self.abort_step = None
+        if config.abort_if_probe_below_random is not None:
+            self.abort_step = config.abort_if_probe_below_random * per_pass
+            if self.abort_step > self.total_steps:
+                raise ConfigError(
+                    f"abort_if_probe_below_random {config.abort_if_probe_below_random} passes "
+                    f"is past the run's end ({self.total_steps} steps)"
+                )
+        if config.probe_every is not None:
+            self.probe_rows, self.probe_record = _probe_rows(config, data)
+        self.online: OnlineProbe | None = None
+        if config.online_probe:
+            if data.train_labels is None:
+                raise ConfigError("the online probe needs Train labels (a labelled layout)")
+            # fork_rng: nothing the head does may move the global generator.
+            with torch.random.fork_rng(devices=[]):
+                self.online = OnlineProbe(
+                    data.train_labels, data.rows, self.device, lr=config.online_probe_lr
+                )
+
+    def probe_point(self, done: int) -> bool:
+        """Whether the periodic probe runs after ``done`` steps (every K passes, the abort
+        check's step and the final step)."""
+        if self.probe_steps is None:
+            return False
+        return done % self.probe_steps == 0 or done in (self.total_steps, self.abort_step)
 
     def schedule(self) -> dict[str, Any]:
         """The run's length and rates, for ``pilot.json``."""
@@ -781,6 +911,9 @@ class PilotRun:
     def step(self, step: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
         """Train on the batch of step ``step``; returns ``(loss, pos, neg, lr)`` (no sync)."""
         config = self.config
+        if self.online is not None:  # first, on the weights before this step's update
+            rows = side_batch(config.seed, step, self.data.rows, config.online_probe_batch)
+            self.online.update(self.model, self.train_images, rows, self.device)
         stored = self.stamps.rows[self.order.batch(step)]
         x = self.stamps.take(stored).to(self.device, non_blocking=True)
         if isinstance(self.stamps, MemmapStamps) and step + 1 < self.total_steps:
@@ -803,8 +936,12 @@ class PilotRun:
         return loss.detach(), pos, neg, lr
 
     def checkpoint(self) -> dict[str, Any]:
-        """The checkpoint payload of the current state (plain values only)."""
-        return {
+        """The checkpoint payload of the current state (plain values only).
+
+        With a monitor on, ``monitor`` holds its state: the random-init baseline, the
+        abort check's outcome and the online head with its optimizer and running counts.
+        """
+        payload = {
             "format": CKPT_FORMAT,
             "format_version": _CKPT_VERSION,
             "config": self.config.to_plain(),
@@ -814,16 +951,24 @@ class PilotRun:
             "model": {k: v.detach().cpu() for k, v in self.model.state_dict().items()},
             "optimizer": self.optimizer.state_dict(),
         }
+        if self.config.monitors:
+            payload["monitor"] = {
+                "random_init": self.random_init,
+                "abort": self.abort,
+                "online": None if self.online is None else self.online.state(),
+            }
+        return payload
 
     def restore(self, payload: dict[str, Any]) -> None:
         """Load a checkpoint of this run (same config) into the model and optimizer.
 
         Raises:
-            ConfigError: if the checkpoint is of another format or another config.
+            ConfigError: if the checkpoint is of another format or another config, or the
+                run it holds was stopped by the abort rule.
         """
         if payload.get("format") != CKPT_FORMAT or payload.get("format_version") != _CKPT_VERSION:
             raise ConfigError("not a pilot checkpoint of this version")
-        if _with_defaults(payload["config"]) != self.config.to_plain():
+        if _with_defaults(payload["config"]) != asdict(self.config):
             raise ConfigError("the checkpoint was written with another config; refusing to resume")
         # The same paths may now hold other data (an index rebuilt with --overwrite).
         saved, current = payload["data"].get("pretrain"), self.data.record.get("pretrain")
@@ -834,20 +979,110 @@ class PilotRun:
             and any(saved.get(k) != current.get(k) for k in keys)
         ):
             raise ConfigError("the checkpoint was trained on another corpus index; refusing")
+        monitor = payload.get("monitor") or {}
+        abort = monitor.get("abort")
+        if abort is not None and abort.get("aborted"):
+            raise ConfigError(
+                f"the run was aborted at step {abort['step']} (the probe did not beat random "
+                "init); there is nothing to resume"
+            )
         self.model.load_state_dict(payload["model"])
         self.optimizer.load_state_dict(payload["optimizer"])
         self.steps_done = int(payload["steps_done"])
+        if self.config.monitors:
+            self.random_init = monitor.get("random_init")
+            self.abort = abort
+            if self.online is not None:
+                self.online.load(monitor["online"])
 
 
 def _with_defaults(saved: dict[str, Any]) -> dict[str, Any]:
     """A saved config with the fields added since it was written at their defaults.
 
     The fields of task 5.1 (``archive``, ``eval_data``, ``host_cap_gb``,
-    ``allow_weak_index``) do not change a
-    layout run's numbers, so a checkpoint written before them resumes.
+    ``allow_weak_index``) do not change a layout run's numbers, so a checkpoint written
+    before them resumes; the monitors' fields are left out of a record at their defaults
+    (:meth:`PilotConfig.to_plain`). A list (a JSON or older record) of ``probe_budgets`` is
+    read as the tuple.
     """
-    defaults = {f.name: f.default for f in fields(PilotConfig)}
-    return {**{k: defaults[k] for k in defaults if k not in saved}, **saved}
+    merged = {**{k: _DEFAULTS[k] for k in _DEFAULTS if k not in saved}, **saved}
+    merged["probe_budgets"] = tuple(merged["probe_budgets"])
+    return merged
+
+
+def _probe_rows(config: PilotConfig, data: PilotData) -> tuple[BudgetRows, dict[str, Any]]:
+    """The periodic probe's Train rows (:func:`~.monitor.budget_train_rows`) and record.
+
+    The label-budget file must be drawn from the run's splits file
+    (:func:`~astro_simclr.protocol.label_budgets.verify_label_budgets`).
+
+    Raises:
+        ConfigError: without labels or a screen, for a part or budget the file lacks, or a
+            budget left with no usable Train stamp.
+        DataError: if the file is unreadable or was not drawn from the splits.
+    """
+    if data.train_labels is None or data.validation_labels is None or data.screen is None:
+        raise ConfigError("the probe monitor needs a labelled layout and a splits file")
+    assert config.splits is not None and config.label_budgets is not None  # noqa: S101
+    splits_path, budgets_path = Path(config.splits), Path(config.label_budgets)
+    splits = read_splits(splits_path)
+    budgets = read_label_budgets(budgets_path)
+    pool_labels = np.concatenate([data.train_labels, data.validation_labels]).astype(np.int64)
+    parts = cv_parts(splits, pool_labels)
+    verify_label_budgets(budgets, parts, source=cv_source(splits, splits_path))
+    try:
+        part = parts[budgets.part_index(config.probe_part)]
+        rows = budget_train_rows(
+            budgets,
+            part,
+            repeat=config.probe_repeat,
+            wanted=config.probe_budgets,
+            n_train=splits.n_train,
+            usable=data.rows,
+            train_labels=data.train_labels,
+        )
+    except (KeyError, ValueError) as err:
+        raise ConfigError(str(err)) from err
+    record = {
+        "label_budgets": str(budgets_path),
+        "label_budgets_sha256": sha256_file(budgets_path),
+        "part": config.probe_part,
+        "repeat": config.probe_repeat,
+        "budgets": rows.record,
+        "probe": "protocol.probe.fit_probe, DEFAULT_WEIGHT_DECAY, float64 L-BFGS",
+        "evaluation": "screen selection half",
+    }
+    return rows, record
+
+
+def _selection_h(run: PilotRun) -> torch.Tensor | None:
+    """``h`` of the screen's selection half (eval view), or ``None`` without a labelled one."""
+    data = run.data
+    if data.screen is None or data.validation_labels is None:
+        return None
+    return eval_h(
+        run.model, data.validation, data.screen.selection, run.device, run.config.embed_batch
+    )
+
+
+def _probe_scores(run: PilotRun, selection_h: torch.Tensor) -> dict[str, float]:
+    """The periodic probe at every budget, on the selection half (module ``monitor``)."""
+    assert run.probe_rows is not None and run.data.screen is not None  # noqa: S101
+    labels, val_labels = run.data.train_labels, run.data.validation_labels
+    assert labels is not None and val_labels is not None  # noqa: S101
+    rows = run.probe_rows.rows
+    union = np.unique(np.concatenate(list(rows.values())))
+    train_h = eval_h(run.model, run.train_images, union, run.device, run.config.embed_batch)
+    selection_y = val_labels[run.data.screen.selection]
+    return {
+        probe_key(budget): probe_balanced_accuracy(
+            train_h[torch.from_numpy(np.searchsorted(union, budget_rows))],
+            labels[budget_rows],
+            selection_h,
+            selection_y,
+        )
+        for budget, budget_rows in rows.items()
+    }
 
 
 def load_checkpoint(path: Path) -> dict[str, Any]:
@@ -866,7 +1101,7 @@ def load_checkpoint(path: Path) -> dict[str, Any]:
 
 
 def _record(run: PilotRun, flags: dict[str, Any]) -> dict[str, Any]:
-    return {
+    record: dict[str, Any] = {
         "config": run.config.to_plain(),
         "data": run.data.record,
         "schedule": run.schedule(),
@@ -879,6 +1114,37 @@ def _record(run: PilotRun, flags: dict[str, Any]) -> dict[str, Any]:
             "python": platform.python_version(),
         },
     }
+    if run.config.monitors:  # without a monitor, the record is the one written before them
+        record["status"] = run.status
+        record["monitors"] = {
+            "role": "diagnostics and an abort input; never a checkpoint selector (5.0c)",
+            "input": "h of the centred 57-px crop, eval mode, no augmentation, no features",
+            "probe": None
+            if run.probe_record is None
+            else {
+                **run.probe_record,
+                "every_steps": run.probe_steps,
+                "random_init": run.random_init,
+                "abort": None
+                if run.abort_step is None
+                else {"step": run.abort_step, "outcome": run.abort},
+            },
+            "online_probe": None
+            if run.online is None
+            else {
+                "head": "Linear(512 -> 5), zero init, on h.detach()",
+                "optimizer": f"Adam lr {run.config.online_probe_lr}, no weight decay",
+                "loss": "class-balanced cross-entropy (weights N / (C n_c) of the Train rows)",
+                "batch": run.config.online_probe_batch,
+                "stream": RESERVED_STREAMS["simclr_online_probe"],
+                "labels": "the usable Train stamps (PilotData.rows) only",
+            },
+        }
+    return record
+
+
+def _write_record(run: PilotRun, out_dir: Path, flags: dict[str, Any]) -> None:
+    (out_dir / "pilot.json").write_text(json.dumps(_record(run, flags), indent=1) + "\n")
 
 
 def _intervals(run: PilotRun, done: int) -> Iterator[str]:
@@ -886,12 +1152,47 @@ def _intervals(run: PilotRun, done: int) -> Iterator[str]:
     final = done == run.total_steps
     if done % config.log_every == 0 or final:
         yield "log"
-    if done % config.diagnostics_every == 0 or final:
+    if done % config.diagnostics_every == 0 or final or run.probe_point(done):
         yield "diagnostics"
     if done % config.checkpoint_every == 0 or final:
         yield "checkpoint"
     if run.keep_every is not None and done % run.keep_every == 0:
         yield "keep"
+
+
+def _monitor_row(run: PilotRun, done: int, selection_h: torch.Tensor | None) -> dict[str, Any]:
+    """The monitors' keys of the diagnostics line after ``done`` steps; runs the abort check.
+
+    The periodic probe's keys are ``None`` off its points; the online probe's selection
+    score is ``None`` without a labelled screen.
+    """
+    row: dict[str, Any] = {}
+    if run.probe_rows is not None:
+        if run.probe_point(done):
+            assert selection_h is not None  # noqa: S101 - the probe needs a screen
+            row.update(_probe_scores(run, selection_h))
+        else:
+            row.update(dict.fromkeys(map(probe_key, run.probe_rows.rows)))
+        if done == run.abort_step:
+            assert run.random_init is not None  # noqa: S101 - computed before step 0
+            key = probe_key(max(run.probe_rows.rows))
+            value, baseline = row[key], run.random_init[key]
+            run.abort = {
+                "step": done,
+                "key": key,
+                "value": value,
+                "random_init": baseline,
+                "aborted": not probe_beats_baseline(value, baseline),
+            }
+    if run.online is not None:
+        row["online_probe_train_acc"] = run.online.take_train_accuracy()
+        val_labels, screen = run.data.validation_labels, run.data.screen
+        row["online_probe_selection_bacc"] = (
+            None
+            if selection_h is None or val_labels is None or screen is None
+            else run.online.balanced_accuracy(selection_h, val_labels[screen.selection])
+        )
+    return row
 
 
 def _after_step(
@@ -900,7 +1201,7 @@ def _after_step(
     done: int,
     outputs: tuple[torch.Tensor, torch.Tensor, torch.Tensor, float],
 ) -> None:
-    """Log, diagnose, checkpoint and keep at the intervals that ``done`` steps reach."""
+    """Log, diagnose (with the monitors), checkpoint and keep at the intervals ``done`` reaches."""
     loss, pos, neg, lr = outputs
     for event in _intervals(run, done):
         if event == "log":
@@ -910,14 +1211,36 @@ def _after_step(
             row = {"step": done, "loss": value, "pos": float(pos), "neg": float(neg), "lr": lr}
             _append_jsonl(out_dir / "metrics.jsonl", row)
         elif event == "diagnostics":
+            selection_h = _selection_h(run) if run.config.monitors else None
             diag = diagnose(
-                run.model, run.data, run.stamps, run.train_images, run.config, run.device
+                run.model,
+                run.data,
+                run.stamps,
+                run.train_images,
+                run.config,
+                run.device,
+                query_h=selection_h,
             )
+            if run.config.monitors:
+                diag.update(_monitor_row(run, done, selection_h))
             _append_jsonl(out_dir / "diagnostics.jsonl", {"step": done, **diag})
         elif event == "checkpoint":
             _save(run.checkpoint(), out_dir / "ckpt" / "last.pt")
         else:
             _save(run.checkpoint(), out_dir / "ckpt" / f"step-{done:07d}.pt")
+
+
+def _run_steps(run: PilotRun, out_dir: Path, end: int) -> None:
+    """Train up to ``end`` steps; stop early (``run.status = "aborted"``) on the abort rule."""
+    try:
+        for step in range(run.steps_done, end):
+            _after_step(run, out_dir, step + 1, run.step(step))
+            if run.abort is not None and run.abort["aborted"]:
+                run.status = "aborted"
+                return
+    finally:
+        if isinstance(run.stamps, MemmapStamps):
+            run.stamps.close()
 
 
 def train_pilot(
@@ -936,10 +1259,19 @@ def train_pilot(
     schedule is still the whole run's). Without it, or when the run reaches its end, the
     call writes ``ckpt/final.pt`` and the embeddings.
 
+    With the periodic probe on, a fresh run first scores the random-init network (the
+    baseline, kept in the checkpoint). With the abort rule, a run whose probe does not beat
+    it at the check stops there: ``ckpt/last.pt`` holds the state, ``pilot.json`` the
+    ``aborted`` status, no ``final.pt`` or embeddings are written, and ``run.status`` is
+    ``"aborted"`` (a resume is refused). With a monitor on, ``pilot.json`` records
+    ``status`` (``running``, ``stopped``, ``aborted`` or ``complete``), rewritten when the
+    call ends.
+
     Raises:
-        ConfigError: if ``out_dir`` already holds a run and ``resume`` is False, or the
-            checkpoint to resume is of another config; or as :class:`PilotConfig`.
-        DataError: as :func:`load_pilot_data`.
+        ConfigError: if ``out_dir`` already holds a run and ``resume`` is False, the
+            checkpoint to resume is of another config or of an aborted run, or a monitor
+            cannot run on the data; or as :class:`PilotConfig`.
+        DataError: as :func:`load_pilot_data`, or for a label-budget file of other splits.
         FloatingPointError: if the loss becomes NaN or infinite (checked at log steps).
     """
     ckpt_dir = out_dir / "ckpt"
@@ -957,16 +1289,19 @@ def train_pilot(
         run.restore(load_checkpoint(last))
     for name in ("metrics.jsonl", "diagnostics.jsonl"):
         _truncate_jsonl(out_dir / name, run.steps_done)
-    (out_dir / "pilot.json").write_text(json.dumps(_record(run, flags), indent=1) + "\n")
+    if run.probe_rows is not None and run.random_init is None:
+        selection_h = _selection_h(run)
+        assert selection_h is not None  # noqa: S101 - the probe needs a labelled screen
+        run.random_init = _probe_scores(run, selection_h)
+    _write_record(run, out_dir, flags)
     end = run.total_steps if stop_at is None else min(stop_at, run.total_steps)
-    try:
-        for step in range(run.steps_done, end):
-            _after_step(run, out_dir, step + 1, run.step(step))
-    finally:
-        if isinstance(run.stamps, MemmapStamps):
-            run.stamps.close()
-    if run.steps_done < run.total_steps:
+    _run_steps(run, out_dir, end)
+    if run.status == "aborted" or run.steps_done < run.total_steps:
         _save(run.checkpoint(), last)
+        if run.status != "aborted":
+            run.status = "stopped"
+        if config.monitors:
+            _write_record(run, out_dir, flags)
         return run
     _save(run.checkpoint(), ckpt_dir / "final.pt")
     dump_embeddings(
@@ -978,4 +1313,7 @@ def train_pilot(
         step=run.steps_done,
         source={"config": config.to_plain()},
     )
+    run.status = "complete"
+    if config.monitors:
+        _write_record(run, out_dir, flags)
     return run
