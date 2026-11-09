@@ -123,7 +123,18 @@ back to back: on 2026-11-08 MC-SDDP waited more than an hour.
    renamed; `check_lock_break` compares the renamed lock with the owner text it judged
    stale, not with a fresh read (two waiters judging the same stale lock could remove the
    new lock the first of them took).
-5. **Entry point for other projects:** `scripts/check-lock.sh run --project NAME --
+5. **Release grace** (added after review: the 5 s poll alone made the transition worse).
+   Until MC-SDDP switches to `run` it registers no waiter file and polls every 30 s, so the
+   queue head (5 s poll) would retake every lock an Astro check frees. The head leaves a
+   freed lock alone until it has been free for `ASTRO_SIMCLR_CHECK_LOCK_GRACE` seconds
+   (default 35, more than the 30 s foreign poll; 0 disables it). The release time is the
+   newest of the `check.released` stamp next to the lock directory (epoch seconds, written
+   on every release by this script and when a waiter breaks a stale lock) and a release a
+   waiter saw while polling; a free lock with no known release time gets the full grace.
+   Whether a foreign poller is waiting is not detectable, but a lock free for longer than
+   the grace is taken at once: any poller with a shorter period already had its chance. A
+   check therefore costs up to 35 s more only when it follows another holder directly.
+6. **Entry point for other projects:** `scripts/check-lock.sh run --project NAME --
    COMMAND...` queues, takes the lock, writes the owner file (`pid`, `host`, `project`,
    `command`, `started`), runs COMMAND, releases the lock and exits with COMMAND's code (2 on
    a usage error). MC-SDDP's integrate loop calls it from this repository's main worktree;
@@ -131,14 +142,15 @@ back to back: on 2026-11-08 MC-SDDP waited more than an hour.
 
 **Consequences.** The queue is fair only among processes that use it: until MC-SDDP moves
 from its own `mkdir` loop to `run` (or to the same waiter files), it can still take a freed
-lock ahead of the oldest Astro waiter, but it can no longer be starved by Astro's faster
-poll once it queues. A waiter whose pid is reused by a long-lived process without a
+lock ahead of the oldest Astro waiter, and the release grace keeps Astro's faster poll from
+starving it meanwhile; once it queues, the order is strict. A waiter whose pid is reused by a long-lived process without a
 recorded `pstart` (another implementation of the convention) blocks the queue until that
 process exits; `pstart` closes that hole for files written by `check-lock.sh`. Covered by
 `tests/test_check_lock.py` (arrival order of two and three waiters, dead and reused-pid
 waiters, stray files, the reader's time zone, cleanup on lock and on SIGTERM/SIGINT, an
 owner-less lock of our own, a re-taken stale lock, a plain `mkdir` holder, re-entrance,
-`run`). A TERM sent while the command under the lock runs is handled when it ends (bash
+`run`; with a scaled-down foreign `mkdir` poller, the grace lets it in between two queued
+checks, and without the grace it is shut out). A TERM sent while the command under the lock runs is handled when it ends (bash
 defers traps during a foreground child): the lock covers the work.
 
 **Alternatives.** `flock(1)` queues fairly but is not on macOS by default and would not

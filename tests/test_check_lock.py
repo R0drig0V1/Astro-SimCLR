@@ -36,7 +36,12 @@ def _env(lock: Path, **extra: str) -> dict[str, str]:
         if not key.startswith("ASTRO_SIMCLR_CHECK_LOCK")
         and key not in {"GITHUB_ACTIONS", "PYTEST_XDIST_AUTO_NUM_WORKERS"}
     }
-    env.update(ASTRO_SIMCLR_CHECK_LOCK_DIR=str(lock), ASTRO_SIMCLR_CHECK_LOCK_POLL="1")
+    # No release grace unless a test asks for one (the grace tests below).
+    env.update(
+        ASTRO_SIMCLR_CHECK_LOCK_DIR=str(lock),
+        ASTRO_SIMCLR_CHECK_LOCK_POLL="1",
+        ASTRO_SIMCLR_CHECK_LOCK_GRACE="0",
+    )
     env.update(extra)
     return env
 
@@ -230,10 +235,10 @@ def test_pytest_workers_on_this_machine_are_at_most_four(tmp_path: Path) -> None
 TICKET = re.compile(r"^\d{13}\.\d{6}\.\d{10}$")
 
 
-def _spawn(script: str, lock: Path) -> subprocess.Popen[str]:
+def _spawn(script: str, lock: Path, **extra: str) -> subprocess.Popen[str]:
     return subprocess.Popen(  # noqa: S603 (bash on the test's own scripts)
         [str(BASH), "-c", f'source "{LIBRARY}"\n{script}'],
-        env=_env(lock),
+        env=_env(lock, **extra),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -520,3 +525,87 @@ def test_break_leaves_a_lock_retaken_after_it_was_judged_stale(tmp_path: Path) -
     out = _bash(f'check_lock_break "$ASTRO_SIMCLR_CHECK_LOCK_DIR" "pid={_dead_pid()}"', lock)
     assert out.returncode == 0 and (lock / "owner").read_text() == f"pid={os.getpid()}\n"
     assert not list(tmp_path.glob("*.stale.*"))
+
+
+# The release grace (module header): a freed lock is left to pollers outside the queue.
+
+
+@pytest.mark.parametrize(("grace", "order"), [("0", "A B F"), ("5", "A F B")])
+def test_the_grace_lets_a_foreign_poller_in_between_two_queued_checks(
+    tmp_path: Path, grace: str, order: str
+) -> None:
+    # MC-SDDP's plain mkdir loop, scaled down: one attempt every 4 s (30 s in real life,
+    # against a 35 s grace), no waiter file. Without the grace, check B retakes the lock
+    # that check A frees long before the foreign poller tries again.
+    lock = tmp_path / "check.lock.d"
+    log = tmp_path / "order"
+    (tmp_path / "check.released").write_text("1\n")  # released long ago: A takes it at once
+    holds = "check_lock_install_traps; check_lock_acquire; echo {name} >> '{log}'; sleep 2;"
+    holds += " check_lock_release"
+    first = _spawn(holds.format(name="A", log=log), lock, ASTRO_SIMCLR_CHECK_LOCK_GRACE=grace)
+    others: list[subprocess.Popen[str] | subprocess.Popen[bytes]] = []
+    try:
+        _until(lambda: log.exists())
+        second = _spawn(holds.format(name="B", log=log), lock, ASTRO_SIMCLR_CHECK_LOCK_GRACE=grace)
+        others.append(second)
+        _until_waiters(lock, 1)
+        foreign = subprocess.Popen(  # noqa: S603
+            [
+                str(BASH),
+                "-c",
+                f"until mkdir '{lock}' 2>/dev/null; do sleep 4; done;"
+                f" echo F >> '{log}'; sleep 0.5; rmdir '{lock}'",
+            ]
+        )
+        others.append(foreign)
+        for process in (first, second, foreign):
+            assert process.wait(timeout=60) == 0
+    finally:
+        first.kill()
+        for process in others:
+            process.kill()
+    assert log.read_text().split() == order.split()
+    assert int((tmp_path / "check.released").read_text()) > 1  # B's release stamped it
+
+
+def test_a_free_lock_with_no_known_release_gets_the_full_grace(tmp_path: Path) -> None:
+    lock = tmp_path / "check.lock.d"
+    start = time.monotonic()
+    out = _bash(
+        'check_lock_acquire; echo "owned=$CHECK_LOCK_OWNED"',
+        lock,
+        ASTRO_SIMCLR_CHECK_LOCK_GRACE="2",
+    )
+    assert out.returncode == 0 and out.stdout.strip() == "owned=1", out.stderr
+    assert time.monotonic() - start >= 2
+    assert "to pollers outside the queue" in out.stderr
+
+
+def test_a_lock_free_for_longer_than_the_grace_is_taken_at_once(tmp_path: Path) -> None:
+    lock = tmp_path / "check.lock.d"
+    (tmp_path / "check.released").write_text(f"{int(time.time()) - 100}\n")
+    out = _bash(
+        'check_lock_acquire; echo "owned=$CHECK_LOCK_OWNED"; check_lock_release;'
+        ' cat "$(check_lock_stamp_file)"',
+        lock,
+        ASTRO_SIMCLR_CHECK_LOCK_GRACE="30",
+    )
+    assert out.returncode == 0, out.stderr
+    owned, stamp = out.stdout.split()
+    assert owned == "owned=1" and "outside the queue" not in out.stderr
+    assert abs(int(stamp) - time.time()) < 10  # the release refreshed the stamp
+
+
+def test_breaking_a_stale_lock_starts_a_grace(tmp_path: Path) -> None:
+    # Pollers outside the queue were waiting for the stale lock too.
+    lock = tmp_path / "check.lock.d"
+    lock.mkdir()
+    (lock / "owner").write_text(f"pid={_dead_pid()}\n")
+    (tmp_path / "check.released").write_text("1\n")
+    out = _bash(
+        'check_lock_acquire; echo "owned=$CHECK_LOCK_OWNED"',
+        lock,
+        ASTRO_SIMCLR_CHECK_LOCK_GRACE="2",
+    )
+    assert out.stdout.strip() == "owned=1", out.stderr
+    assert "broke a stale lock" in out.stderr and "outside the queue" in out.stderr

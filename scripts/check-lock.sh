@@ -45,6 +45,16 @@
 # lock directory to disappear. Such a holder can still jump the queue; the queue is only
 # fair among processes that use it.
 #
+# Release grace (for the pollers outside the queue): a plain mkdir loop that polls every
+# 30 s would lose every freed lock to the queue head, which polls every 5 s. So the head
+# leaves a freed lock alone until it has been free for ASTRO_SIMCLR_CHECK_LOCK_GRACE
+# seconds (default 35, more than a 30 s foreign poll; 0 disables the grace). The release
+# time is the newest of: the stamp `check.released` next to the lock directory (epoch
+# seconds, written by every holder of this script on release and by a waiter that breaks
+# a stale lock), and the moment a waiter saw the lock go away while it polled. A lock that
+# has been free longer than the grace is taken at once (any poller with a shorter period
+# had its chance); a free lock with no known release time gets the full grace.
+#
 # Re-entrance: a check started inside the holder (verify-merge.sh writes its own pid to
 # the owner file and runs check.sh; `run` exports its pid to COMMAND) runs without waiting
 # and registers no waiter: the owner pid is one of its ancestors, or the inherited
@@ -59,6 +69,8 @@
 # Short, because the oldest waiter is the only one that may take a freed lock.
 : "${ASTRO_SIMCLR_CHECK_LOCK_POLL:=5}"
 : "${ASTRO_SIMCLR_CHECK_LOCK_NOTICE:=300}"
+# Seconds a freed lock is left to the pollers outside the queue (module header).
+: "${ASTRO_SIMCLR_CHECK_LOCK_GRACE:=35}"
 
 check_lock_log() {
     echo "check-lock: $*" >&2
@@ -130,6 +142,7 @@ check_lock_break() {
     stale=$(cat "$aside/owner" 2>/dev/null) || stale=""
     if [[ $stale == "$owner_text" ]]; then
         rm -rf "$aside"
+        check_lock_stamp_release
         check_lock_log "broke a stale lock ($(echo "$owner_text" | tr '\n' ' '))"
     elif [[ ! -e $dir ]]; then
         mv "$aside" "$dir" 2>/dev/null || true # not ours to break: put it back
@@ -225,15 +238,42 @@ check_lock_is_first() {
     [[ $first == "$CHECK_LOCK_WAITER" ]]
 }
 
+# The release stamp (module header): `check.released` next to the lock directory.
+check_lock_stamp_file() {
+    echo "$(dirname "$ASTRO_SIMCLR_CHECK_LOCK_DIR")/check.released"
+}
+
+# Record that the lock was released now (written aside and renamed; best effort).
+check_lock_stamp_release() {
+    local stamp
+    stamp=$(check_lock_stamp_file)
+    { date +%s >"$stamp.tmp.$$" && mv -f "$stamp.tmp.$$" "$stamp"; } 2>/dev/null || true
+}
+
+# Print the newest known release time: the stamp or $1 (a release seen while polling),
+# whichever is later; nothing when neither is known.
+check_lock_last_release() {
+    local seen=${1:-} stamp
+    stamp=$(cat "$(check_lock_stamp_file)" 2>/dev/null) || stamp=""
+    [[ $stamp =~ ^[0-9]+$ ]] || stamp=""
+    if [[ -n $seen && (-z $stamp || $seen -gt $stamp) ]]; then
+        echo "$seen"
+    elif [[ -n $stamp ]]; then
+        echo "$stamp"
+    fi
+}
+
 # Take the lock, waiting for its holder and for the older waiters (module header).
 # Arguments: the project and the command recorded in the owner and waiter files (default
 # astro-simclr and scripts/check.sh). Exports ASTRO_SIMCLR_CHECK_LOCK_HELD=<pid> and sets
 # CHECK_LOCK_OWNED=1 when this shell took it. Does nothing when the lock is disabled
 # (ASTRO_SIMCLR_CHECK_LOCK=0, or GitHub Actions, where nothing else shares the runner) or
 # already held by an ancestor. Install check_lock_install_traps first, so the waiter file
-# is removed if this shell is killed while waiting.
+# is removed if this shell is killed while waiting. The queue head leaves a freed lock to
+# the pollers outside the queue for ASTRO_SIMCLR_CHECK_LOCK_GRACE seconds (module header).
 check_lock_acquire() {
     local dir=$ASTRO_SIMCLR_CHECK_LOCK_DIR pid waited=0 next_notice=0 first
+    local grace=$ASTRO_SIMCLR_CHECK_LOCK_GRACE now held=0 seen="" released take grace_logged=""
     CHECK_LOCK_PROJECT=${1:-astro-simclr}
     CHECK_LOCK_COMMAND=${2:-scripts/check.sh}
     CHECK_LOCK_OWNED=0
@@ -252,11 +292,37 @@ check_lock_acquire() {
     mkdir -p "$(dirname "$dir")"
     check_lock_register "$CHECK_LOCK_PROJECT" "$CHECK_LOCK_COMMAND"
     while :; do
+        now=$(date +%s)
+        if [[ -d $dir ]]; then
+            held=1
+        elif [[ $held == 1 ]]; then
+            held=0
+            seen=$now # the lock went away since the last poll
+        fi
         first=0
         check_lock_is_first && first=1
+        take=0
+        if [[ $first == 1 && ! -d $dir ]]; then
+            take=1
+            if [[ $grace -gt 0 ]]; then
+                released=$(check_lock_last_release "$seen")
+                if [[ -z $released ]]; then # unknown: the grace starts now
+                    seen=$now
+                    released=$now
+                fi
+                if [[ $((now - released)) -lt $grace ]]; then
+                    take=0
+                    if [[ $grace_logged != "$released" ]]; then
+                        check_lock_log "the lock is free; leaving it $((released + grace - now)) s" \
+                            "to pollers outside the queue (ASTRO_SIMCLR_CHECK_LOCK_GRACE)"
+                        grace_logged=$released
+                    fi
+                fi
+            fi
+        fi
         # Owned as soon as the mkdir succeeds: a signal before the owner file is written
         # must still release the lock, which nobody else would break (no owner file).
-        if [[ $first == 1 ]] && mkdir "$dir" 2>/dev/null; then
+        if [[ $take == 1 ]] && mkdir "$dir" 2>/dev/null; then
             CHECK_LOCK_OWNED=1
             break
         fi
@@ -280,7 +346,7 @@ check_lock_acquire() {
                 check_lock_log "waiting for $dir, place $CHECK_LOCK_POSITION of" \
                     "$CHECK_LOCK_QUEUE (no owner file; if you wrapped check.sh in a by-hand" \
                     "lock, drop the wrapper or set ASTRO_SIMCLR_CHECK_LOCK=0)"
-            else
+            elif [[ $first != 1 ]]; then
                 check_lock_log "waiting behind older waiters, place $CHECK_LOCK_POSITION" \
                     "of $CHECK_LOCK_QUEUE ($ASTRO_SIMCLR_CHECK_LOCK_WAITERS)"
             fi
@@ -313,6 +379,7 @@ check_lock_release() {
     # after the mkdir) is ours and has no owner file: remove it too.
     if [[ ${CHECK_LOCK_OWNER_WRITTEN:-0} != 1 || $(check_lock_owner_pid "$dir/owner") == "$$" ]]; then
         rm -rf "$dir"
+        check_lock_stamp_release
     fi
     CHECK_LOCK_OWNER_WRITTEN=0
 }

@@ -86,7 +86,11 @@ uvx copier@9.19.1 update           # pull python-template improvements (clean tr
   `mkdir` the lock; files of dead pids are dropped by any waiter. Other projects take their
   turn with `<this repo>/scripts/check-lock.sh run --project NAME -- COMMAND...` (writes the
   owner file, runs COMMAND, releases, returns its exit code). A plain `mkdir` holder is still
-  respected, but it jumps the queue.
+  respected, but it jumps the queue; so that a slow plain poller (MC-SDDP's 30 s loop) is not
+  starved by the 5 s queue, the queue head leaves a freed lock alone for
+  `ASTRO_SIMCLR_CHECK_LOCK_GRACE` s (default 35; 0 disables), counted from the release
+  (`check.released` stamp or a release seen while polling): a lock free for longer is taken
+  at once.
 - **Code rules:** new code goes in `src/astro_simclr/` with tests, passing ruff, mypy strict
   and coverage. `extend-exclude` holds only `jupyter_examples/`, `results/` and
   `scripts/characterize/`; never widen the exclusions or lower the thresholds without a
