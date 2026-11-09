@@ -23,7 +23,7 @@ from typing import Final
 import torch
 
 from astro_simclr.augmentations import resolve_augmentation_name
-from astro_simclr.config import CARRASCO2021, RJ23, ConfigError, Settings
+from astro_simclr.config import CARRASCO2021, HYBRID_FLAGS, RJ23, ConfigError, Settings
 from astro_simclr.data.prepared import is_prepared
 from astro_simclr.data.schema import DataError
 from astro_simclr.paper_variants import paper_input_side
@@ -158,6 +158,8 @@ PAPER_VARIANT_DEFAULTS: Final[Mapping[str, object]] = {
     "feature_set": "all",
     # The ConvNeXt backbone's initial weights (plan row B8; ADR 0022).
     "backbone_weights": "none",
+    # The conv-attention hybrids' shape (plan row B9).
+    **HYBRID_FLAGS,
     # Class-aware augmentation (plan rows C5 and C6; ADR 0006).
     "aug_noise": 0.0,
     "aug_feature_jitter": 0.0,

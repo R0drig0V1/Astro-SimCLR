@@ -42,10 +42,17 @@ __all__ = [
     "CARRASCO2021_EVAL_BATCH_SIZE",
     "CONTEXTS",
     "CONVNEXT_ARCHS",
+    "DEFAULT_HYBRID_DEPTH",
+    "DEFAULT_HYBRID_DIM",
+    "DEFAULT_HYBRID_HEADS",
+    "DEFAULT_HYBRID_READOUT",
     "EPOCHS",
     "FEATURE_SETS",
     "FP32_PRECISIONS",
     "GROUP_ARCHS",
+    "HYBRID_ARCHS",
+    "HYBRID_FLAGS",
+    "HYBRID_READOUTS",
     "PAPER_ARCHS",
     "PAPER_INPUTS",
     "RJ23",
@@ -99,12 +106,35 @@ ADAM_BETAS_CHOICES: Final = ("code", "paper")
 #: The ``paper_arch`` values that are timm ConvNeXt backbones on the whole 63x63 stamp
 #: (plan row B8; ``convnext_model``, ADR 0022).
 CONVNEXT_ARCHS: Final = ("convnext_atto", "convnext_pico")
+#: The ``paper_arch`` values that are conv-attention hybrids on the 21x21 crop (plan row B9;
+#: ``hybrid_model``): the paper's trunk (4 rotations) or the p4 trunk (single pass).
+HYBRID_ARCHS: Final = ("hybrid", "hybrid_p4")
 #: ``Settings.paper_arch`` (task 2.5-models): the faithful 4-rotation model, its single pass,
-#: the single-pass p4 / p4m group-equivariant CNNs (``paper_variants.PAPER_ARCHS``) and the
-#: 4-rotation ConvNeXt-atto / pico at 63 px (:data:`CONVNEXT_ARCHS`).
-PAPER_ARCHS: Final = ("rot4", "single", "p4", "p4m", *CONVNEXT_ARCHS)
-#: The ``paper_arch`` values that are G-CNNs (the only ones ``group_fields`` applies to).
+#: the single-pass p4 / p4m group-equivariant CNNs (``paper_variants.PAPER_ARCHS``), the
+#: 4-rotation ConvNeXt-atto / pico at 63 px (:data:`CONVNEXT_ARCHS`) and the conv-attention
+#: hybrids (:data:`HYBRID_ARCHS`).
+PAPER_ARCHS: Final = ("rot4", "single", "p4", "p4m", *CONVNEXT_ARCHS, *HYBRID_ARCHS)
+#: The ``paper_arch`` values that are G-CNNs (``group_fields`` applies to them and to
+#: ``hybrid_p4``, whose trunk is p4's).
 GROUP_ARCHS: Final = ("p4", "p4m")
+#: ``Settings.hybrid_readout``: the mean of the grid tokens, or a learned CLS token.
+HYBRID_READOUTS: Final = ("mean", "cls")
+#: The defaults of the hybrids' shape flags (plan row B9): token width, number of
+#: encoder blocks, attention heads and readout.
+DEFAULT_HYBRID_DIM: Final = 64
+DEFAULT_HYBRID_DEPTH: Final = 2
+DEFAULT_HYBRID_HEADS: Final = 4
+DEFAULT_HYBRID_READOUT: Final = "mean"
+#: The ``Settings`` fields of the hybrids and their defaults; only a hybrid ``paper_arch``
+#: accepts another value.
+HYBRID_FLAGS: Final[Mapping[str, object]] = types.MappingProxyType(
+    {
+        "hybrid_dim": DEFAULT_HYBRID_DIM,
+        "hybrid_depth": DEFAULT_HYBRID_DEPTH,
+        "hybrid_heads": DEFAULT_HYBRID_HEADS,
+        "hybrid_readout": DEFAULT_HYBRID_READOUT,
+    }
+)
 #: ``Settings.backbone_weights`` (plan row B8; ADR 0022): ``none`` trains from scratch;
 #: ``zoobot`` starts ``convnext_pico``'s backbone from the pinned Zoobot weights
 #: (``convnext_model.BACKBONE_WEIGHTS``), downloaded at run time.
@@ -275,7 +305,9 @@ class Settings:
     #: ``paper_stamp_classifier`` trunk; see :data:`PAPER_ARCHS`. ``rot4`` (faithful) runs
     #: the paper's trunk on the 4 rotations and averages after fc1; ``single`` runs it once
     #: (not invariant); ``p4`` / ``p4m`` are single-pass group-equivariant CNNs
-    #: (``paper_variants``; plan rows B7 and B2').
+    #: (``paper_variants``; plan rows B7 and B2'); ``convnext_*`` the B8 ConvNeXts on the
+    #: whole stamp; ``hybrid`` / ``hybrid_p4`` the B9 conv-attention hybrids
+    #: (``hybrid_model``).
     paper_arch: str = "rot4"
     #: ``paper_arch: convnext_*``: the backbone's initial weights; see
     #: :data:`BACKBONE_WEIGHTS_CHOICES`. ``zoobot`` needs ``paper_arch: convnext_pico`` and
@@ -285,6 +317,15 @@ class Settings:
     #: None: ``32 // |G|``, the paper's 32/64 maps (p4 8/16, p4m 4/8 fields). Only the
     #: G-CNNs accept it.
     group_fields: int | None = None
+    #: ``paper_arch: hybrid | hybrid_p4`` (plan row B9; ``hybrid_model``): the token width
+    #: of the attention blocks (a multiple of ``hybrid_heads``).
+    hybrid_dim: int = DEFAULT_HYBRID_DIM
+    #: The hybrids: the number of pre-norm transformer encoder blocks (>= 1).
+    hybrid_depth: int = DEFAULT_HYBRID_DEPTH
+    #: The hybrids: the attention heads of each block (>= 1).
+    hybrid_heads: int = DEFAULT_HYBRID_HEADS
+    #: The hybrids: the readout of the tokens; see :data:`HYBRID_READOUTS`.
+    hybrid_readout: str = DEFAULT_HYBRID_READOUT
     #: ``paper_stamp_classifier`` context input; see :data:`CONTEXTS`. ``avgpool63`` adds
     #: the 63x63 stamp average-pooled to 21x21 as 3 more channels (plan row B1';
     #: ``data.float_input.context_split``). Needs ``paper_input: float32``.
@@ -391,11 +432,12 @@ class Settings:
             if value not in valid:
                 raise ConfigError(f"{name} {value!r} is not one of: {', '.join(valid)}")
         self._check_convnext()
+        self._check_hybrid()
         if self.group_fields is not None:
-            if self.paper_arch not in GROUP_ARCHS:
+            if self.paper_arch not in (*GROUP_ARCHS, "hybrid_p4"):
                 msg = (
-                    f"group_fields applies to paper_arch {' or '.join(GROUP_ARCHS)} only, "
-                    f"not {self.paper_arch!r}"
+                    f"group_fields applies to paper_arch {', '.join(GROUP_ARCHS)} or "
+                    f"hybrid_p4 only, not {self.paper_arch!r}"
                 )
                 raise ConfigError(msg)
             if self.group_fields < 1:
@@ -433,6 +475,28 @@ class Settings:
             msg = (
                 f"{', '.join(on_crops)} work on the 21x21 crop, but paper_arch "
                 f"{self.paper_arch!r} takes the whole 63x63 stamp: turn them off"
+            )
+            raise ConfigError(msg)
+
+    def _check_hybrid(self) -> None:
+        """The hybrids' shape flags (plan row B9): valid, and changed only for a hybrid."""
+        changed = [key for key, value in HYBRID_FLAGS.items() if getattr(self, key) != value]
+        if changed and self.paper_arch not in HYBRID_ARCHS:
+            msg = (
+                f"{', '.join(changed)} apply to paper_arch {' or '.join(HYBRID_ARCHS)} only, "
+                f"not {self.paper_arch!r}"
+            )
+            raise ConfigError(msg)
+        if self.hybrid_readout not in HYBRID_READOUTS:
+            valid = ", ".join(HYBRID_READOUTS)
+            raise ConfigError(f"hybrid_readout {self.hybrid_readout!r} is not one of: {valid}")
+        for name in ("hybrid_dim", "hybrid_depth", "hybrid_heads"):
+            if getattr(self, name) < 1:
+                raise ConfigError(f"{name} must be >= 1, got {getattr(self, name)}")
+        if self.hybrid_dim % self.hybrid_heads:
+            msg = (
+                f"hybrid_dim ({self.hybrid_dim}) must be a multiple of hybrid_heads "
+                f"({self.hybrid_heads})"
             )
             raise ConfigError(msg)
 

@@ -8,6 +8,7 @@
 #       run.output_dir=OUT/carrasco2021/seed-S
 # A 2.5 variant changes its section, for example:
 #   --set model.arch=p4m model.group_fields=8 | augment.flux_rescale=0.5
+#   | model.arch=hybrid model.hybrid_readout=cls
 # Print the resolved config and its config hash without training: add --show.
 preset: carrasco2021
 
