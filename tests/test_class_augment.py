@@ -1,6 +1,7 @@
 """Tests of the class-aware training augmentation (plan rows C5 and C6; ADR 0006).
 
-``training.class_augment`` and its use in ``PaperClassifierModule.training_step``:
+``training.class_augment`` and its use in the plain engine's paper task
+(``tasks.paper.PaperTask.train_step``, through ``training.paper_augment.PaperAugment``):
 
 1. the cross-channel fit (``stamp_fits``) and the computed difference (``perturb``);
 2. C5's noise keeps the evaluation inputs' min-max statistics and leaves the low-R^2 rows,
@@ -9,15 +10,17 @@
 3. C6's synthetic rows are Bogus, with a sharp spike at the centre (narrower than the
    smallest PSF in the data) and a real Bogus donor's features; real stamps keep their
    labels;
-4. the module: defaults off are bit-identical, the draws are seeded by the step, and
-   evaluation is never augmented; the settings, presets and a CPU run.
+4. the task: defaults off are bit-identical, the draws are seeded by the step, and
+   evaluation is never augmented; the settings, presets and a run on each accelerator.
 
 The split runs (``--splits --fold K``) with augmentation are in ``test_split_runs.py``.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -27,13 +30,16 @@ from _training_support import ACCELERATORS
 from astro_simclr.config import ConfigError, Settings, settings_from_mapping
 from astro_simclr.data.float_input import crop_then_normalise
 from astro_simclr.data.schema import LABEL_NAMES
-from astro_simclr.experiments import paper_module, run_command
+from astro_simclr.engine.checkpoint import load_best
 from astro_simclr.presets import (
     CARRASCO2021_NO_FEATURES,
     CARRASCO2021_PRESET,
     PRESETS,
     preset_report,
 )
+from astro_simclr.tasks.common import check_schedule
+from astro_simclr.tasks.paper import PaperTask, build_paper_task
+from astro_simclr.tasks.plain import run_plain
 from astro_simclr.training.class_augment import (
     CENTRE_SOURCE_Z,
     DISCRETE_FEATURES,
@@ -57,8 +63,8 @@ from astro_simclr.training.class_augment import (
     synthetic_bogus,
     template_centre_z,
 )
-from astro_simclr.training.device_data import TensorSplit, without_train_indices
-from astro_simclr.training.modules import PaperClassifierModule
+from astro_simclr.training.paper_augment import PaperAugment, check_augment_context
+from astro_simclr.training.tensor_splits import TensorSplit, without_train_indices
 
 _BOGUS = LABEL_NAMES.index("Bogus")
 _ISDIFFPOS = KEPT_FEATURE_NAMES.index("isdiffpos")
@@ -440,24 +446,32 @@ def test_synthetic_bogus_needs_sources_and_donors() -> None:
         synthetic_bogus(torch.cat([images, images], 1), features, targets, fits, 0.5, rng)
 
 
-# --- 4. The module, the settings and a run ----------------------------------------------
+# --- 4. The task, the settings and a run ------------------------------------------------
 
 
-def _module(preset: str = CARRASCO2021_PRESET, /, **changes: object) -> PaperClassifierModule:
+def _task(preset: str = CARRASCO2021_PRESET, /, **changes: object) -> PaperTask:
     torch.manual_seed(0)
-    return paper_module(settings_from_mapping({**PRESETS[preset], **changes}))
+    return build_paper_task(settings_from_mapping({**PRESETS[preset], **changes}), {})
+
+
+def _without_jitter(augment: PaperAugment) -> PaperAugment:
+    """``augment`` with C5's feature jitter off: its class-aware part (C6, C5's noise)."""
+    return dataclasses.replace(augment, feature_jitter=0.0)
 
 
 def test_defaults_off_are_bit_identical() -> None:
     images, features, targets, fits = _synthetic_inputs()
-    module = _module().train()
-    assert (module.aug_noise, module.aug_feature_jitter, module.synthetic_bogus) == (0, 0, 0)
+    task = _task()
+    augment = task.augment
+    assert (augment.noise, augment.feature_jitter, augment.synthetic_bogus) == (0, 0, 0)
+    assert not augment.active
+    net = task.net.train()
     torch.manual_seed(1)
-    plain = module.training_step((images, features, targets), 0)
+    plain = task.train_step((images, features, targets), 0)
     torch.manual_seed(1)
-    with_fits = module.training_step((images, features, targets, fits), 0)
+    with_fits = task.train_step((images, features, targets, fits), 0)
     torch.manual_seed(1)
-    expected = module.compute_loss(module(images, features), targets)
+    expected = net.criterion(net(images, features), targets)
     assert torch.equal(plain, expected)
     assert torch.equal(with_fits, expected)
 
@@ -470,45 +484,53 @@ def test_training_is_augmented_and_evaluation_is_not() -> None:
         "synthetic_bogus": 0.25,
         "seed": 5,
     }
-    module = _module(paper_arch="p4", **changes).eval()
-    plain = _module(paper_arch="p4").eval()
-    plain.load_state_dict(module.state_dict())
+    task = _task(paper_arch="p4", **changes)
+    task.net.eval()
+    plain = _task(paper_arch="p4")
+    plain.net.eval()
+    plain.net.load_state_dict(task.net.state_dict())
     batch = (images, features, targets)
-    aug_images, aug_features, aug_targets = module.class_augment(images, features, targets, fits)
+    with_fits = (images, features, targets, fits)
+    classes = _without_jitter(task.augment)
+    aug_images, aug_features, aug_targets = classes.apply(with_fits, classes.plan(with_fits, 0))
     assert not torch.equal(aug_images, images)
     assert (aug_targets.argmax(dim=1) == _BOGUS).sum() >= (targets.argmax(dim=1) == _BOGUS).sum()
-    again = module.class_augment(images, features, targets, fits)
+    again = classes.apply(with_fits, classes.plan(with_fits, 0))
     expected_batch = (aug_images, aug_features, aug_targets)
     assert all(torch.equal(x, y) for x, y in zip(again, expected_batch, strict=True))
-    loss = module.training_step((*batch, fits), 0)
+    loss = task.train_step(with_fits, 0)
     rng = augment_rng(5, 0, 2)
     jittered = jitter_features(aug_features, 0.1, rng)
-    expected = module.compute_loss(module(aug_images, jittered), aug_targets)
+    expected = task.net.criterion(task.net(aug_images, jittered), aug_targets)
     torch.testing.assert_close(loss, expected)
-    for step in ("validation_step", "test_step"):
-        torch.testing.assert_close(getattr(module, step)(batch, 0), getattr(plain, step)(batch, 0))
+    with torch.no_grad():
+        augmented, faithful = task.eval_step(batch), plain.eval_step(batch)
+    torch.testing.assert_close(augmented.loss, faithful.loss)
+    torch.testing.assert_close(augmented.probabilities, faithful.probabilities)
     with pytest.raises(ValueError, match="need the stamp fits"):
-        module.training_step(batch, 0)
+        task.train_step(batch, 0)
 
 
 def test_jitter_alone_needs_no_fits() -> None:
     images, features, targets, _ = _synthetic_inputs()
-    module = _module(aug_feature_jitter=0.2).eval()
-    loss = module.training_step((images, features, targets), 0)
+    task = _task(aug_feature_jitter=0.2)
+    net = task.net.eval()
+    loss = task.train_step((images, features, targets), 0)
     jittered = jitter_features(features, 0.2, augment_rng(0, 0, 2))
-    torch.testing.assert_close(loss, module.compute_loss(module(images, jittered), targets))
+    torch.testing.assert_close(loss, net.criterion(net(images, jittered), targets))
 
 
-def test_module_rejects_bad_augmentation_values() -> None:
-    base = {"beta_loss": 0.5, "lr": 1e-3, "optimizer": "Adam"}
-    for bad, match in (
-        ({"aug_noise": -1.0}, ">= 0"),
+def test_the_augmentation_rejects_bad_values() -> None:
+    cases: list[tuple[dict[str, Any], str]] = [
+        ({"noise": -1.0}, ">= 0"),
         ({"synthetic_bogus": 1.0}, r"\[0, 1\)"),
-        ({"aug_min_r2": 1.5}, r"\[0, 1\]"),
-        ({"synthetic_bogus": 0.1, "context": "avgpool63"}, "context='none'"),
-    ):
+        ({"min_r2": 1.5}, r"\[0, 1\]"),
+    ]
+    for values, match in cases:
         with pytest.raises(ValueError, match=match):
-            PaperClassifierModule(**base, **bad)  # type: ignore[arg-type]
+            PaperAugment(**values)
+    with pytest.raises(ValueError, match="context='none'"):
+        check_augment_context(0.1, 0.0, "avgpool63", 5)
 
 
 def _preset(**changes: object) -> Settings:
@@ -549,8 +571,9 @@ def test_augmentation_flags_need_the_paper_model(classifier_f32_dir: Path, tmp_p
         output_dir=tmp_path,
         aug_noise=1.0,
     )
+    # The schedule check every run makes (``run_plain``, ``ensemble-eval``).
     with pytest.raises(ConfigError, match="aug_noise apply only to"):
-        run_command("train-supervised", settings, progress_bar=False)
+        check_schedule("train-supervised", settings)
 
 
 @pytest.mark.parametrize("accelerator", ACCELERATORS)
@@ -577,12 +600,14 @@ def test_augmented_p4_run_trains_and_records_the_exclusions(
         checkpoint_every_n_steps=2,
         **changes,
     )
-    metrics = run_command("train-supervised", settings, progress_bar=False)
+    metrics = run_plain("train-supervised", settings)
     assert metrics["last_step"] == 4
     report = metrics["paper_data"]["class_augment"]
     assert report["min_r2"] == 0.0
     assert set(report["excluded"]) == set(LABEL_NAMES)
     assert set(metrics["preset"]["deviations"]) >= set(changes) - {"aug_min_r2"}
-    checkpoint = torch.load(tmp_path / "checkpoints" / "best.ckpt", weights_only=True)
-    restored = PaperClassifierModule(**checkpoint["hyper_parameters"])
-    assert restored.synthetic_bogus == 0.25
+    assert metrics["config"]["synthetic_bogus"] == 0.25
+    # The best weights load back into the run's model.
+    restored = _task(**{key: metrics["config"][key] for key in changes})
+    restored.net.load_state_dict(load_best(tmp_path / "ckpt" / "best.pt")["model"])
+    assert restored.augment.synthetic_bogus == 0.25

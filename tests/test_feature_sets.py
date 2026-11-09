@@ -4,10 +4,10 @@
    by name against the stored schema and ``class_augment.KEPT_FEATURE_NAMES``.
 2. **``all`` is the faithful model**: ``tests/test_paper_variants.py`` checks it against the
    golden fixture ``tests/fixtures/paper_model/faithful.npz`` (``feature_set`` is one of its
-   flags at their defaults); here, its hyperparameters and config hash are unchanged.
+   flags at their defaults); here, its config hash is unchanged.
 3. **``none`` is bit-identical to ``with_features: false``**: the same initial tensors and
-   logits for every ``paper_arch``, and the same trained checkpoint and predictions bytes
-   after a CPU run through ``run_command``.
+   logits for every ``paper_arch``, and the same best weights and predictions bytes after a
+   CPU run on the plain engine (``tasks.plain.run_plain``).
 4. **``position`` reads only the coordinates**: the features BN and fc2 shrink to 6 inputs,
    the other 17 columns do not change the logits, and it trains and reloads.
 5. The settings' checks, the preset deviation and the CD21 gate's grouping.
@@ -20,7 +20,6 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 import torch
@@ -28,7 +27,7 @@ import torch
 from astro_simclr.config import FEATURE_SETS, ConfigError, Settings, settings_from_mapping
 from astro_simclr.convnext_model import ConvNeXtStampClassifier
 from astro_simclr.data.schema import DISCARDED_FEATURES, FEATURE_NAMES
-from astro_simclr.experiments import paper_module, run_command
+from astro_simclr.engine.checkpoint import load_best
 from astro_simclr.feature_sets import (
     KEPT_FEATURES,
     POSITION_FEATURES,
@@ -49,14 +48,19 @@ from astro_simclr.paper_variants import (
 from astro_simclr.presets import CARRASCO2021_PRESET, PRESETS, preset_report
 from astro_simclr.reference import compare_reference
 from astro_simclr.runs.canonical import config_sha256, semantic_config
+from astro_simclr.tasks.common import check_schedule
+from astro_simclr.tasks.paper import PaperTask, build_paper_task
+from astro_simclr.tasks.plain import run_plain
 from astro_simclr.training.class_augment import KEPT_FEATURE_NAMES
-from astro_simclr.training.modules import PaperClassifierModule
-
-_OPTIM: dict[str, Any] = {"beta_loss": 0.5, "lr": 1e-3, "optimizer": "Adam"}
 
 
 def _preset(**changes: object) -> Settings:
     return settings_from_mapping({**PRESETS[CARRASCO2021_PRESET], **changes})
+
+
+def _task(settings: Settings) -> PaperTask:
+    torch.manual_seed(5)
+    return build_paper_task(settings, {})
 
 
 def _inputs(n: int = 6, seed: int = 0, side: int = 21) -> tuple[torch.Tensor, torch.Tensor]:
@@ -102,15 +106,10 @@ def test_all_and_none() -> None:
         feature_columns("colour")
 
 
-# --- 2. all: the faithful module's hyperparameters and hash ---------------------------------
+# --- 2. all: the faithful config hash --------------------------------------------------------
 
 
-def test_all_keeps_the_hyperparameters_and_the_config_hash() -> None:
-    assert "feature_set" not in PaperClassifierModule(**_OPTIM).hparams
-    assert "feature_set" not in PaperClassifierModule(**_OPTIM, feature_set="all").hparams
-    assert PaperClassifierModule(**_OPTIM, feature_set="position").hparams["feature_set"] == (
-        "position"
-    )
+def test_all_keeps_the_config_hash() -> None:
     faithful = _preset()
     settings = semantic_config("train-supervised", faithful)["settings"]
     assert isinstance(settings, dict)
@@ -137,13 +136,13 @@ def test_none_is_the_without_features_model(arch: str) -> None:
         assert torch.equal(none(images, features), without(images, None))
 
 
-def test_none_module_is_the_without_features_module() -> None:
-    torch.manual_seed(5)
-    without = paper_module(_preset(with_features=False))
-    torch.manual_seed(5)
-    none = paper_module(_preset(feature_set="none"))
-    assert none.with_features is False
-    _assert_same_state(none, without)
+def test_none_task_is_the_without_features_task() -> None:
+    without = _task(_preset(with_features=False))
+    none = _task(_preset(feature_set="none"))
+    assert none.net.reads_features is False
+    assert without.net.reads_features is False
+    assert _task(_preset()).net.reads_features is True
+    _assert_same_state(none.net, without.net)
 
 
 def _smoke(classifier_f32_dir: Path, out: Path, **changes: object) -> Settings:
@@ -170,9 +169,7 @@ def test_none_trains_bit_identically(classifier_f32_dir: Path, tmp_path: Path) -
     runs = {}
     for name, changes in (("without", {"with_features": False}), ("none", {"feature_set": "none"})):
         out = tmp_path / name
-        metrics = run_command(
-            "train-supervised", _smoke(classifier_f32_dir, out, **changes), progress_bar=False
-        )
+        metrics = run_plain("train-supervised", _smoke(classifier_f32_dir, out, **changes))
         runs[name] = (out, metrics)
     (without_dir, without), (none_dir, none) = runs["without"], runs["none"]
     for key in ("best_step", "val_acc_best", "test_acc_at_best", "loss_val_best"):
@@ -180,10 +177,7 @@ def test_none_trains_bit_identically(classifier_f32_dir: Path, tmp_path: Path) -
     for stage in ("val", "test"):
         file = f"predictions_{stage}.npz"
         assert _sha(none_dir / file) == _sha(without_dir / file)
-    states = [
-        torch.load(d / "checkpoints" / "best.ckpt", weights_only=True)["state_dict"]
-        for d in (without_dir, none_dir)
-    ]
+    states = [load_best(d / "ckpt" / "best.pt")["model"] for d in (without_dir, none_dir)]
     assert list(states[0]) == list(states[1])
     for key in states[0]:
         assert torch.equal(states[0][key], states[1][key]), key
@@ -233,22 +227,19 @@ def test_position_parameter_count_and_errors() -> None:
         PaperStampClassifier(with_features=False, feature_set="position")
     with pytest.raises(ValueError, match="feature_set must be one of"):
         GroupStampClassifier("p4", feature_set="sky")
-    with pytest.raises(ValueError, match="'position' needs with_features=True"):
-        PaperClassifierModule(**_OPTIM, with_features=False, feature_set="position")
 
 
 def test_position_trains_and_reloads(classifier_f32_dir: Path, tmp_path: Path) -> None:
     settings = _smoke(classifier_f32_dir, tmp_path, feature_set="position", paper_arch="p4")
-    metrics = run_command("train-supervised", settings, progress_bar=False)
+    metrics = run_plain("train-supervised", settings)
     assert metrics["last_step"] == 4
     assert metrics["config"]["feature_set"] == "position"
     assert metrics["preset"]["faithful"] is False
     assert metrics["preset"]["deviations"]["feature_set"] == {"value": "position", "preset": "all"}
-    checkpoint = torch.load(tmp_path / "checkpoints" / "best.ckpt", weights_only=True)
-    assert checkpoint["hyper_parameters"]["feature_set"] == "position"
-    restored = PaperClassifierModule(**checkpoint["hyper_parameters"])
-    restored.load_state_dict(checkpoint["state_dict"])
-    model = restored.model
+    # The best weights load back into the run's model.
+    restored = _task(settings)
+    restored.net.load_state_dict(load_best(tmp_path / "ckpt" / "best.pt")["model"])
+    model = restored.net.model
     assert isinstance(model, GroupStampClassifier)
     assert model.head.bn_features is not None
     assert model.head.bn_features.num_features == 6
@@ -286,8 +277,9 @@ def test_feature_set_needs_the_paper_model(classifier_f32_dir: Path, tmp_path: P
         output_dir=tmp_path,
         feature_set="none",
     )
+    # The schedule check every run makes (``run_plain``, ``ensemble-eval``).
     with pytest.raises(ConfigError, match="feature_set apply only to"):
-        run_command("train-supervised", settings, progress_bar=False)
+        check_schedule("train-supervised", settings)
 
 
 def _gate_run(root: Path, name: str, seed: int, feature_set: str) -> Path:

@@ -10,9 +10,10 @@
    permutation equivariance.
 4. Parameter and MAC counts (pinned, next to the paper model's), initialisation, dropout,
    ``feature_set``, the input and construction checks.
-5. The settings and the module: the flags only for a hybrid, the preset deviations, the
-   hyperparameters (defaults left out) and a checkpoint round trip. The default flags
-   keeping the faithful model bit-identical (the golden fixture) is
+5. The settings and the paper task: the flags only for a hybrid, the preset deviations,
+   the shapes built from the settings (``tasks.paper.paper_model``, which
+   ``ensemble-eval`` reloads a run's weights into) and a weights round trip. The default
+   flags keeping the faithful model bit-identical (the golden fixture) is
    ``tests/test_paper_variants.py``; the CPU split runs are in ``tests/test_split_runs.py``.
 """
 
@@ -27,7 +28,6 @@ import torch
 from torch import nn
 
 from astro_simclr.config import ConfigError, Settings, settings_from_mapping
-from astro_simclr.experiments import paper_module
 from astro_simclr.hybrid_model import (
     GRID_SIDE,
     EncoderBlock,
@@ -43,7 +43,7 @@ from astro_simclr.paper_variants import (
     count_parameters,
 )
 from astro_simclr.presets import CARRASCO2021_PRESET, PRESETS, preset_report
-from astro_simclr.training.modules import PaperClassifierModule
+from astro_simclr.tasks.paper import build_paper_task, paper_model
 
 ARCHS = ("hybrid", "hybrid_p4")
 
@@ -369,11 +369,11 @@ def test_the_module_imports_no_lightning() -> None:
         "bad = sorted(m for m in sys.modules if m.split('.')[0] == 'lightning'); "
         "assert not bad, bad"
     )
-    # A fresh interpreter: this process has imported Lightning already (ADR 0014).
+    # A fresh interpreter: another test of the session may have imported it (ADR 0014).
     subprocess.run([sys.executable, "-c", code], check=True)  # noqa: S603 (fixed argv)
 
 
-# --- 5. Settings and the module --------------------------------------------------------------
+# --- 5. Settings and the paper task ----------------------------------------------------------
 
 
 def _preset(**changes: object) -> Settings:
@@ -409,20 +409,24 @@ def test_the_variants_are_preset_deviations() -> None:
         assert VARIANTS[name].row == "B9"
 
 
-def test_the_module_records_only_changed_flags_and_reloads() -> None:
+def test_the_task_builds_the_configured_shapes_and_reloads() -> None:
     torch.manual_seed(0)
-    default = paper_module(_preset(paper_arch="hybrid"))
-    assert isinstance(default.model, HybridStampClassifier)
-    assert not {key for key in default.hparams if key.startswith("hybrid_")}
+    default = build_paper_task(_preset(paper_arch="hybrid"), {}).net.model
+    assert isinstance(default, HybridStampClassifier)
+    assert (default.readout, len(default.blocks), default.cls_token) == ("mean", 2, None)
+    settings = _preset(paper_arch="hybrid", hybrid_readout="cls", hybrid_depth=3)
     torch.manual_seed(0)
-    changed = paper_module(_preset(paper_arch="hybrid", hybrid_readout="cls", hybrid_depth=3))
-    assert changed.hparams["hybrid_readout"] == "cls"
-    assert changed.hparams["hybrid_depth"] == 3
-    assert "hybrid_dim" not in changed.hparams
-    restored = PaperClassifierModule(**changed.hparams)
+    changed = build_paper_task(settings, {}).net.model
+    assert isinstance(changed, HybridStampClassifier)
+    assert (changed.readout, len(changed.blocks)) == ("cls", 3)
+    assert changed.cls_token is not None
+    # paper_model rebuilds a run's shapes from its settings, so its weights load back.
+    restored = paper_model(settings)
     restored.load_state_dict(changed.state_dict())
     images, features = _inputs(2, dtype=torch.float32)
     with torch.no_grad():
         torch.testing.assert_close(
             restored.eval()(images, features), changed.eval()(images, features), rtol=0, atol=0
         )
+    with pytest.raises(RuntimeError, match="state_dict"):
+        paper_model(_preset(paper_arch="hybrid")).load_state_dict(changed.state_dict())

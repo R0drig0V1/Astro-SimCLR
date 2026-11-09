@@ -1,36 +1,33 @@
-"""Tests of the augmentation prefetch (audit item 5; ADR 0006 and 0007, "Prefetch").
+"""Tests of the host-planned augmentation (audit item 5; ADR 0006 and 0007, "Prefetch").
 
-The training loader plans each step's augmentation on the host
-(``PaperClassifierModule.augment_plan``) and uploads the plan with the batch; the step only
-applies it (``apply_plan``). The contract: bit for bit the in-step path, on every device.
+The plain engine's paper task (``tasks.paper.PaperTask``) plans each step's augmentation on
+a host copy of the batch (``training.paper_augment.PaperAugment.plan``), uploads the plan
+(``class_augment.upload_plan``) and applies it on the batch's device
+(``PaperAugment.apply``). The contract: every draw is a function of the run's seed and the
+step, so the same step gets the same augmentation wherever it runs.
 
 1. ``upload_plan`` moves nested plans.
-2. The loader's planned batches equal the in-step augmentation (one pass in detail, then
-   200 steps across passes with every flag on).
-3. A short augmented run gives the same ``metrics.json`` (timing aside) and the same
-   predictions with the prefetch as without it, on every available accelerator.
+2. ``PaperTask.train_step`` trains on exactly the planned augmentation of its step, with
+   every flag on, over several steps (and the plan changes with the step).
+3. A run without augmentation plans nothing.
+
+The bit-for-bit runs of every augmentation flag are ``test_engine_regression.py``'s goldens.
 """
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pytest
 import torch
-from _training_support import ACCELERATORS
 
-from astro_simclr import experiments
 from astro_simclr.config import settings_from_mapping
-from astro_simclr.experiments import paper_module, run_command
 from astro_simclr.presets import CARRASCO2021_PRESET, PRESETS
-from astro_simclr.protocol.predictions import load_predictions
+from astro_simclr.tasks.paper import build_paper_task, paper_augment
 from astro_simclr.training.class_augment import stamp_fits, upload_plan
-from astro_simclr.training.device_data import DeviceTensorDataModule, TensorSplit
 from astro_simclr.training.flux_rescale import fit_central_psf
-from astro_simclr.training.modules import PaperClassifierModule
+from astro_simclr.training.paper_augment import AugmentBatch
+from astro_simclr.training.tensor_splits import TensorSplit
 
 #: Every training augmentation at once (R^2 0 so that the random synthetic stamps qualify).
 _ALL: dict[str, Any] = {
@@ -79,109 +76,49 @@ def _splits(n: int = 40, seed: int = 0) -> dict[str, TensorSplit]:
     return {"Train": split(n, True), "Validation": split(8, False), "Test": split(8, False)}
 
 
-def test_the_loader_plans_each_step_exactly_as_the_step_would() -> None:
+def _train_batch(split: TensorSplit, rows: slice) -> AugmentBatch:
+    """Rows ``rows`` of ``split`` as a training batch: crops, features, one-hot labels, fits."""
+    assert split.fits is not None
+    labels = torch.from_numpy(split.labels[rows])
+    return (
+        torch.from_numpy(split.images[rows]),
+        torch.from_numpy(split.features[rows]),
+        torch.nn.functional.one_hot(labels, 5).float(),
+        torch.from_numpy(split.fits[rows]),
+    )
+
+
+def test_the_task_step_trains_on_its_planned_augmentation() -> None:
     torch.manual_seed(0)
-    module = paper_module(settings_from_mapping({**PRESETS[CARRASCO2021_PRESET], **_ALL}))
-    assert module.augmenting
-    splits = _splits()
-    planned = DeviceTensorDataModule(splits, batch_size=8, planner=module.augment_plan)
-    planned.setup("fit")
-    plain = DeviceTensorDataModule(splits, batch_size=8)
-    plain.setup("fit")
-    loader = planned.train_dataloader()
-    batches = list(loader)
-    assert len(batches) == len(plain.train_dataloader())
-    for step, (with_plan, without) in enumerate(
-        zip(batches, plain.train_dataloader(), strict=True)
-    ):
-        assert isinstance(with_plan[-1], dict)
-        rows = with_plan[:-1]
-        for got, want in zip(rows, without, strict=True):
-            assert torch.equal(got, want)
-        applied = module.apply_plan(rows, with_plan[-1])
-        host = tuple(t.cpu() for t in without)
-        expected = module.apply_plan(
-            without, upload_plan(module.augment_plan(host, step), torch.device("cpu"))
+    task = build_paper_task(settings_from_mapping({**PRESETS[CARRASCO2021_PRESET], **_ALL}), {})
+    augment = task.augment
+    assert augment.active and augment.needs_fits
+    task.net.eval()  # no dropout: the loss is a function of the batch alone
+    train = _splits()["Train"]
+    previous = None
+    for step in range(6):
+        batch = _train_batch(train, slice(8 * (step % 5), 8 * (step % 5) + 8))
+        host = (batch[0].clone(), batch[1].clone(), batch[2].clone(), batch[3].clone())
+        plan = upload_plan(augment.plan(host, step), torch.device("cpu"))
+        images, features, targets = augment.apply(batch, plan)
+        expected = task.net.criterion(task.net(images, features), targets)
+        loss = task.train_step(batch, step)
+        assert torch.equal(loss, expected)
+        # The batch is not modified, and the plan is a function of (seed, step) alone.
+        assert all(torch.equal(a, b) for a, b in zip(batch, host, strict=True))
+        again = augment.apply(batch, upload_plan(augment.plan(host, step), torch.device("cpu")))
+        assert all(
+            torch.equal(a, b) for a, b in zip(again, (images, features, targets), strict=True)
         )
-        for got, want in zip(applied, expected, strict=True):
-            assert torch.equal(got, want)
-    # Step 0 is the in-step path's (no Trainer: global step 0), bit for bit.
-    in_step = module.augmented_batch(tuple(batches[0][:-1]))
-    for got, want in zip(module.apply_plan(batches[0][:-1], batches[0][-1]), in_step, strict=True):
-        assert torch.equal(got, want)
-    # And the step accepts the planned batch.
-    module.eval()
-    loss = module.training_step(batches[0], 0)
-    torch.testing.assert_close(loss, module.compute_loss(module(*in_step[:2]), in_step[2]))
+        if step == 5:  # the rows of step 0, at another step: another augmentation
+            assert previous is not None and not torch.equal(images, previous)
+        if step == 0:
+            previous = images
 
 
-def test_200_planned_steps_equal_the_in_step_augmentation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The loader's real iteration, epoch after epoch, against ``augmented_batch`` at that step."""
-    current = [0]
-    # No Trainer: the module's and the loader's global step both read this counter.
-    monkeypatch.setattr(PaperClassifierModule, "global_step", property(lambda _: current[0]))
-    monkeypatch.setattr(DeviceTensorDataModule, "_global_step", lambda _: current[0])
-    torch.manual_seed(0)
-    module = paper_module(settings_from_mapping({**PRESETS[CARRASCO2021_PRESET], **_ALL}))
-    data = DeviceTensorDataModule(_splits(n=100), batch_size=16, planner=module.augment_plan)
-    data.setup("fit")
-    loader = data.train_dataloader()
-    steps = 200
-    while current[0] < steps:
-        for batch in loader:  # each epoch starts at the current step
-            plan = batch[-1]
-            assert isinstance(plan, dict)
-            planned = module.apply_plan(batch[:-1], plan)
-            in_step = module.augmented_batch(tuple(batch[:-1]))
-            for got, want in zip(planned, in_step, strict=True):
-                assert torch.equal(got, want)
-            current[0] += 1
-            if current[0] == steps:
-                break
-
-
-def test_a_run_without_augmentation_gets_no_planner() -> None:
-    module = paper_module(settings_from_mapping(dict(PRESETS[CARRASCO2021_PRESET])))
-    assert not module.augmenting
-
-
-def _comparable(metrics: dict[str, Any], out: Path) -> dict[str, Any]:
-    """``metrics`` without the timing and with the output directory replaced."""
-    text = json.dumps({k: v for k, v in metrics.items() if k != "timing"}, sort_keys=True)
-    return dict(json.loads(text.replace(str(out), "OUT")))
-
-
-@pytest.mark.parametrize("accelerator", ACCELERATORS)
-def test_prefetch_gives_the_same_run_as_the_in_step_path(
-    accelerator: str, classifier_f32_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    settings = {
-        **PRESETS[CARRASCO2021_PRESET],
-        **_ALL,
-        "accelerator": accelerator,
-        "deterministic": True,
-        "data_dir": classifier_f32_dir.parent,
-        "dataset": classifier_f32_dir.name,
-        "batch_size": 8,
-        "max_steps": 6,
-        "val_every_n_steps": 2,
-        "horizon_increment": 0,
-        "checkpoint_every_n_steps": 2,
-    }
-    runs = {}
-    for prefetch in (True, False):
-        monkeypatch.setattr(experiments, "_PREFETCH", prefetch)
-        out = tmp_path / str(prefetch)
-        config = settings_from_mapping({**settings, "output_dir": out})
-        metrics = run_command("train-supervised", config, progress_bar=False)
-        on_disk = json.loads((out / "metrics.json").read_text(encoding="utf-8"))
-        assert on_disk["timing"]
-        runs[prefetch] = (_comparable(on_disk, out), out, metrics)
-    assert runs[True][0] == runs[False][0]
-    for split in ("val", "test"):
-        name = runs[True][2]["predictions"][split]["file"]
-        first = load_predictions(runs[True][1] / name)
-        second = load_predictions(runs[False][1] / name)
-        np.testing.assert_array_equal(first.probabilities, second.probabilities)
+def test_a_run_without_augmentation_plans_nothing() -> None:
+    augment = paper_augment(settings_from_mapping(dict(PRESETS[CARRASCO2021_PRESET])))
+    assert not augment.active
+    assert not augment.needs_fits
+    batch = _train_batch(_splits()["Train"], slice(0, 8))
+    assert augment.plan(batch, 3) == {}

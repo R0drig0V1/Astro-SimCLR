@@ -1,9 +1,10 @@
 """The ``carrasco2021`` preset (task 2.2c): CLI wiring, the float path, leakage, Adam, gate.
 
 The acceptance smoke run is :func:`test_cli_smoke_run_and_cd21_gate`: ``train-supervised
---preset carrasco2021`` on synthetic float data on the CPU, then ``compare-reference --ref
-CD21`` on its output. The schedule is shortened with ``--set`` (the preset's other values
-are kept), which the run records as deviations.
+--preset carrasco2021`` on synthetic float data on the CPU (the plain engine), then
+``compare-reference --ref CD21`` on its output. The schedule is shortened with ``--set``
+(the preset's other values are kept), which the run records as deviations. Adam's betas
+are checked on the paper task's optimizer (``tasks.paper.PaperTask.make_optimizer``).
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from astro_simclr.cli import _TRAINING_PRESETS, main
 from astro_simclr.config import ConfigError, Settings, read_settings_file, settings_from_mapping
 from astro_simclr.data import DataError, load_prepared
 from astro_simclr.data.float_input import crop_split
-from astro_simclr.experiments import run_command
+from astro_simclr.engine.checkpoint import load_best
 from astro_simclr.presets import (
     CARRASCO2021_NO_FEATURES,
     CARRASCO2021_PRESET,
@@ -31,13 +32,14 @@ from astro_simclr.presets import (
     preset_report,
 )
 from astro_simclr.reference import REFERENCES, compare_reference, read_oracle_report
-from astro_simclr.training.device_data import (
+from astro_simclr.tasks.paper import PaperTask, build_paper_task
+from astro_simclr.tasks.plain import run_plain
+from astro_simclr.training.tensor_splits import (
     TensorSplit,
     float_crops,
     interim_uint8_crops,
     without_train_indices,
 )
-from astro_simclr.training.modules import PaperClassifierModule
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIGS = ROOT / "configs" / "phase2"
@@ -136,21 +138,26 @@ def test_preset_report_records_deviations_and_diagnostics(tmp_path: Path) -> Non
 # --- Adam ------------------------------------------------------------------------------------
 
 
-def _optimizer(**kwargs: Any) -> torch.optim.Optimizer:
-    module = PaperClassifierModule(beta_loss=0.5, lr=1e-3, optimizer="Adam", **kwargs)
-    optimizer = module.configure_optimizers()
+def _task(**changes: Any) -> PaperTask:
+    torch.manual_seed(0)
+    return build_paper_task(settings_from_mapping({**PRESETS[CARRASCO2021_PRESET], **changes}), {})
+
+
+def _optimizer(**changes: Any) -> torch.optim.Optimizer:
+    optimizer = _task(**changes).make_optimizer()
     assert isinstance(optimizer, torch.optim.Adam)
     return optimizer
 
 
-def test_paper_module_uses_the_code_betas() -> None:
+def test_paper_task_uses_the_code_betas() -> None:
     (group,) = _optimizer().param_groups
     assert group["betas"] == (0.9, 0.999)
     assert (group["eps"], group["weight_decay"], group["lr"]) == (1e-8, 0.0, 1e-3)
     (paper,) = _optimizer(adam_betas="paper").param_groups
     assert paper["betas"] == (0.5, 0.9)
+    task = _task()
     with pytest.raises(ValueError, match="adam_betas"):
-        _optimizer(adam_betas="tf")
+        PaperTask(task.net, task.augment, optimizer="Adam", lr=1e-3, adam_betas="tf")
 
 
 # --- The float path and the leakage removal --------------------------------------------------
@@ -279,9 +286,9 @@ def test_cli_no_features_variant_and_a_diagnostic(classifier_f32_dir: Path, tmp_
     assert metrics["config"]["with_features"] is False
     assert metrics["preset"]["name"] == CARRASCO2021_NO_FEATURES
     assert metrics["preset"]["diagnostics"] == ["dropout_active", "adam_betas"]
-    checkpoint = torch.load(out / "checkpoints" / "best.ckpt", weights_only=True)
-    assert checkpoint["hyper_parameters"]["adam_betas"] == "paper"
-    assert not any(key.startswith("model.bn_features") for key in checkpoint["state_dict"])
+    assert metrics["config"]["adam_betas"] == "paper"
+    best = load_best(out / "ckpt" / "best.pt")["model"]
+    assert not any(key.startswith("model.bn_features") for key in best)
     lines = compare_reference("CD21", [out]).lines
     assert any("advisory" in line for line in lines)
 
@@ -295,7 +302,7 @@ def test_uint8_diagnostic_without_leakage_removal(classifier_dir: Path, tmp_path
         max_steps=3,
         horizon_increment=0,
     )
-    metrics = run_command("train-supervised", settings, progress_bar=False)
+    metrics = run_plain("train-supervised", settings)
     assert metrics["paper_data"] == {
         "input": "uint8",
         "crop": 21,
