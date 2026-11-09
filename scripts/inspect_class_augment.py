@@ -1,7 +1,7 @@
 """Visual and numeric checks of the class-aware augmentation (plan rows C5 and C6; ADR 0006).
 
 On the Train split of a prepared layout with float32 stamps (``prepare-data --images
-float32``), through the paper's input path (``device_data.float_crops``: 21x21 crops,
+float32``), through the paper's input path (``training.tensor_splits.float_crops``: 21x21 crops,
 per-channel min-max, NaN -> 0), this writes to ``OUT``:
 
 - ``C5_<class>.png``: per class, ``--rows`` real crops (science / template / difference)
@@ -68,7 +68,7 @@ from astro_simclr.training.class_augment import (
     synthetic_bogus,
     template_centre_z,
 )
-from astro_simclr.training.device_data import float_crops
+from astro_simclr.training.tensor_splits import float_crops
 
 _CHANNELS = ("sci", "tmpl", "diff")
 _WINDOW = 11

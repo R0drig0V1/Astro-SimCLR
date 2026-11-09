@@ -1,7 +1,7 @@
 """Visual and numeric checks of the transient flux rescaling (plan row C7; ADR 0007).
 
 On the Train split of a prepared layout with float32 stamps, through the paper's input path
-(``device_data.float_crops``), this fits the central PSF of every difference crop
+(``training.tensor_splits.float_crops``), this fits the central PSF of every difference crop
 (``training.flux_rescale.fit_central_psf``) and writes to ``OUT``:
 
 - ``C7_<class>.png`` for AGN, SN, VS and Asteroid (C7 never rescales Bogus): ``--rows``
@@ -42,7 +42,6 @@ from astro_simclr.training.class_augment import (
     renormalise,
     stamp_fits,
 )
-from astro_simclr.training.device_data import float_crops
 from astro_simclr.training.flux_rescale import (
     fit_central_psf,
     k_floor,
@@ -50,6 +49,7 @@ from astro_simclr.training.flux_rescale import (
     rescale_transient,
     rescaled_features,
 )
+from astro_simclr.training.tensor_splits import float_crops
 
 _CHANNELS = ("sci", "tmpl", "diff")
 _KS = (0.6, 1.4)

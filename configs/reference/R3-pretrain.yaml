@@ -1,4 +1,6 @@
 # R3, step 1: SimCLR pretraining with the 31b10c9 settings (the only recorded 300k-alert run).
+# Lightning only: task 4.8 removed the engine and these commands; run this config from a
+# checkout of the git tag lightning-final (the commands below are that checkout's).
 # Run: astro-simclr pretrain --config configs/reference/R3-pretrain.yaml --seed 0
 #      --output-dir OUT/R3/pretrain
 # Then R3-linear-eval.yaml at 1, 10 and 100 % labels, with --pretrained OUT/R3/pretrain.
