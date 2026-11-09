@@ -9,8 +9,14 @@ the predicted and true labels, and the row-normalised confusion matrix, as
   ``test_acc_at_best``, the macro-F1s, ``evaluation``, ``predictions_{val,test}.npz``, the
   confusion-matrix figures), or a split run's selection / evaluation results
   (``selection_acc_best``, ``evaluation_*``, ``predictions_evaluation.npz``);
-- :func:`evaluation_entry`, :func:`write_predictions`, :func:`plot_confusion_matrix`, and the
-  JSON helpers :func:`finite` and :func:`data_info`.
+- :func:`evaluation_entry` (with the ECE of plan row D3, a secondary metric),
+  :func:`write_predictions`, :func:`plot_confusion_matrix`, :func:`selection_entry` (which
+  weights were scored: ``metrics.json["selection"]``), and the JSON helpers :func:`finite`
+  and :func:`data_info`.
+
+The keys ``val_acc_best`` / ``test_acc_at_best`` (and a split run's ``selection_acc_best``)
+keep their names under ``checkpoint_selection: final``, where they are the final weights'
+values: ``metrics.json["selection"]`` says which weights they are.
 """
 
 from __future__ import annotations
@@ -24,8 +30,10 @@ import numpy as np
 import numpy.typing as npt
 import torch
 
+from astro_simclr.config import Settings
 from astro_simclr.data.prepared import read_meta
 from astro_simclr.data.schema import LABEL_NAMES, DataError
+from astro_simclr.protocol.calibration import ECE_BINS, expected_calibration_error
 from astro_simclr.protocol.predictions import Predictions, predictions_file, save_predictions
 from astro_simclr.protocol.split_runs import SplitRun
 from astro_simclr.training.metrics import confusion_counts, confusion_matrix, macro_f1
@@ -38,6 +46,7 @@ __all__ = [
     "finite",
     "plot_confusion_matrix",
     "recalls_of",
+    "selection_entry",
     "write_predictions",
 ]
 
@@ -104,8 +113,25 @@ def recalls_of(counts: list[list[int]]) -> dict[str, float | None]:
     }
 
 
+def selection_entry(settings: Settings, *, best_step: int | None, last_step: int) -> dict[str, Any]:
+    """``metrics.json["selection"]``: which weights the run's results are of (plan row D3).
+
+    ``checkpoint_selection``; ``scored_step``, the steps done when the scored weights were
+    reached (the best validation's, or the last step's for ``final``); ``ema``, whether
+    they are the weight EMA's; and ``ece_bins``, the bins of every ``ece`` entry.
+    """
+    final = settings.checkpoint_selection == "final"
+    return {
+        "checkpoint_selection": settings.checkpoint_selection,
+        "scored_step": last_step if final else best_step,
+        "ema": settings.ema_decay is not None,
+        "ece_bins": ECE_BINS,
+    }
+
+
 def evaluation_entry(stage: StageOutput) -> dict[str, Any]:
-    """Accuracy, balanced accuracy, macro-F1, per-class recall and both confusion matrices."""
+    """Accuracy, balanced accuracy, macro-F1, per-class recall, both confusion matrices and
+    the top-label ECE (15 bins; ``protocol.calibration``, a secondary metric)."""
     y_pred, y_true = stage.y_pred, stage.y_true
     counts = confusion_counts(y_pred, y_true).tolist()
     recalls = recalls_of(counts)
@@ -117,6 +143,7 @@ def evaluation_entry(stage: StageOutput) -> dict[str, Any]:
         "recall_per_class": recalls,
         "confusion_matrix": stage.confusion.tolist(),
         "confusion_counts": counts,
+        "ece": expected_calibration_error(stage.probabilities.double().numpy(), y_true.numpy()),
     }
 
 

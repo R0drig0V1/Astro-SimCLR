@@ -129,7 +129,12 @@ from astro_simclr.tasks.common import check_schedule as _check_schedule
 from astro_simclr.tasks.common import check_split as _check_split
 from astro_simclr.tasks.common import refuse_rj23 as _refuse_rj23
 from astro_simclr.tasks.paper import load_backbone, paper_inputs
-from astro_simclr.tasks.results import StageOutput, classifier_results, data_info
+from astro_simclr.tasks.results import (
+    StageOutput,
+    classifier_results,
+    data_info,
+    selection_entry,
+)
 from astro_simclr.tasks.results import finite as _finite
 from astro_simclr.training.datamodules import ClassifierDataModule, ContrastiveDataModule
 from astro_simclr.training.device_data import (
@@ -305,9 +310,10 @@ def paper_module(settings: Settings) -> PaperClassifierModule:
     ``group_fields``, ``context``, ``rot90_augment``) and the C5 / C6 augmentation
     (``aug_noise``, ``aug_feature_jitter``, ``synthetic_bogus``, ``aug_min_r2``) and the C7
     flux rescaling (``flux_rescale``, ``flux_k_min``, ``flux_k_max``), whose
-    draws are seeded with ``seed``, the ``feature_set`` diagnostic (ADR 0016) and the
+    draws are seeded with ``seed``, the ``feature_set`` diagnostic (ADR 0016), the
     hybrids' shape flags (``hybrid_dim``, ``hybrid_depth``, ``hybrid_heads``,
-    ``hybrid_readout``; plan row B9).
+    ``hybrid_readout``; plan row B9), and plan row D3's weight EMA and learning-rate
+    schedule (over ``max_steps``).
 
     Raises:
         UnknownOptimizerError, ValueError: as ``PaperClassifierModule``.
@@ -337,6 +343,11 @@ def paper_module(settings: Settings) -> PaperClassifierModule:
         hybrid_depth=settings.hybrid_depth,
         hybrid_heads=settings.hybrid_heads,
         hybrid_readout=settings.hybrid_readout,
+        ema_decay=settings.ema_decay,
+        ema_warmup=settings.ema_warmup,
+        lr_schedule=settings.lr_schedule,
+        lr_warmup_steps=settings.lr_warmup_steps,
+        lr_total_steps=settings.max_steps,
     )
 
 
@@ -370,10 +381,14 @@ def _load_backbone_weights(
 ) -> None:
     """``tasks.paper.load_backbone`` on ``module.model``, with this module's :data:`_DOWNLOAD`.
 
+    The weight EMA (plan row D3) is then reset to the loaded weights, as the plain task
+    builds it after them.
+
     Raises:
         ConfigError, WeightsError: as ``tasks.paper.load_backbone``.
     """
     load_backbone(settings, module.model, info, download=_DOWNLOAD)
+    module.reset_ema()
 
 
 #: The weights downloader of ``_load_backbone_weights`` (None: the Hugging Face Hub); the
@@ -497,6 +512,9 @@ def _base_metrics(
     if best.is_file():
         saved = torch.load(best, map_location="cpu", weights_only=True)
         best_epoch, best_step = int(saved["epoch"]), int(saved["global_step"])
+    elif isinstance(checkpoint, HorizonCallback):
+        # checkpoint_selection final keeps no best.ckpt; the callback still tracks the best.
+        best_epoch, best_step = checkpoint.best_epoch, checkpoint.best_step
     return {
         "command": command,
         "seed": settings.seed,
@@ -535,19 +553,21 @@ def _classifier_results(
     trainer: L.Trainer,
     module: ClassifierModule,
     datamodule: L.LightningDataModule,
-    best: str,
+    best: str | None,
     out: Path,
     split_run: SplitRun | None = None,
 ) -> dict[str, Any]:
-    """Validate and test the best weights, then ``tasks.results.classifier_results``.
+    """Validate and test the scored weights, then ``tasks.results.classifier_results``.
 
-    A split run's ``Test`` role is its evaluation part (``device_data.protocol_splits``),
-    so ``trainer.test`` predicts it and never touches the real Test split.
+    ``best`` is the best checkpoint, or None to score the module's current (final) weights
+    (``checkpoint_selection: final``, plan row D3). A split run's ``Test`` role is its
+    evaluation part (``device_data.protocol_splits``), so ``trainer.test`` predicts it and
+    never touches the real Test split.
 
     Raises:
-        DataError: if no best checkpoint was written.
+        DataError: if ``best`` is given but no best checkpoint was written.
     """
-    if not best or not Path(best).is_file():
+    if best is not None and (not best or not Path(best).is_file()):
         raise DataError("no best checkpoint was written (did any validation run?)")
     trainer.validate(module, datamodule=datamodule, ckpt_path=best, verbose=False)
     val = _stage(module, "val")
@@ -584,8 +604,9 @@ def _carrasco2021_trainer(
     """ALeRCE's schedule: steps, validation every ``val_every_n_steps``, the horizon rule.
 
     No EarlyStopping, no ``ModelCheckpoint`` and no epoch limit (``max_steps`` and the
-    horizon end the run); the ``HorizonCallback`` writes ``best.ckpt`` and, after the
-    validation of every ``checkpoint_every_n_steps`` steps, ``last.ckpt``; no sanity check.
+    horizon end the run); the ``HorizonCallback`` writes ``best.ckpt`` (none with
+    ``checkpoint_selection: final``) and, after the validation of every
+    ``checkpoint_every_n_steps`` steps, ``last.ckpt``; no sanity check.
     """
     dirpath = settings.output_dir / CHECKPOINT_DIR
     horizon = HorizonCallback(
@@ -597,6 +618,7 @@ def _carrasco2021_trainer(
         increment=settings.horizon_increment,
         last_filename=Path(LAST_CHECKPOINT).stem,
         last_every_n_steps=settings.checkpoint_every_n_steps,
+        keep_best=settings.checkpoint_selection != "final",
     )
     trainer = build_trainer(
         settings,
@@ -661,11 +683,18 @@ def _add_results(
     if split_run is not None:
         metrics["protocol"] = split_run.describe()
     if isinstance(module, ClassifierModule):
-        best = checkpoint.best_model_path
+        final = settings.checkpoint_selection == "final"
+        best = None if final else checkpoint.best_model_path
         out = settings.output_dir
         metrics.update(
             _classifier_results(command, trainer, module, datamodule, best, out, split_run)
         )
+        if settings.schedule == CARRASCO2021:
+            metrics["selection"] = selection_entry(
+                settings, best_step=metrics["best_step"], last_step=metrics["last_step"]
+            )
+            if final:
+                metrics["checkpoints"]["best"] = None
     else:
         metrics["pretrained_encoder"] = settings.encoder_name
 

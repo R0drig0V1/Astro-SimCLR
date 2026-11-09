@@ -147,6 +147,8 @@ def test_semantic_config_holds_every_other_field() -> None:
     # 0, feature_set all and backbone_weights none (the behaviour before the field: ADR
     # 0016, ADR 0022), the hybrids' shape defaults (plan row B9) and the rj23_* defaults
     # (task 3.4b; ADR 0023).
+    # And plan row D3's flags off (its five fields).
+    d3 = {"checkpoint_selection", "lr_schedule", "lr_warmup_steps", "ema_decay", "ema_warmup"}
     neutral = {
         "num_workers",
         "feature_set",
@@ -159,6 +161,7 @@ def test_semantic_config_holds_every_other_field() -> None:
         "rj23_bn_position",
         "rj23_large_values",
         "rj23_keep",
+        *d3,
     }
     assert set(HASH_NEUTRAL_DEFAULTS) == neutral
     assert set(settings) == FIELDS - set(NON_SEMANTIC_KEYS) - set(IDENTITY_KEYS) - neutral
@@ -168,6 +171,18 @@ def test_semantic_config_holds_every_other_field() -> None:
     position = semantic_config("train-supervised", Settings(feature_set="position"))["settings"]
     assert isinstance(position, dict)
     assert position["feature_set"] == "position"
+    ema = Settings(
+        schedule="carrasco2021",
+        eval_batch_size=64,
+        early_stopping=False,
+        horizon_increment=0,
+        ema_decay=0.999,
+        checkpoint_selection="final",
+    )
+    d3_on = semantic_config("train-supervised", ema)["settings"]
+    assert isinstance(d3_on, dict)
+    assert (d3_on["ema_decay"], d3_on["checkpoint_selection"]) == (0.999, "final")
+    assert "lr_schedule" not in d3_on  # still at its neutral value
     zoobot = Settings(paper_arch="convnext_pico", backbone_weights="zoobot")
     weights = semantic_config("train-supervised", zoobot)["settings"]
     assert isinstance(weights, dict)

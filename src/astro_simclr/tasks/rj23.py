@@ -335,6 +335,9 @@ class RJ23Task:
         logits: torch.Tensor = self.net(images, positions)
         return F.cross_entropy(logits, labels)
 
+    def after_step(self, step: int) -> None:
+        """Nothing after the optimizer step: no scheduler, no weight EMA (ADR 0014, D3)."""
+
     def eval_step(self, batch: Batch) -> EvalOutput:
         """The batch's softmax outputs (on the CPU), labels and mean negative log-likelihood."""
         images, positions, labels = batch

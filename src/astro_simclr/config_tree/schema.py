@@ -452,7 +452,10 @@ class EpochsSchedule:
 class Carrasco2021Schedule:
     """ALeRCE's iteration schedule (task 2.2a): steps, validation grid, the horizon rule.
 
-    It has no EarlyStopping, so it lowers ``early_stopping: false`` (``FLAT_FIXED``).
+    It has no EarlyStopping, so it lowers ``early_stopping: false`` (``FLAT_FIXED``). Plan
+    row D3's flags live here too (the scored weights, the learning-rate schedule and the
+    weight EMA), all off by default: they are read by the paper model only, which is the
+    only model on this schedule.
     """
 
     KINDS: ClassVar = (CARRASCO2021,)
@@ -465,6 +468,15 @@ class Carrasco2021Schedule:
     checkpoint_every_n_steps: int = _flat("checkpoint_every_n_steps")
     monitor: str = _flat("monitor")
     limit_train_batches: int | float | None = _flat("limit_train_batches")
+    #: Plan row D3: the scored weights, ``best_val_loss`` (CD21) or ``final``.
+    selection: str = _flat("checkpoint_selection")
+    #: Plan row D3: ``constant`` (CD21) or ``cosine`` over exactly ``max_steps``.
+    lr_schedule: str = _flat("lr_schedule")
+    #: Plan row D3: linear learning-rate warmup steps (0: none).
+    lr_warmup_steps: int = _flat("lr_warmup_steps")
+    #: Plan row D3: the weight EMA's decay (null: off) and its warmup ramp.
+    ema_decay: float | None = _flat("ema_decay")
+    ema_warmup: bool = _flat("ema_warmup")
 
     def __post_init__(self) -> None:
         """Raises: ConfigError: on another ``kind``."""

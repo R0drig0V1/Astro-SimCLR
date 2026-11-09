@@ -99,6 +99,7 @@ class ToyTask:
     def __init__(self) -> None:
         self.net = _Toy()
         self.trained_steps: list[int] = []
+        self.stepped: list[int] = []
         self.seen: list[dict[str, Any]] = []
 
     @property
@@ -113,6 +114,9 @@ class ToyTask:
         images, features, one_hot = batch[0], batch[1], batch[2]
         logits = self.net(images, features)
         return nn.functional.cross_entropy(logits, one_hot.argmax(dim=1))
+
+    def after_step(self, step: int) -> None:
+        self.stepped.append(step)
 
     def eval_step(self, batch: Batch) -> EvalOutput:
         images, features, one_hot = batch
@@ -195,6 +199,7 @@ def test_grid_horizon_and_step_keys(tmp_path: Path) -> None:
     assert result.batches_per_pass == 5
     assert result.last_step == result.horizon >= 10
     assert task.trained_steps == list(range(result.last_step))  # C6: steps done before
+    assert task.stepped == task.trained_steps  # after_step(step) follows each step
     assert result.horizon == max(10, result.best_step + 6)
     assert result.best_epoch == (result.best_step - 1) // 5
     assert result.last_epoch == (result.last_step - 1) // 5

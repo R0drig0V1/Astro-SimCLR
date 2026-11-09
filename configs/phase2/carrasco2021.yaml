@@ -93,6 +93,16 @@ flux_rescale: 0.0
 flux_k_min: 0.5
 flux_k_max: 1.5
 
+# Selection, learning-rate schedule and weight EMA (plan row D3): off. A D3 run sets
+# checkpoint_selection final, lr_schedule cosine (with lr_warmup_steps) and ema_decay (with
+# ema_warmup); the first two need horizon_increment 0 (src/astro_simclr/training/ema.py,
+# src/astro_simclr/training/lr_schedule.py).
+checkpoint_selection: best_val_loss
+lr_schedule: constant
+lr_warmup_steps: 0
+ema_decay: null
+ema_warmup: false
+
 # Precision (ADR 0010): float32 convolutions and matmuls, as on the GTX 1050. torch 2.14
 # would otherwise run cuDNN convolutions in TF32 on Ampere and newer GPUs.
 fp32_precision: ieee

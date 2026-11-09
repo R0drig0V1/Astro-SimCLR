@@ -19,9 +19,11 @@ outputs, so a plain run and a Lightning run of one config are compared file by f
 **Order of a run.** The checks (accelerator, names, schedule, split, resume), the data
 (``tasks.paper.paper_inputs``: the arrays the Lightning path trains on, on the ``device``
 tier), the manifest (``running``), then :func:`~astro_simclr.engine.fit` (precision, flags,
-seed, the task built on the CPU, ...), the final evaluation of the restored best weights,
-``metrics.json`` and the manifest's ``finished``. A run refused before the manifest
-exists never started and leaves none (``run_command``'s rule, task A1).
+seed, the task built on the CPU, ...), the final evaluation of the scored weights (the
+restored best ones, or the last ones with ``checkpoint_selection: final``, plan row D3:
+``Schedule.keep`` ``stop``), ``metrics.json`` and the manifest's ``finished``. A run
+refused before the manifest exists never started and leaves none (``run_command``'s rule,
+task A1).
 
 **Resume.** ``resume="auto"`` continues from ``OUTPUT_DIR/ckpt/last.pt`` when it exists (a
 fresh start otherwise); a path must exist. The engine refuses a Lightning checkpoint, another
@@ -88,7 +90,13 @@ from astro_simclr.tasks.common import (
     dataset_path,
 )
 from astro_simclr.tasks.paper import build_paper_task, check_paper_task, paper_inputs
-from astro_simclr.tasks.results import StageOutput, classifier_results, data_info, finite
+from astro_simclr.tasks.results import (
+    StageOutput,
+    classifier_results,
+    data_info,
+    finite,
+    selection_entry,
+)
 from astro_simclr.tasks.rj23 import RJ23Request, run_rj23_plain
 from astro_simclr.training.tensor_splits import TensorSplit
 
@@ -195,11 +203,17 @@ def _check_plain(command: str, settings: Settings) -> None:
 
 
 def schedule_of(settings: Settings) -> Schedule:
-    """The ``carrasco2021`` settings as the engine's :class:`~astro_simclr.engine.Schedule`."""
+    """The ``carrasco2021`` settings as the engine's :class:`~astro_simclr.engine.Schedule`.
+
+    ``checkpoint_selection: final`` (plan row D3) keeps the last weights (``stop``), and no
+    best ones; the default keeps the best (CD21).
+    """
+    final = settings.checkpoint_selection == "final"
     return Schedule(
         monitor=_MONITOR,
         validation=ValidationGrid(settings.val_every_n_steps),
         horizon=Horizon(settings.max_steps, settings.horizon_increment),
+        keep=("stop",) if final else ("best",),
         checkpoint_every_n_steps=settings.checkpoint_every_n_steps,
     )
 
@@ -288,15 +302,21 @@ def _metrics(
     metrics["preset"] = preset_report(settings)
     if split_run is not None:
         metrics["protocol"] = split_run.describe()
-    best = evaluate_kept(task, result, sources, ("best",))["best"]
+    (keep,) = schedule_of(settings).keep
+    scored = evaluate_kept(task, result, sources, (keep,))[keep]
     stages = {
-        role: StageOutput.of(best[role].probabilities, best[role].targets, device)
+        role: StageOutput.of(scored[role].probabilities, scored[role].targets, device)
         for role in ("Validation", "Test")
     }
     out = settings.output_dir
     metrics.update(
         classifier_results(command, stages["Validation"], stages["Test"], out, split_run)
     )
+    metrics["selection"] = selection_entry(
+        settings, best_step=result.best_step, last_step=result.last_step
+    )
+    if keep == "stop":
+        metrics["checkpoints"]["best"] = None  # the scored weights are ckpt/last.pt's
     return metrics
 
 

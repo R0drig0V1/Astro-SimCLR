@@ -67,6 +67,14 @@ class Task(Protocol):
         step): every per-step draw (rotations, C5-C7, SimCLR views) is keyed by it.
         """
 
+    def after_step(self, step: int) -> None:
+        """Called after the optimizer step of step ``step`` (``train_step``'s ``step``).
+
+        What follows each update outside the optimizer: a learning-rate scheduler's step,
+        a weight EMA's update (plan row D3; ADR 0014, amendment of row D3). It runs before
+        the step's validation, if one is due. A task with nothing to do there does nothing.
+        """
+
     def eval_step(self, batch: Batch) -> EvalOutput:
         """One evaluation batch, under the loop's ``eval()`` and no-grad context."""
 

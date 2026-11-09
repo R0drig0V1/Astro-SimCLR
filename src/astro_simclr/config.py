@@ -40,6 +40,7 @@ __all__ = [
     "BACKBONE_WEIGHTS_CHOICES",
     "CARRASCO2021",
     "CARRASCO2021_EVAL_BATCH_SIZE",
+    "CHECKPOINT_SELECTIONS",
     "CONTEXTS",
     "CONVNEXT_ARCHS",
     "DEFAULT_HYBRID_DEPTH",
@@ -53,6 +54,7 @@ __all__ = [
     "HYBRID_ARCHS",
     "HYBRID_FLAGS",
     "HYBRID_READOUTS",
+    "LR_SCHEDULES",
     "PAPER_ARCHS",
     "PAPER_INPUTS",
     "RJ23",
@@ -147,6 +149,14 @@ CONTEXTS: Final = ("none", "avgpool63")
 #: (the images only; the same model as ``with_features: false``). See
 #: :mod:`astro_simclr.feature_sets`.
 FEATURE_SETS: Final = ("all", "position", "none")
+
+#: ``Settings.checkpoint_selection`` (plan row D3): ``best_val_loss`` scores the weights of
+#: the best validation loss (CD21's protocol), ``final`` the weights at the end of the run
+#: (the EMA shadow's with ``ema_decay``); validation still runs and is logged.
+CHECKPOINT_SELECTIONS: Final = ("best_val_loss", "final")
+#: ``Settings.lr_schedule`` (plan row D3; ``training.lr_schedule``): ``constant`` (CD21's
+#: Adam 1e-3) or ``cosine`` over exactly ``max_steps``.
+LR_SCHEDULES: Final = ("constant", "cosine")
 
 #: ``Settings.fp32_precision`` (ADR 0010): ``ieee`` keeps float32 convolutions and matmuls
 #: in full float32 on every device; ``tf32`` lets Ampere and newer CUDA GPUs run them in
@@ -381,6 +391,26 @@ class Settings:
     #: ``rj23``: ``data.rj23_input.normalise(large_values=...)``; see :data:`RJ23_LARGE_VALUES`.
     rj23_large_values: str = "paper"
 
+    # --- Paper-model weight EMA, learning-rate schedule and selection (plan row D3) ---------
+
+    #: ``carrasco2021``: which weights the run scores; see :data:`CHECKPOINT_SELECTIONS`.
+    #: ``final`` needs ``horizon_increment: 0`` (the run's length must not depend on the
+    #: validation either).
+    checkpoint_selection: str = "best_val_loss"
+    #: ``carrasco2021``: the learning rate per step; see :data:`LR_SCHEDULES`. ``cosine``
+    #: anneals to 0 over exactly ``max_steps`` and needs ``horizon_increment: 0``.
+    lr_schedule: str = "constant"
+    #: ``carrasco2021``: linear warmup of the learning rate over the first this many steps
+    #: (``training.lr_schedule``), fewer than ``max_steps``; 0: none. Needs
+    #: ``horizon_increment: 0``.
+    lr_warmup_steps: int = 0
+    #: ``carrasco2021``: the decay of the weight EMA (``training.ema``), in (0, 1), e.g.
+    #: 0.999; the model is then validated, selected and scored with the EMA weights.
+    #: None: off.
+    ema_decay: float | None = None
+    #: ``ema_decay``: ramp the decay as ``min(ema_decay, (1 + step) / (10 + step))``.
+    ema_warmup: bool = False
+
     def __post_init__(self) -> None:
         """Check the values that a type alone cannot (ranges and names).
 
@@ -409,6 +439,7 @@ class Settings:
         self._check_paper_variants()
         self._check_schedule()
         self._check_rj23()
+        self._check_weight_averaging()
 
     def _check_fp32_precision(self) -> None:
         if self.fp32_precision not in FP32_PRECISIONS:
@@ -640,6 +671,51 @@ class Settings:
         problems = [what for ok, what in rules if not ok]
         if problems:
             raise ConfigError(f"schedule {RJ23} needs {'; '.join(problems)}")
+
+    def _check_weight_averaging(self) -> None:
+        """The plan row D3 flags (EMA, learning-rate schedule, selection; ADR 0014 rules)."""
+        for name, valid in (
+            ("checkpoint_selection", CHECKPOINT_SELECTIONS),
+            ("lr_schedule", LR_SCHEDULES),
+        ):
+            value = getattr(self, name)
+            if value not in valid:
+                raise ConfigError(f"{name} {value!r} is not one of: {', '.join(valid)}")
+        if self.ema_decay is not None and not 0 < self.ema_decay < 1:
+            raise ConfigError(f"ema_decay must be in (0, 1), got {self.ema_decay}")
+        if self.ema_warmup and self.ema_decay is None:
+            raise ConfigError("ema_warmup ramps the EMA decay: it needs ema_decay")
+        if self.lr_warmup_steps < 0:
+            raise ConfigError(f"lr_warmup_steps must be >= 0, got {self.lr_warmup_steps}")
+        changed = [
+            name
+            for name, off in (
+                ("checkpoint_selection", "best_val_loss"),
+                ("lr_schedule", "constant"),
+                ("lr_warmup_steps", 0),
+                ("ema_decay", None),
+            )
+            if getattr(self, name) != off
+        ]
+        if changed and self.schedule != CARRASCO2021:
+            # Only the paper model's modules (both engines) read them.
+            msg = f"{', '.join(changed)} apply only to schedule {CARRASCO2021}"
+            raise ConfigError(msg)
+        # A fixed schedule over max_steps, or scoring the final weights, needs a run whose
+        # length the validation does not decide.
+        fixed = [name for name in changed if name != "ema_decay"]
+        if fixed and self.horizon_increment != 0:
+            msg = (
+                f"{', '.join(fixed)} need a run of exactly max_steps: set "
+                f"horizon_increment=0 (got {self.horizon_increment})"
+            )
+            raise ConfigError(msg)
+        if self.lr_warmup_steps >= self.max_steps and self.lr_warmup_steps:
+            msg = (
+                f"lr_warmup_steps ({self.lr_warmup_steps}) must be smaller than max_steps "
+                f"({self.max_steps})"
+            )
+            raise ConfigError(msg)
 
     def replace(self, **changes: Any) -> Settings:
         """Return a copy with ``changes`` applied, validated like :func:`settings_from_mapping`.

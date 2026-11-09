@@ -75,7 +75,9 @@ from astro_simclr.training.class_augment import (
     synthetic_bogus,
     upload_plan,
 )
+from astro_simclr.training.ema import EmaWeights, trainable_parameters
 from astro_simclr.training.flux_rescale import FLUX_STREAM, flux_rescale
+from astro_simclr.training.lr_schedule import LrSchedule
 from astro_simclr.training.metrics import METRIC_NAMES, classification_metrics, confusion_matrix
 from astro_simclr.training.optimizers import (
     PAPER_ADAM_BETAS,
@@ -394,6 +396,14 @@ class PaperClassifierModule(ClassifierModule):
     only when it is not ``all``, so the faithful module's ``hparams.yaml`` and checkpoints
     are what they were before it existed.
 
+    Plan row D3 (``training.ema``, ``training.lr_schedule``): ``ema_decay`` keeps a weight
+    EMA of ``model`` in ``ema`` (an ``EmaWeights``, updated in :meth:`on_train_batch_end`
+    with ``step = global_step - 1``, the steps done before the step), and the forward in
+    ``eval()`` mode, so every validation and test, runs the EMA weights; ``lr_schedule`` /
+    ``lr_warmup_steps`` over ``lr_total_steps`` add a per-step ``LambdaLR``. The EMA's
+    parameters are not in the optimizer. Like ``feature_set``, they are recorded in the
+    hyperparameters only when they are not off.
+
     Raises:
         UnknownOptimizerError: if ``optimizer`` is not a known name.
         ValueError: if ``adam_betas`` is not a key of ``PAPER_ADAM_BETAS``, ``augment_seed``
@@ -433,6 +443,11 @@ class PaperClassifierModule(ClassifierModule):
         hybrid_depth: int = DEFAULT_HYBRID_DEPTH,
         hybrid_heads: int = DEFAULT_HYBRID_HEADS,
         hybrid_readout: str = DEFAULT_HYBRID_READOUT,
+        ema_decay: float | None = None,
+        ema_warmup: bool = False,
+        lr_schedule: str = "constant",
+        lr_warmup_steps: int = 0,
+        lr_total_steps: int = 1,
     ) -> None:
         # Fails here on an unknown set or position without features; none: no features.
         reads_features = bool(feature_columns(feature_set, with_features=with_features))
@@ -491,6 +506,12 @@ class PaperClassifierModule(ClassifierModule):
             hybrid_heads=hybrid_heads,
             hybrid_readout=hybrid_readout,
         )
+        #: The learning-rate schedule (plan row D3); fails here on invalid values.
+        self.lr_schedule = LrSchedule(lr_schedule, lr_warmup_steps, lr_total_steps)
+        #: The weight EMA of ``model`` (plan row D3), or None; registered after ``model``.
+        self.ema = (
+            None if ema_decay is None else EmaWeights(self.model, ema_decay, warmup=ema_warmup)
+        )
         # Flags at their defaults stay out of the hyperparameters, so the faithful module's
         # hparams.yaml and checkpoints are what they were before the flags existed.
         hybrid = {
@@ -501,16 +522,36 @@ class PaperClassifierModule(ClassifierModule):
         }
         defaults = [key for key, value in hybrid.items() if value == HYBRID_FLAGS[key]]
         defaults += ["feature_set"] if feature_set == "all" else []
+        if ema_decay is None:  # the D3 flags off: the same rule
+            defaults += ["ema_decay", "ema_warmup"]
+        if not self.lr_schedule.active:
+            defaults += ["lr_schedule", "lr_warmup_steps", "lr_total_steps"]
         self.save_hyperparameters(ignore=_hparams_ignore(n_classes, *defaults))
 
     def forward(self, x_img: torch.Tensor, x_feat: torch.Tensor) -> torch.Tensor:
         """Crops (B, C, S, S) and features -> (B, n_classes) logits.
 
         S is 21 (C: 3, or 6 with context; the hybrids too), or 63 for the ConvNeXt archs
-        (C: 3).
+        (C: 3). With an EMA, ``eval()`` mode runs the EMA weights (plan row D3).
         """
-        out: torch.Tensor = self.model(x_img, x_feat if self.with_features else None)
+        net = self.model if self.ema is None or self.training else self.ema.shadow
+        out: torch.Tensor = net(x_img, x_feat if self.with_features else None)
         return out
+
+    def trainable_parameters(self) -> Iterator[nn.Parameter]:
+        """Every parameter but the EMA's (``training.ema.trainable_parameters``)."""
+        return trainable_parameters(self)
+
+    def reset_ema(self) -> None:
+        """Copy ``model`` into the EMA (after loading other weights into it; ADR 0022)."""
+        if self.ema is not None:
+            self.ema.reset(self.model)
+
+    def on_train_batch_end(self, outputs: Any, batch: Any, batch_idx: int) -> None:
+        """Update the EMA after the optimizer step (plan row D3; the plain task's
+        ``after_step``). ``global_step`` already counts the step: ``step`` is one less."""
+        if self.ema is not None:
+            self.ema.update(self.model, self.global_step - 1)
 
     def rotation_steps(self, n: int, step: int) -> torch.Tensor:
         """The ``k`` (int64, CPU, 0..3) of ``n`` training stamps at global step ``step``.
@@ -614,13 +655,24 @@ class PaperClassifierModule(ClassifierModule):
         return x_img, x_feat, targets
 
     def configure_optimizers(self) -> OptimizerLRScheduler:
-        """The optimizer with the betas ``adam_betas`` names, no LR schedule."""
-        return build_optimizer(
+        """The optimizer with the betas ``adam_betas`` names, and the D3 schedule if any.
+
+        The schedule (``training.lr_schedule``) is a ``LambdaLR`` stepped after every
+        optimizer step (``interval: step``); a constant rate has none.
+        """
+        optimizer = build_optimizer(
             self.optimizer_name,
             self.trainable_parameters(),
             self.lr,
             adam_betas=PAPER_ADAM_BETAS[self.adam_betas],
         )
+        scheduler = self.lr_schedule.scheduler(optimizer)
+        if scheduler is None:
+            return optimizer
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 1},
+        }
 
 
 class SupervisedCEResNetModule(ClassifierModule):

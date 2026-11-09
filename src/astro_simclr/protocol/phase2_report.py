@@ -13,8 +13,9 @@ with ``compare-reference`` or ``compare-variants``.
 which holds the arm's run directories at any depth (``DIR/<arm>/.../metrics.json``):
 
 - ``replication``: the CD21 replication (``results/phase2/replication``: ``with-features``
-  and ``no-features``). Per arm, a table per seed (best step, validation and test accuracy
-  of the selected checkpoint, SN test recall, s/step) with mean ± std (ddof = 1); then the
+  and ``no-features``). Per arm, a table per seed (the scored step, validation and test
+  accuracy of the scored weights, SN test recall, s/step, test ECE) with mean ± std (ddof =
+  1); then the
   CD21 gate on all the runs together (``compare-reference --ref CD21``, with the M1 oracle
   report: ``--oracle-report``, default ``m1_oracle.json`` in the directory).
 - ``screen`` (with its splits file): screen runs (``train-supervised --splits FILE
@@ -26,7 +27,13 @@ which holds the arm's run directories at any depth (``DIR/<arm>/.../metrics.json
   McNemar, every arm against the baseline. The pre-registered rule of an arm is
   superiority, or non-inferiority for the arms listed in ``non_inferiority`` (the
   efficiency rows of task 2.5); the ``compare-variants`` output printed is that rule's.
-  Then, per arm, the pooled per-class recall and the confusion matrix.
+  The per-fold table ends with the fold-to-fold standard deviation (ddof = 1), and a
+  calibration table gives each arm's top-label ECE per run (mean ± std). Then, per arm,
+  the pooled per-class recall and the confusion matrix.
+
+**Secondary metrics.** The ECE (15 bins, ``protocol.calibration``, from the predictions
+files) and the fold-to-fold standard deviation are reported for plan row D3's
+pre-registered hypothesis; neither is a decision input (``docs/evaluation-protocol.md``).
 
 The per-class recall and the confusion matrix of the pooled CV use the same scores as the
 pooled balanced accuracy: per stamp, the fraction of the fold's seeds that predict each
@@ -72,7 +79,9 @@ from astro_simclr.protocol.compare import (
     ScreenResult,
     SplitRunPredictions,
     compare_decision,
+    load_run_predictions,
     load_split_run,
+    run_ece,
 )
 from astro_simclr.protocol.predictions import Predictions, seed_mean_correct
 from astro_simclr.protocol.split_runs import FOLD, SCREEN
@@ -325,30 +334,63 @@ def _sn_recall(metrics: Mapping[str, Any]) -> float | None:
     return _finite(recall.get("SN")) if isinstance(recall, Mapping) else None
 
 
+def _test_ece(run_dir: Path, metrics: Mapping[str, Any]) -> float | None:
+    """The run's test ECE: ``metrics.json``'s, else from its test predictions file, else None.
+
+    Runs from before plan row D3 have no ``ece`` entry; their predictions (task 2.3 on)
+    give the same number.
+    """
+    evaluation = metrics.get("evaluation")
+    test = evaluation.get("test") if isinstance(evaluation, Mapping) else None
+    if isinstance(test, Mapping) and "ece" in test:
+        return _finite(test["ece"])
+    try:
+        return run_ece(load_run_predictions(run_dir, "test").predictions)
+    except (ConfigError, ValueError):  # no predictions file (or a malformed one)
+        return None
+
+
+def _scored_step(metrics: Mapping[str, Any]) -> object:
+    """The step of the weights the run's scores are of (plan row D3).
+
+    ``metrics["selection"]["scored_step"]`` when the run records it (the last step under
+    ``checkpoint_selection: final``), else ``best_step``: before D3 every run scored its
+    best validation's weights.
+    """
+    selection = metrics.get("selection")
+    if isinstance(selection, Mapping) and "scored_step" in selection:
+        return selection["scored_step"]
+    return metrics.get("best_step")
+
+
 def _replication_arm(arm: Arm) -> list[str]:
-    runs = sorted((load_run(path) for path in arm.runs), key=lambda run: _seed_key(run["seed"]))
+    runs = sorted(
+        ((path, load_run(path)) for path in arm.runs), key=lambda item: _seed_key(item[1]["seed"])
+    )
     rows: list[list[object]] = []
-    columns: dict[str, list[float]] = {"val": [], "test": [], "sn": [], "sps": []}
-    for run in runs:
+    columns: dict[str, list[float]] = {"val": [], "test": [], "sn": [], "sps": [], "ece": []}
+    for path, run in runs:
         values = {
             "val": _finite(run.get("val_acc_best")),
             "test": _finite(run.get("test_acc_at_best")),
             "sn": _sn_recall(run),
             "sps": _seconds_per_step(run),
+            "ece": _test_ece(path, run),
         }
         for key, value in values.items():
             if value is not None:
                 columns[key].append(value)
-        step = run.get("best_step")
-        best_step = f"{step:,}" if isinstance(step, int) and not isinstance(step, bool) else _DASH
+        step = _scored_step(run)
+        scored = f"{step:,}" if isinstance(step, int) and not isinstance(step, bool) else _DASH
         rows.append(
             [
                 run.get("seed"),
-                best_step,
+                scored,
                 _num(values["val"], 3),
                 _num(values["test"], 3),
                 _num(values["sn"], 3),
                 _num(values["sps"], 4),
+                _num(values["ece"], 4),
             ]
         )
     rows.append(
@@ -359,9 +401,18 @@ def _replication_arm(arm: Arm) -> list[str]:
             _mean_std(columns["test"]),
             _mean_std(columns["sn"], 3),
             _mean_std(columns["sps"]),
+            _mean_std(columns["ece"]),
         ]
     )
-    header = ["Seed", "best_step", "val_acc_best", "test (at best)", "SN test recall", "s/step"]
+    header = [
+        "Seed",
+        "scored step",
+        "val acc (scored)",
+        "test (scored)",
+        "SN test recall",
+        "s/step",
+        "test ECE",
+    ]
     return [f"### {arm.name}", "", *_table(header, rows), ""]
 
 
@@ -603,7 +654,19 @@ def _per_fold_table(base: _CVArm, variants: Sequence[_CVVariant], splits: Path) 
         rows.append([fold, *map(_num, values)])
     pooled = [first.baseline_pooled, *(v.cv.variant_pooled for v in variants)]
     rows.append(["**pooled**", *map(_num, pooled)])
+    if len(fold_ids) > 1:
+        spread = [first.baseline_folds, *(v.cv.variant_folds for v in variants)]
+        rows.append(["**std over folds (ddof=1)**", *(_num(statistics.stdev(f)) for f in spread)])
     return _table(["Fold", base.name, *(v.arm.name for v in variants)], rows)
+
+
+def _calibration_table(arms: Sequence[_CVArm]) -> list[str]:
+    """Each arm's top-label ECE per run (mean ± std over its runs): a secondary metric."""
+    rows = []
+    for arm in arms:
+        values = [run_ece(pred) for fold in sorted(arm.folds) for pred in arm.folds[fold]]
+        rows.append([arm.name, len(values), _mean_std(values)])
+    return _table(["Arm", "Runs", "ECE per run (mean ± std, ddof=1)"], rows)
 
 
 def _decision_table(
@@ -663,6 +726,13 @@ def _cv_section(inputs: ReportInputs, root: Path, splits: Path) -> list[str]:
         "### Decisions",
         "",
         *_decision_table(inputs, base, variants),
+        "",
+        "### Calibration (secondary)",
+        "",
+        "Top-label expected calibration error (15 equal-width bins) of each run on its "
+        "fold's evaluation part; it decides nothing.",
+        "",
+        *_calibration_table([base, *(variant.arm for variant in variants)]),
         "",
         f"Paired bootstrap over pool stamps: {variants[0].cv.interval.n_boot} resamples, "
         f"seed {inputs.seed}, stratified by class. McNemar compares the seed ensembles over "

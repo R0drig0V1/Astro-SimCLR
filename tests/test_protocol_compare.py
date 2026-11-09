@@ -16,6 +16,7 @@ from astro_simclr.protocol.compare import (
     compare_variants,
     cv_comparison,
     load_run_predictions,
+    run_ece,
     screen_comparison,
 )
 from astro_simclr.protocol.predictions import Predictions
@@ -59,6 +60,8 @@ def test_compare_variants_reports(tmp_path: Path) -> None:
     assert "test is never a decision input" in text
     assert "WARN: 2 baseline run(s); the protocol uses 5 seeds" in text
     assert result.lines[-1] == "compare-variants: REPORT"
+    eces = [run_ece(load_run_predictions(path, "test").predictions) for path in base]
+    assert f"ECE (15 bins, top label; secondary, per run): baseline {eces[0]:.4f}" in text
     val = compare_variants(base, variant, stage="val", n_boot=10)
     assert "chose each run's checkpoint" in "\n".join(val.lines)
     assert val.bootstrap.observed == 0.0

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import statistics
 from collections.abc import Callable
 from pathlib import Path
 
@@ -159,6 +160,9 @@ def test_full_report_repeats_the_protocol_outputs(
     assert "### no-features" in replication and "### with-features" in replication
     assert "| 0 | 18,930 | 0.946 | 0.942 | 0.850 | 0.0502 |" in replication
     assert "| **mean ± std (ddof=1)** |  | 0.9428 ± 0.0027 | 0.9428 ± 0.0041 |" in replication
+    assert "| SN test recall | s/step | test ECE |" in replication
+    # The archived runs predate the ECE entry: it comes from their predictions files.
+    assert "| 0 | 18,930 | 0.946 | 0.942 | 0.850 | 0.0502 | 0.2198 |" in replication
     runs = [run for arm in find_arms(REPLICATION) for run in arm.runs]
     gate = compare_reference("CD21", runs, oracle_report=REPLICATION / "m1_oracle.json")
     assert "\n".join(gate.lines) in replication
@@ -188,6 +192,9 @@ def test_full_report_repeats_the_protocol_outputs(
         f"{ctx_decision.cv.variant_pooled:.4f} | {p4_decision.cv.variant_pooled:.4f} |"
     )
     assert "| Fold | rot4 | ctx | p4 |" in cv and pooled in cv
+    spread = statistics.stdev(p4_decision.cv.baseline_folds)
+    assert f"| **std over folds (ddof=1)** | {spread:.4f} |" in cv
+    assert "### Calibration (secondary)" in cv and "| rot4 | 10 | " in cv
     assert "| p4 | " in cv and "| adopt | adopt | non-inferiority: **ADOPT** |" in cv
     assert "| worse | worse | superiority: **NOT ADOPTED** |" in cv
     assert cv.count("| 0 | 0 | ") == 1 and "| 4 | 1 | " in cv  # 5 folds x 2 seeds

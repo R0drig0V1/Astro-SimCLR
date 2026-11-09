@@ -49,19 +49,54 @@ Test (about 20 % of the Validation and Test Bogus; see "Leakage" below).
 ## What every run reports
 
 `metrics.json` of every classifier run (`train-supervised`, `linear-eval`, `fine-tune`)
-holds, for the checkpoint selected on validation:
+holds, for the scored weights (the checkpoint selected on validation, unless the run sets
+`checkpoint_selection: final`; see "Which weights a run scores" below):
 
 | Key | Content |
 |---|---|
 | `test_acc_at_best` | test accuracy (micro; on the balanced test set it equals balanced accuracy) |
 | `val_acc_best`, `val_macro_f1`, `test_macro_f1` | validation accuracy, macro-F1 |
-| `evaluation.{val,test}` | `accuracy`, `balanced_accuracy`, `macro_f1`, `recall_per_class` (by class name; `null` for a class with no stamp), the normalised and count confusion matrices |
+| `evaluation.{val,test}` | `accuracy`, `balanced_accuracy`, `macro_f1`, `recall_per_class` (by class name; `null` for a class with no stamp), the normalised and count confusion matrices, and `ece` (secondary; below) |
+| `selection` | paper runs: `checkpoint_selection`, `scored_step`, `ema`, `ece_bins` |
 | `predictions.{val,test}` | the per-stamp predictions file (`predictions_val.npz`, `predictions_test.npz`), the evaluated set and its size |
 | `machine` | `device` (the one Lightning chose), `gpu` (the CUDA device name; `null` elsewhere), `torch`, `cuda`, `cudnn`, `platform`, `processor`, `python` |
 
 The predictions files hold `probabilities` (float32 softmax, N × 5, columns in label order),
 `labels` and `index` (the stamp's position in the evaluated set). They are plain `.npz`
 files read with `allow_pickle=False`. Comparisons pair runs stamp by stamp through them.
+
+### Which weights a run scores (`checkpoint_selection`; plan row D3)
+
+- **`best_val_loss`** (the default, CD21's protocol): the weights of the strictly best
+  validation loss, every `val_every_n_steps` steps, with the horizon rule. In a split run
+  the "validation" is the run's selection part (500 stamps for a fold), so the choice
+  itself is noisy: about 1.1 points of standard error on the selection accuracy.
+- **`final`**: the weights at the end of the run (the weight EMA's when `ema_decay` is
+  set). Validation still runs and is logged (`scalars.jsonl`, `best_step`,
+  `monitor_best`), but chooses nothing: the run needs `horizon_increment: 0`, so its length
+  is exactly `max_steps`, and no best checkpoint is kept. The CV fold scores, the
+  predictions files and the manifest's run are then those final weights; the result keys
+  keep their names (`val_acc_best`, `selection_acc_best`, ...) and `metrics.json["selection"]`
+  says which weights they are; `report-phase2`'s replication tables print its `scored_step`
+  (not the validation-best `best_step`), and the run registry records it as `scored_step`. It goes with `lr_schedule: cosine` (a fixed anneal over
+  `max_steps`) and `ema_decay`, the D3 recipe; the hypothesis registered for it: mean
+  balanced accuracy at least the baseline minus 0.1 points, a fold-to-fold std at least
+  20 % smaller, and a lower ECE.
+
+With `ema_decay` and `best_val_loss`, the selection chooses among the EMA weights (the
+module validates with them).
+
+### Calibration: ECE (a secondary metric)
+
+`ece` is the top-label expected calibration error (Guo et al. 2017) with 15 equal-width
+confidence bins `((m − 1)/15, m/15]`: `Σ_m |B_m|/n · |acc(B_m) − conf(B_m)|`, the
+confidence being the largest softmax probability (`protocol.calibration`). It is reported,
+never decided on: `compare-variants` prints each side's ECE per run (mean ± std), and for
+CV the fold-to-fold std of the balanced accuracy; `report-phase2` adds the test ECE to the
+replication tables (from the predictions files for the archived runs), a "std over
+folds" row to the per-fold table and a calibration table to the CV section. The CD21
+replication is strongly underconfident (test ECE about 0.22 at 94 % accuracy, seed 0 with
+features): the loss `CE − 0.5 H` rewards high-entropy outputs.
 
 Results are summarised as mean ± std (ddof = 1) over **5 seeds**. Runs in one comparison
 use the same machine and build (`machine.device`, `gpu`, `torch`, `cuda`). The 1050
@@ -322,7 +357,8 @@ astro-simclr compare-variants --splits $SPLITS \
 - Each run's predictions cover exactly its part, in order (otherwise exit 2).
 - **CV:** the balanced accuracy of each fold (seed means) for both arms and their
   difference, the pooled balanced accuracies, McNemar on the seed ensembles over all folds
-  (reported, not a rule), the paired bootstrap 95 % CI, and the rule's outcome. Last line
+  (reported, not a rule), the paired bootstrap 95 % CI, the fold-to-fold std and each side's
+  ECE per run (secondary), and the rule's outcome. Last line
   `compare-variants: ADOPT` (exit 0) or `compare-variants: NOT ADOPTED (worse|inconclusive)`
   (exit 1).
 - **Screen:** the seed-mean accuracies on the decision half, McNemar, and

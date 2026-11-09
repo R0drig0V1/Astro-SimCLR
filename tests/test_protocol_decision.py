@@ -9,6 +9,7 @@ tested in ``test_split_runs.py``.
 from __future__ import annotations
 
 import json
+import statistics
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -142,6 +143,11 @@ def test_cv_superiority_adopts_and_reports_per_fold(
     for fold in splits.folds:
         assert f"fold {fold.fold}: baseline" in text
     assert "paired by pool index" in text and "McNemar" in text
+    # The secondary metrics (plan row D3): fold-to-fold spread and calibration.
+    spread = statistics.stdev(result.cv.variant_folds)
+    assert "fold-to-fold std (ddof=1; secondary): baseline " in text
+    assert f"variant {spread:.4f}" in text
+    assert "ECE (15 bins, top label; secondary, per run): baseline " in text
     assert main(_argv(base, better, path)) == 0
     assert "compare-variants: ADOPT" in capsys.readouterr().out
     # The reverse is worse: not adopted, exit 1.
@@ -297,6 +303,7 @@ def test_screen_only_drops(
     kept = compare_decision(base, equal, path)
     assert kept.verdict == "KEEP" and kept.passed
     assert "the screen never adopts" in "\n".join(kept.lines)
+    assert "ECE (15 bins, top label; secondary, per run)" in "\n".join(kept.lines)
     assert main(_argv(base, much_worse, path)) == 1
     assert "compare-variants: DROP" in capsys.readouterr().out
     assert main(_argv(base, equal, path)) == 0

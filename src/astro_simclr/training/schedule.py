@@ -38,6 +38,12 @@ Carrasco-Davis et al. 2021 train by iterations, not epochs. ALeRCE's ``fit`` /
 It exposes ``best_model_path``, ``best_model_score`` and ``best_step``, the attributes
 ``experiments`` reads from a ``ModelCheckpoint``.
 
+**Scoring the final weights** (``keep_best=False``, ``checkpoint_selection: final``; plan
+row D3): the best score, step and epoch are still tracked (and logged in ``metrics.json``),
+but no weights are copied, none are restored at the end and no ``best.ckpt`` is written:
+the module ends with the last weights, which the run then evaluates. Such a run has
+``horizon_increment: 0`` (``config.Settings``), so the validation decides nothing.
+
 **Step numbering.** TF validated after the training step of iteration ``i`` for ``i`` in
 0, 10, 20, ..., i.e. after ``i + 1`` optimizer steps, and trained ``horizon`` steps in all;
 Lightning validates after 10, 20, 30, ... steps. ``best_step`` is Lightning's global step
@@ -77,6 +83,8 @@ class HorizonCallback(Callback):
         last_filename: name of the latest-state checkpoint without ``.ckpt``.
         last_every_n_steps: write it at the end of the validations of the steps that are
             multiples of this (and when training ends); None: never.
+        keep_best: keep, restore and write the best weights (the default, CD21); False
+            only tracks the best score (module docstring, "Scoring the final weights").
 
     Raises:
         ValueError: at construction, for a ``mode`` other than ``min``/``max``, a
@@ -95,6 +103,7 @@ class HorizonCallback(Callback):
         increment: int = 10_000,
         last_filename: str = "last",
         last_every_n_steps: int | None = None,
+        keep_best: bool = True,
     ) -> None:
         if mode not in ("min", "max"):
             raise ValueError(f"mode must be 'min' or 'max', got {mode!r}")
@@ -110,6 +119,7 @@ class HorizonCallback(Callback):
         self.increment = increment
         self.last_filename = last_filename
         self.last_every_n_steps = last_every_n_steps
+        self.keep_best = keep_best
         #: The current horizon (the Trainer's ``max_steps``).
         self.horizon = initial_horizon
         #: The best monitored value so far (a 0-d CPU tensor), or None before any validation.
@@ -167,9 +177,10 @@ class HorizonCallback(Callback):
             self.best_model_score = torch.tensor(value)
             self.best_step = step
             self.best_epoch = trainer.current_epoch
-            self._best_state = {
-                key: tensor.detach().clone() for key, tensor in pl_module.state_dict().items()
-            }
+            if self.keep_best:
+                self._best_state = {
+                    key: tensor.detach().clone() for key, tensor in pl_module.state_dict().items()
+                }
             self.horizon = max(self.horizon, step + self.increment)
             self._apply_horizon()
         if self.last_every_n_steps is not None and step % self.last_every_n_steps == 0:
