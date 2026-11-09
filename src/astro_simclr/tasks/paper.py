@@ -3,6 +3,7 @@
 What ``experiments._build_paper`` and ``PaperClassifierModule`` do for the Lightning path,
 without Lightning, sharing every piece that decides the numbers:
 
+- :func:`paper_crops`: the splits as the run's model sees them (also ``ensemble-eval``'s);
 - :func:`paper_inputs`: the run's splits as ``training.tensor_splits.TensorSplit`` (the
   float path or the uint8 diagnostic, the leaked Train stamps removed, a split run's
   roles, the C5-C7 fits of the Train role) and the ``paper_data`` metrics entry. The
@@ -66,6 +67,7 @@ __all__ = [
     "leaked_train",
     "load_backbone",
     "paper_augment",
+    "paper_crops",
     "paper_inputs",
     "with_train_fits",
 ]
@@ -108,6 +110,30 @@ def with_train_fits(
     return {**splits, "Train": dataclasses.replace(train, fits=fits)}
 
 
+def paper_crops(settings: Settings, data: Path, names: Sequence[str]) -> dict[str, TensorSplit]:
+    """The splits ``names`` of ``data`` as the run's model sees them (no Train exclusions).
+
+    One reader for both input paths, so a split run, a paper-protocol run and
+    ``ensemble-eval`` (plan row D4) get the same input: ``float_crops`` (with the context
+    channels, task 2.5-models) for ``paper_input: float32``, ``interim_uint8_crops``
+    otherwise, at ``paper_arch``'s input side.
+
+    Raises:
+        DataError: if ``data`` is not a valid prepared layout, or lacks the float32 stamps
+            the float path needs.
+    """
+    side = paper_input_side(settings.paper_arch)
+    if settings.paper_input == "float32":
+        return float_crops(
+            data,
+            nan_approximation=settings.nan_approximation,
+            names=names,
+            context=settings.context != "none",
+            side=side,
+        )
+    return interim_uint8_crops(data, names=names, side=side)
+
+
 def paper_inputs(
     settings: Settings, data: Path, split_run: SplitRun | None = None
 ) -> tuple[Callable[[], dict[str, TensorSplit]], dict[str, Any]]:
@@ -135,10 +161,9 @@ def paper_inputs(
         excluded = leaked_train(settings, data)
     else:
         excluded = list(split_run.splits.excluded_train)
-    side = paper_input_side(settings.paper_arch)
     info: dict[str, Any] = {
         "input": settings.paper_input,
-        "crop": side,
+        "crop": paper_input_side(settings.paper_arch),
         "nan_approximation": (
             settings.nan_approximation if settings.paper_input == "float32" else None
         ),
@@ -146,17 +171,7 @@ def paper_inputs(
     }
 
     def crops(names: Sequence[str]) -> dict[str, TensorSplit]:
-        # One reader for both paths, so a split run gets the same input (and context
-        # channels, task 2.5-models) as a paper-protocol run.
-        if settings.paper_input == "float32":
-            return float_crops(
-                data,
-                nan_approximation=settings.nan_approximation,
-                names=names,
-                context=settings.context != "none",
-                side=side,
-            )
-        return interim_uint8_crops(data, names=names, side=side)
+        return paper_crops(settings, data, names)
 
     def source() -> dict[str, TensorSplit]:
         if split_run is not None:
@@ -372,6 +387,10 @@ def build_paper_task(
         dropout_active=settings.dropout_active,
         drop_rate=settings.drop_rate,
         feature_set=settings.feature_set,
+        hybrid_dim=settings.hybrid_dim,
+        hybrid_depth=settings.hybrid_depth,
+        hybrid_heads=settings.hybrid_heads,
+        hybrid_readout=settings.hybrid_readout,
     )
     load_backbone(settings, model, info, download=download)
     net = PaperNet(model, criterion, reads_features=reads_features)

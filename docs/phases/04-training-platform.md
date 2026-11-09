@@ -224,6 +224,26 @@ Cut:
   next to a Lightning-versus-Lightning same-seed rerun as the noise floor. The archived runs
   were non-deterministic (`benchmark=True`), so they cannot be matched exactly.
 
+**4.7 results (2026-11-08, RTX 5090; the GTX 1050 is retired, so (b) ran on the 5090).**
+- **(a)** passes in CI.
+- **(b) passes, bit-exact.** CD21 real data, seed 0, `deterministic=true`, from main `ea87aa6`.
+  - Full schedule with a 3,000-step start and horizon extension: the same `best_step` (11,230) and 11/11 numeric metrics equal.
+  - Instrumented run, 1,000 steps without extension: the initial weights are identical (23 tensors, 441,122 values), and so are all 100 validations: step, `loss_val` and every tensor, with `torch.equal`.
+- **(c) passes (distributional).** The full CD21 schedule, `deterministic=false`, seeds 0–4. Test accuracy at best:
+  - plain: 0.9372 ± 0.0052;
+  - Lightning: 0.9324 ± 0.0088;
+  - Lightning rerun: 0.9296 ± 0.0071, the noise floor.
+
+  Same-seed paired differences:
+  - plain − Lightning: +0.48 ± 1.20 pts;
+  - Lightning rerun − Lightning: −0.28 ± 0.69 pts.
+
+  No seed reproduces across non-deterministic reruns of either engine. The plain mean lies inside the spread of the 10 Lightning runs (Welch p ≈ 0.1; one test stamp is 0.2 pts).
+- **Observation, not a failure:** `best_step` is lower and tighter on plain (6,898 ± 1,325, against 10,720 ± 5,324 and 13,552 ± 6,614). With 5 against 10 runs, a Mann-Whitney test gives U = 9 (p ≈ 0.07). Because (b) is bit-exact, a real algorithmic difference is unlikely; the kernel choice (cudnn.benchmark) is the likely source. Watch it in later plain-only CVs.
+- **Speed under a shared GPU:** about 11.5 min per CD21 run on plain against 16–18 min on Lightning, so 1.5× (3.3× uncontended).
+- Raw runs: `~/runs/gate47/` on the 5090.
+- **Cut-over:** from 2026-11-08 every new run uses `runtime.engine=plain`. 4.8 follows once the open PRs that touch Lightning are merged (#54, #58, #50, ema-final, rj23-plain).
+
 ### 4.8 Switch and retire (after 4.7)
 - Remove Lightning, the legacy data modules and the PIL path once nothing uses them.
 - Tag `lightning-final` first.

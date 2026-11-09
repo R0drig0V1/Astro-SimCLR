@@ -6,10 +6,12 @@
 - **Status:** accepted (2026-11-08, phase 3, task 3.4b)
 - **Implemented by:** `src/astro_simclr/rj23_regime.py`, `src/astro_simclr/rj23_data.py`
   (engine-free); `src/astro_simclr/training/rj23.py` (the Lightning adapters);
+  `src/astro_simclr/tasks/rj23.py` (the plain engine's adapter and the shared records);
   `src/astro_simclr/presets.py` (`rj23-<scenario>`), `configs/phase3/rj23-*.yaml`,
   `src/astro_simclr/config_tree/` (the nested variants and presets)
 - **Checked by:** `tests/test_rj23_regime.py`, `tests/test_rj23_data.py`,
-  `tests/test_rj23_training.py`, `tests/test_presets.py`
+  `tests/test_rj23_training.py`, `tests/test_tasks_rj23.py`, `tests/test_presets.py`,
+  `tests/test_engine_differential.py` (the rj23 cases)
 
 ## Context
 
@@ -102,10 +104,23 @@ from `engine.randomness.host_generator` with a reserved stream.
     in a callback, and records the run in `manifest.json` (ADR 0015) with the object splits
     hashed as its splits: a decision run is a `screen`, a replication run takes the new
     split part `whole` (ADR 0015's identity requires a part with a splits hash; no existing
-    run id changes). The plain engine (task 4.6) trains the paper classifier only so far:
-    its runner (`tasks.plain.run_plain`) and `astro-simclr run` with `runtime.engine:
-    plain` refuse `schedule: rj23` (`tasks.common.refuse_rj23`), and its rj23 adapter, a
-    plain `Task` over the same objects, is a follow-up.
+    run id changes). The plain engine's adapter (`tasks.rj23`, so that Lightning can be
+    removed in 4.8) uses the same objects as they are: `RJ23Task` (the classifier, the
+    cross-entropy, `keras_adam`; `eval_step` is `predict_probabilities`), a training source
+    that serves `ClassUniformStream` batch `s` at step `s`, and an engine `Schedule` whose
+    validation grid starts at step 0, whose monitored value is the selection part's
+    macro-F1 (a `score` of the validation's outputs), whose horizon is the fixed cap and
+    whose stop rule is `RJ23Schedule.decide` on the history (kept in the checkpoint); both
+    weights are kept (`stop`: the last weights, `best`: the loop's best, the same strict
+    rule). What needs no engine (the inputs, the stream check, the records and
+    `metrics.json`) is shared by both runners in `tasks.rj23`, so a plain run writes the
+    Lightning run's files. `tasks.plain.run_plain` takes the run's `RJ23Request`, and
+    `astro-simclr run` with `runtime.engine: plain` trains it. The 4.7(a) differential test
+    pins the two engines bit for bit (each scenario, both protocols, the sensitivity
+    flags, the stop at patience and at the cap, the training batches of stream 10, a
+    mid-run resume, resumes just before and at a patience stop); the plain resume is
+    exact, dropout masks included. The engine
+    gained three extension points for it (ADR 0014, amendment of task 3.4b).
 
 ## Consequences
 

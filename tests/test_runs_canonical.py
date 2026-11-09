@@ -145,11 +145,16 @@ def test_semantic_config_holds_every_other_field() -> None:
     assert isinstance(settings, dict)
     # The hash-neutral fields are semantic, but left out at their neutral values: num_workers
     # 0, feature_set all and backbone_weights none (the behaviour before the field: ADR
-    # 0016, ADR 0022), and the rj23_* defaults (task 3.4b; ADR 0023).
+    # 0016, ADR 0022), the hybrids' shape defaults (plan row B9) and the rj23_* defaults
+    # (task 3.4b; ADR 0023).
     neutral = {
         "num_workers",
         "feature_set",
         "backbone_weights",
+        "hybrid_dim",
+        "hybrid_depth",
+        "hybrid_heads",
+        "hybrid_readout",
         "rj23_scenario",
         "rj23_bn_position",
         "rj23_large_values",
@@ -167,6 +172,11 @@ def test_semantic_config_holds_every_other_field() -> None:
     weights = semantic_config("train-supervised", zoobot)["settings"]
     assert isinstance(weights, dict)
     assert weights["backbone_weights"] == "zoobot"
+    wide = Settings(paper_arch="hybrid", hybrid_dim=128)
+    shaped = semantic_config("train-supervised", wide)["settings"]
+    assert isinstance(shaped, dict)
+    assert shaped["hybrid_dim"] == 128
+    assert "hybrid_depth" not in shaped
 
 
 @pytest.mark.parametrize(

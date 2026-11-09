@@ -15,7 +15,8 @@ import json
 import math
 import os
 import random
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,7 @@ from astro_simclr.engine import (
     DevicePolicy,
     EarlyStop,
     EvalOutput,
+    FitResult,
     Horizon,
     IdentityState,
     Monitor,
@@ -263,8 +265,8 @@ def test_no_validation_means_no_best(tmp_path: Path) -> None:
     assert load_checkpoint(tmp_path / "ckpt" / "last.pt")["steps_done"] == 5
 
 
-def test_only_loss_val_is_monitored() -> None:
-    with pytest.raises(ConfigError, match="monitors loss_val only"):
+def test_only_loss_val_is_monitored_without_a_score() -> None:
+    with pytest.raises(ConfigError, match="computes loss_val only"):
         _fit(None, schedule=_schedule(monitor=Monitor("accuracy_val", "max")))
 
 
@@ -330,6 +332,118 @@ def test_early_stop_ends_the_run(tmp_path: Path) -> None:
     assert result.validations[-1].wait_count == 1 and not result.validations[-1].improved
     assert result.last_step == result.validations[-1].steps_done < 10_000
     assert load_checkpoint(tmp_path / "ckpt" / "last.pt")["steps_done"] == result.last_step
+
+
+@dataclass(frozen=True)
+class _Stop:
+    stop: bool
+
+
+class _ScriptedRule:
+    """A stop rule that stops once the history holds ``length`` values (any ``StopRule``)."""
+
+    def __init__(self, length: int) -> None:
+        self.length = length
+        self.calls: list[tuple[int, tuple[float, ...]]] = []
+
+    def decide(self, step: int, history: Sequence[float]) -> _Stop:
+        self.calls.append((step, tuple(history)))
+        return _Stop(len(history) >= self.length)
+
+
+def _accuracy(outputs: Sequence[EvalOutput]) -> float:
+    probabilities = torch.cat([o.probabilities for o in outputs])
+    targets = torch.cat([o.targets for o in outputs])
+    return float((probabilities.argmax(dim=1) == targets).float().mean())
+
+
+def _rj23_like(rule: _ScriptedRule, **changes: Any) -> Schedule:
+    values: dict[str, Any] = {
+        "monitor": Monitor("accuracy_val", "max"),
+        "validation": ValidationGrid(4, at_start=True),
+        "horizon": Horizon(40, 0),
+        "stop_rule": rule,
+        "keep": ("stop", "best"),
+        "checkpoint_every_n_steps": 4,
+    }
+    values.update(changes)
+    return Schedule(**values)
+
+
+def test_at_start_score_and_stop_rule(tmp_path: Path) -> None:
+    rule = _ScriptedRule(3)
+    task, result = _fit(tmp_path, schedule=_rj23_like(rule), score=_accuracy)
+    # Step 0 (before any step), then the grid; the rule stopped at the third value.
+    assert [v.steps_done for v in result.validations] == [0, 4, 8]
+    assert result.validations[0].train_loss is None and result.validations[0].epoch == 0
+    assert result.stopped_early and result.last_step == 8
+    assert [step for step, _ in rule.calls] == [0, 4, 8]
+    assert rule.calls[-1][1] == result.history == tuple(v.value for v in result.validations)
+    assert all(0.0 <= value <= 1.0 for value in result.history)  # the score, not a loss
+    # The step-0 validation's epoch is 0 (Lightning's current_epoch), in scalars.jsonl too.
+    assert read_scalars(tmp_path / "scalars.jsonl")[0]["epoch"] == 0
+    assert task.trained_steps == list(range(8))
+    # last.pt after the step-4 and step-8 validations (never at step 0), with the history.
+    last = load_checkpoint(tmp_path / "ckpt" / "last.pt")
+    assert last["steps_done"] == 8 and last["policy"]["history"] == list(result.history)
+    records = read_scalars(tmp_path / "scalars.jsonl")
+    assert [r["step"] for r in records] == [0, 4, 8]
+    assert all("accuracy_val" in r and "loss_val" not in r for r in records)
+
+
+def test_a_resumed_run_that_had_stopped_trains_nothing(tmp_path: Path) -> None:
+    _, first = _fit(tmp_path, schedule=_rj23_like(_ScriptedRule(3)), score=_accuracy)
+    rule = _ScriptedRule(3)
+    _, again = _fit(
+        tmp_path,
+        schedule=_rj23_like(rule),
+        score=_accuracy,
+        resume=tmp_path / "ckpt" / "last.pt",
+    )
+    assert again.steps == 0 and again.validations == () and again.stopped_early
+    assert again.history == first.history and again.best_step == first.best_step
+    assert rule.calls == [(8, first.history)]  # decided once, on the restored history
+
+
+def test_a_mid_run_resume_keeps_the_history(tmp_path: Path) -> None:
+    whole, part = tmp_path / "whole", tmp_path / "part"
+    _, expected = _fit(whole, schedule=_rj23_like(_ScriptedRule(4)), score=_accuracy)
+    _fit(part, schedule=_rj23_like(_ScriptedRule(4), horizon=Horizon(4, 0)), score=_accuracy)
+    # A step-4 checkpoint of another horizon: the run id is not checked without one.
+    _, resumed = _fit(
+        part,
+        schedule=_rj23_like(_ScriptedRule(4)),
+        score=_accuracy,
+        resume=part / "ckpt" / "last.pt",
+    )
+    assert resumed.history == expected.history
+    assert [v.steps_done for v in resumed.validations] == [8, 12]
+
+
+def test_an_off_grid_horizon_ends_a_stop_rule_run(tmp_path: Path) -> None:
+    # The last checkpoint at step 10 is off the grid (every 4): the rule is not asked there.
+    schedule = _rj23_like(_ScriptedRule(99), horizon=Horizon(10, 0))
+    _, first = _fit(tmp_path, schedule=schedule, score=_accuracy)
+    assert first.last_step == 10 and not first.stopped_early
+    rule = _ScriptedRule(99)
+    _, again = _fit(
+        tmp_path,
+        schedule=_rj23_like(rule, horizon=Horizon(10, 0)),
+        score=_accuracy,
+        resume=tmp_path / "ckpt" / "last.pt",
+    )
+    assert again.steps == 0 and not again.stopped_early and rule.calls == []
+
+
+def test_the_carrasco2021_checkpoint_has_no_history(tmp_path: Path) -> None:
+    _, result = _fit(tmp_path)
+    assert "history" not in load_checkpoint(tmp_path / "ckpt" / "last.pt")["policy"]
+    assert result.history == ()
+
+
+def test_a_schedule_takes_one_stop_rule() -> None:
+    with pytest.raises(ConfigError, match="early_stop or stop_rule"):
+        _rj23_like(_ScriptedRule(2), early_stop=EarlyStop(patience=1))
 
 
 # --- checkpoints and exact resume -------------------------------------------------------
@@ -668,3 +782,21 @@ def test_recorded_ends_failed_or_cancelled(
     with pytest.raises(error), recorded(record):
         raise error
     assert read_manifest(tmp_path).status == status
+
+
+def test_a_step_0_best_is_in_epoch_0_and_no_step_is_epoch_minus_1() -> None:
+    result = FitResult(
+        last_step=0,
+        horizon=0,
+        best_step=0,
+        best_score=0.5,
+        batches_per_pass=4,
+        stopped_early=True,
+        validations=(),
+        resumed_from=None,
+        steps=0,
+        fit_seconds=0.0,
+    )
+    assert (result.best_epoch, result.last_epoch) == (0, -1)
+    assert replace(result, best_step=4, last_step=5).best_epoch == 0
+    assert replace(result, best_step=5, last_step=5).last_epoch == 1

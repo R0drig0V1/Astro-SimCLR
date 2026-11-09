@@ -28,10 +28,13 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  │                                          datamodules ──► data (prepared layout) + augmentations
  ├──► reference (compare-reference: the gates of R1-R4 and CD21)
  ├──► protocol (make-splits, compare-variants: the phase-2 evaluation protocol) ──► data
+ ├──► ensemble_eval (ensemble-eval: seed ensembles and TTA of stored split runs; D4) ──► tta,
+ │      tasks.paper (PaperNet, paper_crops), engine (open_eval, DevicePolicy), runs, protocol
  ├──► oracle (fetch-m1, m1-oracle: the published M1 vs our input path) ──► paper_model, data
  ├──► alerts (fetch-alerts, alerts-summary: raw alerts from ALeRCE) ──► data (prepared, m1_features)
  ├──► r5 (r5-sources, build-r5: the R5 benchmark) ──► alerts (by_oid, store), protocol, data.raw_alerts
  │    (training ──► paper_variants: rot4 / single / p4 / p4m ──► paper_model, group_conv;
+ │     paper_variants ──► convnext_model (B8), hybrid_model (B9) ──► paper_variants.PaperHead;
  │     paper_model ──► feature_sets: all / position / none)
  ├──► preflight ──► experiments (R1-R4), tasks.plain (CD21), data (inspection, manifest)
  ├──► tasks (phase 4, 4.6: the paper classifier on the plain engine; no Lightning) ──► engine,
@@ -44,6 +47,8 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
       optim (LARS), losses (NT_Xent), stamp_relation, protocol (splits, stats), data
 
 cli train-supervised --preset rj23-* ──► training.rj23 (thin Lightning adapters, task 3.4b)
+   │   or, runtime.engine plain, tasks.plain ──► tasks.rj23 (the plain Task adapter)
+   │   (both ──► tasks.rj23: inputs, records, metrics.json, shared)
    ──► rj23_regime (schedule policy, class-uniform sampler, Keras Adam: engine-free)
    ──► rj23_data (parts from a raw-alerts layout + object splits) ──► data.rj23_input, protocol
    ──► rj23_model (engine-free nn.Modules) ──► data.rj23_input
@@ -168,8 +173,12 @@ of one run.
 
   | Field | Default | Meaning |
   |---|---|---|
-  | `paper_arch` | `rot4` | `rot4` (faithful: 4 rotations, mean after fc1), `single` (one pass, not invariant), `p4` (B7), `p4m` (B2') |
-  | `group_fields` | null | `p4` / `p4m`: fields of conv1-conv2 (conv3-conv5 twice); null is `32 // \|G\|` (8 / 4). An error with `rot4` / `single` |
+  | `paper_arch` | `rot4` | `rot4` (faithful: 4 rotations, mean after fc1), `single` (one pass, not invariant), `p4` (B7), `p4m` (B2'), `convnext_atto` / `convnext_pico` (B8), `hybrid` / `hybrid_p4` (B9) |
+  | `group_fields` | null | `p4` / `p4m` / `hybrid_p4`: fields of conv1-conv2 (conv3-conv5 twice); null is `32 // \|G\|` (8 / 4). An error with the other archs |
+  | `hybrid_dim` | 64 | `hybrid` / `hybrid_p4` (B9): token width of the attention blocks, a multiple of `hybrid_heads`. Another value is an error with the other archs (all four `hybrid_*` fields) |
+  | `hybrid_depth` | 2 | the hybrids: pre-norm transformer encoder blocks (≥ 1) |
+  | `hybrid_heads` | 4 | the hybrids: attention heads per block (≥ 1) |
+  | `hybrid_readout` | `mean` | the hybrids: `mean` of the 36 grid tokens, or a learned `cls` token |
   | `context` | `none` | `avgpool63`: the 63×63 stamp average-pooled to 21×21 as 3 more channels (B1'); needs `paper_input: float32` |
   | `rot90_augment` | false | rotate each training stamp by a random multiple of 90° (seeded by `seed` and the step) |
   | `feature_set` | `all` | the features the head reads (a diagnostic; ADR 0016): `all` 23 (faithful), `position` the 6 sky coordinates (`ra`, `dec`, `ecl_lat`, `ecl_long`, `gal_lat`, `gal_long`), `none` the images only (bit-identical to `with_features: false`). `position` needs `with_features` |
@@ -214,7 +223,7 @@ the config hash is defined on, ADR 0015 rule 10), so it changes no numbers.
   |---|---|---|
   | `model` | `stamp_classifier` | `drop_rate`, `beta_loss` |
   | | `resnet` | `name` (`supervised_model`: `resnet18/34/50/152`), `beta_loss` |
-  | | `paper_stamp_classifier` | `arch` (`paper_arch`), `backbone_weights`, `group_fields`, `context`, `feature_set`, `input` (`paper_input`), `nan_approximation`, `exclude_leaked_train`, `dropout_active`, `drop_rate`, `beta_loss` |
+  | | `paper_stamp_classifier` | `arch` (`paper_arch`), `backbone_weights`, `group_fields`, `hybrid_dim`, `hybrid_depth`, `hybrid_heads`, `hybrid_readout`, `context`, `feature_set`, `input` (`paper_input`), `nan_approximation`, `exclude_leaked_train`, `dropout_active`, `drop_rate`, `beta_loss` |
   | | `rj23` | `scenario` (`rj23_scenario`), `bn_position` (`rj23_bn_position`), `large_values` (`rj23_large_values`) (task 3.4b) |
   | | `simclr` | `encoder` (`encoder_name`), `projection_dim`, `temperature`, `legacy_denominator` (`nt_xent_legacy_denominator`) |
   | | `linear_eval` | `pretrained`, `beta_loss` |
@@ -232,8 +241,8 @@ the config hash is defined on, ADR 0015 rule 10), so it changes no numbers.
   - The model decides the command (`Config.command`). Every default is the default of the
     flat field (`Config()` lowers to `Settings()`). `runtime.engine` is `lightning` (the
     default until 4.7/4.8) or `plain` (task 4.6: `astro-simclr run` then trains with
-    `tasks.plain.run_plain`, the paper classifier on `carrasco2021` only); it is the run
-    id's engine, not hashed.
+    `tasks.plain.run_plain`: the paper classifier on `carrasco2021`, and RJ23's on `rj23`
+    since task 3.4b's plain adapter); it is the run id's engine, not hashed.
   - A `Config` is valid by construction: the tags, `paper_stamp_classifier` ⇔
     `carrasco2021` schedule ⇔ `paper` augmentation, `rj23` model ⇔ `rj23` schedule ⇔
     `none` augmentation, then the lowered `Settings`' checks,
@@ -293,7 +302,8 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   2.2c, see `presets`) and `--splits FILE --fold K | --screen` (task 2.5-infra, a split
   run; see `protocol`; `--fold`/`--screen` without `--splits`, or the reverse, exit 2).
   With `--preset rj23-<scenario>` (or any `schedule: rj23`; task 3.4b) the run goes to
-  `training.rj23.run_rj23`: `--splits` is then the object-splits file of the `raw-alerts`
+  `training.rj23.run_rj23` (`astro-simclr run` with `runtime.engine: plain`: to
+  `tasks.plain.run_plain`, i.e. `tasks.rj23.run_rj23_plain`): `--splits` is then the object-splits file of the `raw-alerts`
   layout (required), `--screen` makes it a decision run, `--fold` is refused, and
   `--alerts CSV` names the alert table the splits were drawn from (default: the layout's
   own); `--alerts` outside `rj23` exits 2.
@@ -314,6 +324,10 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   2.5-infra) it decides on split runs: 0 for ADOPT / KEEP, 1 for NOT ADOPTED / DROP;
   `--rule`/`--margin` without `--splits`, `--split` with it, or `--margin` without
   `--rule non-inferiority` exit 2.
+- `ensemble-eval RUN_DIR... --splits FILE --fold K | --screen [--tta rot4|d4|d4_shift]
+  [--test] --out JSON [--overwrite] [--data DIR] [--accelerator ...]` (plan row D4, see `tta and
+  ensemble_eval`): exit 0 when written, 2 for runs that cannot form an ensemble or a TTA
+  mode their input cannot support, 1 for unusable data.
 - `make-object-splits ALERTS_CSV --out FILE [--seed 0] [--fractions 0.6 0.2 0.2]
   [--labels NAMES] [--drop-conflicts] [--overwrite]` and `bench-report RUN... --splits FILE
   --alerts ALERTS_CSV [--baseline RUN...] [--split test|val] [--reference-counts N...]
@@ -496,7 +510,10 @@ Task 2.1 adds the paper's float input path (`docs/data.md`, "Float input path"):
   input dtype; `former_nan_mask` (zeros of channels with more than one exact zero over the
   full stamp), `approximated_stamps` (stamps where a masked zero is inside the crop),
   `crop_split` (a whole float32 split, chunked, for 2.2a's precomputed crops) and
-  `crop_bounds` (ALeRCE's crop arithmetic: `(21, 42)` for 21 on 63). Golden fixture:
+  `crop_bounds` (ALeRCE's crop arithmetic: `(21, 42)` for 21 on 63). Plan row D4 adds
+  `offset=(dy, dx)` to `crop_then_normalise` and `crop_split`: the window moves by `dy`
+  rows and `dx` columns (refused if it leaves the stamp), then the same normalisation;
+  `(0, 0)`, the default, is the paper's crop through the same code. Golden fixture:
   `tests/fixtures/data/alerce_crop.npz`, from ALeRCE's own functions
   (`scripts/characterize/data/alerce_crop.py`).
 - `float_input`, task 2.5-models (plan row B1'): `context_then_normalise(stamps, factor=3,
@@ -835,6 +852,8 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
 | `p4`, `context: avgpool63` | B7 with the 63×63 context (B1') | 228,915 | 53,978,880 (+1.7 %) |
 | `convnext_atto`, `image_size: 63` | timm ConvNeXt-atto on the whole stamp, 4 rotations (B8; `convnext_model`) | 3,405,227 | 714,557,184 |
 | `convnext_pico`, `image_size: 63` | timm ConvNeXt-pico on the whole stamp, 4 rotations (B8) | 8,575,667 | 1,785,014,016 |
+| `hybrid` | the paper's convolutions, 2 attention blocks over the 6×6 grid, 4 rotations (B9; `hybrid_model`) | 371,251 | 221,357,824 |
+| `hybrid_p4` | the p4 trunk, orientation-pooled, 2 attention blocks with C4-tied positions, 1 pass (B9) | 153,907 | 55,246,720 |
 
 - `GroupStampClassifier(group, *, group_fields=None, with_features, dropout_active,
   drop_rate, in_channels)`: the paper's geometry with group layers: `ZeroPad2d(3)`,
@@ -848,7 +867,8 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
   layers and initialisation); tested equal to `PaperStampClassifier`'s head with the same
   weights.
 - `build_paper_model(arch, *, group_fields, context, with_features, dropout_active,
-  drop_rate, n_classes, feature_set)`: the factory `PaperClassifierModule` uses; the defaults build the faithful
+  drop_rate, n_classes, feature_set, hybrid_dim, hybrid_depth, hybrid_heads,
+  hybrid_readout)`: the factory `PaperClassifierModule` uses; the defaults build the faithful
   model. `paper_in_channels(context)`, `default_group_fields(arch)`, `paper_input_side(arch)`
   (21, or 63 for the ConvNeXts: what `image_size` must be).
 - `count_parameters(model)`; `count_macs(model, *, in_channels)`: MACs per stamp of an
@@ -858,7 +878,8 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
   passes (divide by 4 for a view).
 - `VARIANTS`: name → `Variant(row, overrides, description)`: `rot4` (A), `single-aug`
   (`single` + `rot90_augment`), `p4` (B7), `p4-16`, `p4m` (B2'), `p4-context` (B1'),
-  `convnext-atto`, `convnext-pico` and `convnext-pico-zoobot` (B8). A run
+  `convnext-atto`, `convnext-pico` and `convnext-pico-zoobot` (B8), `hybrid`,
+  `hybrid-cls`, `hybrid-wide` (dim 128, 4 blocks) and `hybrid-p4` (B9). A run
   is the `carrasco2021` preset plus `--set key=value` for each override, for example
   `train-supervised --preset carrasco2021 --set paper_arch=p4 --set context=avgpool63`.
   Split runs (`--splits FILE --fold K | --screen`, 2.5-infra) take the same flags: one crop
@@ -927,6 +948,66 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
   disabled, the settings, the run wiring; a CPU split run of `convnext_atto` in
   `tests/test_split_runs.py`; the golden fixture with `backbone_weights: none`.
 
+## `hybrid_model` (task 2.5, plan row B9)
+
+`src/astro_simclr/hybrid_model.py`: conv-attention hybrids as `paper_arch` values of
+`paper_stamp_classifier`, on the paper's 21×21 crop (and the 6-channel context). Engine-free
+(no Lightning import; tested in a fresh interpreter).
+
+- `HybridStampClassifier(arch, *, dim, depth, heads, readout, group_fields, with_features,
+  dropout_active, drop_rate, in_channels, n_classes, feature_set)`: a conv trunk down to its
+  last 6×6 grid (36 tokens) → `embed` (linear to `dim`) + `positions` (learned 2-D table)
+  [+ a CLS token] → `depth` × `EncoderBlock` → LayerNorm → mean of the grid tokens or the
+  CLS token → `fc1` to 64, ReLU, dropout per view → the mean over the views → `PaperHead`
+  (`feature_set` honoured).
+  - `hybrid`: the paper's five convolutions (64 channels per token); one positional vector
+    per cell; **4 rotations as one batch, mean after fc1**: exactly invariant by
+    averaging (one view alone is not: the free table sees where a pattern is).
+  - `hybrid_p4`: the p4 G-CNN trunk (`group_fields` F, default 8: F/2F fields) then the
+    **mean over the 4 orientations** of each field (2F channels per token); the positional
+    table is **tied across C4** (one vector per orbit of the 6×6 grid, 9 orbits;
+    `c4_orbits`). A 90° rotation of the stamp then permutes the tokens, which attention,
+    the MLPs, LayerNorm and both readouts do not see: exactly invariant **in one pass**,
+    so no 4-rotation mean (it would average 4 equal representations at 4× the cost). Not
+    built: 144 tokens of one orientation each with positions tied over the joint
+    (cell, orientation) orbits, which keeps orientation information at 16× the attention
+    cost.
+- `EncoderBlock(dim, heads)`: pre-norm; LayerNorm → `qkv` → scaled dot-product attention
+  written as two batched products and a softmax (counted by `count_macs`, the same on every
+  backend) → `proj` → residual; LayerNorm → `fc_in` (2·dim, `MLP_RATIO`) → GELU → `fc_out`
+  → residual. No dropout, no stochastic depth. Tested equal to `nn.MultiheadAttention`
+  with the same weights, and permutation-equivariant.
+- `GridPositions(side, dim, *, tied_c4)`: the tied table is expanded by a constant one-hot
+  matrix product (each cell gets an exact copy of its orbit's row), so its backward is a
+  matrix product, not `index_select`'s scatter (no deterministic MPS kernel).
+- Initialisation (seeded global generator): trunks as their models (Glorot, zero biases;
+  `group_conv` fans for p4); embedding, attention, MLP, positions and CLS from a normal of
+  std 0.02 truncated at 2σ, zero biases, LayerNorm (1, 0); fc1 and the head as the paper's.
+- | arch | Parameters | MACs per view | MACs per stamp |
+  |---|---|---|---|
+  | `rot4` (the paper's) | 441,075 | 52.6 M | 210.6 M (4 views) |
+  | `hybrid` | 371,251 | 55.3 M | 221.4 M (4 views) |
+  | `hybrid`, `hybrid_readout: cls` | 371,315 | 55.4 M | 221.7 M |
+  | `hybrid`, `hybrid_dim: 128`, `hybrid_depth: 4` | 844,915 | 73.0 M | 292.0 M |
+  | `hybrid_p4` | 153,907 | 55.2 M | 55.2 M (1 view) |
+
+  (with the 23 features; defaults dim 64, depth 2, heads 4, mean.) The paper's 2304 → 64
+  fc1 (147k parameters) becomes the embedding (4k), two blocks (66k) and a 64 → 64 fc1;
+  attention adds about 2.7 M MACs per view (5 %).
+- Settings: `hybrid_dim`, `hybrid_depth`, `hybrid_heads`, `hybrid_readout` (defaults in
+  `config.HYBRID_FLAGS`); another value with a non-hybrid arch is a `ConfigError`. They are
+  listed in the `carrasco2021` presets (a changed shape is a deviation), hash-neutral at their
+  defaults (`runs.canonical.HASH_NEUTRAL_DEFAULTS`: no existing hash moves) and recorded in
+  the module's hyperparameters only when changed (the faithful `hparams.yaml` is unchanged).
+- **Tested** (`tests/test_hybrid_model.py`): shapes; float64 invariance under the 3
+  rotations with every parameter perturbed, both archs, both readouts, with and without the
+  context (a flip visible); one view not invariant for `hybrid` and invariant for
+  `hybrid_p4`; the orbits, the tied table, the block; the pinned and the analytic counts;
+  initialisation, seed, dropout, `feature_set`; the checks; the settings, deviations,
+  hyperparameters and a reload. The golden fixture with the four flags at their defaults
+  (`tests/test_paper_variants.py`); CPU split runs of `hybrid` (CLS, C5-C7 augmentation) and
+  `hybrid_p4` (context) in `tests/test_split_runs.py`.
+
 ## `rj23_model` (task 3.4)
 
 `src/astro_simclr/rj23_model.py`: the stamp classifiers of Reyes-Jainaga et al. 2023 (RJ23)
@@ -982,8 +1063,9 @@ into training.
 ## `rj23_regime` and `rj23_data` (task 3.4b)
 
 The training regime of RJ23 as **engine-free** objects (the phase-4 rule from B0 on: no
-Lightning; the Lightning adapter is `training.rj23`, the plain engine of phase 4 adapts the
-same objects). ADR 0023 pins what the sources leave open.
+Lightning; the Lightning adapter is `training.rj23`, the plain engine's is `tasks.rj23`,
+both over the same objects, bit for bit equal: section `engine`, the 4.7(a) test). ADR 0023
+pins what the sources leave open.
 
 `src/astro_simclr/rj23_regime.py`:
 
@@ -1273,12 +1355,12 @@ in its shards, and a fake service for the by-oid fetch). They cover:
 - `--expect`;
 - the CLI commands.
 
-## `archive` (phase 5, task 5.1a; ADR 0019)
+## `archive` (phase 5, tasks 5.1a and 5.1; ADR 0019)
 
 `src/astro_simclr/archive/`: the unlabelled pretraining corpus from the ZTF public alert
-archive. The rules, layout, commands and budget are in [`docs/data.md`](data.md),
-"Archive corpus"; the decisions in ADR 0019. Nothing in the package imports torch or opens
-a network connection.
+archive, and its index. The rules, layout, commands and budget are in
+[`docs/data.md`](data.md), "Archive corpus" and "Corpus index"; the decisions in ADR 0019
+and its amendment. Nothing in the package imports torch or opens a network connection.
 
 ```
 tarball file or stdin ──► TarballStream ──Member──► parse_alert(repair=False) ──Alert──► _decide
@@ -1345,6 +1427,40 @@ tarball file or stdin ──► TarballStream ──Member──► parse_alert(
   - `estimate(plan, stamps_per_night, tarball_gb, download_hours, measured)` gives the
     stamps, GB and hours per year, per use and in total. The basis is assumed or measured
     on a corpus. `format_estimate` prints it.
+- `corpus_index` (task 5.1):
+  - `build_corpus_index(archive, layout=, oid_files=, candid_files=, radius_arcsec=1.5,
+    duplicates="first", seed=0, near=DEFAULT_NEAR, chunk_rows=4096, progress=)` lists the
+    complete nights once, reads every row's identity and position, and applies `RULES` in
+    order: `candid_list`, `oid_list`, `position` (`protocol.groups.match_any_within`
+    against every CD21 alert, positions from `split_positions`; a match drops its whole
+    `oid`), `near_duplicate` (on
+    the rows left; a match drops its whole `oid`), then `duplicate_oid` (`_one_per_oid`:
+    the earliest, or a draw from `host_generator(seed, 0, corpus_duplicates)`). It returns
+    `CorpusIndex(rows, meta)`.
+  - `_reference_layout` re-hashes each `features.npy` and `images_f32.npy` it reads
+    against the layout's `meta.json`, and refuses a layout without float32 stamps when the
+    near-duplicate check runs.
+  - `load_candid_exclusions` is the candid counterpart of `selection.load_exclusions`.
+  - `write_corpus_index` / `read_corpus_index` handle the `.npz` (`rows` and `meta` as a
+    JSON string; atomic write; format, version, dtype, `n` and sort order checked).
+    `check_archive(index, archive)` compares `corpus.json`'s SHA-256 and the `meta.json`
+    SHA-256 of every night the index uses.
+- `near_duplicates`: `descriptors(stamps)` (mean-pool 7 to 9×9×3, centred per channel,
+  unit norm, float32; zeros for a stamp with no structure), `NearDuplicateRules(cosine=0.99,
+  max_abs_diff=1e-3, candidates=4)`, `ReferenceStamps(names, images)` (the CD21 splits,
+  memory-mapped; `locate`, `stamp`, `descriptors`), and `find_near_duplicates(chunks,
+  reference, rules)` → `NearDuplicates(matched, matches, candidates, checked)`. Stage 1
+  thresholds float32 cosines (numpy) in blocks of 1024 query rows and keeps the best
+  `candidates` per row (ties by the lower reference row); stage 2 checks the full-resolution
+  pixel difference.
+- `reader`: `normalise_stamps(raw)` (`alerce_normalise`, then float32) and
+  `CorpusStamps(archive, rows)`, which memory-maps the indexed nights (`load_night`),
+  checks the index's `oid`/`candid` against them, and maps each index position to a
+  cutout file and offset. `read(positions, out=)` reads sorted by `(file, offset)` and
+  scatters to the requested order; `normalised(positions)`; `chunks(positions, n)` yields
+  `(positions, normalised)` blocks; `nbytes`.
+- `commands`: the `build-corpus-index` subcommand (`add_corpus_index_command`, registered by
+  `cli.build_parser`).
 - `alerts.parse` changes for the archive:
   - `oid` and `candid` are optional (the alert's own are taken).
   - `repair=False` raises `CutoutShapeError` for non-63×63 cutouts.
@@ -1363,6 +1479,22 @@ hostile members. They cover:
 - another file for a complete night, and a corpus refusing other rules;
 - a deterministic writer, `corpus_index`, the loader's checks and the CLI;
 - the plan's strata, seeds, spares, pilot and uses, and the assumed and measured estimates.
+
+`tests/test_corpus_index.py` (offline: a CD21-like layout with float32 stamps and set
+positions, and an archive written with `NightWriter`) covers:
+- the cross-match inside and outside 1.5″, across the RA wrap and at the pole, and its
+  ties;
+- every rule and its count, with an object on two nights, and `first` and seeded `random`;
+- a renormalised copy of a CD21 stamp dropped with its `oid`, and a noisy look-alike only
+  counted;
+- the SHA-256 of every input, the index file's round trip and refusals, and
+  `check_archive`;
+- the reader across cutout files and in any order, and its refusals of another archive;
+- the pilot from an index: the same model on `memmap` and `host`, the CD21 evaluation and
+  record, the refusals (`device`, the host cap, noise, another evaluation layout, a weak
+  index, a resume on a rebuilt index), the one-batch prefetch, and a resume from a
+  checkpoint written before the corpus fields;
+- the CLI.
 
 ## `optim` (task 1.5)
 
@@ -1850,7 +1982,10 @@ fold's training part's) and its exact resume.
 
 `src/astro_simclr/training/rj23.py`: thin Lightning adapters of `rj23_regime` and
 `rj23_data` (ADR 0023), run by `train-supervised --preset rj23-<scenario> --splits
-OBJECT_SPLITS [--screen] [--alerts CSV]`.
+OBJECT_SPLITS [--screen] [--alerts CSV]`. What does not need Lightning is shared with the
+plain engine's adapter in `tasks.rj23` (section `tasks`): `RJ23Request`, the inputs
+(`rj23_inputs`), the stream check, the keep records, `schedule_record` and
+`rj23_metrics`, so both engines write the same files with the same values.
 
 - `RJ23Module(scenario, n_classes, bn_position, lr)`: `rj23_model.build_rj23_classifier`,
   unweighted cross-entropy (`loss_train`), `keras_adam`. No validation step.
@@ -1885,7 +2020,8 @@ OBJECT_SPLITS [--screen] [--alerts CSV]`.
 
 **Resume** restores the weights, the optimizer, the step, the history and the snapshots;
 the batch stream continues exactly. Lightning does not restore the global torch generator,
-so dropout masks after a resume differ (the plain engine's checkpoint keeps every stream).
+so dropout masks after a resume differ (the plain engine's checkpoint keeps every stream:
+its resume is exact, `tasks.rj23`).
 
 **Tested** (`tests/test_rj23_training.py`, CPU, a synthetic 5-class `raw-alerts` layout):
 an end-to-end run (the history agrees with the policy, the `bench-report` contract read by
@@ -1910,11 +2046,11 @@ Lightning behaviour the loop reproduces (C1-C11) and the test that pins each.
 | Module | Contract |
 |---|---|
 | `task` | `Task`: `module`, `make_optimizer()` (after the device move), `train_step(batch, step)` (the loss with its graph; `step` = optimizer steps done before it), `eval_step(batch) -> EvalOutput`, `state()` / `load_state()`. `mean_of_batch_losses`: the monitored value, the float32 mean of the batch means (not the per-sample mean). |
-| `policies` | `Monitor.improves` (strict, NaN never, the first finite value always: `HorizonCallback`'s rule); `ValidationGrid.due(steps_done)` (multiples of the interval only: no step 0, no epoch-end, no forced final validation); `Horizon.extended` / `resumed`; `EarlyStop` (Lightning's semantics, for `rj23`); `Keep = stop \| best`; `Schedule`, whose defaults are the `carrasco2021` settings. |
-| `checkpoint` | `Checkpoint` (a `TypedDict` of plain values, read with `weights_only=True`) and its frozen key set `CHECKPOINT_KEYS`: format, engine, identity (A0's run id and attempt, the split run), `steps_done` (also the stream position), model, optimizer, task, policy, stream definition, every RNG stream, numerics (ADR 0010) and versions. `check_resumable` refuses Lightning checkpoints, other engines, formats and incomplete ones. |
+| `policies` | `Monitor.improves` (strict, NaN never, the first finite value always: `HorizonCallback`'s rule); `ValidationGrid.due(steps_done)` (multiples of the interval only: no epoch-end, no forced final validation), and `at_start` (default off: the initial weights too, step 0, `rj23`); `Horizon.extended` / `resumed`; `EarlyStop` (Lightning's semantics; unused); `StopRule` (`decide(step, history) -> .stop`, an engine-free policy on the whole history: `rj23_regime.RJ23Schedule`, as it is); `Keep = stop \| best`; `Schedule` (`stop_rule` or `early_stop`, not both), whose defaults are the `carrasco2021` settings. |
+| `checkpoint` | `Checkpoint` (a `TypedDict` of plain values, read with `weights_only=True`) and its frozen key set `CHECKPOINT_KEYS`: format, engine, identity (A0's run id and attempt, the split run), `steps_done` (also the stream position), model, optimizer, task, policy (with a `stop_rule`, its `history` of monitored values: absent otherwise, so the `carrasco2021` checkpoints keep their keys), stream definition, every RNG stream, numerics (ADR 0010) and versions. `check_resumable` refuses Lightning checkpoints, other engines, formats and incomplete ones. |
 | `device` | `DevicePolicy`: one device (`world_size != 1` refused), `cudnn.benchmark = not deterministic`, `use_deterministic_algorithms(deterministic)`, `CUBLAS_WORKSPACE_CONFIG=":4096:8"` only when deterministic (`torch_flags()`, checked equal to Lightning's `_set_torch_flags`), ADR 0010's precision. |
 | `data` | `Batch` / `TrainBatch` (equal to `device_data`'s); `DataTier` (`device`, `pinned`, `memmap`, all exact); `TierChoice` (non-float32 storage is a recorded deviation); the `BatchSource` (`batch(step)`, a pure function of the stream and the step) and `EvalSource` protocols. |
-| `randomness` | `host_generator(seed, step, stream)` (= `class_augment.augment_rng`: per-sample parameters, device-independent); `device_generator(seed, step, stream, device)` (per-pixel fields: the seed is device-independent, the values are not, so runs record the device); `RESERVED_STREAMS`, the stream numbers in use (1-4 the paper model's augmentations, 5 the `block` stream's passes (4.3, ADR 0018), 6-9 the SimCLR pilot's views, noise fields, batch order and diagnostics; ADR 0025). |
+| `randomness` | `host_generator(seed, step, stream)` (= `class_augment.augment_rng`: per-sample parameters, device-independent); `device_generator(seed, step, stream, device)` (per-pixel fields: the seed is device-independent, the values are not, so runs record the device); `RESERVED_STREAMS`, the stream numbers in use (1-4 the paper model's augmentations, 5 the `block` stream's passes (4.3, ADR 0018), 6-9 the SimCLR pilot's views, noise fields, batch order and diagnostics; ADR 0025; 10 RJ23's class-uniform stream, ADR 0023). |
 
 `tests/test_engine_contracts.py` also pins the Lightning 2.6.6 facts the checklist relies on
 (the validation grid across 7-step epochs, `global_step` inside `training_step`, the
@@ -1929,7 +2065,7 @@ the Lightning path is unchanged.
 
 | Module | What it does |
 |---|---|
-| `loop` | `fit(build, train, validation, schedule=, device=, seed=, run_dir=, identity=, resume=, on_validation=, progress=) -> (task, FitResult)`: precision and flags (`DevicePolicy.apply`), `seed_everything`, `build()` on the CPU, the move, `make_optimizer()`; per step forward, `zero_grad(set_to_none=True)`, backward, `step()`; after each step the grid, then the validation (`zero_grad`, every submodule's mode captured, `eval()`, `no_grad`, the modes restored), the policies (`Monitor`, `Horizon`, `EarlyStop.update`), `last` if due; the loop ends when `steps_done >= horizon` after that. `evaluate(task, sources)` (`inference_mode`) and `evaluate_kept(task, result, sources, keep)` (`stop` first, then the restored best). `FitResult`: `last_step`, `horizon`, `best_step`, `best_score`, the derived `best_epoch` / `last_epoch`, this fit's `validations`, `steps`, `fit_seconds`, the best weights. Only `loss_val` is monitored for now. |
+| `loop` | `fit(build, train, validation, schedule=, device=, seed=, run_dir=, identity=, resume=, on_validation=, progress=, score=) -> (task, FitResult)`: precision and flags (`DevicePolicy.apply`), `seed_everything`, `build()` on the CPU, the move, `make_optimizer()`; per step forward, `zero_grad(set_to_none=True)`, backward, `step()`; a fresh fit validates first when the grid is `at_start` (that validation's epoch is 0, as Lightning's `current_epoch`, not the `-1` of `(steps - 1) // batches_per_pass`); after each step the grid, then the validation (`zero_grad`, every submodule's mode captured, `eval()`, `no_grad`, the modes restored), the policies (`Monitor`, `Horizon`, `EarlyStop.update` or the `StopRule` on the history), `last` if due (never at step 0); the loop ends when `steps_done >= horizon` or the stop rule stopped, after that (a resumed run whose rule had stopped trains nothing). `evaluate(task, sources)` (`inference_mode`) and `evaluate_kept(task, result, sources, keep)` (`stop` first, then the restored best). `FitResult`: `last_step`, `horizon`, `best_step`, `best_score`, the derived `best_epoch` / `last_epoch`, this fit's `validations`, `steps`, `fit_seconds`, the best weights, the run's `history` (with a stop rule). The monitored value is `loss_val` (the mean of the batch losses) unless a `score` of the validation's outputs is given, under the monitor's name (task 3.4b: `macro_f1_val`); `scalars.jsonl` and the progress line use that name. |
 | `checkpoint` (4.1 part) | `capture_rng` / `restore_rng` (Python, NumPy's global, torch CPU, CUDA or MPS); `numerics_record`; `save_checkpoint` (atomic: a temporary file, then a rename); `load_checkpoint` (`weights_only`, `check_resumable`); `check_identity` (run id and split run; the attempt may differ) and `check_numerics` (precision and determinism); `BestWeights`, `ckpt/best.pt`'s record (weights of the best validation, not resumable), read by `load_best`. |
 | `policies` (4.1 part) | `EarlyStop.update(value, best, wait, mode)`: Lightning's `_evaluate_stopping_criteria` in its order and float32 arithmetic. |
 | `precision` | ADR 0010's `apply_fp32_precision(precision)` and `fp32_precision_record(device)`, moved from `training.runs` (which delegates). |
@@ -1950,7 +2086,9 @@ stream (`TrainSource.resume`, refused on another stream); the RNG streams last.
 **Tested.** `tests/test_engine_loop.py` (a toy task with an active dropout and a frozen
 submodule): the grid and the horizon, the step keys, the modes, gradients and no-grad /
 inference contexts, `keep`, early stopping against Lightning's `EarlyStopping` over value
-sequences, the checkpoint contents, exact resume through the global RNG streams (and its
+sequences, the step-0 validation, a `score` and a `StopRule` (the history in the
+checkpoint, a resumed stopped run training nothing, a mid-run resume keeping the history,
+none in a `carrasco2021` checkpoint), the checkpoint contents, exact resume through the global RNG streams (and its
 control: without `restore_rng` it is not exact), every resume refusal, atomic writes, the
 seeding and flags, the scalars, and the `engine: plain` manifest.
 `tests/test_engine_differential.py` is **the 4.7(a) CPU differential test**, a CI gate.
@@ -1964,7 +2102,18 @@ manifests `finished`. Cases: the 2.5 flags (`single`, `p4`, `p4m`, `convnext_att
 `context`, `rot90`, C5, C6, C7, both `feature_set` diagnostics, `fp32_precision: tf32`,
 all of C5-C7 with `p4`), a fold and the screen, a mid-run plain resume, and each
 accelerator present (deterministic). It also ports the three Lightning-bound resume tests
-to the plain runner.
+to the plain runner. Since task 3.4b's plain adapter it also runs the `rj23` schedule
+(`training.rj23.run_rj23` against `run_plain`) on a synthetic 5-class `raw-alerts` layout:
+each scenario, the replication and the decision protocols, `rj23_bn_position:
+before_concat`, `rj23_keep: best`, `rj23_large_values: code`, a stop by patience and one at
+the cap, a mid-run plain resume (then a resume of the finished run, which trains
+nothing), and plain resumes two validations, one validation and zero steps before a
+patience stop (the restored wait and best decide the same stop, from the best kept before
+the resume point). They agree bit for bit on the initial weights, every validation from step 0 (its
+macro-F1 and the weights), every training batch (each Lightning batch is the plain
+source's, and its labels are the classes drawn from `host_generator(seed, step, 10)`),
+`metrics.json` (also without each keep's checkpoint file), both keeps' predictions files
+and the manifests.
 
 ### The data layer (task 4.3; ADR 0018)
 
@@ -2033,17 +2182,18 @@ phase-5 corpus. Their CUDA and cold-disk numbers are measured on the GPU machine
 
 ## `tasks` (phase 4, task 4.6; ADR 0014, amendment of task 4.6)
 
-`src/astro_simclr/tasks/`: the paper classifier on the plain engine, and what both engines'
-runners share. **Nothing in it imports Lightning** (tested in a fresh interpreter, with
+`src/astro_simclr/tasks/`: the paper classifier and RJ23's classifiers (task 3.4b) on the
+plain engine, and what both engines' runners share. **Nothing in it imports Lightning** (tested in a fresh interpreter, with
 the CLI and the preflight). `astro-simclr run CONFIG` with `runtime.engine: plain` trains
 through it; Lightning stays the default until 4.7/4.8.
 
 | Module | What it does |
 |---|---|
-| `common` | The run checks of `run_command`, moved from `experiments` (which re-exports them): `check_accelerator` (`AcceleratorError`), `dataset_path`, `check_names`, `check_schedule` / `check_paper_variant`, `check_split`. |
-| `paper` | `paper_inputs(settings, data, split_run)`: the splits as `TensorSplit`s (float path or uint8 diagnostic, leaked Train stamps removed, a split run's roles, the C5-C7 fits) and the `paper_data` entry; `experiments._build_paper` calls it too. `load_backbone` (ConvNeXt weights, ADR 0022). `PaperNet` (the model under `model`, the loss as `criterion`: `PaperClassifierModule`'s `state_dict` keys). `PaperTask`, the engine `Task`: a step plans the augmentation of step `step` on a host copy (`training.paper_augment.PaperAugment`, the object the Lightning module delegates to), uploads and applies it, then the loss; `build_optimizer` with the configured betas. `build_paper_task(settings, info)` builds it on the CPU (after the seed); `check_paper_task` runs its checks before the manifest. |
+| `common` | The run checks of `run_command`, moved from `experiments` (which re-exports them): `check_accelerator` (`AcceleratorError`), `dataset_path`, `check_names`, `check_schedule` / `check_paper_variant`, `check_split`, and `refuse_rj23` (`run_command` sends `schedule: rj23` to `training.rj23.run_rj23`). |
+| `paper` | `paper_crops(settings, data, names)`: the splits as the run's model sees them (the float path with its context channels, or the uint8 diagnostic, at `paper_arch`'s side), shared by `paper_inputs` and `ensemble-eval`. `paper_inputs(settings, data, split_run)`: the splits as `TensorSplit`s (float path or uint8 diagnostic, leaked Train stamps removed, a split run's roles, the C5-C7 fits) and the `paper_data` entry; `experiments._build_paper` calls it too. `load_backbone` (ConvNeXt weights, ADR 0022). `PaperNet` (the model under `model`, the loss as `criterion`: `PaperClassifierModule`'s `state_dict` keys). `PaperTask`, the engine `Task`: a step plans the augmentation of step `step` on a host copy (`training.paper_augment.PaperAugment`, the object the Lightning module delegates to), uploads and applies it, then the loss; `build_optimizer` with the configured betas. `build_paper_task(settings, info)` builds it on the CPU (after the seed); `check_paper_task` runs its checks before the manifest. |
 | `results` | `StageOutput` and `classifier_results`: the Validation / Test (or selection / evaluation) entries of `metrics.json`, `predictions_*.npz` and the confusion-matrix figures, moved from `experiments` and used by both engines. |
-| `plain` | `run_plain(command, settings, resume=, split=, on_step=, on_validation=, progress=)`: `run_command` for `train-supervised` of the paper classifier on `carrasco2021` (every 2.5 flag, split runs, `fp32_precision`). The same checks, the data on the `device` tier, `start_run(..., engine="plain")`, `engine.fit`, the final evaluation of the restored best, `metrics.json` (the Lightning keys, with `machine.engine: plain`, `checkpoints` `ckpt/{best,last}.pt`, no Lightning version, `accelerator` the device type), the manifest `finished`. `resume="auto"`: `OUTPUT_DIR/ckpt/last.pt`. Refuses other commands, models and schedules (use `lightning`), `devices != 1`, and `limit_train_batches` / `limit_val_batches`. |
+| `plain` | `run_plain(command, settings, resume=, split=, on_step=, on_validation=, progress=)`: `run_command` for `train-supervised` of the paper classifier on `carrasco2021` (every 2.5 flag, split runs, `fp32_precision`). The same checks, the data on the `device` tier, `start_run(..., engine="plain")`, `engine.fit`, the final evaluation of the restored best, `metrics.json` (the Lightning keys, with `machine.engine: plain`, `checkpoints` `ckpt/{best,last}.pt`, no Lightning version, `accelerator` the device type), the manifest `finished`. `resume="auto"`: `OUTPUT_DIR/ckpt/last.pt`. With `schedule: rj23` and `rj23=RJ23Request(...)` (required there, refused elsewhere; `split` refused with it) it returns `tasks.rj23.run_rj23_plain`'s run. Refuses other commands, models and schedules (use `lightning`), `devices != 1` and `limit_train_batches` / `limit_val_batches` (`check_plain_runtime`, both paths). |
+| `rj23` | The `rj23` schedule on both engines (task 3.4b; ADR 0023). Shared with `training.rj23`: `RJ23Request(splits, mode, alerts)`, `rj23_inputs(settings, request)` (the layout, the alert table, the verified object splits, the protocol's parts, the run identity), `check_stream_state` (a resume of another run is a `ConfigError`, of another stream a `DataError`), `keep_record` (one kept weights' predictions files, the primary's plain, the other's `_<keep>`, and evaluation), `schedule_record` (from the history: `stopped_by`, `capped`, stop and best steps) and `rj23_metrics` (`metrics.json` but for each engine's own entries). The plain adapter, over `rj23_regime`'s objects as they are: `RJ23Task` (the classifier built on the CPU after the seed, cross-entropy on int64 labels, `keras_adam`; `eval_step` is `predict_probabilities` of the batch), `RJ23TrainSource` (`ClassUniformStream` batch `s` at step `s`, gathered on the device; stream 10), `RJ23EvalSource` (a part in `eval_batch_size` batches), `macro_f1_score` and `rj23_schedule` (`macro_f1_val`/`max`, `ValidationGrid(at_start=True)`, `Horizon(max_steps, 0)`, `stop_rule=RJ23Schedule`, `keep=("stop", "best")`). `run_rj23_plain`: the inputs, the parts on the device, `start_run(..., engine="plain")` (a replication's splits as `whole`, a decision's as a screen), `engine.fit`, both keeps evaluated (`stop`: the last weights, `ckpt/last.pt`; `best`: `ckpt/best.pt`), `metrics.json` and the manifest. A resume is exact (every RNG stream) and a finished run resumed trains nothing. |
 
 `training/__init__` loads its names lazily (PEP 562), so its Lightning-free submodules
 (`paper_augment`, `tensor_splits`, `class_augment`, `flux_rescale`, `metrics`,
@@ -2053,6 +2203,11 @@ through it; Lightning stays the default until 4.7/4.8.
 `tests/test_tasks_plain.py`: a plain run's outputs, every refusal (before the manifest, or
 a failed attempt after it), the accelerator and resume resolution, `astro-simclr run` with
 `runtime.engine: plain`, the Lightning-free imports, the timer and the preflight's CD21 run.
+`tests/test_tasks_rj23.py`: a plain RJ23 run's outputs (checkpoints, both keeps'
+predictions, `scalars.jsonl` from step 0, the manifest), `run_plain`'s refusals of a bad
+request, a resume of another run, the sources and the stream check, Lightning-free imports;
+`tests/test_rj23_training.py`: `astro-simclr run` of a nested `rj23-lowres` on both
+engines.
 
 ## `presets` (task 2.2c)
 
@@ -2203,12 +2358,11 @@ class's share of failed PSF fits) and `preset`
 `carrasco2021` run is exact: the data stream is a function of the step, and the horizon
 and best weights come back from `last.ckpt`.
 
-**`rj23` (task 3.4b).** `run_command` and `tasks.plain.run_plain` refuse `schedule: rj23`
-(`tasks.common.refuse_rj23`, `ConfigError`): those runs go through
-`training.rj23.run_rj23` (see `training`, "The rj23 schedule"), on Lightning only until its
-plain adapter lands (`astro-simclr run` with `runtime.engine: plain` refuses it). It
-reuses `check_accelerator`, `dataset_path`, `resolve_resume`, `machine_record` (the
-`machine` block, public for it) and `tasks.results.finite` (non-finite floats to `null`).
+**`rj23` (task 3.4b).** `run_command` refuses `schedule: rj23` (`tasks.common.refuse_rj23`,
+`ConfigError`): those runs go through `training.rj23.run_rj23` on Lightning (see
+`training`, "The rj23 schedule") and `tasks.plain.run_plain` with an `RJ23Request` on the
+plain engine (section `tasks`). `run_rj23` reuses `check_accelerator`, `resolve_resume`
+and `machine_record` (the `machine` block, public for it).
 
 **Timing (task 2.2c).** Every run's metrics hold `timing`: `fit_seconds` (wall clock from
 the first step to the end of the fit loop, validation included), `steps` (the optimizer
@@ -2273,7 +2427,7 @@ and `make-label-budgets` start fast.
 | Module | What it does |
 |---|---|
 | `leakage` | `find_duplicates(StampData)`: byte-identical uint8 stamps across every pair of splits (BLAKE2b-128), with both labels and whether the features match; `train_exclusions` (the Train indices to drop, from Train only), `train_keep_indices(n_train, excluded)` |
-| `groups` | Phase 2: builds object groups from the prepared data (unlike task 3.2's `grouping`, which assigns given ids): `neighbour_pairs(ra, dec, radius_arcsec)` (every pair within the radius, inclusive; an exact dec-sorted window search with the haversine separation, numpy only, correct at the poles and across the RA wrap; refuses non-finite coordinates and `|dec| > 90`), `union_groups` (union-find, canonical ids: groups numbered by their smallest row), `position_groups` / `external_groups` (equal ids, e.g. `oid`) → `Grouping(method, radius_arcsec, group_of)` (`n_groups`, `multi()`), `split_positions(data, names)` (ra/dec de-standardised with M1's statistics), `grouping_for(data, names, radius_arcsec=1.5, group_ids=None)`, `load_group_ids(npz)` (one array per split, integers or strings, no pickles; returns the file's name and SHA-256) |
+| `groups` | Phase 2: builds object groups from the prepared data (unlike task 3.2's `grouping`, which assigns given ids): `neighbour_pairs(ra, dec, radius_arcsec)` (every pair within the radius, inclusive; an exact dec-sorted window search with the haversine separation, numpy only, correct at the poles and across the RA wrap; refuses non-finite coordinates and `|dec| > 90`), `union_groups` (union-find, canonical ids: groups numbered by their smallest row), `position_groups` / `external_groups` (equal ids, e.g. `oid`) → `Grouping(method, radius_arcsec, group_of)` (`n_groups`, `multi()`), `split_positions(data, names)` (ra/dec de-standardised with M1's statistics), `grouping_for(data, names, radius_arcsec=1.5, group_ids=None)`, `load_group_ids(npz)` (one array per split, integers or strings, no pickles; returns the file's name and SHA-256); `match_any_within(ra, dec, ref_ra, ref_dec, radius_arcsec)` (task 5.1: which rows lie within the radius of any reference row, and the nearest one; the same dec-window search over the sorted reference, `O(N w)`) |
 | `splits` | Format version 2 (grouped; version 1 still read). `make_splits(prepared_dir, seed=0, radius_arcsec=1.5, group_ids_file=None)`: groups the pool (Train ∪ Validation), then the grouped 250/250 screen of Validation (groups placed largest first into the half with room; a documented fallback trims both halves to a common per-class count), `screen_excluded_train` (the Train alerts grouped with Validation, out of the screen's training), and the class-stratified group 5-fold CV (greedy placement, largest group first, per-class spread at most the largest group's stamps of the class), each fold with an exact 100-per-class selection set drawn from whole groups outside the fold (the other stamps of a selection group are the fold's `unused`); leaked Train stamps are in no fold. At most 10 folds (`fold_of` is one digit per stamp). `write_splits` / `read_splits` (structure checks: sizes, disjointness, ranges, positive integers, the grouping block, and `check_group_integrity`: no group in two folds, in a fold's selection and training, or in both screen halves; `screen_excluded_train` consistent) / `verify_splits(splits, prepared_dir, group_ids_file=None)` (dataset identity by source and label SHA-256 and sizes, not the directory name; group integrity; the stored groups equal a fresh grouping; class balance; fold stratification within the grouped tolerance; `excluded_train` equal to a fresh leakage check). `ProtocolSplits.locate` maps pool indices to Train and Validation indices; `ProtocolSplits.screen_training_excluded()` |
 | `audit` | `leakage_audit(prepared_dir, radius_arcsec=1.5, group_ids_file=None)` (CLI `leakage-audit`): groups all three splits together and reports the groups within each split and per split pair by class, the Validation and Test rows with a Train alert within the radius (or the same id), and the byte duplicates, as a JSON-ready dict; `format_audit` prints it |
 | `predictions` | `Predictions(probabilities, labels, index, n_classes=5)` (task 3.2: `n_classes` generalises the column count; 5 by default, so phase 2 is unchanged; the benchmarks pass 6 and index by `candid`), `save_predictions` / `load_predictions` (`.npz`, `allow_pickle=False`), `check_paired`, `ensemble` (mean probabilities per stamp), `seed_mean_correct` |
@@ -2321,6 +2475,100 @@ and `make-label-budgets` start fast.
   another fold's weights. The default path, and so the
   faithful preset, is unchanged. The end-to-end commands are in
   `docs/evaluation-protocol.md`.
+
+## `tta` and `ensemble_eval` (plan row D4)
+
+Seed ensembles and extended test-time augmentation (TTA), evaluated on the stored weights
+of finished split runs, without retraining. Nothing here changes how a run trains or
+evaluates itself: there is no `Settings` field, so every config computes what it computed
+(no new config hash, no `NUMERICS_EPOCH` bump).
+
+**`tta`** (`src/astro_simclr/tta.py`): pure, engine-free and deterministic (no
+randomness, so no random stream). Modes `TTA_MODES = ("rot4", "d4", "d4_shift")`.
+
+- *Where the averaging happens.* The paper model (CD21, `paper_arch: rot4`) is
+  cyclic-pooling: its forward averages the 64-d **features** of the 4 rotations after fc1,
+  before the head. The ConvNeXt rows pool their 4 rotations the same way, `p4` its 4
+  orientations, `p4m` the 8 of D4 (`ARCH_SYMMETRY`: `c4`, `d4` or `none` for `single`).
+  The B9 hybrids are `c4`: `hybrid` averages the features of its 4 rotations, and
+  `hybrid_p4` pools its p4 orientations before the attention, with positional embeddings
+  tied across C4, so a rotation only permutes its tokens (neither is reflection-invariant).
+  A TTA view goes through the whole model, so its extra views are averaged at the
+  **logit** level, outside it (`combine_view_logits`: the mean of the views' logits; the
+  caller applies the softmax). Re-feeding the rotations to a C4-pooled model would only
+  repeat its own feature mean, so `tta_views(mode, symmetry)` gives the cosets of the
+  model's symmetry in D4:
+
+  | Model symmetry | `rot4` | `d4` | `d4_shift` |
+  |---|---|---|---|
+  | `c4` (rot4, p4, ConvNeXt, hybrid, hybrid_p4) | 1 view | identity, flip (2) | 2 × 9 offsets (18) |
+  | `d4` (p4m) | 1 view | 1 view | 1 × 9 offsets (9) |
+  | `none` (single) | 1 view | the 8 dihedral views | 8 × 9 offsets (72) |
+
+  The 4 internal rotations of the flipped stamp are its 4 reflections, so for the paper
+  model `d4` covers the 8 elements of D4: feature-averaged within each view,
+  logit-averaged across the two (not the same as a feature mean over all 8, which the
+  head never saw).
+- `rot4` (the default) is one identity view whose logits are returned untouched: the
+  run's own evaluation, bit for bit (for `single`, one pass).
+- `d4_shift`: `d4` at the 9 crop offsets `(dy, dx)`, `dy, dx ∈ {-1, 0, 1}`
+  (`SHIFT_OFFSETS`): the 21×21 crop re-taken 1 px off centre from the 63×63 float stamp
+  (`crop_then_normalise(offset=...)`, each crop normalised on its own pixels; no padding,
+  the stamp has a 21-px margin). The offset set is D4-symmetric, so the result stays
+  D4-invariant. `check_tta` refuses it for `paper_input: uint8`, the ConvNeXt rows (they
+  see the whole stamp) and `context: avgpool63` (the context would not move with the
+  crop; use `d4`).
+- `View(rotation, flip, offset)`, `apply_dihedral(images, view)` (flip the columns, then
+  `rotation` counter-clockwise quarter turns, `torch.rot90` as the model's own; on all
+  channels, the context included), `tta_logits(forward, images, views)` (centre views
+  only).
+
+**`ensemble_eval`** (`src/astro_simclr/ensemble_eval.py`, CLI `ensemble-eval`):
+
+- `read_member(run_dir)` reads the validated `manifest.json` and `metrics.json`;
+  `check_members(members, splits_sha256, part)` refuses, before any data is read, a run
+  that is not `finished`, not `train-supervised` of `paper_stamp_classifier`, of another
+  fold / the screen or splits file, and members that differ in config hash, engine, data
+  hash, machine class, numerics epoch, pretrained weights or training machine
+  (`reference.machine_signature`), or repeat a run (`ConfigError`, exit 2).
+- `member_net` rebuilds the model from the manifest's config (`build_paper_model`, no
+  backbone download) and loads the selected weights: `ckpt/best.pt` (plain, its run id
+  checked) or `checkpoints/best.ckpt` (Lightning; the same `state_dict` keys as
+  `PaperNet`). A Lightning checkpoint holds no run id, so what it holds is checked: its
+  `global_step` is the run's `best_step`, its `augment_seed` the seed, and each saved
+  hyperparameter the config's value (a copy from another run of the same config, seed and
+  best step would pass).
+- `evaluation_parts`: the part's evaluation stamps from `paper_crops` and
+  `protocol_splits` (pool index for a fold, Validation index for the screen), and Test
+  only with `--test`; `shifted_images` re-crops them for `d4_shift` from the memory-mapped
+  float32 stamps, 4096 at a time.
+- `ensemble_probabilities` evaluates every member as its run did, offsets outer (the
+  `d4_shift` crops are built once per offset for all members): `engine.open_eval` batches of the
+  config's `eval_batch_size`, `eval()` and `inference_mode`, the config's float32
+  precision and determinism (`DevicePolicy`), on the members' training device unless
+  `--accelerator`; per batch, the views' logits are combined and soft-maxed as
+  `PaperTask.eval_step`. With `rot4` the probabilities equal the run's own
+  `predictions_evaluation.npz` (tested for plain and Lightning weights, fold and screen).
+- The **ensemble** is `protocol.predictions.ensemble` (the float64 mean of the members'
+  probabilities). The report has each member's balanced accuracy (and the run's stored
+  one), their mean and std, the ensemble's evaluation entry and `ensemble − mean`.
+- `--out FILE.json` is shaped like a split run's `metrics.json` for what
+  `compare-variants --splits` reads (`seed`: the member's for one member, the sorted
+  list for an ensemble; `machine`: the members' training machine; `data`; `protocol`;
+  `predictions.evaluation` → `<stem>.predictions_evaluation.npz`), plus `format:
+  astro-simclr-ensemble-eval` version 1, `tta`, `members`, `results`,
+  `evaluation_machine`. The JSON file itself is a `RUN_DIR` of `compare-variants`.
+  `_check_out` refuses, before any evaluation, an `out` inside a member's run directory
+  (always: those are the runs' records) and an existing `out` or predictions file unless
+  `--overwrite`; once everything is computed, the predictions are written first and the
+  JSON last, atomically (`data.files.atomic_write_bytes`).
+
+**Tested.** `tests/test_tta.py` (view sets, D4 invariance of `d4` for rot4 / single / p4 /
+p4m / ConvNeXt-atto and of `d4_shift` from the stamps, the shifted crops, the refusals) and
+`tests/test_ensemble_eval.py` (six tiny CPU split runs: `rot4` reproduces the plain and
+Lightning runs' predictions bit for bit, the ensemble arithmetic, `d4` / `d4_shift` /
+`--test`, the output read by `compare-variants --splits`, every refusal, the `--out`
+refusals and that a failed evaluation writes nothing, the Lightning checkpoint checks).
 
 ## `runs` (phase 4, task A0; ADR 0015)
 
@@ -2466,7 +2714,7 @@ draw is keyed by `step`, so 5.3 can run the same functions on the plain engine.
 | `optim` | `lars_param_groups(model)`: convolution/linear weights (weight decay 1e-6, trust ratio) and an excluded group (normalisation parameters and biases: no decay, no trust ratio, `optim.EXCLUDE_KEY`); `build_lars(model, lr=...)`: fixed trust ratio, no Nesterov, momentum 0.9; `base_learning_rate(B) = 0.3 * B / 256`; `warmup_cosine_lr(step, base_lr, total_steps, warmup_steps, lr_min=0)`: linear warmup to `base_lr` at step `W - 1`, then a cosine that is exactly `lr_min` at `total_steps - 1`; `set_learning_rate`. |
 | `diagnostics` | `effective_rank(h)` (exp of the entropy of the normalised eigenvalues of `cov(h)`), `dimension_std(z)`, `alignment(z_i, z_j)`, `uniformity(z, t=2)`, `knn_predict` / `knn_balanced_accuracy` (cosine, `k = 20`, vote weights `exp(sim / 0.07)`). |
 | `probe` | `draw_label_subsets(labels, candidates, per_class, n_subsets, seed)` (nested across budgets: subset `r` is the head of a per-class permutation keyed `[seed, r, class]`), `write_label_subsets` / `read_label_subsets` (format `astro-simclr-label-subsets` v1, with the SHA-256 of the candidates and the labels); `fit_probe(h, labels, weight_decay)`: logistic regression, standardised `h`, plain cross-entropy on logits, L2 on the weights, full-batch L-BFGS in float64 on the CPU; `probe_screen(...)`: the penalty chosen on the screen's selection half from `WEIGHT_DECAY_GRID`, the score on the decision half, per subset. |
-| `pilot` | `PilotConfig` (the run's whole definition; `epochs` or `steps`), `load_pilot_data` (Train and Validation as float32 (N, 3, 63, 63); with a splits file, verified, pretraining leaves out `screen_training_excluded`), `BatchOrder` (a permutation per pass keyed `[seed, pass, simclr_batch_order]`, last partial batch dropped), `PilotRun` (model built on the CPU from the seed, LARS, the step: views, one forward of both views concatenated, loss, rate, backward, step), `diagnose`, `embed`, `dump_embeddings`, `train_pilot(config, out_dir, resume=, stop_at=)`. |
+| `pilot` | `PilotConfig` (the run's whole definition; `epochs` or `steps`; task 5.1 added `tier="memmap"`, `archive`, `eval_data` and `host_cap_gb`, and a checkpoint written before them resumes with them at their defaults), `load_pilot_data` (a layout: Train and Validation as float32 (N, 3, 63, 63); with a splits file, verified, pretraining leaves out `screen_training_excluded`. A corpus index file: the CD21 layout it excluded, the same way, for the evaluation, plus `CorpusPretrain(CorpusStamps, record)` after `check_archive`), the pretraining stamps (`TensorStamps(images, rows)` for `device`/`host`, `MemmapStamps` for `memmap`: a sorted read, the normalisation and a pinned tensor per batch; `_pretraining_stamps` picks them and refuses `device` for a corpus and a corpus above `host_cap_gb` on `host`; `_weak_rules` refuses an index below the plan's exclusion unless `allow_weak_index`; `restore` also compares the checkpoint's index SHA-256, exclusion SHA-256 and `n`), `BatchOrder` (a permutation per pass keyed `[seed, pass, simclr_batch_order]`, last partial batch dropped), `PilotRun` (model built on the CPU from the seed, LARS, the step: views, one forward of both views concatenated, loss, rate, backward, step), `diagnose`, `embed`, `dump_embeddings`, `train_pilot(config, out_dir, resume=, stop_at=)`. |
 | `commands` | The `simclr-pilot`, `simclr-embed`, `make-label-subsets` and `simclr-probe` subcommands (see `cli`). |
 
 A pilot run directory holds `pilot.json` (config, data record with the source and splits

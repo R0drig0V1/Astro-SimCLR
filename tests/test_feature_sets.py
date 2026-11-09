@@ -35,6 +35,7 @@ from astro_simclr.feature_sets import (
     feature_columns,
     feature_names,
 )
+from astro_simclr.hybrid_model import HybridStampClassifier
 from astro_simclr.models import N_FEATURES
 from astro_simclr.paper_model import PaperStampClassifier
 from astro_simclr.paper_variants import (
@@ -198,7 +199,9 @@ def test_none_trains_bit_identically(classifier_f32_dir: Path, tmp_path: Path) -
 def test_position_reads_only_the_coordinates(arch: str) -> None:
     torch.manual_seed(0)
     model = build_paper_model(arch, feature_set="position").double().eval()
-    grouped = isinstance(model, GroupStampClassifier | ConvNeXtStampClassifier)
+    grouped = isinstance(
+        model, GroupStampClassifier | ConvNeXtStampClassifier | HybridStampClassifier
+    )
     head = model.head if grouped else model
     assert isinstance(head, PaperStampClassifier | PaperHead)
     assert head.bn_features is not None and head.bn_features.num_features == 6

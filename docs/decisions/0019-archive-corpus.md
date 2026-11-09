@@ -134,3 +134,62 @@ ALeRCE's code.
   later cut would read.
 - **Schema eras:** the tests cover a 2018-like schema without `drb`, a 2020 one, and a
   2024 one with `fp_hists`. The real schema versions are checked by the pilot.
+
+## Amendment (2026-11-08, task 5.1): the corpus index
+
+Point 5 left the `candid` and position exclusions and the near-duplicate check to the
+corpus index. `build-corpus-index` (`archive/corpus_index.py`) builds it from the complete
+nights. It applies five rules in order, and counts each row under the first rule that
+drops it:
+
+1. listed `candid`s;
+2. listed `oid`s;
+3. every alert of an `oid` that has a row within 1.5″ of **any** CD21 alert. Train is included, since CD21 CV
+   evaluates it. The CD21 positions are the layout's features de-standardised with M1's
+   statistics, matched with `protocol.groups.match_any_within` (haversine, RA wrap);
+4. near-duplicates of a CD21 stamp, which drop their whole `oid`;
+5. one alert per `oid`.
+
+Decisions and their reasons:
+
+- **The position rule is direct, not transitive.** A row goes if it is within 1.5″ of a
+  CD21 alert itself. A chain of corpus rows, each within 1.5″ of the next, does not carry
+  the exclusion further. The CD21 groups are already transitive among CD21's own alerts,
+  so this removes every row within 1.5″ of any member of a group. Chaining through the
+  corpus would remove crowded fields wholesale and prevent no CD21 leak. A matched row's
+  `oid`, however, goes whole, as for near-duplicates: the object is a CD21 object even
+  where another of its alerts carries a bad coordinate.
+- **One alert per `oid` keeps the earliest by default.** The earliest (`jd`, then
+  `candid`) is CD21's first alert (point 2). The seeded choice that the task brief asked
+  for is available as `--duplicates random --seed N`, drawn from a new reserved stream,
+  `corpus_duplicates` (11). It is an ablation, not the default.
+- **The near-duplicate check has two stages, and drops only confirmed pixel copies.**
+  - Stage 1 takes, for each corpus row, the CD21 stamps whose 9×9×3 pooled descriptor
+    reaches a cosine of 0.99.
+  - Stage 2 confirms a pair only if the full 63×63×3 normalised stamps agree within 1e-3 at
+    every pixel.
+  - Measured on 4 real nights (2026-11-08, 144,981 rows against the 51,582 CD21 stamps):
+    stage 1 flags 29,041 candidates (about 20 % of the rows), because pooled point
+    sources look alike. Dropping on the cosine alone would remove a fifth of the corpus.
+  - The 142 rows within 1.5″ of a CD21 alert calibrate stage 2. 131 are pixel copies of
+    their CD21 stamp (largest difference 1.2e-7: the normalisation reproduces the stored
+    stamps to float32 rounding). The other 11 differ by at least 0.39.
+  - The check uses all three channels, not only the difference. On the difference
+    channel alone, isolated point sources look alike.
+- **The index file** is a pickle-free `.npz`: `rows`, plus `meta` as a JSON string. It
+  records the SHA-256 of every exclusion input: the layout's `meta.json`, and each
+  `features.npy` and `images_f32.npy` it read, re-hashed against that `meta.json`, and
+  each list file. It also records one `exclusion_sha256`, which pretraining manifests
+  carry. It covers those inputs, labelled, and the rules, so a 1.5″ index and a 0.1″ one
+  never share it. The index also records the SHA-256 of `corpus.json` and of each
+  night's `meta.json`. A
+  reader refuses an archive whose indexed nights changed. The index names local paths, so
+  it is not committed.
+- **Reading** (`archive/reader.py`) memory-maps the night shards and reads each batch
+  sorted by file offset. This is ADR 0018's tier 3, over the shards instead of one file.
+  The raw cutouts are normalised exactly as the stored stamps are (`alerce_normalise` in
+  float64, then cast to float32). ADR 0025 records how the pilot reads them.
+
+Measured costs on the 5090 (shared host, load average about 78): the index of 145k rows in
+76 s with the near-duplicate check, so about 3.5 min for the 390k-row corpus; one batch of
+256 stamps read and normalised in about 66 ms.
