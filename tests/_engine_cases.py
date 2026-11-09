@@ -21,6 +21,8 @@ from __future__ import annotations
 import hashlib
 import json
 import pickle
+import platform
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -154,6 +156,16 @@ ENGINE_ENTRIES = ("accelerator", "checkpoints", "versions", "run", "timing", "ma
 
 #: One validation: (steps done, the monitored value, the weights then).
 Validations = list[tuple[int, float, dict[str, torch.Tensor]]]
+
+
+def platform_key() -> str:
+    """The platform a golden holds on: OS, machine and torch's CPU capability (lowercase).
+
+    CPU kernels round differently across instruction sets (x86 AVX2 / AVX-512 against arm64
+    NEON, or another BLAS), so bit-identical outputs are only expected on one key.
+    """
+    capability = torch.backends.cpu.get_cpu_capability()
+    return f"{sys.platform}-{platform.machine()}-{capability}".lower()
 
 
 def paper_settings(data: Path, out: Path, **changes: Any) -> Settings:

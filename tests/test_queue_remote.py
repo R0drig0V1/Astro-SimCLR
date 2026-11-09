@@ -88,10 +88,8 @@ class Env:
 
 
 @pytest.fixture
-def env(
-    tmp_path: Path, synthetic_prepared: dict[str, Path], monkeypatch: pytest.MonkeyPatch
-) -> Env:
-    data_dir = next(iter(synthetic_prepared.values())).parent
+def env(tmp_path: Path, classifier_f32_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
+    data_dir = classifier_f32_dir.parent
     return Env(tmp_path, data_dir, monkeypatch)
 
 
@@ -172,7 +170,8 @@ def test_submit_run_and_sync(env: Env) -> None:
     assert not (dest / "other" / "p-a1" / "checkpoints" / "last.ckpt").exists()
     for run_dir in (dest / "demo").iterdir():
         assert read_manifest(run_dir).status == "finished"
-        assert not (run_dir / "checkpoints").exists() and not (run_dir / ".lock").exists()
+        # The plain engine's ckpt/ (the classifiers keep none: runs.layout.retention).
+        assert not (run_dir / "ckpt").exists() and not (run_dir / ".lock").exists()
         assert (run_dir / "metrics.json").exists()
     assert not list(dest.rglob("*.sqlite*"))
     assert (specs / f"{spec.spec_id}.yaml").exists()

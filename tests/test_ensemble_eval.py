@@ -1,23 +1,25 @@
 """Tests of ``ensemble-eval`` on tiny synthetic split runs (plan row D4).
 
 A module fixture trains, on the synthetic prepared data and its stored splits (25 stamps
-per split, as ``test_engine_differential``'s), eight short split runs on the CPU: three
-plain screen runs of one config (seeds 0-2), a plain screen run of another ``lr``, a
-Lightning screen run (seed 0), a plain run of fold 0, and a plain and a Lightning screen
-run of plan row D3 (weight EMA, ``checkpoint_selection: final``: no best checkpoint, the
-scored weights are ``last``'s EMA). Then:
+per split, ``_engine_cases.make_split_data``'s recipe), six short plain split runs on the
+CPU: three screen runs of one config (seeds 0-2), a screen run of another ``lr``, a run of
+fold 0, and a screen run of plan row D3 (weight EMA, ``checkpoint_selection: final``: no
+best checkpoint, the scored weights are ``last``'s EMA). Then:
 
-- ``rot4`` reproduces each run's own ``predictions_evaluation.npz`` bit for bit (plain and
-  Lightning weights; screen and fold parts; D3's final EMA weights), and the members'
-  balanced accuracies equal the runs' stored ones;
+- ``rot4`` reproduces each run's own ``predictions_evaluation.npz`` bit for bit (screen
+  and fold parts; D3's final EMA weights), and the members' balanced accuracies equal the
+  runs' stored ones;
 - the ensemble arithmetic: its probabilities are the float64 mean of the members', its
   gain is the ensemble's balanced accuracy minus the members' mean;
 - ``d4`` and ``d4_shift`` run, with their views, and the centre crop re-taken from the
   stamps is the run's own input;
 - ``--test`` adds the Test split; without it Test is never predicted;
 - the output is a run for ``compare-variants --splits`` (the screen decision);
-- the refusals: other folds, configs, engines, statuses, splits files, data, repeated
-  seeds, an unsupported TTA mode, and missing weights.
+- the refusals: other folds, configs, statuses, splits files, data, repeated seeds, an
+  unsupported TTA mode, and missing weights.
+
+Stored Lightning runs (their ``checkpoints/best.ckpt``, the checks of their weights, a
+mixed-engine refusal) are tested on the stored fixture run in ``test_lightning_runs.py``.
 """
 
 from __future__ import annotations
@@ -33,7 +35,6 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
-import torch
 
 from astro_simclr.cli import main
 from astro_simclr.config import ConfigError, Settings
@@ -47,13 +48,12 @@ from astro_simclr.ensemble_eval import (
     read_member,
     shifted_images,
 )
-from astro_simclr.experiments import run_command
 from astro_simclr.protocol.compare import compare_decision, load_split_run
 from astro_simclr.protocol.predictions import load_predictions
 from astro_simclr.protocol.split_runs import SplitRequest, file_sha256, open_split_run
 from astro_simclr.protocol.splits import make_splits, write_splits
 from astro_simclr.protocol.stats import balanced_accuracy
-from astro_simclr.runs.layout import BEST_CHECKPOINT, LIGHTNING_BEST
+from astro_simclr.runs.layout import BEST_CHECKPOINT
 from astro_simclr.tasks.plain import run_plain
 
 _SCHEDULE: dict[str, Any] = {
@@ -76,7 +76,7 @@ _SCHEDULE: dict[str, Any] = {
 
 @pytest.fixture(scope="module")
 def runs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
-    """The prepared data, the splits file and the eight run directories (module docstring)."""
+    """The prepared data, the splits file and the six run directories (module docstring)."""
     raw = tmp_path_factory.mktemp("ens_raw")
     out = tmp_path_factory.mktemp("ens_prepared")
     make_synthetic(raw, n_per_split=25, seed=1)
@@ -108,15 +108,11 @@ def runs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
         dirs[f"screen{seed}"] = root / f"screen{seed}"
         run_plain("train-supervised", settings(f"screen{seed}", seed=seed), split=screen)
     run_plain("train-supervised", settings("other_lr", seed=3, lr=1e-2), split=screen)
-    run_command("train-supervised", settings("lightning"), progress_bar=False, split=screen)
     run_plain("train-supervised", settings("fold0"), split=SplitRequest(splits, 0))
     # Plan row D3: the final weights' EMA are the scored ones (last, not best).
     d3 = {"ema_decay": 0.9, "ema_warmup": True, "checkpoint_selection": "final"}
     run_plain("train-supervised", settings("d3", **d3), split=screen)
-    run_command(
-        "train-supervised", settings("d3_lightning", **d3), progress_bar=False, split=screen
-    )
-    for name in ("other_lr", "lightning", "fold0", "d3", "d3_lightning"):
+    for name in ("other_lr", "fold0", "d3"):
         dirs[name] = root / name
     return {"data": data, "splits": splits, "dirs": dirs}
 
@@ -129,7 +125,7 @@ def _written(out: Path, stage: str = "evaluation") -> Any:
     return load_predictions(out.parent / f"{out.stem}.predictions_{stage}.npz")
 
 
-@pytest.mark.parametrize("name", ["screen0", "lightning", "fold0", "d3", "d3_lightning"])
+@pytest.mark.parametrize("name", ["screen0", "fold0", "d3"])
 def test_rot4_reproduces_the_runs_own_predictions(
     name: str, runs: dict[str, Any], tmp_path: Path
 ) -> None:
@@ -247,7 +243,6 @@ def _refused(runs: dict[str, Any], names: list[str], match: str, tmp_path: Path)
 def test_refusals_of_other_runs(runs: dict[str, Any], tmp_path: Path) -> None:
     _refused(runs, ["screen0", "fold0"], "not of the screen", tmp_path)
     _refused(runs, ["screen0", "other_lr"], "differ in config", tmp_path)
-    _refused(runs, ["screen0", "lightning"], "differ in engine", tmp_path)
     _refused(runs, ["screen0", "screen0"], "repeat a run", tmp_path)
 
 
@@ -374,27 +369,3 @@ def test_a_failed_evaluation_writes_nothing(runs: dict[str, Any], tmp_path: Path
     with pytest.raises(ConfigError, match="selected weights are missing"):
         ensemble_eval([good, broken], runs["splits"], fold=None, out=out)
     assert not out.parent.exists()
-
-
-def test_lightning_weights_are_checked_against_their_run(
-    runs: dict[str, Any], tmp_path: Path
-) -> None:
-    copy = tmp_path / "lightning"
-    shutil.copytree(runs["dirs"]["lightning"], copy)
-    metrics_file = copy / "metrics.json"
-    metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
-    metrics_file.write_text(json.dumps({**metrics, "best_step": -1}), encoding="utf-8")
-    with pytest.raises(ConfigError, match="not the run's best_step"):
-        ensemble_eval([copy], runs["splits"], fold=None, out=tmp_path / "a.json")
-    metrics_file.write_text(json.dumps(metrics), encoding="utf-8")
-    best = copy / LIGHTNING_BEST
-    checkpoint = torch.load(best, map_location="cpu", weights_only=True)
-    checkpoint["hyper_parameters"]["lr"] = 0.5
-    torch.save(checkpoint, best)
-    with pytest.raises(ConfigError, match=r"trained with lr=0\.5"):
-        ensemble_eval([copy], runs["splits"], fold=None, out=tmp_path / "b.json")
-    checkpoint["hyper_parameters"]["lr"] = metrics["config"]["lr"]
-    checkpoint["hyper_parameters"]["augment_seed"] = 9
-    torch.save(checkpoint, best)
-    with pytest.raises(ConfigError, match="augment_seed=9"):
-        ensemble_eval([copy], runs["splits"], fold=None, out=tmp_path / "c.json")

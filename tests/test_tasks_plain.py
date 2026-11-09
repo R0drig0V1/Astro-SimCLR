@@ -1,9 +1,10 @@
 """Tests of the plain engine's tasks and runner (task 4.6): ``astro_simclr.tasks``.
 
-What the differential test (``test_engine_differential.py``) does not cover: the refusals
-of :func:`run_plain`, the accelerator and resume resolution, ``astro-simclr run`` with
-``runtime.engine: plain``, that the plain path (runner, CLI, preflight's CD21 run) never
-imports Lightning, the engine-free throughput timer and the preflight's CD21 dry run.
+What the golden regression set (``test_engine_regression.py``) does not cover: the
+refusals of :func:`run_plain` (a Lightning checkpoint, with the tag that resumes it), the
+accelerator and resume resolution, ``astro-simclr run`` with ``runtime.engine: plain``,
+that the package (runner, CLI, preflight's CD21 run) never imports Lightning, the
+throughput timer and the preflight's CD21 dry run.
 """
 
 from __future__ import annotations
@@ -13,7 +14,6 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -23,7 +23,7 @@ import yaml
 from astro_simclr.cli import main
 from astro_simclr.config import ConfigError, Settings
 from astro_simclr.data.schema import DataError
-from astro_simclr.preflight import ThroughputTimer, estimate, lightning_timer, run_preflight
+from astro_simclr.preflight import ThroughputTimer, estimate, run_preflight
 from astro_simclr.preflight import Timed as PreflightTimed
 from astro_simclr.tasks.paper import check_paper_task, paper_augment
 from astro_simclr.tasks.plain import resolve_accelerator, resolve_plain_resume, run_plain
@@ -110,7 +110,7 @@ def test_run_plain_refuses_bad_resumes(classifier_f32_dir: Path, tmp_path: Path)
         run_plain("train-supervised", settings, resume=str(tmp_path / "missing.pt"))
     lightning = tmp_path / "old.ckpt"
     torch.save({"pytorch-lightning_version": "2.6.6", "state_dict": {}}, lightning)
-    with pytest.raises(ConfigError, match="Lightning checkpoint"):
+    with pytest.raises(ConfigError, match=r"Lightning checkpoint.*lightning-final"):
         run_plain("train-supervised", settings, resume=str(lightning))
     # A refused resume after the manifest was written is a failed attempt.
     assert json.loads((tmp_path / "manifest.json").read_text())["status"] == "failed"
@@ -187,18 +187,10 @@ def test_the_plain_path_imports_no_lightning() -> None:
     )
 
 
-def test_training_names_load_lazily() -> None:
-    import astro_simclr.training as training
-
-    assert training.apply_fp32_precision.__module__ == "astro_simclr.training.runs"
-    with pytest.raises(AttributeError, match="no attribute 'missing'"):
-        _ = training.missing
-
-
 # --- the preflight: the engine-free timer and the CD21 dry run --------------------------
 
 
-def test_throughput_timer_and_its_lightning_adapter() -> None:
+def test_throughput_timer() -> None:
     timer = ThroughputTimer()
     device = torch.device("cpu")
     timer.tick(device)
@@ -208,19 +200,19 @@ def test_throughput_timer_and_its_lightning_adapter() -> None:
     timer.tick(device)
     assert len(timer.intervals) == 1  # the step after a reset is not timed
     assert timer.steps_per_second is not None
-    adapter = lightning_timer(timer)
-    adapter.on_train_epoch_start(None, None)
-    module = SimpleNamespace(device=device)  # a LightningModule's device
-    adapter.on_train_batch_end(None, module, None, None, 0)
-    adapter.on_train_batch_end(None, module, None, None, 1)
-    assert len(timer.intervals) == 2
     assert ThroughputTimer().steps_per_second is None
 
 
 def test_estimate_counts_cd21_in_steps() -> None:
-    cd21 = PreflightTimed("CD21", "red", 64, 220, 64, 10.0, 20, planned_steps=36_000)
+    cd21 = PreflightTimed("CD21", "red", 64, 32, 10.0, 3, planned_steps=36_000)
     step = estimate([cd21], lambda dataset: 50_000)
     assert step.lines[0].startswith("CD21: >= 5.0 GPU-h full set, 1.0 minimal (36000 steps")
+    assert "measured at batch 32" in step.lines[0] and "rough" in step.lines[0]
+    assert step.lines[-1].startswith("total: >= 5.0 GPU-h full set")
+    unknown = estimate([cd21], lambda dataset: None)
+    assert unknown.status == "WARN" and "no estimate for red" in unknown.lines[0]
+    unmeasured = estimate([PreflightTimed("CD21", "red", 64, 64, None, 0, 36_000)], len)
+    assert unmeasured.status == "WARN"
 
 
 def test_preflight_cd21_runs_without_lightning(tmp_path: Path) -> None:
@@ -228,7 +220,7 @@ def test_preflight_cd21_runs_without_lightning(tmp_path: Path) -> None:
         "from pathlib import Path\n"
         "from astro_simclr.preflight import run_preflight\n"
         f"ok = run_preflight(output_dir=Path({str(tmp_path)!r}), synthetic=True, "
-        "accelerator='cpu', reference_dir=Path('configs/reference'), runs=['CD21'], "
+        "accelerator='cpu', runs=['CD21'], "
         "n_per_split=40, steps=2)\n"
         "assert ok\n"
     )
@@ -246,7 +238,6 @@ def test_preflight_skips_cd21_without_float32_stamps(classifier_dir: Path, tmp_p
         output_dir=tmp_path / "out",
         data_dir=data,
         accelerator="cpu",
-        reference_dir=ROOT / "configs" / "reference",
         runs=["CD21"],
         stream=stream,
     )

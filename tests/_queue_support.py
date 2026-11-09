@@ -31,15 +31,18 @@ format: astro-simclr-experiment-spec
 version: 1
 name: {name}
 command: train-supervised
+preset: carrasco2021
 settings:
-  max_epochs: 1
-  limit_train_batches: 1
-  limit_val_batches: 1
-  batch_size: 5
+  batch_size: 4
+  max_steps: 2
+  val_every_n_steps: 2
+  horizon_increment: 0
+  checkpoint_every_n_steps: 2
   accelerator: cpu
+  deterministic: true
 arms:
   baseline: {{}}
-  wide: {{drop_rate: 0.5}}
+  wide: {{lr: 0.01}}
 seeds: {seeds}
 machine:
   class: cpu-test
@@ -49,7 +52,9 @@ scratch: {scratch}
 
 
 def spec_text(name: str = "demo", *, scratch: bool = False, seeds: str = "[0, 1]") -> str:
-    """A two-arm dry spec on the synthetic data (``train-supervised``), two seeds by default."""
+    """A two-arm short spec of the paper classifier on the plain engine (the default since
+    task 4.8; ``carrasco2021``, 2 steps): the synthetic float32 data
+    (``classifier_f32_dir``), two seeds by default."""
     return SPEC.format(name=name, scratch="true" if scratch else "false", seeds=seeds)
 
 

@@ -24,9 +24,9 @@ sensitivity flags and both stop reasons. The resume tests are in
 
 **Platforms.** CPU kernels differ in their rounding between instruction sets (x86 AVX2 /
 AVX-512 against arm64 NEON, or another BLAS), so a golden holds on the platform it was
-recorded on: ``<sys.platform>-<machine>-<torch CPU capability>`` (:func:`platform_key`;
-``darwin-arm64-default``, ``linux-x86_64-avx2``, ...). On a platform without goldens every
-case is skipped, naming it. A golden recorded with another torch version still applies:
+recorded on: ``<sys.platform>-<machine>-<torch CPU capability>``
+(``_engine_cases.platform_key``: ``darwin-arm64-default``, ``linux-x86_64-avx2``, ...). On a
+platform without goldens every case is skipped, naming it. A golden recorded with another torch version still applies:
 a torch upgrade that changes these numbers is a numerics change (bump ``NUMERICS_EPOCH``)
 and fails here until the goldens are recorded again.
 
@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import json
 import os
-import platform
 import sys
 from pathlib import Path
 from typing import Any
@@ -61,6 +60,7 @@ from _engine_cases import (
     cpu_state,
     make_split_data,
     paper_settings,
+    platform_key,
     predictions_digests,
     rj23_settings,
     state_digest,
@@ -81,12 +81,6 @@ GOLDEN_DIR = Path(__file__).parent / "fixtures" / "engine_golden"
 RECORD = os.environ.get("ASTRO_SIMCLR_RECORD_GOLDEN") == "1"
 #: The golden document's format; bumped if its keys change.
 GOLDEN_FORMAT = 1
-
-
-def platform_key() -> str:
-    """The platform a golden holds on: OS, machine and torch's CPU capability (lowercase)."""
-    capability = torch.backends.cpu.get_cpu_capability()
-    return f"{sys.platform}-{platform.machine()}-{capability}".lower()
 
 
 def _golden_path(case: str) -> Path:

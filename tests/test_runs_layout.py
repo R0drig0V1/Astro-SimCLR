@@ -7,10 +7,6 @@ from pathlib import Path
 import pytest
 from _canonical_cases import case_settings
 
-from astro_simclr.experiments import BEST_CHECKPOINT as LIGHTNING_BEST_NAME
-from astro_simclr.experiments import CHECKPOINT_DIR as LIGHTNING_DIR
-from astro_simclr.experiments import LAST_CHECKPOINT as LIGHTNING_LAST_NAME
-from astro_simclr.experiments import METRICS_FILE as EXPERIMENTS_METRICS
 from astro_simclr.runs.identity import GitState, IdentityError, run_identity
 from astro_simclr.runs.layout import (
     LIGHTNING_BEST,
@@ -65,10 +61,12 @@ def _manifest(command: str, case: str, status: Status) -> Manifest:
     return running if status == "running" else transition(running, status, at=T2)
 
 
-def test_lightning_names_match_experiments() -> None:
-    assert f"{LIGHTNING_DIR}/{LIGHTNING_LAST_NAME}" == LIGHTNING_LAST
-    assert f"{LIGHTNING_DIR}/{LIGHTNING_BEST_NAME}" == LIGHTNING_BEST
-    assert EXPERIMENTS_METRICS == METRICS_FILE
+def test_lightning_names_are_the_stored_runs() -> None:
+    # The layout of the Lightning runs (stored before task 4.8, still read): the fixture's.
+    stored = Path(__file__).parent / "fixtures" / "lightning_run"
+    assert (stored / LIGHTNING_BEST).is_file()
+    assert (stored / METRICS_FILE).is_file()
+    assert LIGHTNING_LAST == "checkpoints/last.ckpt"
 
 
 def test_run_dir_name() -> None:

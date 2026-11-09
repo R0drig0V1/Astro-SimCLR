@@ -1,8 +1,10 @@
 """Tests of a job's fixed entry point, ``spec expand`` and ``spec run-cell`` (``queue.job``).
 
-Dry ``train-supervised`` runs on the synthetic data, in-process: the manifest life cycle
+Short ``train-supervised`` runs of the paper classifier on the plain engine (the synthetic
+float32 data), in-process: the manifest life cycle
 (queued, running, finished; back to queued after a crash or SIGTERM; failed on an
-exception), the run-directory lock, the dirty-tree refusal and the idempotent rerun.
+exception), the run-directory lock, the dirty-tree refusal, the idempotent rerun and the
+refusal of an ``engine: lightning`` spec (task 4.8).
 """
 
 from __future__ import annotations
@@ -19,7 +21,6 @@ import pytest
 from _queue_support import init_repo, spec_text
 from _rj23_support import DATASET, rj23_layout
 
-from astro_simclr import experiments
 from astro_simclr.queue import job as job_module
 from astro_simclr.queue.job import (
     EXIT_BUSY,
@@ -35,14 +36,15 @@ from astro_simclr.queue.job import (
 from astro_simclr.runs.identity import GitState, data_sha256
 from astro_simclr.runs.manifest import new_manifest, read_manifest, transition, write_manifest
 from astro_simclr.runs.spec import Cell, SpecError, expected_run_ids, parse_spec
+from astro_simclr.tasks import plain
 
 CELL = "baseline/s0/all"
 
 
 @pytest.fixture(scope="module")
-def data_dir(synthetic_prepared: dict[str, Path]) -> Path:
-    """The parent of the prepared synthetic datasets."""
-    return next(iter(synthetic_prepared.values())).parent
+def data_dir(classifier_f32_dir: Path) -> Path:
+    """The parent of the prepared synthetic dataset with float32 stamps."""
+    return classifier_f32_dir.parent
 
 
 @pytest.fixture
@@ -95,7 +97,7 @@ def test_run_cell_writes_a_finished_manifest(tmp_path: Path, data_dir: Path, rep
     assert _run(spec_file, run_dir, data_dir, repo, attempt=3) == 0
     manifest = read_manifest(run_dir)
     assert manifest.status == "finished" and manifest.attempt == 3  # the queue's attempt
-    assert manifest.engine == "lightning" and manifest.identity.machine_class == "cpu-test"
+    assert manifest.engine == "plain" and manifest.identity.machine_class == "cpu-test"
     assert manifest.machine is not None and manifest.machine["device"] == "cpu"
     assert manifest.config["output_dir"] == str(run_dir)
     assert (run_dir / "metrics.json").exists() and (run_dir / LOCK_FILE).exists()
@@ -263,8 +265,8 @@ def test_an_exception_fails_the_attempt(
     def broken(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         raise RuntimeError("diverged")
 
-    # After the manifest is written: run_command records the attempt failed.
-    monkeypatch.setattr(experiments, "_base_metrics", broken)
+    # After the manifest is written: run_plain records the attempt failed.
+    monkeypatch.setattr(plain, "_base_metrics", broken)
     spec_file = _spec(tmp_path)
     run_dir = tmp_path / "runs" / "r"
     assert _run(spec_file, run_dir, data_dir, repo) == EXIT_FAILED
@@ -326,3 +328,12 @@ def test_an_unknown_cell_is_an_error(tmp_path: Path, data_dir: Path, repo: Path)
         run_cell(
             spec_file, "nope/s0/all", attempt=1, run_dir=run_dir, data_dir=data_dir, repo_root=repo
         )
+
+
+def test_a_lightning_spec_is_refused(tmp_path: Path, data_dir: Path, repo: Path) -> None:
+    # Task 4.8: the spec still parses (runs compare resolves its run ids), but no cell runs.
+    spec_file = _spec(tmp_path, spec_text() + "engine: lightning\n")
+    run_dir = tmp_path / "runs" / "r"
+    with pytest.raises(SpecError, match="lightning-final"):
+        _run(spec_file, run_dir, data_dir, repo)
+    assert not run_dir.exists()

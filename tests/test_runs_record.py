@@ -28,7 +28,7 @@ MACHINE = {
     "cuda": None,
     "fp32_precision": "ieee",
     "processor": "arm64",
-    "engine": "lightning",
+    "engine": "plain",
 }
 T0, T1, T2 = "2026-11-08T10:00:00+00:00", "2026-11-08T10:05:00+00:00", "2026-11-08T11:00:00+00:00"
 
@@ -44,7 +44,7 @@ def test_a_fresh_run_is_running_attempt_one(classifier_dir: Path, tmp_path: Path
     )
     manifest = read_manifest(settings.output_dir)
     assert manifest == record.manifest
-    assert (manifest.status, manifest.attempt, manifest.engine) == ("running", 1, "lightning")
+    assert (manifest.status, manifest.attempt, manifest.engine) == ("running", 1, "plain")
     assert manifest.identity.seed == 3
     assert manifest.identity.data_sha256 == data_sha256(classifier_dir)
     assert manifest.identity.machine_class == "cpu-arm64"
@@ -193,7 +193,7 @@ def test_the_machine_engine_must_agree(classifier_dir: Path, tmp_path: Path) -> 
             "train-supervised",
             _settings(tmp_path),
             data=classifier_dir,
-            machine={**MACHINE, "engine": "plain"},
+            machine={**MACHINE, "engine": "lightning"},
             root=tmp_path,
         )
 
