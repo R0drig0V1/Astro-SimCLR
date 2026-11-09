@@ -2559,9 +2559,9 @@ retention are unchanged.
   arm; `expected_run_ids` gives each cell's run id (on the spec's engine) from the data
   and splits SHA-256. `engine: lightning` still parses, so that `runs compare` resolves the
   run ids of a spec that trained on Lightning, but `check_trainable` (`queue submit`, `spec
-  run-cell`) refuses it, naming the git tag `lightning-final`. A Lightning spec written
-  before task 4.8 without an `engine` key now reads as `plain`: add `engine: lightning` to
-  compare its runs.
+  run-cell`) refuses it, naming the git tag `lightning-final`. `engine` is required since
+  task 4.8 (before it, a missing key meant `lightning`): a spec without it is refused with
+  what to write, never read as another engine with other run ids.
 
 ## `queue` (phase 4, task A3; ADR 0026)
 

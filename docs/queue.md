@@ -32,7 +32,7 @@ splits:                         # optional; without it, the file's own Train/Val
 machine:
   class: cuda-nvidia-geforce-gtx-1050   # the run id's machine class
   extra: cu126                  # `uv sync --extra` on that machine (ADR 0001)
-engine: plain                   # optional: plain (the default since task 4.8)
+engine: plain                   # required since task 4.8: plain (lightning: read only)
 scratch: false                  # true: a dirty tree is allowed (never a result)
 ```
 
@@ -44,8 +44,10 @@ scratch: false                  # true: a dirty tree is allowed (never a result)
   order do not change it. The registry's `runs compare` takes it (A2).
 - Each cell (`<arm>/s<seed>/<f<fold>|screen|all>`) is one run id (ADR 0015). The seeds of
   one arm share its config hash.
-- `engine` is the training loop of every cell: `plain` (`tasks.plain.run_plain`), the
-  default and the only one that trains since task 4.8, which removed Lightning. As with
+- `engine` is the training loop of every cell, required since task 4.8: `plain`
+  (`tasks.plain.run_plain`), the only one that trains since 4.8 removed Lightning. Before
+  4.8 a spec without the key meant `lightning`, so a missing key is now an error that says
+  what to write, never a silent switch of engine and run ids. As with
   `runtime.engine` of a nested config, it is part of the run id but not of the config
   hash, so the same arms on two engines are two sets of runs that `runs compare` refuses
   to mix unless told to. The plain engine trains `train-supervised` of
@@ -57,8 +59,7 @@ scratch: false                  # true: a dirty tree is allowed (never a result)
   specs that trained on Lightning, but `queue submit` and `spec run-cell` refuse it
   (`runs.spec.check_trainable`), naming the git tag `lightning-final`: such a spec is
   re-run from a checkout of that tag. A Lightning spec written before task 4.8 without an
-  `engine` key now reads as `plain` (another set of run ids): add `engine: lightning` to it
-  to compare its stored runs.
+  `engine` key needs `engine: lightning` added to compare its stored runs.
 - **rj23** (an arm whose settings resolve to `schedule: rj23`, for example `preset:
   rj23-lowres`, on a `raw-alerts` layout): `splits.file` is the layout's object splits
   (`make-object-splits`), with `screen: true` for a decision run or `whole: true` for a
@@ -210,6 +211,7 @@ settings: {max_steps: 5000, horizon_increment: 0, checkpoint_every_n_steps: 50}
 arms: {baseline: {}}
 seeds: [0, 1]
 machine: {class: cuda-nvidia-geforce-gtx-1050, extra: cu126}
+engine: plain
 scratch: true
 ```
 

@@ -332,7 +332,7 @@ def test_an_unknown_cell_is_an_error(tmp_path: Path, data_dir: Path, repo: Path)
 
 def test_a_lightning_spec_is_refused(tmp_path: Path, data_dir: Path, repo: Path) -> None:
     # Task 4.8: the spec still parses (runs compare resolves its run ids), but no cell runs.
-    spec_file = _spec(tmp_path, spec_text() + "engine: lightning\n")
+    spec_file = _spec(tmp_path, spec_text().replace("engine: plain", "engine: lightning"))
     run_dir = tmp_path / "runs" / "r"
     with pytest.raises(SpecError, match="lightning-final"):
         _run(spec_file, run_dir, data_dir, repo)

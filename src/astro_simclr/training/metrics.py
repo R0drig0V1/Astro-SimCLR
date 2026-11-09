@@ -19,7 +19,11 @@ case):
   summed (torchmetrics' ``_adjust_weights_safe_divide``, whose rounding this keeps).
 
 Inputs are integer class labels, already ``argmax``-ed, in ``[0, num_classes)``. The
-functions work on the device of their inputs (no device is named here).
+functions work on the device of their inputs (no device is named here). An empty input or a
+label outside the range raises ``ValueError``, deliberately and with no guard in
+``tasks.results``: it always passes a split's labels and the argmax of its probabilities
+over ``num_classes`` logits, so a raise there is a bug (an empty split, labels of another
+class set), never a result to report around. torchmetrics raised on both too.
 """
 
 from __future__ import annotations

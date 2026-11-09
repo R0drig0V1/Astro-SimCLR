@@ -23,7 +23,7 @@ version 1 (:data:`SPEC_FORMAT`, :data:`SPEC_VERSION`)::
     machine:
       class: cuda-nvidia-geforce-gtx-1050   # the run id's machine class (ADR 0015, rule 7)
       extra: cu126                  # the `uv sync --extra` of that machine (ADR 0001); optional
-    engine: plain                   # optional: plain (the default since task 4.8)
+    engine: plain                   # required since task 4.8: plain (or lightning, read only)
     scratch: false                  # optional: true allows a dirty tree (never a result)
 
 **Settings of a cell** (:meth:`ExperimentSpec.arm_settings`) resolve in the order of
@@ -43,14 +43,15 @@ command line. The alert table is the layout's own. Such a spec needs ``engine: p
 (the queue does not drive Lightning's ``training.rj23.run_rj23``); ``whole: true`` is
 refused for any other schedule.
 
-**Engine.** ``engine`` is the training loop of every cell: ``plain``
-(``tasks.plain.run_plain``: the paper classifier on ``carrasco2021`` and RJ23's on
-``rj23``; no ``limit_*_batches``), the default since task 4.8. ``lightning``
-(the default before it) still parses, so that ``runs compare`` resolves the run ids of a
-spec that trained on Lightning, but :func:`check_trainable` (``queue submit``, ``spec
-run-cell``) refuses it, naming the git tag ``lightning-final``. A Lightning spec written
-before task 4.8 without an ``engine`` key now reads as ``plain``: add ``engine: lightning``
-to compare its runs. Like ``runtime.engine`` of a nested config (ADR 0017), it is a run-id
+**Engine.** ``engine`` is the training loop of every cell, and is required since task
+4.8: ``plain`` (``tasks.plain.run_plain``: the paper classifier on ``carrasco2021`` and
+RJ23's on ``rj23``; no ``limit_*_batches``) or ``lightning``. Before 4.8 a spec without
+the key meant ``lightning``; a default of ``plain`` would have given such a file other
+run ids and trained it on another engine without a word, so the key is required and its
+absence is an error that says what to write. ``lightning`` still parses, so that ``runs
+compare`` resolves the run ids of a spec that trained on Lightning, but
+:func:`check_trainable` (``queue submit``, ``spec run-cell``) refuses it, naming the git
+tag ``lightning-final``. Like ``runtime.engine`` of a nested config (ADR 0017), it is a run-id
 component, not a setting: the arms' config hashes do not depend on it, their run ids do.
 
 **Identity.** :attr:`ExperimentSpec.spec_id`, the experiment-spec id that a comparison
@@ -447,6 +448,24 @@ def _parse_seeds(value: object) -> tuple[int, ...]:
     return seeds
 
 
+def _parse_engine(data: Mapping[str, object]) -> Engine:
+    """The spec's ``engine``, required since task 4.8 (module docstring, "Engine").
+
+    Raises:
+        SpecError: if the key is missing (saying what to write) or not an engine.
+    """
+    if "engine" not in data:
+        msg = (
+            "engine is required since task 4.8: `engine: plain` to train, or `engine: "
+            "lightning` for a spec written before 4.8 (it meant Lightning), to compare its runs"
+        )
+        raise SpecError(msg)
+    engine = data["engine"]
+    if engine not in ENGINES:
+        raise SpecError(f"engine {engine!r} is not one of: {', '.join(ENGINES)}")
+    return engine
+
+
 def _from_plain(data: Mapping[str, object]) -> ExperimentSpec:
     if data.get("format") != SPEC_FORMAT:
         raise SpecError(f"not an {SPEC_FORMAT} file (format {data.get('format')!r})")
@@ -470,9 +489,7 @@ def _from_plain(data: Mapping[str, object]) -> ExperimentSpec:
     if scratch is not True and scratch is not False:
         raise SpecError(f"scratch must be true or false, got {scratch!r}")
     machine_class, extra = _parse_machine(data["machine"])
-    engine = data.get("engine", "plain")
-    if engine not in ENGINES:
-        raise SpecError(f"engine {engine!r} is not one of: {', '.join(ENGINES)}")
+    engine = _parse_engine(data)
     spec = ExperimentSpec(
         name=_slug(data["name"], "name"),
         command=command,

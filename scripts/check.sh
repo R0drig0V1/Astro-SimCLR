@@ -27,4 +27,7 @@ check_lock_install_traps
 check_lock_acquire
 PYTEST_XDIST_AUTO_NUM_WORKERS=$(check_pytest_workers)
 export PYTEST_XDIST_AUTO_NUM_WORKERS
+# The gate checks the golden regression set; a stale ASTRO_SIMCLR_RECORD_GOLDEN=1 in the
+# shell would make it rewrite the goldens instead (tests/test_engine_regression.py).
+unset ASTRO_SIMCLR_RECORD_GOLDEN
 uv run --locked pytest -n auto -rs

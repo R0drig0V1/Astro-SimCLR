@@ -499,7 +499,7 @@ method, the only change to the interface:
 
 ## Amendment: 4.8: Lightning removed (2026-11-09)
 
-The 4.7 gate passed ((a) in CI; (b) bit-exact on the RTX 5090, the GTX 1050 being retired;
+The 4.7 gate passed ((a) in CI; (b) bit-exact on the RTX 5090;
 (c) within the noise floor; results in `docs/phases/04-training-platform.md`, "4.7
 results"), and every new run has used `runtime.engine=plain` since 2026-11-08. Task 4.8
 removes Lightning from the package:
@@ -520,8 +520,10 @@ removes Lightning from the package:
    `engine.record`, `tasks.common`, `training.tensor_splits`); `training.metrics` computes
    the confusion matrices and macro-F1 in plain torch, with torchmetrics' operations in
    their order and dtypes (checked equal on 20,000 random cases before torchmetrics went).
-3. **Defaults.** `runtime.engine` is `plain` by default and the only value it accepts;
-   experiment specs default to `engine: plain`. Neither is a config-hash component, so the
+3. **Defaults.** `runtime.engine` is `plain` by default and the only value it accepts.
+   Experiment specs must now name their `engine`: before 4.8 a spec without the key meant
+   `lightning`, and a silent default of `plain` would have given such a file other run ids
+   and another engine. Neither is a config-hash component, so the
    config hashes and run ids of plain runs are unchanged
    (`tests/test_lightning_retired.py` recomputes both for a stored plain run of
    `configs/runs/carrasco2021.yaml`). The run identity keeps `lightning` as a valid engine:

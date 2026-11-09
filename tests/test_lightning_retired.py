@@ -1,8 +1,8 @@
 """Task 4.8 retired Lightning: nothing imports it, and the plain runs keep their identity.
 
 - No file of ``src/`` or ``tests/`` imports ``lightning``, ``pytorch_lightning`` or
-  ``torchmetrics`` (a grep of the import statements), and the environment no longer
-  installs them (``pyproject.toml`` dropped them).
+  ``torchmetrics`` (a grep of the import statements), and neither ``pyproject.toml`` nor
+  ``uv.lock`` declares them (nor ``tensorboard``, Lightning's logger).
 - The run id and the config hash of a plain run do not change with the switch:
   ``tests/fixtures/plain_run/manifest.json`` is a plain run of
   ``configs/runs/carrasco2021.yaml`` recorded on main before task 4.8 (its ``request.json``
@@ -13,9 +13,9 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -53,9 +53,25 @@ def test_the_import_grep_catches_every_form() -> None:
         assert not _IMPORT.search(line), line
 
 
-@pytest.mark.parametrize("package", ["lightning", "pytorch_lightning", "torchmetrics"])
-def test_the_retired_packages_are_not_installed(package: str) -> None:
-    assert importlib.util.find_spec(package) is None
+#: The distributions task 4.8 dropped (tensorboard was only Lightning's logger).
+RETIRED = ("lightning", "pytorch-lightning", "lightning-utilities", "torchmetrics", "tensorboard")
+
+
+def test_the_retired_packages_are_not_declared() -> None:
+    # What the repository declares, not what a venv holds: `uv run --locked` syncs
+    # inexactly, so a venv synced before task 4.8 may still have them installed.
+    with (ROOT / "uv.lock").open("rb") as handle:
+        locked = {package["name"] for package in tomllib.load(handle)["package"]}
+    assert "torch" in locked
+    assert locked.isdisjoint(RETIRED)
+    with (ROOT / "pyproject.toml").open("rb") as handle:
+        project = tomllib.load(handle)["project"]
+    declared = [*project["dependencies"]]
+    for extra in project.get("optional-dependencies", {}).values():
+        declared += extra
+    names = {re.split(r"[<>=!~\[ ;]", item, maxsplit=1)[0].lower() for item in declared}
+    assert "torch" in names
+    assert names.isdisjoint(RETIRED)
 
 
 @pytest.mark.parametrize("explicit_engine", [True, False], ids=["engine-plain", "default"])

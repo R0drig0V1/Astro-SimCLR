@@ -47,6 +47,7 @@ seeds: {seeds}
 machine:
   class: cpu-test
   extra: cpu
+engine: plain
 scratch: {scratch}
 """
 

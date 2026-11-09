@@ -34,6 +34,7 @@ arms:
 seeds: [0, 1]
 splits: {file: configs/splits/x.json, folds: [1, 0]}
 machine: {class: cuda-nvidia-geforce-gtx-1050, extra: cu126}
+engine: plain
 """
 
 
@@ -118,12 +119,13 @@ def test_expected_run_ids() -> None:
 
 
 def test_the_engine_changes_run_ids_not_config_hashes() -> None:
-    """``engine`` is a run-id component, not a setting (ADR 0017); plain by default (4.8)."""
+    """``engine`` is a run-id component, not a setting (ADR 0017); required since 4.8."""
     plain = parse_spec(FULL)
-    lightning = parse_spec(FULL + "engine: lightning\n")
+    lightning = parse_spec(FULL.replace("engine: plain", "engine: lightning"))
     assert lightning.engine == "lightning" and plain.engine == "plain"
     assert plain.spec_id != lightning.spec_id
-    assert parse_spec(FULL + "engine: plain\n").spec_id == plain.spec_id
+    with pytest.raises(SpecError, match=r"engine is required since task 4\.8"):
+        parse_spec(FULL.replace("engine: plain\n", ""))
     assert plain.arm_config_sha256("flux") == lightning.arm_config_sha256("flux")
 
     def ids(spec: ExperimentSpec, engine: Engine | None = None) -> dict[Cell, str]:
@@ -224,7 +226,7 @@ def test_cell_keys() -> None:
         (("machine: {", "machine: ["), "YAML"),
         (("name: c5-screen", "name: c5-screen\nowner: me"), "unknown"),
         (("name: c5-screen\n", ""), "missing keys"),
-        (("name: c5-screen", "name: c5-screen\nengine: jax"), "engine"),
+        (("engine: plain", "engine: jax"), "engine"),
     ],
 )
 def test_invalid_specs(edit: tuple[str, str], message: str) -> None:
@@ -299,7 +301,7 @@ def test_the_registry_reads_a_real_spec(tmp_path: Path, monkeypatch: pytest.Monk
 def test_a_lightning_spec_parses_but_is_not_trainable() -> None:
     # Task 4.8: an old Lightning spec still resolves its run ids (runs compare), but the
     # queue refuses to train it, naming the tag that keeps the engine.
-    lightning = parse_spec(FULL + "engine: lightning\n")
+    lightning = parse_spec(FULL.replace("engine: plain", "engine: lightning"))
     with pytest.raises(SpecError, match="lightning-final"):
         check_trainable(lightning)
     check_trainable(parse_spec(FULL))

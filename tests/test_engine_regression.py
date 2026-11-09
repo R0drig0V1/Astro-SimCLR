@@ -26,9 +26,11 @@ sensitivity flags and both stop reasons. The resume tests are in
 AVX-512 against arm64 NEON, or another BLAS), so a golden holds on the platform it was
 recorded on: ``<sys.platform>-<machine>-<torch CPU capability>``
 (``_engine_cases.platform_key``: ``darwin-arm64-default``, ``linux-x86_64-avx2``, ...). On a
-platform without goldens every case is skipped, naming it. A golden recorded with another
-torch version still applies: a torch upgrade that changes these numbers is a numerics
-change (bump ``NUMERICS_EPOCH``) and fails here until the goldens are recorded again.
+platform without goldens (no directory) every case is skipped, naming it; on a platform
+with goldens, a case without its golden fails (a new or renamed case must record one). A
+golden recorded with another torch version still applies: a torch upgrade that changes
+these numbers is a numerics change (bump ``NUMERICS_EPOCH``) and fails here until the
+goldens are recorded again.
 
 **Recording** (a new flag, a new platform, or a deliberate numerics change, said in the
 PR)::
@@ -36,7 +38,8 @@ PR)::
     ASTRO_SIMCLR_RECORD_GOLDEN=1 uv run pytest tests/test_engine_regression.py
 
 writes this platform's goldens (every case passes) instead of checking them; review the
-diff of ``tests/fixtures/engine_golden/`` before committing it.
+diff of ``tests/fixtures/engine_golden/`` before committing it. ``scripts/check.sh`` unsets
+the variable, so the gate always checks.
 """
 
 from __future__ import annotations
@@ -95,8 +98,13 @@ def _check_golden(case: str, outputs: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(document, indent=1, sort_keys=True) + "\n", encoding="utf-8")
         return
-    if not path.is_file():
+    if not path.parent.is_dir():
         pytest.skip(f"no golden for platform {platform_key()} (record it: module docstring)")
+    if not path.is_file():  # a platform with goldens must have every case's
+        pytest.fail(
+            f"{case} has no golden on {platform_key()}: record it with "
+            "ASTRO_SIMCLR_RECORD_GOLDEN=1 uv run pytest tests/test_engine_regression.py"
+        )
     golden = json.loads(path.read_text(encoding="utf-8"))
     assert golden["format"] == GOLDEN_FORMAT
     # In order: the first difference is the most telling (initial weights, then training).
