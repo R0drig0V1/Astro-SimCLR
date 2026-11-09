@@ -1,17 +1,20 @@
 """The plain engine's run record: its machine entry and the manifest's lifecycle (ADR 0015).
 
-A plain run writes the same ``manifest.json`` as a Lightning run (``runs.record.start_run``),
+A plain run writes the same ``manifest.json`` as a Lightning run wrote
+(``runs.record.start_run``),
 with ``engine: plain``, which is part of its run id: a plain run never passes for an
 attempt of a Lightning run, and comparisons refuse mixed engines (task A1).
 
-- :func:`machine_record` is ``experiments.machine_record`` without the Lightning ``Trainer``: the
-  device and build of a run, with ADR 0010's precision record and ``engine: plain``. It is
-  what ``start_run(machine=...)`` and ``metrics.json["machine"]`` take.
+- :func:`machine_record` is the Lightning runner's ``experiments.machine_record`` without
+  its ``Trainer``: the device and build of a run, with ADR 0010's precision record and
+  ``engine: plain``. It is what ``start_run(machine=...)`` and ``metrics.json["machine"]``
+  take.
 - :func:`recorded` ends a started record with ``finished`` when its block completes,
   ``cancelled`` on ``KeyboardInterrupt`` or ``SystemExit``, and ``failed`` on any other
-  exception (``run_command``'s rule, task A1), and re-raises.
+  exception (task A1's rule), and re-raises.
 
-Wiring the CLI to the plain engine is task 4.6; this is what it will call.
+The plain runners (``tasks.plain.run_plain``, ``tasks.rj23.run_rj23_plain``; task 4.6) call
+them.
 """
 
 from __future__ import annotations
@@ -33,7 +36,7 @@ ENGINE: Final = "plain"
 
 
 def machine_record(device: torch.device) -> dict[str, Any]:
-    """The machine and build a run on ``device`` used (``experiments.machine_record``'s keys).
+    """The machine and build a run on ``device`` used (the keys Lightning's record had).
 
     ``gpu`` is the CUDA device name (``None`` elsewhere); ``fp32_precision`` (effective),
     ``fp32_backends`` and ``compute_capability`` come from ADR 0010's record, so call it

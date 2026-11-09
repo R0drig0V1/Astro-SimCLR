@@ -1,7 +1,8 @@
 """The parts of an RJ23 run on a ``raw-alerts`` layout and its object splits (task 3.4b).
 
-Engine-free (numpy only; the phase-4 rule): both the Lightning adapter
-(:mod:`astro_simclr.training.rj23`) and the plain engine of phase 4 build their data here.
+Engine-free (numpy only; the phase-4 rule): the plain engine's RJ23 runner
+(:mod:`astro_simclr.tasks.rj23`) builds its data here, as the Lightning adapter did
+until task 4.8.
 
 A run reads a ``raw-alerts`` layout (:mod:`astro_simclr.data.raw_alerts`, task 3.1b), its
 stored object splits (:mod:`astro_simclr.protocol.object_splits`, task 3.2) and the alert

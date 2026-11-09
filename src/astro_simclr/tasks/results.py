@@ -1,9 +1,10 @@
-"""The classifier results of ``metrics.json``, shared by both engines (task 4.6; Lightning-free).
+"""The classifier results of ``metrics.json``, as the plain engine writes them (task 4.6).
 
-Moved from ``experiments`` so that a plain run (``tasks.plain``) writes exactly the results a
-Lightning run writes. Each evaluated stage is a :class:`StageOutput` (the probabilities,
-the predicted and true labels, and the row-normalised confusion matrix, as
-``ClassifierModule`` keeps them after ``validate`` / ``test``):
+Moved from the Lightning runner (``experiments``, removed in task 4.8) so that a plain run
+(``tasks.plain``) writes exactly the results a Lightning run wrote. Each evaluated stage
+is a :class:`StageOutput` (the probabilities, the predicted and true labels, and the
+row-normalised confusion matrix, as Lightning's ``ClassifierModule`` kept them after
+``validate`` / ``test``):
 
 - :func:`classifier_results`: a normal run's Validation / Test results (``val_acc_best``,
   ``test_acc_at_best``, the macro-F1s, ``evaluation``, ``predictions_{val,test}.npz``, the
@@ -73,8 +74,8 @@ class StageOutput:
     ) -> StageOutput:
         """From probabilities and labels; the confusion matrix is computed on ``device``.
 
-        ``ClassifierModule`` computes it on the training device; doing the same keeps the
-        recorded matrix bit for bit the Lightning run's on every device.
+        Lightning's ``ClassifierModule`` computed it on the training device; doing the same
+        keeps the recorded matrix bit for bit the Lightning run's on every device.
         """
         y_pred = probabilities.argmax(dim=1)
         matrix = confusion_matrix(

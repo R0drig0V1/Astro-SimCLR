@@ -4,8 +4,9 @@ Both rows come from a visual inspection of the Train stamps per class and channe
 (2026-11-08): SN has 1,396 Train stamps, so the tiling repeats each about 10 times (C5 makes
 the copies differ), and about half of the inspected Bogus are a hot pixel or a cosmic ray: a
 1-2 pixel spike at the centre of the science and the difference, on an unremarkable template
-(C6 makes more of them). Everything here runs in ``PaperClassifierModule.training_step`` on
-the device-resident batch; validation and test are never augmented.
+(C6 makes more of them). Everything here runs in the training step of
+``tasks.paper.PaperTask``, on the device-resident batch; validation and test are never
+augmented.
 
 **The difference is computed, not augmented on its own.** In the stored crops (each channel
 min-max normalised on its own), the difference is still close to an affine function of the
@@ -99,7 +100,7 @@ from astro_simclr.paper_model import PAPER_CROP
 
 # The cross-channel relation, re-exported so that every caller keeps importing it from here;
 # it lives in stamp_relation so that phase 5's SimCLR views can use it without importing
-# this package's Lightning modules (ADR 0025).
+# this package, which held the Lightning modules until task 4.8 (ADR 0025).
 from astro_simclr.stamp_relation import (
     BORDER_WIDTH,
     DEFAULT_MIN_R2,

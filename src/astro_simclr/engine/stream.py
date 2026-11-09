@@ -1,6 +1,7 @@
 """The seeded, resumable training stream: class balance, the shuffle and its granularity.
 
-Engine-free (no Lightning), so both engines and every data tier (:mod:`.tiers`) share it;
+Engine-free (no Lightning), so every data tier (:mod:`.tiers`) shares it (both engines did
+until task 4.8);
 ``training.tiling`` re-exports :func:`tile_indices` and :class:`PermutationStream` from here.
 
 **Class balance** (task 2.2a, Carrasco-Davis et al. 2021). In ALeRCE's code

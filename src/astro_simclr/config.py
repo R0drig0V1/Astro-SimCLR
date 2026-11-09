@@ -167,8 +167,8 @@ LR_SCHEDULES: Final = ("constant", "cosine")
 #: TensorFloat-32 (10-bit mantissa; Pascal, CPU and MPS have no TF32 and stay float32).
 FP32_PRECISIONS: Final = ("ieee", "tf32")
 
-#: Accelerator names accepted by ``Settings.accelerator`` (the Lightning names this project
-#: supports). ``auto`` picks CUDA, then MPS, then CPU.
+#: Accelerator names accepted by ``Settings.accelerator`` (Lightning's names, kept after
+#: task 4.8). ``auto`` picks CUDA, then MPS, then CPU.
 ACCELERATORS = frozenset({"auto", "cpu", "cuda", "gpu", "mps"})
 
 
@@ -187,7 +187,7 @@ class Settings:
     optimizer of every tuned trial behind it; the plan's known-defects table).
     """
 
-    #: Lightning accelerator; see :data:`ACCELERATORS`. Reference configs set ``cuda`` so
+    #: Training accelerator; see :data:`ACCELERATORS`. Reference configs set ``cuda`` so
     #: that a missing GPU fails instead of training on CPU.
     accelerator: str = "auto"
     #: Number of devices, or a Lightning device string. Defaults to 1: ``NT_Xent`` has no
@@ -199,12 +199,14 @@ class Settings:
     data_dir: Path = Path("dataset")
     #: Every output of a run (checkpoints, logs, figures, metrics) goes under this directory.
     output_dir: Path = Path("outputs")
-    #: Seed for ``lightning.seed_everything(seed, workers=True)``.
+    #: The run's seed: ``engine.randomness.seed_everything`` (the global streams, as
+    #: ``lightning.seed_everything`` seeded them) and the per-step generators.
     seed: int = 0
-    #: ``Trainer(deterministic=...)``. False keeps the legacy ``benchmark=True`` behaviour.
+    #: Deterministic algorithms (``engine.device.DevicePolicy``). False keeps the legacy
+    #: ``cudnn.benchmark=True`` behaviour.
     deterministic: bool = False
     #: float32 convolutions and matmuls; see :data:`FP32_PRECISIONS` (ADR 0010). Applied by
-    #: ``training.runs.apply_fp32_precision`` before any module is built, and recorded with
+    #: ``engine.precision.apply_fp32_precision`` before any module is built, and recorded with
     #: its effect in ``metrics.json["machine"]``. torch's own default is TF32 convolutions.
     fp32_precision: str = "ieee"
     #: Upper bound on training epochs.
@@ -226,14 +228,16 @@ class Settings:
     #: EarlyStopping ``divergence_threshold``: stop as soon as the monitored value is worse
     #: than this (the legacy tuning protocol used 0.1 on ``accuracy_val``). None: never.
     divergence_threshold: float | None = None
-    #: ``Trainer(limit_train_batches=...)``: an int is a number of batches per epoch, a float
-    #: a fraction. None: every batch. The dry mode sets 2.
+    #: Lightning's ``Trainer(limit_train_batches=...)`` (an int is a number of batches per
+    #: epoch, a float a fraction; None: every batch). The plain engine refuses it
+    #: (``tasks.plain.check_plain_runtime``).
     limit_train_batches: int | float | None = None
-    #: ``Trainer(limit_val_batches=...)``, as ``limit_train_batches``.
+    #: Lightning's ``Trainer(limit_val_batches=...)``, as ``limit_train_batches``.
     limit_val_batches: int | float | None = None
     #: Redraw Lightning's progress bar every this many batches (``TQDMProgressBar``); 0
-    #: hides it. Lightning's default, 1, costs ~0.4 ms a step on a 30,000-step run
-    #: (``carrasco2021``); no effect on the numbers.
+    #: hides it. Lightning's default, 1, cost ~0.4 ms a step on a 30,000-step run
+    #: (``carrasco2021``); no effect on the numbers. Read by the Lightning engine only
+    #: (frozen at ``lightning-final``).
     progress_bar_refresh_rate: int = 50
 
     # --- Data and model hyperparameters of the training subcommands (task 1.7) -------------
@@ -249,7 +253,8 @@ class Settings:
     lr: float = 0.002495379490073152
     #: Optimizer name: ``AdamW``, ``Adam``, ``SGD`` or ``LARS``.
     optimizer: str = "AdamW"
-    #: Training augmentation: a registry name or a legacy alias (``augmentations``).
+    #: Training augmentation of the legacy commands (frozen at ``lightning-final``): a
+    #: registry name or a legacy alias. No remaining runner reads it (``tasks.common``).
     augmentation: str = "center_crop"
     #: ``P_stamps_loss`` entropy weight of the classifiers.
     beta_loss: float = 0.016063800410738464
@@ -280,7 +285,7 @@ class Settings:
 
     #: ``epochs`` (the legacy schedule: ``max_epochs``, EarlyStopping, best by epoch),
     #: ``carrasco2021`` (ALeRCE's: steps, validation every ``val_every_n_steps``, the horizon
-    #: rule; ``training.schedule``) or ``rj23`` (RJ23's: validation every
+    #: rule; ``engine.policies.Horizon``) or ``rj23`` (RJ23's: validation every
     #: ``val_every_n_steps`` from step 0, ``patience`` validations, the ``max_steps`` cap;
     #: ``rj23_regime``). See :data:`SCHEDULES`.
     schedule: str = "epochs"
@@ -626,7 +631,7 @@ class Settings:
             msg = f"schedule {CARRASCO2021} keeps the data on the device: set num_workers=0"
             raise ConfigError(msg)
         if self.checkpoint_every_n_steps % self.val_every_n_steps != 0:
-            # last.ckpt is written after a validation (training.schedule.HorizonCallback).
+            # last is written after a validation and its policy update (engine.loop).
             msg = (
                 f"schedule {CARRASCO2021} writes last.ckpt after a validation: "
                 f"checkpoint_every_n_steps ({self.checkpoint_every_n_steps}) must be a "
@@ -702,7 +707,7 @@ class Settings:
             if getattr(self, name) != off
         ]
         if changed and self.schedule != CARRASCO2021:
-            # Only the paper model's modules (both engines) read them.
+            # Only the paper model's task (tasks.paper) reads them.
             msg = f"{', '.join(changed)} apply only to schedule {CARRASCO2021}"
             raise ConfigError(msg)
         # A fixed schedule over max_steps, or scoring the final weights, needs a run whose

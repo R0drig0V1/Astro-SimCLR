@@ -6,9 +6,9 @@ copied) train each scenario's classifier (:mod:`astro_simclr.rj23_model`) with K
 on class-balanced batches of 256, validate the macro-F1 every 500 iterations, stop after 5
 validations without improvement and save the model **at the stopping iteration**. This
 module holds those rules as pure objects, with no training engine (the phase-4 rule from B0
-on: ``docs/phases/04-training-platform.md``). The Lightning adapter is
-:mod:`astro_simclr.training.rj23`, the plain engine's :mod:`astro_simclr.tasks.rj23`; both
-use these objects as they are. The choices the sources leave open are pinned in ADR 0023.
+on: ``docs/phases/04-training-platform.md``). The plain engine's adapter,
+:mod:`astro_simclr.tasks.rj23`, uses these objects as they are (as the Lightning adapter
+did until task 4.8). The choices the sources leave open are pinned in ADR 0023.
 
 - :class:`RJ23Schedule`, the **schedule policy**: :meth:`RJ23Schedule.decide` is a pure
   function of ``(step, history)``, the number of optimizer steps done and the monitored
@@ -267,7 +267,7 @@ class ClassUniformStream:
     share of every batch is ``1 / n_classes`` whatever its size.
 
     :attr:`batches_per_pass` (``ceil(n / batch_size)``) is only the length of the
-    Lightning "epoch" that logs: the stream has no passes.
+    logging "epoch" (the loop's derived epoch; Lightning's): the stream has no passes.
 
     Raises:
         ValueError: if ``labels`` is not a non-empty 1-D integer array with values in
@@ -310,7 +310,7 @@ class ClassUniformStream:
 
     @property
     def batches_per_pass(self) -> int:
-        """``ceil(n / batch_size)``: the logging epoch of the Lightning adapter."""
+        """``ceil(n / batch_size)``: the logging epoch (``engine.loop``'s derived epoch)."""
         return -(-self.n // self.batch_size)
 
     def batch(self, batch: int) -> npt.NDArray[np.int64]:

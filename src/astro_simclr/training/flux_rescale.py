@@ -3,14 +3,15 @@
 Real SN, AGN, VS and Asteroids are seen at many brightnesses, but each Train stamp shows its
 transient at one. C7 makes the transient of a training stamp ``k`` times brighter or fainter,
 **keeping the noise**, so its signal-to-noise really changes, and updates the features that
-measure it. Training only, in ``PaperClassifierModule.training_step``, never for Bogus.
+measure it. Training only, in the training step of ``tasks.paper.PaperTask``, never for
+Bogus.
 
 **Why not scale the difference.** Every crop channel is min-max normalised on its own
 (``data.float_input``), and the min-max is scale-invariant: ``k * diff`` normalises to the
 same input. The transient must change *relative to the noise*. So the central source of the
 difference is modelled, and only the model is scaled:
 
-1. :func:`fit_central_psf`, once per Train stamp (``experiments._build_paper``, next to
+1. :func:`fit_central_psf`, once per Train stamp (``tasks.paper.with_train_fits``, next to
    ``class_augment.stamp_fits``): a pixel-integrated circular Gaussian plus a constant,
    fitted by Levenberg-Marquardt (per stamp, float64, the Jacobians by ``torch.func``) to
    the central 11x11 pixels of the normalised difference crop, masked pixels left out. The

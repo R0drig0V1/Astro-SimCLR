@@ -80,8 +80,8 @@ __all__ = [
 DEFAULT_LEASE_SECONDS: Final = 120.0
 #: Seconds between two steps.
 DEFAULT_POLL_SECONDS: Final = 5.0
-#: Seconds between SIGTERM and SIGKILL (Lightning writes no checkpoint on SIGTERM, so
-#: this only lets the manifest be rewritten).
+#: Seconds between SIGTERM and SIGKILL (the training engine writes no checkpoint on
+#: SIGTERM, so this only lets the manifest be rewritten).
 DEFAULT_GRACE_SECONDS: Final = 30.0
 
 type Outcome = tuple[Literal["finished", "failed", "requeue", "retry"], str]

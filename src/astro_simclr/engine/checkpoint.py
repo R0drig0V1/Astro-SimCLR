@@ -10,8 +10,8 @@ per-step generators of :mod:`.randomness` need no state, being functions of the 
 The **stream position** is ``steps_done``: the next batch is stream batch ``steps_done``
 (:class:`~astro_simclr.engine.data.BatchSource`), so no loader position is stored, only the
 stream definition to check. ``last`` is written after the validation of its step and the
-policy update, so a resume owes no validation (the reason ``HorizonCallback`` writes it
-there).
+policy update, so a resume owes no validation (the reason Lightning's ``HorizonCallback``
+wrote it there too).
 
 The resume order (ADR 0014, "Resume") is: :func:`check_resumable`; seed; build the task on
 the CPU; load ``model``; move to the device; build the optimizer and load ``optimizer``;
@@ -135,7 +135,7 @@ class Checkpoint(TypedDict):
     #: ``BatchSource.state()``: the stream definition to check, not a position.
     stream: dict[str, Any]
     rng: RngState
-    #: ``training.runs.fp32_precision_record`` and the determinism flags at save time; a
+    #: ``engine.precision.fp32_precision_record`` and the determinism flags at save time; a
     #: resume under another precision policy is refused (ADR 0010).
     numerics: dict[str, Any]
     #: ``astro_simclr`` and ``torch`` versions and the git SHA, for the record, as plain

@@ -1,16 +1,18 @@
-"""The ``rj23`` schedule on both engines: its inputs, records and the plain run (task 3.4b).
+"""The ``rj23`` schedule on the plain engine: its inputs, records and the run (task 3.4b).
 
 Lightning-free (the engine-free rule, ADR 0014): the rules are
 :mod:`astro_simclr.rj23_regime`'s policy objects (the schedule, the class-uniform stream,
 Keras' Adam, the evaluation) and the parts are :mod:`astro_simclr.rj23_data`'s, used as
-they are. This module holds what both runners share and the plain engine's adapter:
+they are. This module holds the run's inputs and records and the plain engine's adapter:
 
-- **Shared with the Lightning runner** (``training.rj23.run_rj23``): :class:`RJ23Request`,
+- **Inputs and records** (the Lightning runner, removed in task 4.8, shared them):
+  :class:`RJ23Request`,
   :func:`rj23_inputs` (the layout, the alert table, the object splits and the protocol's
   parts, verified), :func:`check_stream_state` (the resume check of the stream and the run
   identity), :func:`keep_record` (one kept weights' predictions files and evaluation),
   :func:`schedule_record` and :func:`rj23_metrics` (``metrics.json`` without the engine's
-  entries). Both engines therefore write the same files with the same values.
+  entries). A plain run therefore writes the files a Lightning run wrote, with the same
+  values.
 - **The plain adapter**: :class:`RJ23Task` (the scenario's classifier, unweighted
   cross-entropy, :func:`~astro_simclr.rj23_regime.keras_adam`), :class:`RJ23TrainSource`
   (batch ``s`` of the :class:`~astro_simclr.rj23_regime.ClassUniformStream`, stream 10, at
@@ -26,7 +28,7 @@ they are. This module holds what both runners share and the plain engine's adapt
 scenario's view ``(B, C, H, W)``, the positions on the unit sphere ``(B, 3)`` in the
 features slot of the engine's :data:`~astro_simclr.engine.Batch`, and **int64** labels
 ``(B,)`` (not one-hot: the task and its sources go together, and the cross-entropy takes
-class indices as Lightning's ``RJ23Module`` does).
+class indices as Lightning's ``RJ23Module`` did).
 
 **Plain outputs** under ``output_dir``: ``ckpt/last.pt`` (the whole training state, written
 after the validations of every ``checkpoint_every_n_steps`` steps and at the stop: the
@@ -203,7 +205,7 @@ def build_rj23_model(settings: Settings, n_classes: int) -> nn.Module:
 def check_stream_state(
     state: Mapping[str, Any], stream: ClassUniformStream, identity: Mapping[str, object]
 ) -> None:
-    """Refuse a resume of another run or stream (both engines' training streams).
+    """Refuse a resume of another run or stream (the training stream's checkpoint state).
 
     Raises:
         ConfigError: if the checkpoint is from another splits file, mode or scenario.
@@ -249,7 +251,7 @@ class RJ23TrainSource:
     """The class-uniform training stream on the device, as the plain loop reads it.
 
     Batch ``s`` is :meth:`ClassUniformStream.batch` ``(s)`` gathered on the device: the
-    Lightning loader's batch at global step ``s``. Its state is the stream definition and
+    batch the Lightning loader gave at global step ``s``. Its state is the stream definition and
     the run identity, checked on resume (:func:`check_stream_state`).
     """
 
@@ -308,7 +310,7 @@ class RJ23Task:
 
     Built on the CPU from the global generator (``fit`` seeds first). ``eval_step`` gives
     :func:`~astro_simclr.rj23_regime.predict_probabilities` of its batch, the evaluation
-    of the Lightning runner, and a loss computed from those probabilities (no run reports
+    the Lightning runner used, and a loss computed from those probabilities (no run reports
     it: the monitored value is the macro-F1).
 
     Raises:
@@ -568,8 +570,9 @@ def run_rj23_plain(
 ) -> dict[str, Any]:
     """Train and evaluate one RJ23 run on the plain engine; return and write its metrics.
 
-    The plain counterpart of ``training.rj23.run_rj23`` (module docstring): the same
-    inputs, the same batches, validations, stop and kept weights, the same files.
+    The plain counterpart of the Lightning ``training.rj23.run_rj23`` (removed in task
+    4.8; module docstring): the same inputs, the same batches, validations, stop and kept
+    weights, the same files.
     ``resume`` is ``None``, ``"auto"`` (``ckpt/last.pt`` if any) or a ``ckpt/last.pt``
     path; the hooks are :func:`astro_simclr.engine.fit`'s. ``queued`` is a queued run's
     fixed attempt, machine class and run id (``runs.record``, "Queued runs"; task A3).

@@ -1,10 +1,12 @@
 """The schedule policies of the plain loop: monitor, validation grid, horizon, stop, keep.
 
 Each policy is a frozen dataclass whose pure rule is the contract that 4.1's loop follows
-and that the 4.7(a) differential test checks against Lightning (ADR 0014):
+(ADR 0014); each rule reproduces Lightning's, which a differential test checked until
+task 4.8, and the golden regression set (``tests/test_engine_regression.py``) now holds
+the runs that follow them fixed:
 
 - :class:`Monitor`: a strict improvement (``<`` for ``min``, ``>`` for ``max``); NaN never
-  improves; the first finite value always does (``HorizonCallback._improves``);
+  improves; the first finite value always does (as Lightning's ``HorizonCallback._improves``);
 - :class:`ValidationGrid`: validate after the optimizer steps that are multiples of the
   interval, never because an epoch ended, and never forced after the last step
   (Lightning's ``(total_batch_idx + 1) % val_check_batch == 0``); at step 0 (the initial
@@ -15,12 +17,12 @@ and that the 4.7(a) differential test checks against Lightning (ADR 0014):
   current run uses it);
 - :class:`StopRule`: a stop rule on the whole history of monitored values, decided by an
   engine-free policy object (``rj23_regime.RJ23Schedule``, task 3.4b, as it is: the
-  Lightning adapter calls the same ``decide``);
+  Lightning adapter called the same ``decide``);
 - :data:`Keep`: which weights a run ends with, ``best`` (restored, CD21) or ``stop`` (the
   last, RJ23's primary); ``rj23`` reports both from one run.
 
 The loop (``engine.loop``, task 4.1) applies the rules after each validation; the rules
-themselves stay here, pure, so a test can check each against Lightning's.
+themselves stay here, pure, so a test can check each on its own.
 """
 
 from __future__ import annotations
@@ -74,7 +76,7 @@ class Monitor:
         """Whether ``value`` is a new best over ``best`` (``None``: no best yet).
 
         The comparison is strict and made on the Python floats of the float32 values, as
-        ``HorizonCallback`` makes it: equal values do not improve, NaN never does.
+        Lightning's ``HorizonCallback`` made it: equal values do not improve, NaN never does.
         """
         if best is None:
             return not math.isnan(value)

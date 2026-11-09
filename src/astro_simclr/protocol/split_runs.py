@@ -29,8 +29,8 @@ helpers of :mod:`astro_simclr.protocol.compare` check: the pool index for a fold
 (:func:`~astro_simclr.protocol.splits.verify_splits`: the dataset fingerprint, the class
 balance, the stratification and a fresh leakage check), so a run never trains on splits
 made for other data. :meth:`SplitRun.parts` gives every part as sorted pool indices and
-checks that they are disjoint (no stamp is both trained on and evaluated). The data module
-gathers the stamps (``training.device_data.protocol_splits``) and ``experiments`` records
+checks that they are disjoint (no stamp is both trained on and evaluated). The run
+gathers the stamps (``training.tensor_splits.protocol_splits``) and ``tasks.plain`` records
 :meth:`SplitRun.describe` as ``metrics.json["protocol"]``, with the SHA-256 of the splits
 file, which ``compare-variants --splits`` checks. :meth:`SplitRun.identity` goes into every
 checkpoint, so ``--resume`` refuses a checkpoint of another fold, mode or splits file.
@@ -171,8 +171,8 @@ class SplitRun:
     def identity(self) -> dict[str, Any]:
         """What makes two split runs the same run: the splits SHA-256, the mode, the fold.
 
-        Stored in every checkpoint of the run (the training loader's state,
-        ``training.device_data``) and compared on ``--resume``: a resume from another fold
+        Stored in every checkpoint of the run (its identity, ``engine.checkpoint``) and
+        compared on ``--resume``: a resume from another fold
         would continue from weights trained on this fold's evaluation part. The file path
         is left out, so a moved splits file still resumes.
         """

@@ -15,12 +15,12 @@ with ``w = warmup_steps`` and ``T = total_steps``. The cosine's last step (``T -
 small positive factor, and a step past ``T`` (none: a cosine run has no horizon extension,
 ``config.Settings``) would have 0.
 
-Both engines apply it with a ``torch.optim.lr_scheduler.LambdaLR`` over the rule
+The plain task applies it with a ``torch.optim.lr_scheduler.LambdaLR`` over the rule
 (:meth:`LrSchedule.scheduler`), stepped once after every optimizer step: at construction
 it sets the learning rate of step 0, and each ``scheduler.step()`` the next step's, so the
-learning rate used by step ``s`` is ``lr * factor(s)``. Lightning steps it with
-``interval: step`` and saves its state in the checkpoint; the plain task steps it in
-``after_step`` and keeps its state in the task state. With the defaults (constant, no
+learning rate used by step ``s`` is ``lr * factor(s)``. The plain task steps it in
+``after_step`` and keeps its state in the task state (Lightning stepped it with
+``interval: step``). With the defaults (constant, no
 warmup) there is no scheduler at all, so a CD21 run is exactly what it was before the flag.
 Nothing here imports Lightning.
 """

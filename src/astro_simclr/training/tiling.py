@@ -1,9 +1,9 @@
 """Class balance by deterministic tiling and ALeRCE's shuffled batch stream (task 2.2a).
 
 The implementation moved to :mod:`astro_simclr.engine.stream` (task 4.3), which imports no
-Lightning, so the plain engine's data tiers and today's ``DeviceTensorDataModule`` share
-one definition of the stream; its module docstring documents ALeRCE's tiling and shuffle.
-This module re-exports the two names for the Lightning path and its tests.
+Lightning, so the plain engine's data tiers and the Lightning ``DeviceTensorDataModule``
+(until task 4.8) shared one definition of the stream; its module docstring documents
+ALeRCE's tiling and shuffle. This module re-exports the two names under their old path.
 """
 
 from __future__ import annotations

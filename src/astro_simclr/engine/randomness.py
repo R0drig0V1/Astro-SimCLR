@@ -19,7 +19,8 @@ number from :data:`RESERVED_STREAMS` (a new augmentation takes a new number; reu
 would correlate two augmentations).
 
 :func:`seed_everything` seeds the **global** streams at the start of a run (ADR 0014, C1),
-as ``lightning.seed_everything`` does, so both engines build the same initial weights.
+as ``lightning.seed_everything`` does, so a plain run builds the initial weights a
+Lightning run of the same seed built.
 """
 
 from __future__ import annotations

@@ -3,7 +3,8 @@
 Engine-free (no Lightning import): the paper model's class-aware augmentation
 (:mod:`astro_simclr.training.class_augment`, plan row C5) and the SimCLR views of phase 5
 (:mod:`astro_simclr.simclr.views`) both use these functions, so they live outside the
-``training`` package, whose ``__init__`` imports Lightning. ``class_augment`` re-exports
+``training`` package, whose ``__init__`` imported Lightning until task 4.8.
+``class_augment`` re-exports
 every name, so its callers are unchanged; the behaviour is the one ADR 0006 records, moved
 without a change (ADR 0025 records the move).
 

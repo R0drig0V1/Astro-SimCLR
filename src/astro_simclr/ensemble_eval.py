@@ -303,8 +303,8 @@ def _check_lightning_best(
     (``best_step``, or ``last_step`` for ``last.ckpt``; ``metrics.json``), its
     ``augment_seed`` the run's seed, and every hyperparameter it saved equals the manifest
     config's value of the same name. A checkpoint copied from another run of the same
-    config, seed and step would pass: the weaker guarantee of the Lightning engine, until
-    task 4.8 retires it.
+    config, seed and step would pass: the weaker guarantee of the Lightning engine (retired
+    by task 4.8; its runs are still read).
 
     Raises:
         ConfigError: on the first mismatch, naming it.

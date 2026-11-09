@@ -2,14 +2,14 @@
 
 **Batch format** (frozen in B0): :data:`Batch` is ``(images, features, one-hot labels)``
 and :data:`TrainBatch` adds the per-stamp fits that C5-C7 need, exactly
-``training.device_data.Batch`` / ``TrainBatch`` (``tests/test_engine_contracts.py`` checks
-that they stay equal; they are restated here because ``device_data`` imports Lightning).
+``training.tensor_splits.Batch`` / ``TrainBatch`` (``tests/test_engine_contracts.py``
+checks that they stay equal), the format of the Lightning ``device_data`` loader too.
 
 **Tiers** (:class:`DataTier`), each a :class:`BatchSource` whose batch of step ``s`` is a
 pure function of the stream definition and ``s``:
 
 1. ``device``: every split resident on the training device, batches gathered there by
-   index (today's ``DeviceTensorDataModule``). Exact.
+   index (the design of the Lightning ``DeviceTensorDataModule``). Exact.
 2. ``pinned``: float32 splits in pinned host memory, a per-step gather on the host and a
    non-blocking upload, prefetched one step ahead. Exact: the same float32 values reach the
    same ops, only their location changes.
@@ -46,10 +46,10 @@ __all__ = [
     "TrainBatch",
 ]
 
-#: (crops, features, one-hot labels): ``training.device_data.Batch``.
+#: (crops, features, one-hot labels): ``training.tensor_splits.Batch``.
 Batch = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 #: A training batch, plus the stamp fits when the Train split has them:
-#: ``training.device_data.TrainBatch``.
+#: ``training.tensor_splits.TrainBatch``.
 TrainBatch = Batch | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
 #: How the stored images are held; anything but ``float32`` is a recorded deviation.
 StorageDtype = Literal["float32", "float16", "uint8"]

@@ -20,7 +20,7 @@ It replaces the hand-written tmux/bash queues. The pieces, from the laptop to th
   resumes from ``last``.
 - :mod:`~astro_simclr.queue.job`: the fixed entry point a job runs, ``spec run-cell``,
   inside the per-SHA worktree: one cell of a spec under a run-directory lock, through
-  ``run_command`` (which writes its ``manifest.json``, ADR 0015) with the queue's attempt
+  ``tasks.plain.run_plain`` (which writes its ``manifest.json``, ADR 0015) with the queue's attempt
   and machine class (``runs.record.QueueAttempt``).
 - :mod:`~astro_simclr.queue.service`: a systemd user unit, or a tmux session found by its
   exact name, to host the worker.

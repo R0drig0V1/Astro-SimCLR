@@ -34,7 +34,7 @@ the module across devices and stays out of ``state_dict``. A call is then one
 / ``stack`` ops per layer (p4's training step issued ~200 of them). The values are the
 same bits as the transform-by-transform expansion. The backward is not ``index_select``'s
 own: that is an accumulating scatter (``index_add_``), which has no deterministic MPS
-kernel (``Trainer(deterministic=True)`` would fail there) and sums the ``|G|`` copies of
+kernel (a ``deterministic`` run would fail there) and sums the ``|G|`` copies of
 each parameter entry in a different order than the transform expansion's autograd graph,
 so the gradients would change in the last bits. :class:`_KernelGather` instead gathers the
 ``|G|`` copies with a precomputed inverse index and adds them in a fixed order, the one in

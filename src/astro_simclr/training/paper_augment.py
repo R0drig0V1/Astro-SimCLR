@@ -1,9 +1,10 @@
 """The paper model's training augmentation as one engine-free policy object (task 4.6).
 
 :class:`PaperAugment` holds the 2.5 augmentation flags of the paper classifier and does
-what ``PaperClassifierModule.augment_plan`` / ``apply_plan`` did (they now delegate here),
-so the Lightning module and the plain engine's task (``tasks.paper``) share one
-implementation, as CLAUDE.md's rule for training flags asks (ADR 0014, section 7):
+what ``PaperClassifierModule.augment_plan`` / ``apply_plan`` did (they delegated here until
+task 4.8 removed them), so the plain engine's task (``tasks.paper``) runs the
+implementation the Lightning module ran, as CLAUDE.md's rule for training flags asks
+(ADR 0014, section 7):
 
 - :meth:`PaperAugment.plan` is the **host** part: every draw and decision of a step, from
   ``[seed, step, stream]`` generators (``class_augment.augment_rng``; the rotation keeps
@@ -84,7 +85,7 @@ class PaperAugment:
     Raises:
         ValueError: for a negative seed or strength, ``synthetic_bogus`` outside [0, 1),
             ``min_r2`` outside [0, 1], ``flux_rescale`` outside [0, 1], or not
-            ``0 < flux_k_min <= flux_k_max`` (``PaperClassifierModule``'s messages).
+            ``0 < flux_k_min <= flux_k_max`` (the messages of ``PaperClassifierModule``).
     """
 
     seed: int = 0
