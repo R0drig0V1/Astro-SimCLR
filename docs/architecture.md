@@ -400,8 +400,10 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
 - **SimCLR pilot (task 5.0b, see `simclr`):** `simclr-pilot DATA --output-dir OUT
   [--splits FILE] [--epochs N | --steps N] [--batch-size B] [--temperature T] [--lr-per-256
   X] [--warmup-epochs E] [--noise-scale S] [--seed N] [--device auto|cpu|cuda|mps]
-  [--fp32-precision ieee|tf32] [--deterministic] [--tier device|host] [--resume]
-  [--stop-at N]`; `simclr-embed DATA --output-dir OUT (--checkpoint FILE | --random-init)
+  [--fp32-precision ieee|tf32] [--deterministic] [--tier device|host] [--probe-every K
+  --label-budgets FILE [--probe-budgets B...] [--probe-part P] [--probe-repeat R]
+  [--abort-if-probe-below-random EPOCH]] [--online-probe [--online-probe-batch N]
+  [--online-probe-lr X]] [--resume] [--stop-at N]`; `simclr-embed DATA --output-dir OUT (--checkpoint FILE | --random-init)
   [--seed N]`; `make-label-subsets DATA --splits FILE --per-class K [--n-subsets R]
   [--seed S] --out FILE [--overwrite]`; `simclr-probe EMBEDDINGS --subsets FILE --splits
   FILE --out FILE [--weight-decay X...]`. Registered by `simclr.commands.add_simclr_commands`;
@@ -2122,7 +2124,7 @@ Lightning behaviour the loop reproduces (C1-C11) and the test that pins each.
 | `checkpoint` | `Checkpoint` (a `TypedDict` of plain values, read with `weights_only=True`) and its frozen key set `CHECKPOINT_KEYS`: format, engine, identity (A0's run id and attempt, the split run), `steps_done` (also the stream position), model, optimizer, task, policy (with a `stop_rule`, its `history` of monitored values: absent otherwise, so the `carrasco2021` checkpoints keep their keys), stream definition, every RNG stream, numerics (ADR 0010) and versions. `check_resumable` refuses Lightning checkpoints, other engines, formats and incomplete ones. |
 | `device` | `DevicePolicy`: one device (`world_size != 1` refused), `cudnn.benchmark = not deterministic`, `use_deterministic_algorithms(deterministic)`, `CUBLAS_WORKSPACE_CONFIG=":4096:8"` only when deterministic (`torch_flags()`, checked equal to Lightning's `_set_torch_flags`), ADR 0010's precision. |
 | `data` | `Batch` / `TrainBatch` (equal to `device_data`'s); `DataTier` (`device`, `pinned`, `memmap`, all exact); `TierChoice` (non-float32 storage is a recorded deviation); the `BatchSource` (`batch(step)`, a pure function of the stream and the step) and `EvalSource` protocols. |
-| `randomness` | `host_generator(seed, step, stream)` (= `class_augment.augment_rng`: per-sample parameters, device-independent); `device_generator(seed, step, stream, device)` (per-pixel fields: the seed is device-independent, the values are not, so runs record the device); `RESERVED_STREAMS`, the stream numbers in use (1-4 the paper model's augmentations, 5 the `block` stream's passes (4.3, ADR 0018), 6-9 the SimCLR pilot's views, noise fields, batch order and diagnostics; ADR 0025; 10 RJ23's class-uniform stream, ADR 0023). |
+| `randomness` | `host_generator(seed, step, stream)` (= `class_augment.augment_rng`: per-sample parameters, device-independent); `device_generator(seed, step, stream, device)` (per-pixel fields: the seed is device-independent, the values are not, so runs record the device); `RESERVED_STREAMS`, the stream numbers in use (1-4 the paper model's augmentations, 5 the `block` stream's passes (4.3, ADR 0018), 6-9 the SimCLR pilot's views, noise fields, batch order and diagnostics; ADR 0025; 10 RJ23's class-uniform stream, ADR 0023; 11 the corpus index's `--duplicates random` draw, task 5.1; 12 the SimCLR pilot's online-probe side-batch, `simclr.monitor`). |
 
 `tests/test_engine_contracts.py` also pins the Lightning 2.6.6 facts the checklist relies on
 (the validation grid across 7-step epochs, `global_step` inside `training_step`, the
@@ -2882,7 +2884,8 @@ draw is keyed by `step`, so 5.3 can run the same functions on the plain engine.
 | `optim` | `lars_param_groups(model)`: convolution/linear weights (weight decay 1e-6, trust ratio) and an excluded group (normalisation parameters and biases: no decay, no trust ratio, `optim.EXCLUDE_KEY`); `build_lars(model, lr=...)`: fixed trust ratio, no Nesterov, momentum 0.9; `base_learning_rate(B) = 0.3 * B / 256`; `warmup_cosine_lr(step, base_lr, total_steps, warmup_steps, lr_min=0)`: linear warmup to `base_lr` at step `W - 1`, then a cosine that is exactly `lr_min` at `total_steps - 1`; `set_learning_rate`. |
 | `diagnostics` | `effective_rank(h)` (exp of the entropy of the normalised eigenvalues of `cov(h)`), `dimension_std(z)`, `alignment(z_i, z_j)`, `uniformity(z, t=2)`, `knn_predict` / `knn_balanced_accuracy` (cosine, `k = 20`, vote weights `exp(sim / 0.07)`). |
 | `probe` | `draw_label_subsets(labels, candidates, per_class, n_subsets, seed)` (nested across budgets: subset `r` is the head of a per-class permutation keyed `[seed, r, class]`), `write_label_subsets` / `read_label_subsets` (format `astro-simclr-label-subsets` v1, with the SHA-256 of the candidates and the labels); `fit_probe(h, labels, weight_decay)`: logistic regression, standardised `h`, plain cross-entropy on logits, L2 on the weights, full-batch L-BFGS in float64 on the CPU; `probe_screen(...)`: the penalty chosen on the screen's selection half from `WEIGHT_DECAY_GRID`, the score on the decision half, per subset. |
-| `pilot` | `PilotConfig` (the run's whole definition; `epochs` or `steps`; task 5.1 added `tier="memmap"`, `archive`, `eval_data` and `host_cap_gb`, and a checkpoint written before them resumes with them at their defaults), `load_pilot_data` (a layout: Train and Validation as float32 (N, 3, 63, 63); with a splits file, verified, pretraining leaves out `screen_training_excluded`. A corpus index file: the CD21 layout it excluded, the same way, for the evaluation, plus `CorpusPretrain(CorpusStamps, record)` after `check_archive`), the pretraining stamps (`TensorStamps(images, rows)` for `device`/`host`, `MemmapStamps` for `memmap`: a sorted read, the normalisation and a pinned tensor per batch; `_pretraining_stamps` picks them and refuses `device` for a corpus and a corpus above `host_cap_gb` on `host`; `_weak_rules` refuses an index below the plan's exclusion unless `allow_weak_index`; `restore` also compares the checkpoint's index SHA-256, exclusion SHA-256 and `n`), `BatchOrder` (a permutation per pass keyed `[seed, pass, simclr_batch_order]`, last partial batch dropped), `PilotRun` (model built on the CPU from the seed, LARS, the step: views, one forward of both views concatenated, loss, rate, backward, step), `diagnose`, `embed`, `dump_embeddings`, `train_pilot(config, out_dir, resume=, stop_at=)`. |
+| `pilot` | `PilotConfig` (the run's whole definition; `epochs` or `steps`; task 5.1 added `tier="memmap"`, `archive`, `eval_data` and `host_cap_gb`, and a checkpoint written before them resumes with them at their defaults; the probe monitors' fields, left out of `to_plain` at their defaults), `load_pilot_data` (a layout: Train and Validation as float32 (N, 3, 63, 63); with a splits file, verified, pretraining leaves out `screen_training_excluded`. A corpus index file: the CD21 layout it excluded, the same way, for the evaluation, plus `CorpusPretrain(CorpusStamps, record)` after `check_archive`), the pretraining stamps (`TensorStamps(images, rows)` for `device`/`host`, `MemmapStamps` for `memmap`: a sorted read, the normalisation and a pinned tensor per batch; `_pretraining_stamps` picks them and refuses `device` for a corpus and a corpus above `host_cap_gb` on `host`; `_weak_rules` refuses an index below the plan's exclusion unless `allow_weak_index`; `restore` also compares the checkpoint's index SHA-256, exclusion SHA-256 and `n`), `BatchOrder` (a permutation per pass keyed `[seed, pass, simclr_batch_order]`, last partial batch dropped), `PilotRun` (model built on the CPU from the seed, LARS, the step: views, one forward of both views concatenated, loss, rate, backward, step), `diagnose`, `embed`, `dump_embeddings`, `train_pilot(config, out_dir, resume=, stop_at=)`. |
+| `monitor` | The probe monitors of pretraining (both opt-in; see below). `budget_train_rows(budgets, part, repeat, wanted, n_train, usable, train_labels)`: the Train stamps of a stored label-budget subset (Validation pool indices and Train stamps outside `usable` dropped, the counts recorded); `eval_h(model, images, rows, device, batch)`: `h` of the eval view (centre crop, eval mode, `inference_mode`); `probe_balanced_accuracy`: the 5.4 probe (`protocol.probe.fit_probe`, `DEFAULT_WEIGHT_DECAY`, float64 L-BFGS) scored by balanced accuracy; `probe_beats_baseline` (strictly greater); `side_batch(seed, step, rows, size)`: the online probe's side-batch from `[seed, step, simclr_online_probe]` (stream 12); `OnlineProbe`: a zero-initialised `Linear(512, 5)` with its own Adam, `update` (encoder in eval mode under `no_grad`, the head on detached `h`, class-balanced cross-entropy), `take_train_accuracy`, `balanced_accuracy`, `state` / `load`. |
 | `commands` | The `simclr-pilot`, `simclr-embed`, `make-label-subsets` and `simclr-probe` subcommands (see `cli`). |
 
 A pilot run directory holds `pilot.json` (config, data record with the source and splits
@@ -2895,11 +2898,54 @@ optimizer and the steps done from `last.pt` (same config only) and drops the log
 it; the continued run takes the same batches and views (exact on CPU, and on CUDA with
 `--deterministic`).
 
+**Probe monitors** (`simclr.monitor`; tasks 5.0b/5.0c/5.3, ADR 0025 amendment of
+2026-11-09). Both are off by default, and then the run's files are byte for byte those of
+before (the record and the checkpoint config leave the monitor fields out at their
+defaults). Both feed the probe **images only**: `h` (512-d) of the centred 57-pixel crop,
+the network in eval mode, no augmentation and no alert feature. Both are **diagnostics and
+an abort input, never a checkpoint selector** (5.0c: a fixed epoch count, the final
+checkpoint is kept).
+
+- `--probe-every K --label-budgets FILE` (with `--splits`): every K passes, at the abort
+  check and at the final step, a diagnostics line adds `probe_b10_selection_bacc` and
+  `probe_b100_selection_bacc` (`--probe-budgets`; `null` on the other lines). The probe is
+  5.4's, trained on repeat 0 (`--probe-repeat`) of part `fold0` (`--probe-part`) of the
+  stored label-budget file, which must be drawn from the run's splits file
+  (`verify_label_budgets`). A CV training part is a part of the pool, so its subsets can
+  hold Validation stamps, even of the screen's decision half (CD21 `fold0` at 100: 11, 6 of
+  them in the decision half): only the subset's usable Train stamps are kept (CD21: 49 at
+  10, 492 at 100; recorded in `pilot.json`). It is scored on the screen's selection half
+  only, embedded once per point and shared with the kNN monitor. A fresh run first scores
+  the random-init network the same way (the baseline, kept in the checkpoint). Cost on a
+  loaded laptop CPU: about 10 s per point (the 250 selection stamps and about 500 Train
+  stamps embedded, two L-BFGS fits).
+- `--abort-if-probe-below-random EPOCH`: at the end of pass EPOCH the run stops unless the
+  largest budget's probe beats the random-init one (strictly). `ckpt/last.pt` keeps the
+  state, `pilot.json` records `status: aborted` and the check's values, no `final.pt` or
+  embeddings are written, the CLI exits 0, and a resume is refused.
+- `--online-probe`: a zero-initialised `Linear(512, 5)` head trained each step, before the
+  training forward, on a side-batch (`--online-probe-batch`, 256) of the usable Train
+  stamps drawn from stream 12, with its own Adam (`--online-probe-lr`, 1e-3) on
+  class-balanced cross-entropy, on `h.detach()` from the encoder in eval mode under
+  `no_grad`. The encoder's weights and gradients are bit-identical with it on and off (a
+  test). Each diagnostics line adds `online_probe_train_acc` (the running accuracy on the
+  side-batches since the previous line) and `online_probe_selection_bacc`. It is a
+  100 %-label trend monitor that lags the final probe. With a corpus as DATA, its labels
+  (and the periodic probe's) come from the evaluation layout. About 4.6 s per step on the
+  laptop CPU against about 35 s for the training step at B = 256.
+- With a monitor on, `pilot.json` adds `status` (`running`, `stopped`, `aborted`,
+  `complete`; rewritten when the call ends) and `monitors` (inputs, the probe's rows and
+  baseline, the abort outcome, the online head's settings), and the checkpoint a `monitor`
+  entry (the baseline, the abort outcome, the head, its optimizer and running counts), so a
+  resume continues exactly and writes no duplicate diagnostics line.
+
 The pilot's protocol, end to end:
 
 ```bash
 D=dataset/prepared/td_ztf_stamp_17_06_20_red-002; S=configs/splits/td_ztf_stamp_17_06_20_red-002-grouped.json
-astro-simclr simclr-pilot $D --splits $S --output-dir runs/pilot/ssl --epochs 100 --device cuda
+astro-simclr simclr-pilot $D --splits $S --output-dir runs/pilot/ssl --epochs 100 --device cuda \
+  --probe-every 5 --label-budgets configs/label-budgets/td_ztf_stamp_17_06_20_red-002-grouped.json \
+  --abort-if-probe-below-random 20 --online-probe
 astro-simclr simclr-embed $D --random-init --seed 0 --output-dir runs/pilot/random-init
 astro-simclr make-label-subsets $D --splits $S --per-class 10 --n-subsets 20 --out runs/pilot/subsets-10.json
 astro-simclr simclr-probe runs/pilot/ssl/embeddings --subsets runs/pilot/subsets-10.json --splits $S --out runs/pilot/probe-ssl-10.json

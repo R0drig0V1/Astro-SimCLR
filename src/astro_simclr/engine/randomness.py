@@ -45,7 +45,8 @@ __all__ = ["RESERVED_STREAMS", "device_generator", "host_generator", "seed_every
 #: ``rj23_regime.ClassUniformStream`` (``[seed, step, 10]``, task 3.4b). Task 5.1:
 #: ``corpus_duplicates``, the draw of ``build-corpus-index --duplicates random`` among the
 #: alerts of one ``oid`` (``[seed, 0, 11]``; data building, not training, but a number of
-#: its own all the same).
+#: its own all the same). ``simclr_online_probe``: the labelled side-batch of the pilot's
+#: online linear probe (``[seed, step, 12]``, :mod:`astro_simclr.simclr.monitor`).
 RESERVED_STREAMS: Final = MappingProxyType(
     {
         "aug_noise": 1,
@@ -62,6 +63,8 @@ RESERVED_STREAMS: Final = MappingProxyType(
         "rj23_class_uniform": 10,
         # archive.corpus_index (task 5.1): the one alert kept per oid with --duplicates random.
         "corpus_duplicates": 11,
+        # simclr.monitor (tasks 5.0b/5.3): the online probe's labelled side-batch per step.
+        "simclr_online_probe": 12,
     }
 )
 

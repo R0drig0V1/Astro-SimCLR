@@ -349,6 +349,8 @@ def test_reserved_streams_are_the_augmentations_numbers() -> None:
         "rj23_class_uniform": rj23_regime.STREAM,
         # Task 5.1's corpus index (build-corpus-index --duplicates random).
         "corpus_duplicates": 11,
+        # The pilot's online linear probe (astro_simclr.simclr.monitor.side_batch).
+        "simclr_online_probe": 12,
     }
     assert len(set(RESERVED_STREAMS.values())) == len(RESERVED_STREAMS)
 
@@ -359,6 +361,7 @@ def test_reserved_stream_numbers_are_unique() -> None:
     assert len(set(numbers)) == len(numbers)
     assert all(isinstance(n, int) and not isinstance(n, bool) and n >= 1 for n in numbers)
     assert RESERVED_STREAMS["rj23_class_uniform"] == 10
+    assert RESERVED_STREAMS["simclr_online_probe"] == 12  # assigned by the integrator
 
 
 def test_host_generator_is_augment_rng() -> None:
