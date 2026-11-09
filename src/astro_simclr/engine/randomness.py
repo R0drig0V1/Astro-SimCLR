@@ -48,6 +48,9 @@ __all__ = ["RESERVED_STREAMS", "device_generator", "host_generator", "seed_every
 #: alerts of one ``oid`` (``[seed, 0, 11]``; data building, not training, but a number of
 #: its own all the same). ``simclr_online_probe``: the labelled side-batch of the pilot's
 #: online linear probe (``[seed, step, 12]``, :mod:`astro_simclr.simclr.monitor`).
+#: ``simclr_scratch``: every draw of the go/no-go's supervised scratch baseline (``[seed_r,
+#: step, 13]``, :mod:`astro_simclr.simclr.scratch`: the batch, its one view and the view's
+#: noise fields, from one host generator).
 RESERVED_STREAMS: Final = MappingProxyType(
     {
         "aug_noise": 1,
@@ -66,6 +69,8 @@ RESERVED_STREAMS: Final = MappingProxyType(
         "corpus_duplicates": 11,
         # simclr.monitor (tasks 5.0b/5.3): the online probe's labelled side-batch per step.
         "simclr_online_probe": 12,
+        # simclr.scratch (task 5.0b): the scratch baseline's batch, view and noise per step.
+        "simclr_scratch": 13,
     }
 )
 

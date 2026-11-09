@@ -9,7 +9,9 @@
   `src/astro_simclr/stamp_relation.py`; the per-group exclusion of `optim.LARS`
   (`EXCLUDE_KEY`); four new `engine.randomness.RESERVED_STREAMS`
 - **Checked by:** `tests/test_simclr_views.py`, `tests/test_simclr_model.py`,
-  `tests/test_simclr_probe.py`, `tests/test_simclr_pilot.py` (CPU only: a few steps)
+  `tests/test_simclr_probe.py`, `tests/test_simclr_pilot.py` (CPU only: a few steps);
+  the scratch baseline (amendment below): `tests/test_simclr_scratch.py` and the golden
+  case `simclr-scratch-noise` of `tests/test_engine_regression.py`
 
 ## Context
 
@@ -165,7 +167,8 @@ importing anything from the `training` package imports Lightning (its `__init__`
 - The pilot's precision is ADR 0010's float32 (`ieee`) by default; `--fp32-precision tf32`
   is available and recorded. 5.3 decides the pretraining precision.
 - The go/no-go also needs the scratch supervised ResNet-18 trained with the same views; it
-  is not part of this package yet.
+  is not part of this package yet (added by the amendment "the scratch baseline and the
+  declared margin" below: `simclr.scratch`, `simclr.compare`).
 - The noise is off by default: it is an option of 5.2 whose admission test (a single-view
   accuracy drop of at most 1 point) has not been run.
 
@@ -323,3 +326,91 @@ truncation of the log lines keeps `diagnostics.jsonl` free of duplicates (a test
 Both monitors are pure functions or small objects outside every engine. There is no
 Lightning import, and the only draw is keyed by `(seed, step)`. 5.3 moves them onto the
 plain engine with the rest of the pilot.
+
+## Amendment (2026-11-09, task 5.0b): the scratch baseline and the declared margin
+
+**Context.** The pilot's go/no-go (plan 5.0b) needs the SSL probe to beat "the scratch
+supervised model at the lowest budget by a pre-registered margin". The user decided
+(2026-11-09) that the scratch model is "the same ResNet architecture or very close", and
+the integrator declared the margin before any baseline result. The probe reports measured
+on the RTX 5090 (main `827c41a`) were 0.571 +- 0.052 at 10 per class and 0.734 +- 0.021 at
+100 (random-init probe 0.417 and 0.515); no scratch number existed when this recipe was
+fixed.
+
+### The baseline (`simclr.scratch`, `simclr-scratch`)
+
+- **Network:** the pilot's encoder, `resnet18_cifar()` (CIFAR stem, `zero_init_residual`,
+  512-d `h`), then `Linear(512, 5)`; random init, built on the CPU after the engine seeds
+  the global streams (encoder first, so it starts as the pilot's would from that seed).
+- **Data:** one fit per label subset of the `make-label-subsets` file the probe used, on
+  that subset's Train stamps only: the training stream holds nothing else, so a Train stamp
+  outside the subset, Validation, the decision half and Test cannot be trained on. Each
+  step is **class-stratified**: `k = min(10, per_class)` stamps of each class (a batch of
+  50), the first `k` of a permutation of the class's subset stamps. Every batch is exactly
+  balanced, so the mean cross-entropy is the class-balanced one.
+- **View:** the pilot's training view (C5 noise at the pilot's scale 3, one of the 8
+  dihedral elements, a 57-pixel integer window), one per stamp. Evaluation is the probe's
+  input: the centred 57-pixel window, eval mode, no augmentation.
+- **Recipe:** AdamW (betas 0.9, 0.999), decoupled weight decay on convolution and linear
+  weights only (normalisation parameters and biases excluded, as the pilot's LARS groups
+  them), a linear warmup over 5 % of the steps then a cosine to 0 exactly at the last step
+  (`optim.warmup_cosine_lr`), float32 (`ieee` by default). AdamW because it needs no
+  per-budget rate tuning beyond a small grid and is the usual from-scratch choice at these
+  sizes; the cosine because it ends the fixed run at rate 0, so the final weights (kept,
+  5.0c) are settled.
+- **Length:** fixed per budget and the same for every subset and trial: 1,000 steps at 10
+  per class (one pass of the 50 stamps per step; 8 x 49 geometric views and the noise make
+  about 20k distinct inputs, and the training loss is near 0 well before the end), 2,000 at
+  100 per class (200 passes, the usual supervised budget at CIFAR scale). Another budget
+  needs `--steps`. No early stopping and no checkpoint selection (5.0c).
+- **Grid and selection (5.0c):** `lr` in (5e-4, 2e-3) x `weight_decay` in (0.05, 0.5):
+  **four trials per subset, the probe's trial count** (its four L2 values), so both arms
+  have the same trial budget. Each trial's final weights are scored on the screen's
+  **selection** half (balanced accuracy, the fit's only validation); the first best in grid
+  order is kept, the probe's rule; only it is scored on the **decision** half. The grid
+  and the trial counts (`trials_per_subset`, `n_trials`) are in the report.
+- **Randomness:** stream 13, `simclr_scratch` (assigned by the integrator). Every draw of
+  step `s` of subset `r` comes from one host generator `default_rng([seed_r, s, 13])`, in
+  order: the batch, the dihedral elements, the offsets, the noise strengths and the
+  noise's standard-normal fields (float32). Drawing the fields on the host (the pilot draws
+  them on the device, stream 7) costs a few milliseconds per step at B = 50 and makes every
+  draw device-independent. `seed_r` is the first 32-bit word of `SeedSequence([seed, r,
+  13])`: each subset has its own initial weights and augmentations, so the spread over
+  subsets includes the initialisation's, as the hierarchical bootstrap's resampling of
+  subsets assumes. The trials of one subset share `seed_r` and differ only in their
+  hyperparameters.
+- **On the plain engine:** each trial is `engine.loop.fit` with a `ScratchTask`, the
+  subset's `ScratchStream` (the batch of step `s` a pure function of `s`), a fixed horizon
+  (`Horizon(steps, 0)`), one validation after the last step (`ValidationGrid(steps)`,
+  monitor `selection_bacc`, `max`, through `score`), `keep=("stop",)` and no checkpoint
+  (`run_dir=None`). The engine fitted without any change. A trial is short, so the command
+  resumes at subset granularity: it rewrites its report after each subset, and `--resume`
+  keeps the finished subsets of a report of the same configuration (identity keys
+  compared). The trial joins the golden regression set (`simclr-scratch-noise`).
+- **Cost:** 20 subsets x 4 trials x (1,000 + 2,000) steps of 50 stamps at 57 pixels, about
+  240k steps: a few hours on the RTX 5090.
+
+### Reports and the comparison (`simclr.compare`, `simclr-compare`)
+
+- **Version 2 of the subset report** (both `simclr-probe` and `simclr-scratch`):
+  `report_version: 2`, `subsets_file` and `splits_file` (path and SHA-256),
+  `decision_rows` and `decision_labels`, and per subset `decision_predictions` (the kept
+  model's predicted class of each decision-half stamp, in its order). A version-1 probe
+  report stays readable as a table; the comparison refuses it and asks to re-run
+  `simclr-probe` (a CPU minute on the stored embeddings).
+- **The interval:** `protocol.stats.hierarchical_paired_bootstrap` of balanced accuracy,
+  variant - baseline, paired by subset (the same stored subsets file, checked by SHA-256)
+  and by stamp (the same decision rows and labels): the subsets resampled with
+  replacement, then the decision half's objects within class (the splits file's groups;
+  the alerts of one object move together), 10,000 resamples, seed 0, 95 %.
+- **The declared margin (H1's reading):** at **10 per class** the SSL probe (variant) must
+  beat the scratch model (baseline) by **more than +2 points**: `go` iff the lower bound of
+  the paired 95 % interval is above +0.02 (rounded to 12 digits, so a bound of exactly
+  0.02 is `no-go`). 100 per class is secondary: its interval is reported with no verdict.
+  The plan's other condition, the SSL probe beating the random-init probe, is read from
+  the same command with the random-init report as the baseline.
+- **Fairness:** both arms train on the same subsets, are chosen on the selection half by
+  the same rule with four trials each, and are scored on the same decision-half stamps from
+  the same input (the centred view, eval mode). Neither reads the decision half or Test for
+  any choice.
+

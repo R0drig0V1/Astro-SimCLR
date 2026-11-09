@@ -449,9 +449,15 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   [--online-probe-lr X]] [--resume] [--stop-at N]`; `simclr-embed DATA --output-dir OUT (--checkpoint FILE | --random-init)
   [--seed N]`; `make-label-subsets DATA --splits FILE --per-class K [--n-subsets R]
   [--seed S] --out FILE [--overwrite]`; `simclr-probe EMBEDDINGS --subsets FILE --splits
-  FILE --out FILE [--weight-decay X...]`. Registered by `simclr.commands.add_simclr_commands`;
-  each exits 0 when it ends (an existing run without `--resume`, an existing subsets file
-  or a budget larger than a class: 2).
+  FILE --out FILE [--weight-decay X...]`; `simclr-scratch DATA --subsets FILE --splits FILE
+  --out FILE [--seed N] [--device auto|cpu|cuda|mps] [--fp32-precision ieee|tf32]
+  [--deterministic] [--steps N] [--lr X...] [--weight-decay X...] [--batch-per-class K]
+  [--warmup-fraction F] [--noise-scale S] [--eval-batch B] [--resume | --overwrite]`;
+  `simclr-compare --baseline FILE --variant FILE --splits FILE [--out FILE] [--margin M]
+  [--n-boot N] [--seed S]`. Registered by `simclr.commands.add_simclr_commands`; each exits 0
+  when it ends, whatever the verdict (an existing run without `--resume`, an existing
+  subsets file or report, a budget larger than a class, a margin out of range: 2; subsets
+  of other candidates, unpaired or version-1 reports, another splits file: 1).
 - Exit codes: 0 success; 1 unusable data (`DataError`) or a failed gate/preflight; 2 invalid
   settings or arguments, including an unavailable accelerator (`AcceleratorError`).
 
@@ -2692,7 +2698,7 @@ draw is keyed by `step`, so 5.3 can run the same functions on the plain engine.
 
 | Module | Contents |
 |---|---|
-| `views` | `make_views(images, params, config, *, fits, generator)`: two training views (B, C, 57, 57) of (B, C, 63, 63) stamps: optional C5 noise on the 63-pixel stamp (`background_noise`: science and template noised, the difference through the fit, the min-max again), then `dihedral(images, k)` (8 exact elements: `rot90` by `k % 4`, flip if `k >= 4`), then `crop(images, offsets)` (an integer 57-pixel window, offsets 0-6, the same for every channel, no fill). `centre_crop` is the evaluation view (offset 3). `draw_view_params(seed, step, B)`: `k`, offsets and noise strengths of both views from `default_rng([seed, step, simclr_views])`, always drawn in full; `noise_generator(seed, step, device)`: the noise fields' device generator. |
+| `views` | `make_views(images, params, config, *, fits, generator)`: two training views (B, C, 57, 57) of (B, C, 63, 63) stamps: optional C5 noise on the 63-pixel stamp (`background_noise`: science and template noised, the difference through the fit, the min-max again), then `dihedral(images, k)` (8 exact elements: `rot90` by `k % 4`, flip if `k >= 4`), then `crop(images, offsets)` (an integer 57-pixel window, offsets 0-6, the same for every channel, no fill). `centre_crop` is the evaluation view (offset 3). `noise_with_fields(images, fits, u, z, config)` is `background_noise` with its standard-normal fields given (the scratch baseline draws them on the host). `draw_view_params(seed, step, B)`: `k`, offsets and noise strengths of both views from `default_rng([seed, step, simclr_views])`, always drawn in full; `noise_generator(seed, step, device)`: the noise fields' device generator. |
 | `network` | `resnet18_cifar()`: torchvision ResNet-18, 3x3 stride-1 stem, no max-pool, `fc = Identity`, `zero_init_residual=True` (57 -> 57 -> 29 -> 15 -> 8, `h` 512-d); `ProjectionHead`: Linear(512, 512, no bias)-BN-ReLU-Linear(512, 128); `SimCLRNetwork(x) -> (h, z)`. |
 | `objective` | `SimCLRLoss(T)(z_i, z_j)`: `losses.NT_Xent` in paper mode (ADR 0002), in float32 with autocast off; returns `(loss, pos, neg)`. |
 | `optim` | `lars_param_groups(model)`: convolution/linear weights (weight decay 1e-6, trust ratio) and an excluded group (normalisation parameters and biases: no decay, no trust ratio, `optim.EXCLUDE_KEY`); `build_lars(model, lr=...)`: fixed trust ratio, no Nesterov, momentum 0.9; `base_learning_rate(B) = 0.3 * B / 256`; `warmup_cosine_lr(step, base_lr, total_steps, warmup_steps, lr_min=0)`: linear warmup to `base_lr` at step `W - 1`, then a cosine that is exactly `lr_min` at `total_steps - 1`; `set_learning_rate`. |
@@ -2700,7 +2706,9 @@ draw is keyed by `step`, so 5.3 can run the same functions on the plain engine.
 | `probe` | `draw_label_subsets(labels, candidates, per_class, n_subsets, seed)` (nested across budgets: subset `r` is the head of a per-class permutation keyed `[seed, r, class]`), `write_label_subsets` / `read_label_subsets` (format `astro-simclr-label-subsets` v1, with the SHA-256 of the candidates and the labels); `fit_probe(h, labels, weight_decay)`: logistic regression, standardised `h`, plain cross-entropy on logits, L2 on the weights, full-batch L-BFGS in float64 on the CPU; `probe_screen(...)`: the penalty chosen on the screen's selection half from `WEIGHT_DECAY_GRID`, the score on the decision half, per subset. |
 | `pilot` | `PilotConfig` (the run's whole definition; `epochs` or `steps`; task 5.1 added `tier="memmap"`, `archive`, `eval_data` and `host_cap_gb`, and a checkpoint written before them resumes with them at their defaults; the probe monitors' fields, left out of `to_plain` at their defaults), `load_pilot_data` (a layout: Train and Validation as float32 (N, 3, 63, 63); with a splits file, verified, pretraining leaves out `screen_training_excluded`. A corpus index file: the CD21 layout it excluded, the same way, for the evaluation, plus `CorpusPretrain(CorpusStamps, record)` after `check_archive`), the pretraining stamps (`TensorStamps(images, rows)` for `device`/`host`, `MemmapStamps` for `memmap`: a sorted read, the normalisation and a pinned tensor per batch; `_pretraining_stamps` picks them and refuses `device` for a corpus and a corpus above `host_cap_gb` on `host`; `_weak_rules` refuses an index below the plan's exclusion unless `allow_weak_index`; `restore` also compares the checkpoint's index SHA-256, exclusion SHA-256 and `n`), `BatchOrder` (a permutation per pass keyed `[seed, pass, simclr_batch_order]`, last partial batch dropped), `PilotRun` (model built on the CPU from the seed, LARS, the step: views, one forward of both views concatenated, loss, rate, backward, step), `diagnose`, `embed`, `dump_embeddings`, `train_pilot(config, out_dir, resume=, stop_at=)`. |
 | `monitor` | The probe monitors of pretraining (both opt-in; see below). `budget_train_rows(budgets, part, repeat, wanted, n_train, usable, train_labels)`: the Train stamps of a stored label-budget subset (Validation pool indices and Train stamps outside `usable` dropped, the counts recorded); `eval_h(model, images, rows, device, batch)`: `h` of the eval view (centre crop, eval mode, `inference_mode`); `probe_balanced_accuracy`: the 5.4 probe (`protocol.probe.fit_probe`, `DEFAULT_WEIGHT_DECAY`, float64 L-BFGS) scored by balanced accuracy; `probe_beats_baseline` (strictly greater); `side_batch(seed, step, rows, size)`: the online probe's side-batch from `[seed, step, simclr_online_probe]` (stream 12); `OnlineProbe`: a zero-initialised `Linear(512, 5)` with its own Adam, `update` (encoder in eval mode under `no_grad`, the head on detached `h`, class-balanced cross-entropy), `take_train_accuracy`, `balanced_accuracy`, `state` / `load`. |
-| `commands` | The `simclr-pilot`, `simclr-embed`, `make-label-subsets` and `simclr-probe` subcommands (see `cli`). |
+| `scratch` | The go/no-go's supervised scratch baseline (on the plain engine). `ScratchRecipe(steps, batch_per_class=10, warmup_fraction=0.05, noise_scale=3, lr_grid=(5e-4, 2e-3), weight_decay_grid=(0.05, 0.5), eval_batch=256)` (`trials`: lr outer; `default_steps(per_class)`: 1,000 at 10, 2,000 at 100); `subset_seed(seed, r)`: the first 32-bit word of `SeedSequence([seed, r, 13])`; `draw_step(seed, step, by_class, k, noise=)`: from `host_generator(seed, step, simclr_scratch)` (stream 13), in order, the class-stratified batch, the dihedral elements, the offsets, the noise strengths and the noise fields (float32, on the host: device-independent); `scratch_view`: the pilot's view, one per stamp (`views.noise_with_fields`, `dihedral`, `crop`); `ScratchNetwork`: `resnet18_cifar()` then `Linear(512, 5)`; `ScratchStream` (a `TrainStream` holding only the subset's Train stamps: `k` of each class per step); `EvalStamps` (an `EvalSource` of the centred view); `ScratchTask` (AdamW, no decay on norms and biases, warmup then cosine to 0 set per step, cross-entropy); `fit_trial`: `engine.loop.fit` with a fixed horizon, one validation after the last step scored by `selection_score` (balanced accuracy) on the selection half, the last weights kept; `scratch_screen`: every trial of every subset, the first best on the selection half kept and only it scored on the decision half. |
+| `compare` | `report_header(command, ...)`: the pairing keys of a version-2 subset report (subsets and splits files with their SHA-256, the decision rows and labels); `summary(rows)`; `read_report`; `decision_groups(splits, rows)`: the objects of the decision rows; `compare_reports(baseline, variant, groups=, margin=0.02)`: `protocol.stats.hierarchical_paired_bootstrap` of balanced accuracy, variant - baseline, after checking the pairing, and `margin_verdict` (`go` iff the lower bound exceeds the margin) at 10 per class only. No torch. |
+| `commands` | The `simclr-pilot`, `simclr-embed`, `make-label-subsets`, `simclr-probe`, `simclr-scratch` and `simclr-compare` subcommands (see `cli`). |
 
 A pilot run directory holds `pilot.json` (config, data record with the source and splits
 SHA-256, schedule, device, precision and determinism flags, versions), `metrics.jsonl`
@@ -2753,6 +2761,36 @@ checkpoint is kept).
   entry (the baseline, the abort outcome, the head, its optimizer and running counts), so a
   resume continues exactly and writes no duplicate diagnostics line.
 
+**The go/no-go's scratch baseline** (`simclr.scratch`; ADR 0025, amendment "the scratch
+baseline"). The SSL probe is compared with the pilot's encoder trained from random init,
+supervised, on the same label subsets: `ResNet-18 (CIFAR stem) + Linear(512, 5)`, the
+pilot's views (C5 noise at scale 3, dihedral, 57-pixel shift), one view per stamp, a
+class-stratified batch of 10 stamps per class per step, AdamW with a 5 % warmup and a
+cosine to 0, a fixed step count per budget (1,000 at 10 per class, 2,000 at 100) and the
+final weights. The grid (lr 5e-4, 2e-3 x weight decay 0.05, 0.5: four trials, the probe's
+four L2 values) is chosen per subset on the screen's selection half by the probe's rule;
+only the kept trial is scored on the decision half. Only the subset's Train stamps reach
+the training stream, and the decision half is read once per subset, after the choice (a
+test poisons the rest with NaN). Each subset has its own seed (initial weights and
+augmentations); every draw is on the host (stream 13), so the draws do not depend on the
+device. On the plain engine (`engine.loop.fit`, a fixed horizon and one validation after
+the last step): no checkpoint, the command rewrites its report after each subset and
+`--resume` keeps the finished subsets. Its trial joins the golden regression set
+(`simclr-scratch-noise`).
+
+**Reports and the comparison** (`simclr.compare`). `simclr-probe` and `simclr-scratch` write
+the same shape: `per_class`, `subsets` (per subset: the chosen hyperparameters, its
+selection and decision balanced accuracy and, from version 2, `decision_predictions`), the
+mean and std over subsets, and the pairing keys (`report_version: 2`, `subsets_file`,
+`splits_file`, `decision_rows`, `decision_labels`). The scratch report adds `seed`,
+`recipe`, `grid`, `trials_per_subset`, `n_trials`, `data`, `device`, `torch` and
+`complete`. `simclr-compare` refuses unpaired reports and version-1 reports (written
+before the predictions: re-run `simclr-probe`, a CPU minute), then gives the hierarchical
+paired bootstrap (subsets, then the decision half's objects from the splits file's groups)
+of variant - baseline and, at 10 per class, the verdict against the declared margin: `go`
+iff the lower bound of the 95 % interval exceeds +0.02 (`--margin`). 100 per class is
+secondary: interval only.
+
 The pilot's protocol, end to end:
 
 ```bash
@@ -2764,7 +2802,12 @@ astro-simclr simclr-embed $D --random-init --seed 0 --output-dir runs/pilot/rand
 astro-simclr make-label-subsets $D --splits $S --per-class 10 --n-subsets 20 --out runs/pilot/subsets-10.json
 astro-simclr simclr-probe runs/pilot/ssl/embeddings --subsets runs/pilot/subsets-10.json --splits $S --out runs/pilot/probe-ssl-10.json
 astro-simclr simclr-probe runs/pilot/random-init --subsets runs/pilot/subsets-10.json --splits $S --out runs/pilot/probe-random-10.json
+astro-simclr simclr-scratch $D --subsets runs/pilot/subsets-10.json --splits $S --out runs/pilot/scratch-10.json --device cuda
+astro-simclr simclr-compare --baseline runs/pilot/scratch-10.json --variant runs/pilot/probe-ssl-10.json --splits $S --out runs/pilot/gonogo-10.json
+astro-simclr simclr-compare --baseline runs/pilot/probe-random-10.json --variant runs/pilot/probe-ssl-10.json --splits $S --out runs/pilot/ssl-vs-random-10.json
 ```
+
+The same at 100 per class (`--per-class 100`, the `-100` files) gives the secondary rows.
 
 ## `preflight` (task 1.7)
 

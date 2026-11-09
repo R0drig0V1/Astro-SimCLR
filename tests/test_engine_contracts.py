@@ -293,6 +293,8 @@ def test_reserved_streams_are_the_augmentations_numbers() -> None:
         "corpus_duplicates": 11,
         # The pilot's online linear probe (astro_simclr.simclr.monitor.side_batch).
         "simclr_online_probe": 12,
+        # The go/no-go's supervised scratch baseline (astro_simclr.simclr.scratch).
+        "simclr_scratch": 13,
     }
     assert len(set(RESERVED_STREAMS.values())) == len(RESERVED_STREAMS)
 
@@ -304,6 +306,7 @@ def test_reserved_stream_numbers_are_unique() -> None:
     assert all(isinstance(n, int) and not isinstance(n, bool) and n >= 1 for n in numbers)
     assert RESERVED_STREAMS["rj23_class_uniform"] == 10
     assert RESERVED_STREAMS["simclr_online_probe"] == 12  # assigned by the integrator
+    assert RESERVED_STREAMS["simclr_scratch"] == 13  # assigned by the integrator
 
 
 def test_host_generator_is_augment_rng() -> None:

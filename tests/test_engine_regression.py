@@ -19,7 +19,9 @@ Lightning was removed, while that test passed) in
 
 The cases (``_engine_cases``) are the differential test's: every 2.5 and D3 flag
 (``FLAGS``), split runs (a fold and the screen) and the rj23 scenarios, protocols,
-sensitivity flags and both stop reasons. The resume tests are in
+sensitivity flags and both stop reasons; and one trial of the go/no-go's supervised scratch
+baseline (``simclr.scratch``, ``simclr-scratch-noise``: its initial and final weights, its
+selection score and its decision predictions). The resume tests are in
 ``test_engine_resume.py``.
 
 **Platforms.** CPU kernels differ in their rounding between instruction sets (x86 AVX2 /
@@ -44,6 +46,7 @@ the variable, so the gate always checks.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -236,12 +239,67 @@ def test_rj23_case_matches_its_golden(
     _check_golden(f"rj23-{request.node.callspec.id}", outputs)
 
 
+#: The scratch baseline's golden case (``simclr.scratch``, task 5.0b): one trial of the
+#: go/no-go's supervised baseline with every draw on (C5 noise, dihedral, shift).
+SCRATCH_CASE = "simclr-scratch-noise"
+
+
+def test_simclr_scratch_case_matches_its_golden() -> None:
+    from astro_simclr.engine import DevicePolicy
+    from astro_simclr.simclr.scratch import (
+        EvalStamps,
+        ScratchRecipe,
+        ScratchStream,
+        ScratchTask,
+        fit_trial,
+        selection_score,
+        subset_seed,
+    )
+    from astro_simclr.stamp_relation import stamp_fits
+
+    rng = np.random.default_rng(0)
+    stamps = torch.from_numpy(rng.random((20, 3, 63, 63), dtype=np.float32))
+    stamps = (stamps - stamps.amin(dim=(-2, -1), keepdim=True)) / (
+        stamps.amax(dim=(-2, -1), keepdim=True) - stamps.amin(dim=(-2, -1), keepdim=True)
+    )
+    labels = np.repeat(np.arange(5, dtype=np.int64), 4)
+    train, selection, decision = stamps[::2], stamps[1::4], stamps[3::4]
+    recipe = ScratchRecipe(steps=6, batch_per_class=2, warmup_fraction=0.34, noise_min_r2=-1.0)
+    seed = subset_seed(0, 0)
+    fits = torch.from_numpy(stamp_fits(train.numpy()))
+    stream = ScratchStream(train, labels[::2], fits, seed=seed, recipe=recipe)
+    cpu = torch.device("cpu")
+    picked = EvalStamps(selection, labels[1::4], cpu, batch_size=4)
+    task, score = fit_trial(
+        stream, picked, recipe, lr=2e-3, weight_decay=0.05, seed=seed, device=DevicePolicy("cpu")
+    )
+    final = cpu_state(task.module)
+    seed_everything(seed)
+    initial = cpu_state(ScratchTask(recipe, 2e-3, 0.05).module)
+    held_out = EvalStamps(decision, labels[3::4], cpu, batch_size=4)
+    task.module.eval()
+    with torch.no_grad():
+        outputs = [task.eval_step(batch) for batch in held_out]
+    predicted = torch.cat([o.probabilities for o in outputs]).argmax(dim=1).numpy()
+    digest = hashlib.sha256(np.ascontiguousarray(predicted, dtype="<i8").tobytes()).hexdigest()
+    _check_golden(
+        SCRATCH_CASE,
+        {
+            "initial": state_digest(initial),
+            "validations": [[recipe.steps, score, state_digest(final)]],
+            "metrics": {"selection_bacc": score, "decision_bacc": selection_score(outputs)},
+            "predictions": {"decision": digest},
+        },
+    )
+
+
 def test_golden_directory_has_no_stray_case() -> None:
     # Every recorded golden belongs to a current case: a renamed or dropped case must not
     # leave a golden nothing checks.
     cases = {f"paper-{p.id}" for p in FLAGS}
     cases |= {f"split-{p.id}" for p in SPLIT_RUNS}
     cases |= {f"rj23-{p.id}" for p in RJ23_CASES}
+    cases.add(SCRATCH_CASE)
     recorded = sorted(GOLDEN_DIR.glob("*/*.json"))
     assert recorded, "no golden recorded on any platform"
     for path in recorded:

@@ -1,0 +1,20 @@
+{
+ "case": "simclr-scratch-noise",
+ "format": 1,
+ "initial": "aa5a5664bdebf923eb15245068503ab1e24bcd81258b2aae4a672e707772be6e",
+ "metrics": {
+  "decision_bacc": 0.2,
+  "selection_bacc": 0.2
+ },
+ "predictions": {
+  "decision": "c8a4ea9e8e9fa609cdd9f996a80c805e921a955d7478f48060adbfc7d558175b"
+ },
+ "torch": "2.14.1",
+ "validations": [
+  [
+   6,
+   0.2,
+   "f403910affb95a974472c97986d029f5651f9eaa2f0d08756693ecb916677d66"
+  ]
+ ]
+}

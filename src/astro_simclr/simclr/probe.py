@@ -23,7 +23,8 @@ learning rate or an epoch count.
 **Selection** (:func:`probe_screen`): the penalty is chosen from a declared grid on the
 screen's **selection** half (balanced accuracy; the first best in grid order), and only
 the chosen probe is scored on the **decision** half (task 5.0b evaluates on the CD21 screen
-halves only).
+halves only). Its per-stamp predictions there are kept, so that two arms can be compared
+paired by subset and stamp (:mod:`astro_simclr.simclr.compare`).
 """
 
 from __future__ import annotations
@@ -304,8 +305,11 @@ def probe_screen(
     ``train_h`` (N_train, D) holds the representations of every Train stamp in file order;
     ``selection`` and ``decision`` are ``(h, labels)`` of the two screen halves.
     Returns ``{"per_class", "grid", "subsets": [{"subset", "weight_decay",
-    "selection_bacc", "decision_bacc"}], "decision_bacc_mean", "decision_bacc_std"}``
-    (the standard deviation over subsets, ``ddof=1``; 0 for one subset).
+    "selection_bacc", "decision_bacc", "decision_predictions"}], "decision_bacc_mean",
+    "decision_bacc_std"}`` (the standard deviation over subsets, ``ddof=1``; 0 for one
+    subset). ``decision_predictions`` are the chosen probe's predicted classes of the
+    decision half, in its order: the input of the paired comparison
+    (:mod:`astro_simclr.simclr.compare`).
 
     Raises:
         ValueError: for an empty grid, or as :func:`fit_probe`.
@@ -332,6 +336,7 @@ def probe_screen(
                 "weight_decay": best[1],
                 "selection_bacc": best[0],
                 "decision_bacc": best[2].balanced_accuracy(*decision),
+                "decision_predictions": best[2].predict(decision[0]).tolist(),
             }
         )
     scores = np.array([row["decision_bacc"] for row in rows])
