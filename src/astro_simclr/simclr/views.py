@@ -62,6 +62,7 @@ __all__ = [
     "draw_view_params",
     "make_views",
     "noise_generator",
+    "noise_with_fields",
 ]
 
 #: The stored stamp's side, in pixels.
@@ -249,6 +250,29 @@ def background_noise(
     z = torch.randn(
         (n, 2, side, side), generator=generator, device=images.device, dtype=images.dtype
     )
+    return noise_with_fields(images, fits, u, z, config)
+
+
+def noise_with_fields(
+    images: torch.Tensor,
+    fits: torch.Tensor,
+    u: npt.NDArray[np.float64],
+    z: torch.Tensor,
+    config: ViewConfig,
+) -> torch.Tensor:
+    """:func:`background_noise` with its standard-normal fields ``z`` (B, 2, S, S) given.
+
+    The same arithmetic: :func:`background_noise` draws ``z`` on the device and calls this;
+    the scratch baseline (:mod:`astro_simclr.simclr.scratch`) draws ``z`` on the host from
+    its own stream, so its views do not depend on the device.
+
+    Raises:
+        ValueError: if ``z`` is not (B, 2, S, S) for (B, C, S, S) ``images``.
+    """
+    n, side = images.shape[0], images.shape[-1]
+    if tuple(z.shape) != (n, 2, side, side):
+        raise ValueError(f"z must be ({n}, 2, {side}, {side}), got {tuple(z.shape)}")
+    z = z.to(images.device, images.dtype)
     strength = torch.from_numpy(u * config.noise_scale).to(images.device, images.dtype)
     sigma = strength * fits[:, 4:6].to(images.dtype)
     deltas = sigma[:, :, None, None] * z

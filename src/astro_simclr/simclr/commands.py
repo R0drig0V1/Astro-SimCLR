@@ -21,7 +21,15 @@ handlers import torch and the pilot lazily, so ``--help`` stays fast.
 - ``simclr-probe EMBEDDINGS --subsets FILE --splits FILE --out FILE``: the probe on the
   dumped ``h`` (:func:`~astro_simclr.simclr.probe.probe_screen`): the penalty chosen on
   the screen's selection half, the score on its decision half; prints the decision-half
-  mean and writes the per-subset table as JSON. Exit 0.
+  mean and writes the per-subset table as JSON, with the per-stamp decision predictions
+  and the pairing keys (:func:`~astro_simclr.simclr.compare.report_header`). Exit 0.
+- ``simclr-scratch DATA --subsets FILE --splits FILE --out FILE [--seed N] [--device D]``:
+  the go/no-go's supervised scratch baseline (:mod:`~astro_simclr.simclr.scratch`) on
+  each subset, the same report shape; the report is rewritten after each subset, and
+  ``--resume`` keeps the finished subsets of a report of the same configuration. Exit 0.
+- ``simclr-compare --baseline FILE --variant FILE --splits FILE [--out FILE]``: the paired
+  interval of two version-2 reports and, at 10 per class, the go/no-go verdict
+  (:func:`~astro_simclr.simclr.compare.compare_reports`). Exit 0 whatever the verdict.
 """
 
 from __future__ import annotations
@@ -30,7 +38,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from astro_simclr.config import ConfigError
 
@@ -43,6 +51,12 @@ DEFAULT_PART = "fold0"
 DEFAULT_REPEAT = 0
 ONLINE_BATCH = 256
 ONLINE_LR = 1e-3
+# ``simclr.scratch``'s and ``simclr.compare``'s defaults (the same test checks them).
+SCRATCH_BATCH_PER_CLASS = 10
+SCRATCH_WARMUP_FRACTION = 0.05
+SCRATCH_NOISE_SCALE = 3.0
+SCRATCH_EVAL_BATCH = 256
+GO_MARGIN = 0.02
 
 
 def _pilot(args: argparse.Namespace) -> int:
@@ -175,6 +189,7 @@ def _probe(args: argparse.Namespace) -> int:
 
     from astro_simclr.data.schema import DataError
     from astro_simclr.protocol.splits import read_splits
+    from astro_simclr.simclr.compare import report_header
     from astro_simclr.simclr.probe import WEIGHT_DECAY_GRID, probe_screen, read_label_subsets
 
     folder: Path = args.embeddings
@@ -200,11 +215,208 @@ def _probe(args: argparse.Namespace) -> int:
         grid=tuple(args.weight_decay) if args.weight_decay else WEIGHT_DECAY_GRID,
     )
     report["embeddings"] = {"path": str(folder), "step": meta["step"], "source": meta["source"]}
+    report = {
+        **report_header(
+            "simclr-probe",
+            subsets_path=args.subsets,
+            splits_path=args.splits,
+            decision_rows=screen.decision,
+            decision_labels=val_y[screen.decision],
+        ),
+        **report,
+    }
     args.out.write_text(json.dumps(report, indent=1) + "\n")
     sys.stdout.write(
         f"simclr-probe: {report['per_class']} per class, decision-half balanced accuracy "
         f"{report['decision_bacc_mean']:.4f} +- {report['decision_bacc_std']:.4f} "
         f"over {len(report['subsets'])} subsets -> {args.out}\n"
+    )
+    return 0
+
+
+def _write_json(path: Path, document: dict[str, Any]) -> None:
+    """Write ``document`` at ``path`` through a temporary file (no half-written report)."""
+    partial = path.with_name(path.name + ".partial")
+    partial.write_text(json.dumps(document, indent=1) + "\n")
+    partial.replace(path)
+
+
+#: The keys of a scratch report that a resumed call must find unchanged.
+_SCRATCH_IDENTITY = (
+    "report_version",
+    "subsets_file",
+    "splits_file",
+    "decision_rows",
+    "per_class",
+    "seed",
+    "recipe",
+    "data_source_sha256",
+    "device",
+)
+
+
+def _scratch_done(args: argparse.Namespace, report: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    """The finished subsets of ``--out`` to keep on ``--resume`` (none for a fresh call).
+
+    Raises:
+        ConfigError: if ``--out`` exists without ``--resume`` or ``--overwrite``, or was
+            written by another configuration.
+    """
+    from astro_simclr.simclr.compare import read_report
+
+    if not args.out.exists() or args.overwrite:
+        return {}
+    if not args.resume:
+        raise ConfigError(f"{args.out} already exists; pass --resume or --overwrite")
+    previous = read_report(args.out)
+    for key in _SCRATCH_IDENTITY:
+        if previous.get(key) != report[key]:
+            raise ConfigError(f"{args.out} was written with another {key}; cannot resume it")
+    return {int(row["subset"]): row for row in previous["subsets"]}
+
+
+def _scratch(args: argparse.Namespace) -> int:
+    import torch
+
+    from astro_simclr.data.schema import DataError
+    from astro_simclr.engine.device import DevicePolicy
+    from astro_simclr.simclr.compare import report_header, summary
+    from astro_simclr.simclr.pilot import PilotConfig, load_pilot_data, resolve_device
+    from astro_simclr.simclr.probe import array_sha256, read_label_subsets
+    from astro_simclr.simclr.scratch import (
+        LR_GRID,
+        WEIGHT_DECAY_GRID,
+        ScratchRecipe,
+        default_steps,
+        scratch_screen,
+    )
+
+    data = load_pilot_data(
+        PilotConfig(data=str(args.data), splits=str(args.splits), batch_size=2, epochs=1)
+    )
+    train_y, val_y, screen = data.train_labels, data.validation_labels, data.screen
+    if train_y is None or val_y is None or screen is None:
+        raise DataError(f"{args.data} has no Train or Validation labels")
+    subsets = read_label_subsets(args.subsets, train_y)
+    if subsets.candidates_sha256 != array_sha256(data.rows):
+        raise DataError(f"{args.subsets} was not drawn from the stamps {args.splits} leaves usable")
+    recipe = ScratchRecipe(
+        steps=args.steps if args.steps is not None else default_steps(subsets.per_class),
+        batch_per_class=args.batch_per_class,
+        warmup_fraction=args.warmup_fraction,
+        noise_scale=args.noise_scale,
+        lr_grid=tuple(args.lr) if args.lr else LR_GRID,
+        weight_decay_grid=tuple(args.weight_decay) if args.weight_decay else WEIGHT_DECAY_GRID,
+        eval_batch=args.eval_batch,
+    )
+    accelerator = resolve_device(args.device).type
+    kinds: dict[str, Literal["cpu", "cuda", "mps"]] = {"cpu": "cpu", "cuda": "cuda", "mps": "mps"}
+    policy = DevicePolicy(
+        kinds[accelerator], deterministic=args.deterministic, fp32_precision=args.fp32_precision
+    )
+    report: dict[str, Any] = {
+        **report_header(
+            "simclr-scratch",
+            subsets_path=args.subsets,
+            splits_path=args.splits,
+            decision_rows=screen.decision,
+            decision_labels=val_y[screen.decision],
+        ),
+        "per_class": subsets.per_class,
+        "seed": args.seed,
+        "recipe": recipe.to_plain(),
+        "grid": [{"lr": lr, "weight_decay": wd} for lr, wd in recipe.trials],
+        "trials_per_subset": len(recipe.trials),
+        "n_trials": len(recipe.trials) * len(subsets.subsets),
+        "data_source_sha256": data.record["source_sha256"],
+        "data": data.record,
+        "device": {
+            "accelerator": accelerator,
+            "deterministic": args.deterministic,
+            "fp32_precision": args.fp32_precision,
+        },
+        "torch": torch.__version__,
+        "complete": False,
+        "subsets": [],
+    }
+    done = _scratch_done(args, report)
+    collected = dict(done)
+
+    def finished(row: dict[str, Any]) -> None:
+        collected[int(row["subset"])] = row
+        report["subsets"] = [collected[r] for r in sorted(collected)]
+        _write_json(args.out, report)
+        sys.stdout.write(
+            f"simclr-scratch: subset {row['subset']}: lr {row['lr']:g}, weight decay "
+            f"{row['weight_decay']:g}, selection {row['selection_bacc']:.4f}, decision "
+            f"{row['decision_bacc']:.4f}\n"
+        )
+        sys.stdout.flush()
+
+    selection = torch.from_numpy(screen.selection)
+    decision = torch.from_numpy(screen.decision)
+    rows = scratch_screen(
+        data.train,
+        train_y,
+        subsets.subsets,
+        (data.validation[selection], val_y[screen.selection]),
+        (data.validation[decision], val_y[screen.decision]),
+        recipe,
+        seed=args.seed,
+        device=policy,
+        done=done,
+        on_subset=finished,
+    )
+    report["subsets"] = rows
+    report.update(summary(rows))
+    report["complete"] = True
+    _write_json(args.out, report)
+    sys.stdout.write(
+        f"simclr-scratch: {report['per_class']} per class, decision-half balanced accuracy "
+        f"{report['decision_bacc_mean']:.4f} +- {report['decision_bacc_std']:.4f} "
+        f"over {len(rows)} subsets ({report['n_trials']} trials) -> {args.out}\n"
+    )
+    return 0
+
+
+def _compare(args: argparse.Namespace) -> int:
+    from astro_simclr.data.files import sha256_file
+    from astro_simclr.data.schema import DataError
+    from astro_simclr.protocol.splits import read_splits
+    from astro_simclr.simclr.compare import compare_reports, decision_groups, read_report
+
+    baseline, variant = read_report(args.baseline), read_report(args.variant)
+    digest = sha256_file(args.splits)
+    for path, report in ((args.baseline, baseline), (args.variant, variant)):
+        recorded = report.get("splits_file", {}).get("sha256")
+        if recorded is not None and recorded != digest:
+            raise DataError(f"{path} was made with another splits file than {args.splits}")
+    groups = None
+    if "decision_rows" in baseline:
+        groups = decision_groups(read_splits(args.splits), baseline["decision_rows"])
+    try:
+        result = compare_reports(
+            baseline,
+            variant,
+            groups=groups,
+            margin=args.margin,
+            n_boot=args.n_boot,
+            seed=args.seed,
+        )
+    except DataError:
+        raise
+    except ValueError as err:  # a margin, n_boot or seed out of range
+        raise ConfigError(str(err)) from err
+    result["baseline"]["path"] = str(args.baseline)
+    result["variant"]["path"] = str(args.variant)
+    if args.out is not None:
+        _write_json(args.out, result)
+    verdict = result["verdict"] or "secondary budget, no verdict"
+    sys.stdout.write(
+        f"simclr-compare: {result['per_class']} per class, variant - baseline "
+        f"{result['difference']:+.4f} [{result['ci_low']:+.4f}, {result['ci_high']:+.4f}] "
+        f"({result['n_subsets']} subsets, {result['n_objects']} objects); margin "
+        f"{result['margin']}: {verdict}\n"
     )
     return 0
 
@@ -376,3 +588,67 @@ def add_simclr_commands(commands: argparse._SubParsersAction[argparse.ArgumentPa
         "--weight-decay", type=float, nargs="+", help="the L2 grid (default: the declared one)"
     )
     probe.set_defaults(handler=_probe)
+    _add_scratch(commands)
+    _add_compare(commands)
+
+
+def _add_scratch(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    """The ``simclr-scratch`` subcommand (``simclr.scratch``)."""
+    scratch = commands.add_parser(
+        "simclr-scratch",
+        help="the go/no-go's baseline: a supervised ResNet-18 from scratch on each label subset",
+        description="Train the pilot's encoder (ResNet-18, CIFAR stem) plus Linear(512, 5) "
+        "from random init, supervised, on each label subset's Train stamps only (the pilot's "
+        "views, one per stamp), for each (lr, weight decay) of the declared grid; keep the "
+        "trial best on the screen's selection half and score it on the decision half. "
+        "Writes the simclr-probe report shape, with per-stamp predictions.",
+    )
+    scratch.add_argument("data", type=Path, metavar="DATA", help="a prepared layout directory")
+    scratch.add_argument("--subsets", type=Path, required=True, help="make-label-subsets file")
+    scratch.add_argument("--splits", type=Path, required=True)
+    scratch.add_argument("--out", type=Path, required=True, help="the JSON report")
+    scratch.add_argument("--seed", type=int, default=0)
+    scratch.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda", "mps"))
+    scratch.add_argument("--fp32-precision", default="ieee", choices=("ieee", "tf32"))
+    scratch.add_argument("--deterministic", action="store_true")
+    scratch.add_argument(
+        "--steps", type=int, help="steps of every trial (default: 1000 at 10/class, 2000 at 100)"
+    )
+    scratch.add_argument("--lr", type=float, nargs="+", help="the lr grid (default 5e-4 2e-3)")
+    scratch.add_argument(
+        "--weight-decay", type=float, nargs="+", help="the weight-decay grid (default 0.05 0.5)"
+    )
+    scratch.add_argument(
+        "--batch-per-class", type=int, default=SCRATCH_BATCH_PER_CLASS, help="(default 10)"
+    )
+    scratch.add_argument("--warmup-fraction", type=float, default=SCRATCH_WARMUP_FRACTION)
+    scratch.add_argument(
+        "--noise-scale", type=float, default=SCRATCH_NOISE_SCALE, help="C5 noise; 0 = off"
+    )
+    scratch.add_argument("--eval-batch", type=int, default=SCRATCH_EVAL_BATCH)
+    again = scratch.add_mutually_exclusive_group()
+    again.add_argument("--resume", action="store_true", help="keep the finished subsets of OUT")
+    again.add_argument("--overwrite", action="store_true", help="replace OUT")
+    scratch.set_defaults(handler=_scratch)
+
+
+def _add_compare(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    """The ``simclr-compare`` subcommand (``simclr.compare``)."""
+    compare = commands.add_parser(
+        "simclr-compare",
+        help="paired interval of two subset reports and the go/no-go verdict",
+        description="The hierarchical paired bootstrap (subsets, then objects) of the "
+        "decision-half balanced accuracy, variant - baseline, of two reports of the same "
+        "subsets file; at 10 per class, 'go' iff the 95%% interval's lower bound exceeds "
+        "the margin.",
+    )
+    compare.add_argument("--baseline", type=Path, required=True, help="e.g. the scratch report")
+    compare.add_argument("--variant", type=Path, required=True, help="e.g. the SSL probe report")
+    compare.add_argument("--splits", type=Path, required=True, help="the reports' splits file")
+    compare.add_argument("--out", type=Path, help="write the comparison as JSON")
+    compare.add_argument(
+        "--margin", type=float, default=GO_MARGIN, help=f"a fraction (default {GO_MARGIN})"
+    )
+    compare.add_argument("--n-boot", type=int, default=10_000)
+    compare.add_argument("--seed", type=int, default=0, help="the bootstrap's seed")
+    compare.set_defaults(handler=_compare)
