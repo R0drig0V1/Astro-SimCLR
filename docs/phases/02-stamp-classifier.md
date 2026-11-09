@@ -521,7 +521,7 @@ Raw logs: `~/runs/p25/cv/` on the 5090. The test set was not used.
 | D3 (EMA 0.999, cosine 15k, final weights) vs rot4-plain | 0.9365 → 0.9235 | **−1.30 [−1.60, −1.01] pts** | **not adopted** (worse on every fold, −0.8 to −2.1; fails non-inferiority at −0.1) |
 
 - Secondary: fold-to-fold std 0.0081 against 0.0040 (larger, not 20 % smaller); ECE 0.2230 ± 0.0030 against 0.2288 ± 0.0100 (about the same mean, much less spread across runs).
-- Exploratory, no CI: McNemar on the seed ensembles favours D3 on plain accuracy (790 stamps right only with D3 against 537 only with rot4), while balanced accuracy drops. So the final weights of the fixed schedule trade minority-class recall for majority-class accuracy; checkpoint selection on the validation loss protected the minority classes. Per-class recalls would tell which classes; not pursued under this row.
+- Unresolved, exploratory: McNemar on the 2-seed **ensembles** favours D3 (790 stamps right only with D3 against 537 only with rot4), while the decision statistic, the balanced accuracy of the **seed mean**, drops. They differ in two ways (ensemble against mean, plain accuracy against balanced accuracy), so this does not say which one moved; per-class recalls and the ensembles' balanced accuracy (`ensemble-eval`) would. Not pursued under this row.
 - D3 stays closed: the protocol declared one trial.
 
 **Improvement rows from the literature (research, 2026-11-08).** The full ranked report
