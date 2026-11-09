@@ -248,6 +248,7 @@ Cut:
 - Remove Lightning, the legacy data modules and the PIL path once nothing uses them.
 - Tag `lightning-final` first.
 - Update CLAUDE.md, the docs and the runbook.
+- **Done 2026-11-09** (PR #65): tag `lightning-final` = `36bfb75`; Lightning, torchmetrics and tensorboard removed; `runtime.engine` is `plain` only (`lightning` is refused, naming the tag); experiment specs must name their `engine`; the 4.7(a) differential test is replaced by the golden regression set (`tests/fixtures/engine_golden/`, enforced on darwin-arm64, where the integrator verifies; other platforms skip until recorded); stored Lightning runs stay readable (`tests/fixtures/lightning_run`). Plain run ids and config hashes are unchanged; no numerics change.
 
 ### 4.9 Performance flags (after the 5090 bring-up)
 - **5090 bring-up first:**
