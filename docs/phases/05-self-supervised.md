@@ -81,8 +81,19 @@ pre-registered tables whatever the result is. A dated literature search is recor
   | SSL probe − scratch | **+13.7 [+10.2, +17.2] pts** | **go** (margin +2) |
   | SSL probe − random-init probe | +15.4 [+11.7, +19.2] pts | (secondary) |
 
-  - 100 per class: SSL probe 0.734 ± 0.021, random-init probe 0.515 ± 0.015; the scratch
-    arm and its paired row are recorded when the run ends.
+  - 100 per class (secondary, no verdict): SSL probe 0.734 ± 0.021, scratch 0.680 ± 0.047,
+    random-init probe 0.515 ± 0.015; SSL − scratch **+5.4 [+1.9, +9.0] pts**, SSL −
+    random-init +21.9 [+17.7, +26.2]. The SSL advantage shrinks as labels grow (+13.7 at
+    10 per class), as expected. (The scratch run at 100 per class was interrupted by a WSL
+    restart after 13 subsets and resumed with `--resume`.)
+  - **Corpus pretraining, launched 2026-11-09 (main df55f5a, PR #67):** the same recipe on
+    the corpus index of the 8 archive nights (311,966 rows; 311,716 kept: 224 within
+    1.5″ of CD21, 26 repeated `oid`s, 0 near-duplicates), with the `build-corpus-fits`
+    sidecar for the noise view; 50 passes fixed (about 61k steps, 3× the pilot's), probe
+    every 2 passes, abort at pass 10. Compared with the CD21-only pilot by the same probe
+    protocol when it ends; the monitors give the curve meanwhile (diagnostics, never a
+    selector). Batch size stays 256 for this comparison; batch {256, 1024, 2048} goes to
+    the fine grid (user, 2026-11-09).
   - Caveats: the scratch model barely beats the random-init probe at 10 per class, so it
     is a weak bar; it is the declared one for this gate only. H1 is decided against the
     strongest baseline of 5.4 (paper model, ImageNet and Zoobot ConvNeXt), fine-tuned, on
