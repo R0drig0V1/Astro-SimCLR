@@ -479,6 +479,26 @@ Zoobot weights first.
 
 Raw logs: `~/runs/p25/cv/` on the 5090. The test set was not used.
 
+**Position and C5 diagnostic CV: results (2026-11-08/09, RTX 5090, plain engine).**
+- Protocol: images with no alert features except as stated; grouped 5-fold CV × 2 seeds; 51,081 pool stamps; paired bootstrap with 10,000 resamples; superiority rule.
+
+| Comparison | Pooled | Δ (95 % CI) | Decision |
+|---|---|---|---|
+| images + position (`feature_set=position`) vs images only (`none`) | 0.8849 → 0.9150 | **+3.01 [+2.72, +3.31] pts** | **adopted**: sky position alone recovers about 60 % of the 23 features' gain |
+| + aug_noise 1.0 vs position | 0.9162 | +0.12 [−0.11, +0.36] | not adopted (inconclusive) |
+| + C5 (noise + feature jitter) vs position | 0.9171 | +0.21 [−0.03, +0.46] | **not adopted** (inconclusive). The same +0.2 pattern as with all features; the user kept the pre-registered standard |
+
+**D4 results (2026-11-09): TTA and seed ensembles on the stored rot4 CV runs (Lightning; `ensemble-eval`, PR #58).**
+
+| Inference | Pooled | Δ vs rot4 (95 % CI) | Decision |
+|---|---|---|---|
+| rot4 (CD21's own evaluation) | 0.9345 | — | — |
+| **d4** (rot4 model: identity + flip) | **0.9374** | **+0.30 [+0.17, +0.43] pts** | **adopted**; meets the pre-registered "TTA alone ≥ +0.1" |
+| d4_shift (d4 × ±1 px crop shifts) | 0.9366 | +0.22 [+0.06, +0.38] | passes, but below d4 alone, so the shifts cost; d4 is the TTA of record |
+
+- **2-seed ensembles (exploratory; the pre-registered arm is 5 seeds):** the ensemble beats its members' mean by +0.57 pts (rot4), +0.51 (d4) and +0.45 (d4_shift), averaged over 5 folds, with no CI.
+- The 5-seed ensemble test needs 3 more seeds per fold.
+
 **Improvement rows from the literature (research, 2026-11-08).** The full ranked report
 (18 ideas, every claim marked verified or inferred) is in the scratchpad `improvements.md`.
 
