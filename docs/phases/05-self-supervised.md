@@ -55,6 +55,40 @@ pre-registered tables whatever the result is. A dated literature search is recor
 - **Go/no-go:** the SSL probe beats the random-init probe and the scratch supervised model
   at the lowest budget by a pre-registered margin. Only then is the user asked to approve
   the corpus download.
+- **Margin, declared 2026-11-09 before any baseline result** (user decision: compare with a
+  ResNet trained from scratch, the same architecture): the lower bound of the paired 95 %
+  CI (hierarchical bootstrap: subsets, then objects) of SSL probe − scratch above **+2
+  points** of balanced accuracy at 10 per class; 100 per class reported, no verdict.
+- **Result (2026-11-09): GO.**
+  - Pretraining: `simclr-pilot` on the screened CD21 Train stamps, ResNet-18 (CIFAR stem),
+    batch 256, LARS lr 0.3·B/256, T 0.2, C5 noise 3, 100 epochs (19,700 steps, warmup
+    10), seed 0, RTX 5090 (main 827c41a; 1.6 h shared with a CV). Monitors: the abort check
+    at epoch 20 passed (probe at 100/class 0.58 against 0.46 random init); final kNN on the
+    selection half 0.704, online probe 0.76.
+  - Evaluation: the screen's decision half (250 stamps, 250 objects), 20 label subsets per
+    budget (`make-label-subsets --seed 0`), 4 trials per subset for every arm
+    (`simclr-probe` L2 grid; `simclr-scratch` lr × weight decay grid, PR #66), chosen on
+    the selection half.
+
+  | Arm, 10 per class | Balanced accuracy (mean ± sd over subsets) |
+  |---|---|
+  | SSL probe | **0.571 ± 0.052** |
+  | Scratch ResNet-18 (supervised, same views) | 0.434 ± 0.050 |
+  | Random-init probe | 0.417 ± 0.044 |
+
+  | Paired comparison, 10 per class | Δ (95 % CI) | Verdict |
+  |---|---|---|
+  | SSL probe − scratch | **+13.7 [+10.2, +17.2] pts** | **go** (margin +2) |
+  | SSL probe − random-init probe | +15.4 [+11.7, +19.2] pts | (secondary) |
+
+  - 100 per class: SSL probe 0.734 ± 0.021, random-init probe 0.515 ± 0.015; the scratch
+    arm and its paired row are recorded when the run ends.
+  - Caveats: the scratch model barely beats the random-init probe at 10 per class, so it
+    is a weak bar; it is the declared one for this gate only. H1 is decided against the
+    strongest baseline of 5.4 (paper model, ImageNet and Zoobot ConvNeXt), fine-tuned, on
+    a larger evaluation set. The decision half has 250 stamps: the CI covers it.
+  - Next, per the plan: the user is asked to approve the corpus (5.1); 14 GB of archive
+    nights are already on the 5090 under the user's 20 GB cap.
 
 ### 5.0c Hyperparameter and selection policy
 - **Search:** a declared grid, for example T ∈ {0.2, 0.5} × 2 lrs.
