@@ -499,6 +499,15 @@ Raw logs: `~/runs/p25/cv/` on the 5090. The test set was not used.
 - **2-seed ensembles (exploratory; the pre-registered arm is 5 seeds):** the ensemble beats its members' mean by +0.57 pts (rot4), +0.51 (d4) and +0.45 (d4_shift), averaged over 5 folds, with no CI.
 - The 5-seed ensemble test needs 3 more seeds per fold.
 
+**B8 results (2026-11-09): ConvNeXt-atto from scratch vs the paper model (rot4), both on the plain engine (RTX 5090).**
+- Protocol: images and all alert features as in CD21; grouped 5-fold CV × 2 seeds; 51,081 pool stamps; paired bootstrap with 10,000 resamples; superiority rule. ConvNeXt-atto at 63 px (`model.arch=convnext_atto data.image_size=63`), same schedule and augmentations. The baseline is a new plain-engine rot4 CV (`rot4-plain`), so both arms share engine, machine and build.
+
+| Comparison | Pooled | Δ (95 % CI) | Decision |
+|---|---|---|---|
+| convnext-atto vs rot4-plain | 0.9365 → 0.9191 | **−1.74 [−2.04, −1.44] pts** | **not adopted** (worse on every fold, −1.5 to −2.4; McNemar p = 8.5e-57). Within the "tie to −1 point from scratch" expectation's worse end, past it. Zoobot weights are not tried here (they need timm, ADR) |
+
+- rot4-plain's pooled 0.9365 matches the Lightning rot4 CV (0.9345) within its fold-to-fold std (0.0040).
+
 **Improvement rows from the literature (research, 2026-11-08).** The full ranked report
 (18 ideas, every claim marked verified or inferred) is in the scratchpad `improvements.md`.
 
