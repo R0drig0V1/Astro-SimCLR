@@ -1,30 +1,31 @@
 """The float32 precision policy of a run (ADR 0010): set, recorded and never mixed.
 
 torch 2.14 runs cuDNN convolutions in TF32 by default, so ``Settings.fp32_precision``
-(default ``ieee``) is applied at the start of every run, recorded with its effect in
-``metrics.json["machine"]`` and is part of the machine signature that a comparison must not
-mix. Everything here runs on the CPU: a CUDA device is faked where its compute capability
-matters.
+(default ``ieee``) is applied at the start of every run (``engine.precision``; the plain
+runner ``tasks.plain.run_plain`` applies it before the run's record and model), recorded
+with its effect in ``metrics.json["machine"]`` (``engine.record.machine_record``) and is
+part of the machine signature that a comparison must not mix. Everything here runs on the
+CPU: a CUDA device is faked where its compute capability matters.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 import torch
 from _protocol_support import MACHINE, fake_run, predictions
 
-from astro_simclr import experiments
 from astro_simclr.config import FP32_PRECISIONS, ConfigError, Settings, settings_from_mapping
+from astro_simclr.engine.precision import apply_fp32_precision, fp32_precision_record
+from astro_simclr.engine.record import machine_record
 from astro_simclr.presets import CARRASCO2021_PRESET, PRESETS, preset_report
 from astro_simclr.protocol.compare import compare_variants
 from astro_simclr.reference import machine_signature
-from astro_simclr.training import apply_fp32_precision
-from astro_simclr.training.runs import fp32_precision_record
+from astro_simclr.runs.record import start_run
+from astro_simclr.tasks import plain
 
 LABELS = [i // 20 for i in range(100)]
 
@@ -53,15 +54,20 @@ def test_settings_default_to_ieee_and_validate() -> None:
 def test_apply_sets_convolutions_and_matmuls(policy: str, matmul: str) -> None:
     # Start from the opposite policy, so that the call is what changes it.
     cast(Any, torch.backends.cudnn).conv.fp32_precision = "tf32" if policy == "ieee" else "ieee"
-    apply_fp32_precision(Settings(fp32_precision=policy))
+    apply_fp32_precision(policy)
     assert _conv_precision() == policy
     assert torch.backends.cuda.matmul.fp32_precision == policy
-    # Lightning's CUDA accelerator reads this on Ampere GPUs: it must not raise.
+    # The legacy matmul API still reads it back (mixing the two APIs would make it raise).
     assert torch.get_float32_matmul_precision() == matmul
 
 
+def test_apply_refuses_other_policies() -> None:
+    with pytest.raises(ConfigError, match="fp32_precision must be 'ieee' or 'tf32'"):
+        apply_fp32_precision("bf16")
+
+
 def test_record_reads_back_the_backends_on_the_cpu() -> None:
-    apply_fp32_precision(Settings(fp32_precision="tf32"))
+    apply_fp32_precision("tf32")
     record = fp32_precision_record(torch.device("cpu"))
     # No TF32 on the CPU (for convolutions and CUDA matmuls): the effective policy is ieee.
     assert record["fp32_precision"] == "ieee"
@@ -84,16 +90,16 @@ def test_record_on_a_cuda_device(
     monkeypatch: pytest.MonkeyPatch, capability: tuple[int, int], policy: str, effective: str
 ) -> None:
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device=None: capability)
-    apply_fp32_precision(Settings(fp32_precision=policy))
+    apply_fp32_precision(policy)
     record = fp32_precision_record(torch.device("cuda", 0))
     assert record["fp32_precision"] == effective
     assert record["compute_capability"] == f"{capability[0]}.{capability[1]}"
 
 
 def test_machine_records_the_policy() -> None:
-    apply_fp32_precision(Settings())
-    trainer = SimpleNamespace(strategy=SimpleNamespace(root_device=torch.device("cpu")))
-    machine = experiments.machine_record(cast(Any, trainer))
+    apply_fp32_precision(Settings().fp32_precision)
+    machine = machine_record(torch.device("cpu"))
+    assert (machine["device"], machine["gpu"], machine["engine"]) == ("cpu", None, "plain")
     assert machine["fp32_precision"] == "ieee"
     assert machine["fp32_backends"]["cudnn_conv"] == "ieee"
     assert machine["compute_capability"] is None
@@ -103,23 +109,38 @@ class _Stop(Exception):
     pass
 
 
-def test_run_command_applies_the_policy_before_the_data_and_model(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_run_plain_applies_the_policy_before_the_record_and_the_model(
+    classifier_f32_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The policy is set before the dataset is opened, so before any module is built."""
-    seen: list[str] = []
+    """The policy is set before the machine is recorded and before any module is built."""
+    seen: dict[str, Any] = {}
 
-    def dataset_path(settings: Settings) -> Path:
-        seen.append(_conv_precision())
+    def recording_start(*args: Any, **kwargs: Any) -> Any:
+        seen["record"] = (_conv_precision(), kwargs["machine"]["fp32_backends"]["cudnn_conv"])
+        return start_run(*args, **kwargs)
+
+    def build(*args: Any) -> Any:
+        seen["model"] = _conv_precision()
         raise _Stop
 
-    monkeypatch.setattr(experiments, "dataset_path", dataset_path)
+    monkeypatch.setattr(plain, "start_run", recording_start)
+    monkeypatch.setattr(plain, "build_paper_task", build)
     cast(Any, torch.backends.cudnn).conv.fp32_precision = "tf32"  # torch's default
+    settings = Settings(
+        accelerator="cpu",
+        data_dir=classifier_f32_dir.parent,
+        dataset=classifier_f32_dir.name,
+        output_dir=tmp_path,
+        schedule="carrasco2021",
+        supervised_model="paper_stamp_classifier",
+        image_size=21,
+        eval_batch_size=64,
+        early_stopping=False,
+        batch_size=4,
+    )
     with pytest.raises(_Stop):
-        experiments.run_command(
-            "train-supervised", Settings(accelerator="cpu", output_dir=tmp_path)
-        )
-    assert seen == ["ieee"]
+        plain.run_plain("train-supervised", settings)
+    assert seen == {"record": ("ieee", "ieee"), "model": "ieee"}
 
 
 def test_tf32_is_a_preset_deviation() -> None:
