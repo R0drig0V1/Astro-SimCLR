@@ -1455,7 +1455,8 @@ tarball file or stdin ──► TarballStream ──Member──► parse_alert(
     near-duplicate check runs.
   - `load_candid_exclusions` is the candid counterpart of `selection.load_exclusions`.
   - `write_corpus_index` / `read_corpus_index` handle the `.npz` (`rows` and `meta` as a
-    JSON string; atomic write; format, version, dtype, `n` and sort order checked).
+    JSON string; atomic write through `write_npz_atomically`, shared with `corpus_fits`;
+    format, version, dtype, `n` and sort order checked).
     `check_archive(index, archive)` compares `corpus.json`'s SHA-256 and the `meta.json`
     SHA-256 of every night the index uses.
 - `near_duplicates`: `descriptors(stamps)` (mean-pool 7 to 9×9×3, centred per channel,
@@ -1472,8 +1473,21 @@ tarball file or stdin ──► TarballStream ──Member──► parse_alert(
   cutout file and offset. `read(positions, out=)` reads sorted by `(file, offset)` and
   scatters to the requested order; `normalised(positions)`; `chunks(positions, n)` yields
   `(positions, normalised)` blocks; `nbytes`.
-- `commands`: the `build-corpus-index` subcommand (`add_corpus_index_command`, registered by
-  `cli.build_parser`).
+- `corpus_fits` (the noise view on a corpus; ADR 0019, amendment of 2026-11-09): the
+  sidecar of an index holding `stamp_relation.stamp_fits` of every index row, the inputs
+  of the C5 noise view.
+  - `compute_corpus_fits(index_path, archive=None, chunk_rows=4096, progress=)` hashes the
+    index, reads it, runs `check_archive`, and fits `CorpusStamps.chunks` on the
+    normalised stamps channels first and contiguous: the input a layout run gives
+    `stamp_fits`, so the values are the same bit for bit. It returns `CorpusFits(fits,
+    meta)`: float32 `(n, 6)` in index order, and the record (the index's path, SHA-256,
+    `n` and `exclusion_sha256`; the archive; the columns; how the values were computed).
+  - `write_corpus_fits` / `read_corpus_fits` handle the `.npz` (`fits` and `meta`; format
+    `astro-simclr-corpus-fits` v1; dtype, shape `(meta.n, 6)` and finiteness checked).
+  - `verify_corpus_fits(fits, index_sha256=, n=, source=)` refuses fits of another index
+    file or row count (the pilot calls it).
+- `commands`: the `build-corpus-index` and `build-corpus-fits` subcommands
+  (`add_corpus_index_command`, registered by `cli.build_parser`).
 - `alerts.parse` changes for the archive:
   - `oid` and `candid` are optional (the alert's own are taken).
   - `repair=False` raises `CutoutShapeError` for non-63×63 cutouts.
@@ -1504,10 +1518,24 @@ positions, and an archive written with `NightWriter`) covers:
   `check_archive`;
 - the reader across cutout files and in any order, and its refusals of another archive;
 - the pilot from an index: the same model on `memmap` and `host`, the CD21 evaluation and
-  record, the refusals (`device`, the host cap, noise, another evaluation layout, a weak
-  index, a resume on a rebuilt index), the one-batch prefetch, and a resume from a
-  checkpoint written before the corpus fields;
+  record, the refusals (`device`, the host cap, noise without fits, another evaluation
+  layout, a weak index, a resume on a rebuilt index), the one-batch prefetch, and a resume
+  from a checkpoint written before the corpus fields;
 - the CLI.
+
+`tests/_corpus_support.py` holds the synthetic layout and archive writers both corpus test
+modules use. `tests/test_corpus_fits.py` (offline, CPU: an archive of ten raw stamps, one
+with NaN pixels, its index, and a **mirror** layout whose Train stamps are the index's
+stamps normalised as stored) covers:
+- the corpus fits equal `stamp_fits` on the mirror's Train stamps (the layout path) bit for
+  bit, with chunks of 4096, 3 and 1 rows;
+- a corpus run with noise gives the same model on `memmap` and `host` as the layout run
+  with noise on the mirror; it is deterministic for a seed, differs without noise or with
+  another seed, and resumes exactly (two stops, the logs identical);
+- the record (`pretrain.fits`, `config.corpus_fits`, both absent without noise);
+- the refusals: no fits, fits without noise or on a layout, fits of another index, a
+  resume on rebuilt fits, and malformed sidecars;
+- the CLI (`build-corpus-fits`, then `simclr-pilot --noise-scale 3 --corpus-fits`).
 
 ## `optim` (task 1.5)
 
@@ -2704,7 +2732,7 @@ draw is keyed by `step`, so 5.3 can run the same functions on the plain engine.
 | `optim` | `lars_param_groups(model)`: convolution/linear weights (weight decay 1e-6, trust ratio) and an excluded group (normalisation parameters and biases: no decay, no trust ratio, `optim.EXCLUDE_KEY`); `build_lars(model, lr=...)`: fixed trust ratio, no Nesterov, momentum 0.9; `base_learning_rate(B) = 0.3 * B / 256`; `warmup_cosine_lr(step, base_lr, total_steps, warmup_steps, lr_min=0)`: linear warmup to `base_lr` at step `W - 1`, then a cosine that is exactly `lr_min` at `total_steps - 1`; `set_learning_rate`. |
 | `diagnostics` | `effective_rank(h)` (exp of the entropy of the normalised eigenvalues of `cov(h)`), `dimension_std(z)`, `alignment(z_i, z_j)`, `uniformity(z, t=2)`, `knn_predict` / `knn_balanced_accuracy` (cosine, `k = 20`, vote weights `exp(sim / 0.07)`). |
 | `probe` | `draw_label_subsets(labels, candidates, per_class, n_subsets, seed)` (nested across budgets: subset `r` is the head of a per-class permutation keyed `[seed, r, class]`), `write_label_subsets` / `read_label_subsets` (format `astro-simclr-label-subsets` v1, with the SHA-256 of the candidates and the labels); `fit_probe(h, labels, weight_decay)`: logistic regression, standardised `h`, plain cross-entropy on logits, L2 on the weights, full-batch L-BFGS in float64 on the CPU; `probe_screen(...)`: the penalty chosen on the screen's selection half from `WEIGHT_DECAY_GRID`, the score on the decision half, per subset. |
-| `pilot` | `PilotConfig` (the run's whole definition; `epochs` or `steps`; task 5.1 added `tier="memmap"`, `archive`, `eval_data` and `host_cap_gb`, and a checkpoint written before them resumes with them at their defaults; the probe monitors' fields, left out of `to_plain` at their defaults), `load_pilot_data` (a layout: Train and Validation as float32 (N, 3, 63, 63); with a splits file, verified, pretraining leaves out `screen_training_excluded`. A corpus index file: the CD21 layout it excluded, the same way, for the evaluation, plus `CorpusPretrain(CorpusStamps, record)` after `check_archive`), the pretraining stamps (`TensorStamps(images, rows)` for `device`/`host`, `MemmapStamps` for `memmap`: a sorted read, the normalisation and a pinned tensor per batch; `_pretraining_stamps` picks them and refuses `device` for a corpus and a corpus above `host_cap_gb` on `host`; `_weak_rules` refuses an index below the plan's exclusion unless `allow_weak_index`; `restore` also compares the checkpoint's index SHA-256, exclusion SHA-256 and `n`), `BatchOrder` (a permutation per pass keyed `[seed, pass, simclr_batch_order]`, last partial batch dropped), `PilotRun` (model built on the CPU from the seed, LARS, the step: views, one forward of both views concatenated, loss, rate, backward, step), `diagnose`, `embed`, `dump_embeddings`, `train_pilot(config, out_dir, resume=, stop_at=)`. |
+| `pilot` | `PilotConfig` (the run's whole definition; `epochs` or `steps`; task 5.1 added `tier="memmap"`, `archive`, `eval_data` and `host_cap_gb`, and a checkpoint written before them resumes with them at their defaults; the probe monitors' fields, left out of `to_plain` at their defaults), `load_pilot_data` (a layout: Train and Validation as float32 (N, 3, 63, 63); with a splits file, verified, pretraining leaves out `screen_training_excluded`. A corpus index file: the CD21 layout it excluded, the same way, for the evaluation, plus `CorpusPretrain(CorpusStamps, record, fits)` after `check_archive`; with `noise_scale > 0` it needs `corpus_fits`, the `build-corpus-fits` sidecar, read and checked against the index's SHA-256 and `n` (`archive.corpus_fits.verify_corpus_fits`), its path and SHA-256 recorded as `pretrain.fits`; `corpus_fits` is refused without noise or with a layout, and left out of `to_plain` unset), the pretraining stamps (`TensorStamps(images, rows)` for `device`/`host`, `MemmapStamps` for `memmap`: a sorted read, the normalisation and a pinned tensor per batch; `_pretraining_stamps` picks them and refuses `device` for a corpus and a corpus above `host_cap_gb` on `host`; `_weak_rules` refuses an index below the plan's exclusion unless `allow_weak_index`; `restore` also compares the checkpoint's index SHA-256, exclusion SHA-256, `n` and fits SHA-256), `BatchOrder` (a permutation per pass keyed `[seed, pass, simclr_batch_order]`, last partial batch dropped), `PilotRun` (model built on the CPU from the seed, LARS, the noise view's fits by stored position (`_noise_fits`: a layout's `stamp_fits` of Train on the stamps' device, a corpus's sidecar on the training device; one gather per batch, about 3 µs for 256 rows on the CPU), the step: views, one forward of both views concatenated, loss, rate, backward, step), `diagnose`, `embed`, `dump_embeddings`, `train_pilot(config, out_dir, resume=, stop_at=)`. |
 | `monitor` | The probe monitors of pretraining (both opt-in; see below). `budget_train_rows(budgets, part, repeat, wanted, n_train, usable, train_labels)`: the Train stamps of a stored label-budget subset (Validation pool indices and Train stamps outside `usable` dropped, the counts recorded); `eval_h(model, images, rows, device, batch)`: `h` of the eval view (centre crop, eval mode, `inference_mode`); `probe_balanced_accuracy`: the 5.4 probe (`protocol.probe.fit_probe`, `DEFAULT_WEIGHT_DECAY`, float64 L-BFGS) scored by balanced accuracy; `probe_beats_baseline` (strictly greater); `side_batch(seed, step, rows, size)`: the online probe's side-batch from `[seed, step, simclr_online_probe]` (stream 12); `OnlineProbe`: a zero-initialised `Linear(512, 5)` with its own Adam, `update` (encoder in eval mode under `no_grad`, the head on detached `h`, class-balanced cross-entropy), `take_train_accuracy`, `balanced_accuracy`, `state` / `load`. |
 | `scratch` | The go/no-go's supervised scratch baseline (on the plain engine). `ScratchRecipe(steps, batch_per_class=10, warmup_fraction=0.05, noise_scale=3, lr_grid=(5e-4, 2e-3), weight_decay_grid=(0.05, 0.5), eval_batch=256)` (`trials`: lr outer; `default_steps(per_class)`: 1,000 at 10, 2,000 at 100); `subset_seed(seed, r)`: the first 32-bit word of `SeedSequence([seed, r, 13])`; `draw_step(seed, step, by_class, k, noise=)`: from `host_generator(seed, step, simclr_scratch)` (stream 13), in order, the class-stratified batch, the dihedral elements, the offsets, the noise strengths and the noise fields (float32, on the host: device-independent); `scratch_view`: the pilot's view, one per stamp (`views.noise_with_fields`, `dihedral`, `crop`); `ScratchNetwork`: `resnet18_cifar()` then `Linear(512, 5)`; `ScratchStream` (a `TrainStream` holding only the subset's Train stamps: `k` of each class per step); `EvalStamps` (an `EvalSource` of the centred view); `ScratchTask` (AdamW, no decay on norms and biases, warmup then cosine to 0 set per step, cross-entropy); `fit_trial`: `engine.loop.fit` with a fixed horizon, one validation after the last step scored by `selection_score` (balanced accuracy) on the selection half, the last weights kept; `scratch_screen`: every trial of every subset, the first best on the selection half kept and only it scored on the decision half. |
 | `compare` | `report_header(command, ...)`: the pairing keys of a version-2 subset report (subsets and splits files with their SHA-256, the decision rows and labels); `summary(rows)`; `read_report`; `decision_groups(splits, rows)`: the objects of the decision rows; `compare_reports(baseline, variant, groups=, margin=0.02)`: `protocol.stats.hierarchical_paired_bootstrap` of balanced accuracy, variant - baseline, after checking the pairing, and `margin_verdict` (`go` iff the lower bound exceeds the margin) at 10 per class only. No torch. |

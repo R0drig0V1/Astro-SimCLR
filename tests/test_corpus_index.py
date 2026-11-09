@@ -22,7 +22,16 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 import torch
-from _protocol_support import standardised
+from _corpus_support import (
+    ARCSEC,
+    CD21_POSITIONS,
+    archive_row,
+    cd21_split,
+    oid_name,
+    sky_stamps,
+    write_archive,
+    write_layout,
+)
 
 from astro_simclr.alerts.fetch import alerce_normalise
 from astro_simclr.archive.corpus_index import (
@@ -35,8 +44,6 @@ from astro_simclr.archive.corpus_index import (
 )
 from astro_simclr.archive.layout import (
     CORPUS_INDEX_DTYPE,
-    NightWriter,
-    check_corpus,
     night_dir,
 )
 from astro_simclr.archive.near_duplicates import (
@@ -50,8 +57,6 @@ from astro_simclr.cli import main
 from astro_simclr.config import ConfigError
 from astro_simclr.data.prepared import write_prepared
 from astro_simclr.data.schema import (
-    FEATURE_NAMES,
-    LABEL_NAMES,
     STAMP_SHAPE,
     DataError,
     SplitData,
@@ -67,122 +72,50 @@ from astro_simclr.simclr.pilot import (
     train_pilot,
 )
 
-N_CLASSES = len(LABEL_NAMES)
-_RA, _DEC = FEATURE_NAMES.index("ra"), FEATURE_NAMES.index("dec")
-ARCSEC = 1 / 3600
-
-
 # --- synthetic data ------------------------------------------------------------------------
-
-
-def _min_max(stamps: npt.NDArray[np.float64]) -> npt.NDArray[np.float32]:
-    """Per-channel min-max of finite stamps, float32 (what the stored stamps are)."""
-    low = stamps.min(axis=(-3, -2), keepdims=True)
-    high = stamps.max(axis=(-3, -2), keepdims=True)
-    return ((stamps - low) / (high - low)).astype(np.float32)
-
-
-def _sky(rng: np.random.Generator, n: int) -> npt.NDArray[np.float64]:
-    """``n`` raw-like stamps: noise, a Gaussian source of random flux and width."""
-    yy, xx = np.mgrid[:63, :63] - 31.0
-    out = rng.normal(100.0, 5.0, size=(n, *STAMP_SHAPE))
-    for i in range(n):
-        width = rng.uniform(1.5, 3.0)
-        source = np.exp(-(xx**2 + yy**2) / (2 * width**2))
-        out[i] += rng.uniform(50, 500) * source[..., None]
-    return out
-
-
-def _split(
-    rng: np.random.Generator, per_class: int, positions: dict[int, tuple[float, float]]
-) -> SplitData:
-    n = per_class * N_CLASSES
-    stamps = _min_max(_sky(rng, n))
-    features = rng.normal(size=(n, len(FEATURE_NAMES)))
-    # Random positions on the sky, far from each other and from the archive's.
-    features[:, _RA] = standardised("ra", rng.uniform(0, 360, n))
-    features[:, _DEC] = standardised("dec", rng.uniform(-30, 80, n))
-    for row, (ra, dec) in positions.items():
-        features[row, _RA] = standardised("ra", ra)
-        features[row, _DEC] = standardised("dec", dec)
-    labels = np.repeat(np.arange(N_CLASSES, dtype=np.int64), per_class)
-    images = np.round(stamps * 255).astype(np.uint8)
-    return SplitData(images, labels, features, images_f32=stamps)
-
-
-#: Positions of some CD21 rows (degrees): Validation 0 and Test 1 (near RA 0 = 360).
-CD21_POSITIONS = {
-    "Train": {},
-    "Validation": {0: (150.0, 20.0)},
-    "Test": {1: (359.9999, 10.0)},
-}
-
-
-def _layout(dest: Path, *, per_class: int = 4, seed: int = 0) -> Path:
-    rng = np.random.default_rng(seed)
-    splits = {name: _split(rng, per_class, CD21_POSITIONS[name]) for name in CD21_POSITIONS}
-    source = {"name": f"{dest.name}.pkl", "size_bytes": 0, "sha256": f"{seed:064d}"}
-    return write_prepared(StampData("classifier", splits), dest, source)
-
-
-def _row(oid: str, candid: int, jd: float, ra: float, dec: float, night: int) -> tuple[Any, ...]:
-    return (oid, candid, jd, 1, ra, dec, night, 1, True, 0.5, np.nan, candid)
-
-
-def _oid(i: int) -> str:
-    letters = "".join(chr(ord("a") + (i // 26**k) % 26) for k in range(7))
-    return f"ZTF18{letters}"
-
-
-def _write_archive(
-    archive: Path, nights: dict[int, list[tuple[tuple[Any, ...], npt.NDArray[np.float32]]]]
-) -> Path:
-    check_corpus(archive, {"selection": {"test": True}, "exclusions": {"count": 0}})
-    for night, rows in nights.items():
-        writer = NightWriter(archive, night, rows_per_file=2)
-        for row, cutout in rows:
-            writer.add(row, cutout)
-        writer.commit({"source": {"tarball": f"ztf_public_{night}.tar.gz"}})
-    return archive
 
 
 @pytest.fixture(scope="module")
 def world(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     """A CD21 layout, an archive exercising every rule, and the exclusion files."""
     root = tmp_path_factory.mktemp("corpus")
-    layout = _layout(root / "cd21")
+    layout = write_layout(root / "cd21")
     train_f32 = np.load(layout / "Train" / "images_f32.npy")
     rng = np.random.default_rng(1)
-    raw = _sky(rng, 13).astype(np.float32)
+    raw = sky_stamps(rng, 13).astype(np.float32)
     raw[0, :3, :3, 2] = np.nan  # a raw cutout with NaNs (normalised to finite values)
     copy = (train_f32[3].astype(np.float64) * 37.5 + 120.0).astype(np.float32)  # same stamp
     lookalike = (train_f32[4] + rng.normal(0, 0.02, STAMP_SHAPE)).astype(np.float32)
     n1, n2 = 20190101, 20190102
     jd1, jd2 = 2458484.7, 2458485.7
     rows = {
-        "inside": _row(_oid(1), 11, jd1, 150.0 + 1.4 * ARCSEC / np.cos(np.radians(20)), 20.0, n1),
+        "inside": archive_row(
+            oid_name(1), 11, jd1, 150.0 + 1.4 * ARCSEC / np.cos(np.radians(20)), 20.0, n1
+        ),
         # Another alert of the matched object, far away (a bad coordinate): it goes too.
-        "inside_elsewhere": _row(_oid(1), 24, jd2, 80.0, 30.0, n2),
-        "outside": _row(_oid(2), 12, jd1, 150.0, 20.0 + 1.6 * ARCSEC, n1),
-        "wrap": _row(_oid(3), 13, jd1, 0.0002, 10.0, n1),  # 1.06" from Test 1 across RA 0
-        "oid_listed": _row(_oid(4), 14, jd1, 10.0, 5.0, n1),
-        "candid_listed": _row(_oid(5), 15, jd1, 20.0, 5.0, n1),
-        "dup_late": _row(_oid(6), 21, jd2, 30.0, 5.0, n2),
-        "dup_early": _row(_oid(6), 16, jd1, 30.0, 5.0, n1),
-        "near": _row(_oid(7), 17, jd1, 40.0, -5.0, n1),
-        "near_again": _row(_oid(7), 22, jd2, 40.0, -5.0, n2),
-        "lookalike": _row(_oid(8), 18, jd1, 50.0, 0.0, n1),
-        "plain_a": _row(_oid(9), 19, jd1, 60.0, 0.0, n1),
-        "plain_b": _row(_oid(10), 23, jd2, 70.0, 0.0, n2),
+        "inside_elsewhere": archive_row(oid_name(1), 24, jd2, 80.0, 30.0, n2),
+        "outside": archive_row(oid_name(2), 12, jd1, 150.0, 20.0 + 1.6 * ARCSEC, n1),
+        "wrap": archive_row(
+            oid_name(3), 13, jd1, 0.0002, 10.0, n1
+        ),  # 1.06" from Test 1 across RA 0
+        "oid_listed": archive_row(oid_name(4), 14, jd1, 10.0, 5.0, n1),
+        "candid_listed": archive_row(oid_name(5), 15, jd1, 20.0, 5.0, n1),
+        "dup_late": archive_row(oid_name(6), 21, jd2, 30.0, 5.0, n2),
+        "dup_early": archive_row(oid_name(6), 16, jd1, 30.0, 5.0, n1),
+        "near": archive_row(oid_name(7), 17, jd1, 40.0, -5.0, n1),
+        "near_again": archive_row(oid_name(7), 22, jd2, 40.0, -5.0, n2),
+        "lookalike": archive_row(oid_name(8), 18, jd1, 50.0, 0.0, n1),
+        "plain_a": archive_row(oid_name(9), 19, jd1, 60.0, 0.0, n1),
+        "plain_b": archive_row(oid_name(10), 23, jd2, 70.0, 0.0, n2),
     }
     cutouts = dict(zip(rows, raw, strict=True))
     cutouts["near"], cutouts["near_again"], cutouts["lookalike"] = copy, copy, lookalike
     nights: dict[int, list[tuple[tuple[Any, ...], npt.NDArray[np.float32]]]] = {n1: [], n2: []}
     for name, row in rows.items():
         nights[row[6]].append((row, cutouts[name]))
-    archive = _write_archive(root / "archive", nights)
+    archive = write_archive(root / "archive", nights)
     oids = root / "oids.txt"
-    oids.write_text(f"# R5 Validation/Test\n{_oid(4)}\n\n")
+    oids.write_text(f"# R5 Validation/Test\n{oid_name(4)}\n\n")
     candids = root / "candids.txt"
     candids.write_text("15\n# comment\n 15 \n")
     return {
@@ -355,7 +288,7 @@ def test_build_refuses_a_layout_without_float32_or_an_archive(
     rng = np.random.default_rng(0)
     splits = {}
     for name in CD21_POSITIONS:
-        split = _split(rng, 1, {})
+        split = cd21_split(rng, 1, {})
         splits[name] = SplitData(split.images, split.labels, split.features)
     source = {"name": "u8.pkl", "size_bytes": 0, "sha256": "1" * 64}
     uint8 = write_prepared(StampData("classifier", splits), tmp_path / "u8", source)
@@ -505,7 +438,7 @@ def test_pilot_refuses_corpus_misuse(pilot_world: dict[str, Path], tmp_path: Pat
         load_pilot_data(_pilot(pilot_world, batch_size=6))
     with pytest.raises(ConfigError, match="memmap tier reads a corpus"):
         train_pilot(_pilot(pilot_world, data=str(pilot_world["layout"])), tmp_path / "c")
-    other = _layout(tmp_path / "other", seed=5)
+    other = write_layout(tmp_path / "other", seed=5)
     with pytest.raises(DataError, match="is not the layout"):
         load_pilot_data(_pilot(pilot_world, eval_data=str(other), splits=None))
     with pytest.raises(ConfigError, match="host_cap_gb"):

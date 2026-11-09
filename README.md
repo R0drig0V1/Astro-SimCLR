@@ -246,7 +246,9 @@ curl -sf https://ztf.uw.edu/alerts/public/ztf_public_20200925.tar.gz \
   | uv run astro-simclr ingest-archive - --night 20200925 --out DIR --exclude exclude_oids.txt
 uv run astro-simclr archive-summary DIR --verify
 uv run astro-simclr build-corpus-index DIR --out index.npz --cd21 dataset/prepared/td_ztf_stamp_17_06_20_red-002
+uv run astro-simclr build-corpus-fits index.npz --out index.fits.npz   # for --noise-scale
 uv run astro-simclr simclr-pilot index.npz --splits configs/splits/td_ztf_stamp_17_06_20_red-002-grouped.json \
+  --noise-scale 3 --corpus-fits index.fits.npz \
   --output-dir runs/corpus-pilot --device cuda    # --tier memmap by default
 ```
 
@@ -257,6 +259,8 @@ uv run astro-simclr simclr-pilot index.npz --splits configs/splits/td_ztf_stamp_
 - all but one alert per `oid`.
 
 It records the counts per rule and the SHA-256 of every exclusion input.
+`build-corpus-fits` stores, beside the index and bound to its SHA-256, the stamp fits that
+the C5 noise view of a corpus run needs.
 
 The rules, the layout and the budget are in [docs/data.md](docs/data.md) ("Archive
 corpus", "Corpus index") and [ADR 0019](docs/decisions/0019-archive-corpus.md).

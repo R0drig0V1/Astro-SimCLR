@@ -10,7 +10,8 @@ handlers import torch and the pilot lazily, so ``--help`` stays fast.
   EPOCH`` and ``--online-probe`` turn on the probe monitors (:mod:`~astro_simclr.simclr.
   monitor`). DATA is a prepared layout, or a corpus index (``build-corpus-index``,
   task 5.1) with ``--archive DIR`` and ``--eval-data LAYOUT`` defaulting to the ones it
-  records; ``--tier`` defaults to ``device`` for a layout and ``memmap`` for an index.
+  records; ``--tier`` defaults to ``device`` for a layout and ``memmap`` for an index;
+  ``--noise-scale`` on an index needs ``--corpus-fits FITS_FILE`` (``build-corpus-fits``).
   Exit 0 when the call ends.
 - ``simclr-embed DATA --output-dir OUT (--checkpoint FILE | --random-init) [--seed N]``:
   the embedding dump of a checkpoint, or of the randomly initialised network (the
@@ -94,6 +95,7 @@ def _pilot(args: argparse.Namespace) -> int:
         online_probe=args.online_probe,
         online_probe_batch=args.online_probe_batch,
         online_probe_lr=args.online_probe_lr,
+        corpus_fits=None if args.corpus_fits is None else str(args.corpus_fits),
     )
     run = train_pilot(config, args.output_dir, resume=args.resume, stop_at=args.stop_at)
     if run.status == "aborted":
@@ -470,6 +472,13 @@ def _add_pilot(commands: argparse._SubParsersAction[argparse.ArgumentParser]) ->
         action="store_true",
         help='accept an index built with a radius below 1.5" or without the near-duplicate '
         "check (recorded; never for a result)",
+    )
+    pilot.add_argument(
+        "--corpus-fits",
+        type=Path,
+        metavar="FITS_FILE",
+        help="the stamp fits of the corpus index (build-corpus-fits): needed by --noise-scale "
+        "on an index",
     )
     pilot.add_argument(
         "--host-cap-gb",

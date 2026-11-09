@@ -11,7 +11,8 @@
 - **Checked by:** `tests/test_simclr_views.py`, `tests/test_simclr_model.py`,
   `tests/test_simclr_probe.py`, `tests/test_simclr_pilot.py` (CPU only: a few steps);
   the scratch baseline (amendment below): `tests/test_simclr_scratch.py` and the golden
-  case `simclr-scratch-noise` of `tests/test_engine_regression.py`
+  case `simclr-scratch-noise` of `tests/test_engine_regression.py`; the corpus amendments:
+  `tests/test_corpus_index.py`, `tests/test_corpus_fits.py`
 
 ## Context
 
@@ -198,7 +199,8 @@ the GPU busy with another job, measured 0.624 s per step without the prefetch an
 with it, about the 66-ms read.
 
 The noise view needs per-stamp fits, which are not computed for a corpus, so a corpus run
-refuses `noise_scale > 0`.
+refuses `noise_scale > 0`. (Superseded by the amendment of 2026-11-09 below: with the fits
+sidecar of `build-corpus-fits`, a corpus run takes the noise view.)
 
 `pilot.json` records the index (path and SHA-256), the archive, the `exclusion_sha256`,
 the counts and the rules.
@@ -414,3 +416,31 @@ fixed.
   the same input (the centred view, eval mode). Neither reads the decision half or Test for
   any choice.
 
+## Amendment (2026-11-09, tasks 5.1/5.3): the noise view on a corpus index
+
+The GO of the 5.0b pilot leads to pretraining on the corpus index with the recipe that won
+on CD21: batch 256, `lr_per_256` 0.3, temperature 0.2 and the C5 noise at scale 3. The
+amendment of 2026-11-08 refused the noise on a corpus; without it the views collapse
+(LARS grid v2: positive similarity 0.998, a probe below random init).
+
+**Decision.**
+- `PilotConfig` gains `corpus_fits`: the sidecar of `build-corpus-fits` (ADR 0019,
+  amendment of 2026-11-09), `--corpus-fits FITS_FILE` on `simclr-pilot`. A corpus run with
+  `noise_scale > 0` needs it, and the refusal without it names the command that builds it.
+  The field is refused without noise and with a layout as DATA, and `to_plain` leaves it
+  out unset, so a run without it writes the record and checkpoint config it wrote before.
+- `load_pilot_data` reads the sidecar and refuses it unless it names the index's SHA-256
+  and row count (`verify_corpus_fits`). `pilot.json` records `data.pretrain.fits`: the
+  sidecar's path, SHA-256, format and the index SHA-256 it names. A resume also compares
+  the fits' SHA-256, so fits rebuilt at the same path are refused.
+- The views, their randomness and the noise arithmetic are the pilot's: no new stream. The
+  fits are indexed by the same stored positions as the stamps (a corpus's index positions;
+  `memmap` and `host` alike), on the training device (24 bytes a row). A layout run still
+  fits its Train stamps when it starts.
+
+**Checks** (CPU tests, `tests/test_corpus_fits.py`): on an archive whose stamps are also
+written as a layout (the "mirror"), the corpus fits equal the layout path's `stamp_fits`
+bit for bit, and the corpus run with noise trains the same model on `memmap` and `host` as
+the layout run with noise on the mirror. It is deterministic for a seed and resumes
+exactly. The fits lookup costs about 3 µs per batch of 256 on the CPU, against about 66 ms
+for the read of the batch's stamps on the GPU machine.

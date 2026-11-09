@@ -1,7 +1,7 @@
-"""The ``build-corpus-index`` subcommand of the CLI (phase 5, task 5.1; ADR 0019).
+"""The ``build-corpus-index`` and ``build-corpus-fits`` subcommands (task 5.1; ADR 0019).
 
 Registered by :func:`add_corpus_index_command` from :func:`astro_simclr.cli.build_parser`;
-the handler imports the index builder lazily, so ``--help`` stays fast.
+the handlers import the builders lazily, so ``--help`` stays fast.
 
 ``build-corpus-index ARCHIVE_DIR --out INDEX_FILE --cd21 LAYOUT [--exclude-oids FILE]...
 [--exclude-candids FILE]... [--radius-arcsec R] [--duplicates first|random] [--seed N]
@@ -10,6 +10,12 @@ applies the exclusion union to every complete night of ``ARCHIVE_DIR`` and write
 (:mod:`~astro_simclr.archive.corpus_index`); it prints the counts per rule (or the whole
 record with ``--json``). Exit 0 when the index is written, 1 for unusable data, 2 for
 unusable arguments.
+
+``build-corpus-fits INDEX_FILE --out FITS_FILE [--archive ARCHIVE_DIR] [--chunk-rows N]
+[--overwrite] [--json] [--quiet]`` computes the stamp fits of every row of the index (the
+inputs of the C5 noise view) and writes them beside it, bound to the index's SHA-256
+(:mod:`~astro_simclr.archive.corpus_fits`); ``simclr-pilot INDEX_FILE --noise-scale S``
+reads them with ``--corpus-fits FITS_FILE``. Same exit codes.
 """
 
 from __future__ import annotations
@@ -72,10 +78,36 @@ def _build(args: argparse.Namespace) -> int:
     return 0
 
 
+def _build_fits(args: argparse.Namespace) -> int:
+    from astro_simclr.archive.corpus_fits import compute_corpus_fits, write_corpus_fits
+
+    if args.out.exists() and not args.overwrite:
+        raise ConfigError(f"{args.out} already exists; pass --overwrite to replace it")
+    if args.chunk_rows < 1:
+        raise ConfigError(f"--chunk-rows must be >= 1, got {args.chunk_rows}")
+
+    def progress(line: str) -> None:
+        if not args.quiet:
+            sys.stderr.write(f"{line}\n")
+
+    fits = compute_corpus_fits(
+        args.index, archive=args.archive, chunk_rows=args.chunk_rows, progress=progress
+    )
+    write_corpus_fits(fits, args.out, overwrite=args.overwrite)
+    if args.json:
+        sys.stdout.write(json.dumps(fits.meta, indent=2, sort_keys=True) + "\n")
+        return 0
+    sys.stdout.write(
+        f"build-corpus-fits: {len(fits)} stamps -> {args.out}\n"
+        f"  index SHA-256 {fits.index_sha256}\n"
+    )
+    return 0
+
+
 def add_corpus_index_command(
     commands: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
-    """Register ``build-corpus-index``."""
+    """Register ``build-corpus-index`` and ``build-corpus-fits``."""
     build = commands.add_parser(
         "build-corpus-index",
         help="the archive rows pretraining may read: the exclusion union and one alert per oid",
@@ -133,3 +165,31 @@ def add_corpus_index_command(
     build.add_argument("--json", action="store_true", help="print the index's whole record")
     build.add_argument("--quiet", action="store_true", help="no progress lines on stderr")
     build.set_defaults(handler=_build)
+    _add_fits_command(commands)
+
+
+def _add_fits_command(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    fits = commands.add_parser(
+        "build-corpus-fits",
+        help="the stamp fits of a corpus index (the C5 noise view's inputs), beside it",
+        description="Compute stamp_fits (diff ~ a*sci + b*tmpl + c, R^2, background sigmas) "
+        "of every row of a corpus index, on the stamps normalised as the pilot reads them, "
+        "and write them to FITS_FILE bound to the index's SHA-256. simclr-pilot INDEX_FILE "
+        "--noise-scale S --corpus-fits FITS_FILE reads them (docs/data.md, 'Corpus index'; "
+        "ADR 0019).",
+    )
+    fits.add_argument("index", type=Path, metavar="INDEX_FILE", help="build-corpus-index --out")
+    fits.add_argument("--out", type=Path, required=True, metavar="FITS_FILE")
+    fits.add_argument(
+        "--archive",
+        type=Path,
+        metavar="ARCHIVE_DIR",
+        help="the archive corpus of the index (default: the recorded one)",
+    )
+    fits.add_argument(
+        "--chunk-rows", type=int, default=4096, help="stamps fitted at a time (default 4096)"
+    )
+    fits.add_argument("--overwrite", action="store_true")
+    fits.add_argument("--json", action="store_true", help="print the sidecar's record")
+    fits.add_argument("--quiet", action="store_true", help="no progress lines on stderr")
+    fits.set_defaults(handler=_build_fits)

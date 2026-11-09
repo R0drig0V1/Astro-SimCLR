@@ -11,9 +11,11 @@
   `ingest`, `plan`), `parse_alert(oid=None, candid=None, repair=False)` and
   `Alert.previous_detections` in `src/astro_simclr/alerts/parse.py`, and the
   `ingest-archive`, `archive-summary` and `plan-archive-nights` commands in
-  `src/astro_simclr/cli.py`
+  `src/astro_simclr/cli.py`; the amendments: `corpus_index`, `near_duplicates`, `reader`,
+  `corpus_fits` and `commands` (`build-corpus-index`, `build-corpus-fits`)
 - **Checked by:** `tests/test_archive_stream.py`, `tests/test_archive_ingest.py`,
-  `tests/test_archive_plan.py` (offline: synthetic tarballs and avro made by the tests)
+  `tests/test_archive_plan.py` (offline: synthetic tarballs and avro made by the tests);
+  the amendments: `tests/test_corpus_index.py`, `tests/test_corpus_fits.py`
 
 ## Context
 
@@ -193,3 +195,40 @@ Decisions and their reasons:
 Measured costs on the 5090 (shared host, load average about 78): the index of 145k rows in
 76 s with the near-duplicate check, so about 3.5 min for the 390k-row corpus; one batch of
 256 stamps read and normalised in about 66 ms.
+
+## Amendment (2026-11-09, tasks 5.1/5.3): the stamp fits of an index, in a sidecar
+
+The 5.0b pilot's GO (2026-11-09) asks for the next run: SimCLR pretraining on the corpus
+index with the C5 noise view (`--noise-scale 3`, batch 256, `lr_per_256` 0.3, temperature
+0.2). Without the noise the views are too weak on this data: the LARS grid v2 collapsed
+(positive similarity 0.998, a probe below the random-init network). The noise needs each
+stamp's fit (`stamp_relation.stamp_fits`: `a`, `b`, `c`, R² and the two background
+sigmas), which a layout run computes from its Train stamps when it starts. A corpus run
+cannot do that cheaply: its stamps are read per batch, and fitting 145k-390k of them takes
+40 s to a few minutes per start.
+
+**Decision.** `build-corpus-fits INDEX_FILE --out FITS_FILE` (`archive/corpus_fits.py`)
+computes the fits of every index row once and writes them to a **sidecar** file bound to
+the index by its SHA-256:
+- the values are `stamp_fits` of each stamp normalised by the reader (`CorpusStamps
+  .normalised`), passed channels first and contiguous as a layout's are, so a stamp gets
+  the same fits bit for bit through either path (tested);
+- the file is a pickle-free `.npz`, written atomically: `fits` float32 `(n, 6)` in index
+  order, and `meta` (format `astro-simclr-corpus-fits` v1) with the index's path,
+  SHA-256, `n` and `exclusion_sha256`, the archive and how the values were computed;
+- the archive is checked against the index (`check_archive`) before the stamps are read;
+- the pilot refuses a sidecar of another index (SHA-256 or row count) and records the
+  sidecar's path and SHA-256 (ADR 0025, amendment of 2026-11-09).
+
+**Why not a field of the index** (an index format v2). The fits are a pure function of the
+index and the archive, not part of the exclusion. In a sidecar:
+- the 145k-row index already built on the GPU machine stays valid, with its
+  `exclusion_sha256` (the value manifests carry); nothing is rebuilt, and the
+  near-duplicate check is not run again;
+- an index used without noise needs nothing new, and old indexes need no version rule;
+- the cost is a second file to keep beside the index, which the SHA-256 binding makes
+  safe: stale fits cannot be paired with a rebuilt index, even at the same path.
+
+**Cost** (CPU, measured on an Apple M4 under load): about 1.6 s per 10k stamps for
+`stamp_fits` alone, 2.7 s per 10k with the read and the normalisation; 24 bytes a row
+(3.5 MB for 145k rows).
