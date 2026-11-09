@@ -44,7 +44,10 @@ the same run, or the same directory). All are ``ConfigError``
 
 **Exactness.** Each member is evaluated as its run evaluated itself: the weights of
 ``ckpt/best.pt`` (plain, its run id checked) or ``checkpoints/best.ckpt`` (Lightning: its
-step, seed and hyperparameters checked against the run, which holds no run id) in the model
+step, seed and hyperparameters checked against the run, which holds no run id), or, for a
+run with ``checkpoint_selection: final`` (plan row D3), the scored last weights of
+``ckpt/last.pt`` / ``checkpoints/last.ckpt`` (the same checks, against ``last_step``),
+with the weight EMA when the run had one (``ema_decay``; its ``eval()`` forward), in the model
 ``build_paper_model`` builds from the manifest's config, the input of
 ``tasks.paper.paper_crops``, the engine's evaluation batches (``engine.open_eval``) of the
 config's ``eval_batch_size``, in ``eval()`` and ``inference_mode``, with the config's
@@ -74,7 +77,14 @@ from astro_simclr.data.files import atomic_write_bytes
 from astro_simclr.data.float_input import crop_split
 from astro_simclr.data.prepared import load_prepared
 from astro_simclr.data.schema import DataError
-from astro_simclr.engine import Dataset, DevicePolicy, TierChoice, load_best, open_eval
+from astro_simclr.engine import (
+    Dataset,
+    DevicePolicy,
+    TierChoice,
+    load_best,
+    load_checkpoint,
+    open_eval,
+)
 from astro_simclr.engine.record import machine_record
 from astro_simclr.feature_sets import feature_columns
 from astro_simclr.losses import P_stamps_loss
@@ -83,7 +93,12 @@ from astro_simclr.protocol.predictions import Predictions, ensemble, save_predic
 from astro_simclr.protocol.split_runs import SplitRequest, SplitRun, file_sha256, open_split_run
 from astro_simclr.reference import load_run, machine_signature
 from astro_simclr.runs.identity import SCREEN, SplitPart, data_sha256
-from astro_simclr.runs.layout import BEST_CHECKPOINT, LIGHTNING_BEST
+from astro_simclr.runs.layout import (
+    BEST_CHECKPOINT,
+    LAST_CHECKPOINT,
+    LIGHTNING_BEST,
+    LIGHTNING_LAST,
+)
 from astro_simclr.runs.manifest import Manifest, ManifestError, is_finished, read_manifest
 from astro_simclr.tasks.common import (
     PAPER_STAMP_CLASSIFIER,
@@ -94,6 +109,7 @@ from astro_simclr.tasks.common import (
 from astro_simclr.tasks.paper import PaperNet, paper_crops
 from astro_simclr.tasks.plain import resolve_accelerator
 from astro_simclr.tasks.results import StageOutput, evaluation_entry, finite
+from astro_simclr.training.ema import EmaWeights
 from astro_simclr.training.tensor_splits import TensorSplit, protocol_splits
 from astro_simclr.tta import (
     View,
@@ -241,48 +257,64 @@ def member_settings(member: Member) -> Settings:
     return settings
 
 
-def _best_state(member: Member) -> dict[str, torch.Tensor]:
-    """The selected weights: ``ckpt/best.pt`` (plain, its run id checked) or Lightning's.
+def _best_state(member: Member, *, final: bool = False) -> dict[str, torch.Tensor]:
+    """The scored weights: ``best`` (plain ``ckpt/best.pt``, its run id checked, or
+    Lightning's), or ``last`` for a ``checkpoint_selection: final`` run (plan row D3).
 
     Raises:
         ConfigError: if the file is missing (a finished classifier's ``best`` may have been
             dropped by the retention policy) or belongs to another run.
     """
     engine = member.manifest.engine
-    path = member.run_dir / (BEST_CHECKPOINT if engine == "plain" else LIGHTNING_BEST)
+    if final:
+        name = LAST_CHECKPOINT if engine == "plain" else LIGHTNING_LAST
+    else:
+        name = BEST_CHECKPOINT if engine == "plain" else LIGHTNING_BEST
+    path = member.run_dir / name
     if not path.is_file():
-        msg = f"{path}: the run's selected weights are missing (ensemble-eval needs best)"
+        kind = "last (checkpoint_selection final)" if final else "best"
+        msg = f"{path}: the run's selected weights are missing (ensemble-eval needs {kind})"
         raise ConfigError(msg)
     if engine == "plain":
-        best = load_best(path)
-        if best["identity"]["run_id"] != member.manifest.run_id:
+        if final:
+            last = load_checkpoint(path)
+            run_id, step, state = last["identity"]["run_id"], last["steps_done"], last["model"]
+            if step != member.metrics.get("last_step"):
+                raise ConfigError(f"{path} is from step {step}, not the run's last_step")
+        else:
+            best = load_best(path)
+            run_id, state = best["identity"]["run_id"], best["model"]
+        if run_id != member.manifest.run_id:
             raise ConfigError(f"{path} holds the weights of another run")
-        return best["model"]
+        return state
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
     if not isinstance(checkpoint, dict) or not isinstance(checkpoint.get("state_dict"), dict):
         raise ConfigError(f"{path} is not a Lightning checkpoint")
-    _check_lightning_best(member, path, checkpoint)
+    _check_lightning_best(member, path, checkpoint, step_key="last_step" if final else "best_step")
     return cast(dict[str, torch.Tensor], checkpoint["state_dict"])
 
 
-def _check_lightning_best(member: Member, path: Path, checkpoint: dict[str, Any]) -> None:
-    """Check a Lightning ``best.ckpt`` against its run, as far as it can be checked.
+def _check_lightning_best(
+    member: Member, path: Path, checkpoint: dict[str, Any], *, step_key: str = "best_step"
+) -> None:
+    """Check a Lightning ``best.ckpt`` (or a ``final`` run's ``last.ckpt``) against its run.
 
     A Lightning checkpoint holds no run id (the plain ``best.pt`` does, and is checked by
-    it), so this checks what it does hold: its ``global_step`` is the run's ``best_step``
-    (``metrics.json``), its ``augment_seed`` the run's seed, and every hyperparameter it
-    saved equals the manifest config's value of the same name. A checkpoint copied from
-    another run of the same config, seed and best step would pass: the weaker guarantee
-    of the Lightning engine, until task 4.8 retires it.
+    it), so this checks what it does hold: its ``global_step`` is the run's ``step_key``
+    (``best_step``, or ``last_step`` for ``last.ckpt``; ``metrics.json``), its
+    ``augment_seed`` the run's seed, and every hyperparameter it saved equals the manifest
+    config's value of the same name. A checkpoint copied from another run of the same
+    config, seed and step would pass: the weaker guarantee of the Lightning engine, until
+    task 4.8 retires it.
 
     Raises:
         ConfigError: on the first mismatch, naming it.
     """
-    best_step = member.metrics.get("best_step")
-    if checkpoint.get("global_step") != best_step:
+    expected = member.metrics.get(step_key)
+    if checkpoint.get("global_step") != expected:
         msg = (
-            f"{path} is from step {checkpoint.get('global_step')!r}, not the run's best_step "
-            f"{best_step!r}: not this run's selected weights"
+            f"{path} is from step {checkpoint.get('global_step')!r}, not the run's {step_key} "
+            f"{expected!r}: not this run's selected weights"
         )
         raise ConfigError(msg)
     hparams = checkpoint.get("hyper_parameters")
@@ -316,9 +348,12 @@ def member_net(member: Member, settings: Settings) -> PaperNet:
         drop_rate=settings.drop_rate,
         feature_set=settings.feature_set,
     )
-    net = PaperNet(model, P_stamps_loss(settings.beta_loss), reads_features=bool(columns))
+    # A D3 run's state has the weight EMA (``ema.shadow.*``), which its eval() forward ran.
+    ema = None if settings.ema_decay is None else EmaWeights(model, settings.ema_decay)
+    net = PaperNet(model, P_stamps_loss(settings.beta_loss), reads_features=bool(columns), ema=ema)
+    final = settings.checkpoint_selection == "final"
     try:
-        net.load_state_dict(_best_state(member))
+        net.load_state_dict(_best_state(member, final=final))
     except RuntimeError as err:
         raise ConfigError(f"{member.run_dir}: the weights do not fit its config ({err})") from None
     return net.eval()

@@ -31,7 +31,7 @@ below about 100k training alerts. A dated literature search replaces any novelty
 - **Test:** the lower bound of the paired 95 % CI (a hierarchical bootstrap over label
   subsets, then objects) is above **+2 points**.
 
-**H2 and H3 (secondary):** the middle budget, and the "all 23 features" setting, with a Holm
+**H2 (secondary):** the middle budget, with a Holm
 correction.
 
 **Everything else is exploratory** and labelled as such.
@@ -141,7 +141,11 @@ tier 3. Phase 5 does not wait for 4.6–4.8.
   - Arms are paired by subset.
   - The CI is the hierarchical bootstrap (subsets, then objects), a new function in
     `protocol.stats` with a golden test.
-- **Feature settings:** none, and all 23 (BN-then-concat, as CD21).
+- **Feature settings:** images only (no alert features) for every pre-registered cell and both
+  pretraining monitors (the probe input is h of the eval view: centre crop, no augmentation).
+  **H3 removed (user decision, 2026-11-08, before any result):** the "all 23 features" setting
+  is not pre-registered. Once the linear-probe evaluation is done and an encoder is chosen, a
+  separate, newly declared test adds the features (BN-then-concat, as CD21).
 - **Baselines:**
   - the random-init probe;
   - a scratch ResNet-18 trained with the same views;
@@ -151,7 +155,7 @@ tier 3. Phase 5 does not wait for 4.6–4.8.
     input handling. timm is added via an ADR, with the weights' licences checked.
 - **Fairness:** the same test-time augmentation policy and the same trial budget for every
   arm.
-- **Mode:** the probe for exploratory cells; fine-tuning only for H1–H3.
+- **Mode:** the probe for exploratory cells; fine-tuning only for H1 and H2.
 - **Before relying on R5,** compute its per-class test counts and MDEs. Its Bogus and
   Asteroid come from CD21 Validation/Test only (phase 3 to confirm).
 

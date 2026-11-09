@@ -1,13 +1,15 @@
 """Tests of ``ensemble-eval`` on tiny synthetic split runs (plan row D4).
 
 A module fixture trains, on the synthetic prepared data and its stored splits (25 stamps
-per split, as ``test_engine_differential``'s), six short split runs on the CPU: three
+per split, as ``test_engine_differential``'s), eight short split runs on the CPU: three
 plain screen runs of one config (seeds 0-2), a plain screen run of another ``lr``, a
-Lightning screen run (seed 0) and a plain run of fold 0. Then:
+Lightning screen run (seed 0), a plain run of fold 0, and a plain and a Lightning screen
+run of plan row D3 (weight EMA, ``checkpoint_selection: final``: no best checkpoint, the
+scored weights are ``last``'s EMA). Then:
 
 - ``rot4`` reproduces each run's own ``predictions_evaluation.npz`` bit for bit (plain and
-  Lightning weights; screen and fold parts), and the members' balanced accuracies equal
-  the runs' stored ones;
+  Lightning weights; screen and fold parts; D3's final EMA weights), and the members'
+  balanced accuracies equal the runs' stored ones;
 - the ensemble arithmetic: its probabilities are the float64 mean of the members', its
   gain is the ensemble's balanced accuracy minus the members' mean;
 - ``d4`` and ``d4_shift`` run, with their views, and the centre crop re-taken from the
@@ -74,7 +76,7 @@ _SCHEDULE: dict[str, Any] = {
 
 @pytest.fixture(scope="module")
 def runs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
-    """The prepared data, the splits file and the six run directories (module docstring)."""
+    """The prepared data, the splits file and the eight run directories (module docstring)."""
     raw = tmp_path_factory.mktemp("ens_raw")
     out = tmp_path_factory.mktemp("ens_prepared")
     make_synthetic(raw, n_per_split=25, seed=1)
@@ -108,7 +110,13 @@ def runs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     run_plain("train-supervised", settings("other_lr", seed=3, lr=1e-2), split=screen)
     run_command("train-supervised", settings("lightning"), progress_bar=False, split=screen)
     run_plain("train-supervised", settings("fold0"), split=SplitRequest(splits, 0))
-    for name in ("other_lr", "lightning", "fold0"):
+    # Plan row D3: the final weights' EMA are the scored ones (last, not best).
+    d3 = {"ema_decay": 0.9, "ema_warmup": True, "checkpoint_selection": "final"}
+    run_plain("train-supervised", settings("d3", **d3), split=screen)
+    run_command(
+        "train-supervised", settings("d3_lightning", **d3), progress_bar=False, split=screen
+    )
+    for name in ("other_lr", "lightning", "fold0", "d3", "d3_lightning"):
         dirs[name] = root / name
     return {"data": data, "splits": splits, "dirs": dirs}
 
@@ -121,7 +129,7 @@ def _written(out: Path, stage: str = "evaluation") -> Any:
     return load_predictions(out.parent / f"{out.stem}.predictions_{stage}.npz")
 
 
-@pytest.mark.parametrize("name", ["screen0", "lightning", "fold0"])
+@pytest.mark.parametrize("name", ["screen0", "lightning", "fold0", "d3", "d3_lightning"])
 def test_rot4_reproduces_the_runs_own_predictions(
     name: str, runs: dict[str, Any], tmp_path: Path
 ) -> None:

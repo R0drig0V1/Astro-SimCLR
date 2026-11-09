@@ -310,8 +310,10 @@ def paper_module(settings: Settings) -> PaperClassifierModule:
     ``group_fields``, ``context``, ``rot90_augment``) and the C5 / C6 augmentation
     (``aug_noise``, ``aug_feature_jitter``, ``synthetic_bogus``, ``aug_min_r2``) and the C7
     flux rescaling (``flux_rescale``, ``flux_k_min``, ``flux_k_max``), whose
-    draws are seeded with ``seed``, the ``feature_set`` diagnostic (ADR 0016), and plan
-    row D3's weight EMA and learning-rate schedule (over ``max_steps``).
+    draws are seeded with ``seed``, the ``feature_set`` diagnostic (ADR 0016), the
+    hybrids' shape flags (``hybrid_dim``, ``hybrid_depth``, ``hybrid_heads``,
+    ``hybrid_readout``; plan row B9), and plan row D3's weight EMA and learning-rate
+    schedule (over ``max_steps``).
 
     Raises:
         UnknownOptimizerError, ValueError: as ``PaperClassifierModule``.
@@ -337,6 +339,10 @@ def paper_module(settings: Settings) -> PaperClassifierModule:
         flux_k_min=settings.flux_k_min,
         flux_k_max=settings.flux_k_max,
         feature_set=settings.feature_set,
+        hybrid_dim=settings.hybrid_dim,
+        hybrid_depth=settings.hybrid_depth,
+        hybrid_heads=settings.hybrid_heads,
+        hybrid_readout=settings.hybrid_readout,
         ema_decay=settings.ema_decay,
         ema_warmup=settings.ema_warmup,
         lr_schedule=settings.lr_schedule,

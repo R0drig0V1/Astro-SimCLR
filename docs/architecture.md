@@ -34,6 +34,7 @@ cli ──► config, hparams (subcommand defaults, legacy key mapping), presets
  ├──► alerts (fetch-alerts, alerts-summary: raw alerts from ALeRCE) ──► data (prepared, m1_features)
  ├──► r5 (r5-sources, build-r5: the R5 benchmark) ──► alerts (by_oid, store), protocol, data.raw_alerts
  │    (training ──► paper_variants: rot4 / single / p4 / p4m ──► paper_model, group_conv;
+ │     paper_variants ──► convnext_model (B8), hybrid_model (B9) ──► paper_variants.PaperHead;
  │     paper_model ──► feature_sets: all / position / none)
  ├──► preflight ──► experiments (R1-R4), tasks.plain (CD21), data (inspection, manifest)
  ├──► tasks (phase 4, 4.6: the paper classifier on the plain engine; no Lightning) ──► engine,
@@ -172,8 +173,12 @@ of one run.
 
   | Field | Default | Meaning |
   |---|---|---|
-  | `paper_arch` | `rot4` | `rot4` (faithful: 4 rotations, mean after fc1), `single` (one pass, not invariant), `p4` (B7), `p4m` (B2') |
-  | `group_fields` | null | `p4` / `p4m`: fields of conv1-conv2 (conv3-conv5 twice); null is `32 // \|G\|` (8 / 4). An error with `rot4` / `single` |
+  | `paper_arch` | `rot4` | `rot4` (faithful: 4 rotations, mean after fc1), `single` (one pass, not invariant), `p4` (B7), `p4m` (B2'), `convnext_atto` / `convnext_pico` (B8), `hybrid` / `hybrid_p4` (B9) |
+  | `group_fields` | null | `p4` / `p4m` / `hybrid_p4`: fields of conv1-conv2 (conv3-conv5 twice); null is `32 // \|G\|` (8 / 4). An error with the other archs |
+  | `hybrid_dim` | 64 | `hybrid` / `hybrid_p4` (B9): token width of the attention blocks, a multiple of `hybrid_heads`. Another value is an error with the other archs (all four `hybrid_*` fields) |
+  | `hybrid_depth` | 2 | the hybrids: pre-norm transformer encoder blocks (≥ 1) |
+  | `hybrid_heads` | 4 | the hybrids: attention heads per block (≥ 1) |
+  | `hybrid_readout` | `mean` | the hybrids: `mean` of the 36 grid tokens, or a learned `cls` token |
   | `context` | `none` | `avgpool63`: the 63×63 stamp average-pooled to 21×21 as 3 more channels (B1'); needs `paper_input: float32` |
   | `rot90_augment` | false | rotate each training stamp by a random multiple of 90° (seeded by `seed` and the step) |
   | `feature_set` | `all` | the features the head reads (a diagnostic; ADR 0016): `all` 23 (faithful), `position` the 6 sky coordinates (`ra`, `dec`, `ecl_lat`, `ecl_long`, `gal_lat`, `gal_long`), `none` the images only (bit-identical to `with_features: false`). `position` needs `with_features` |
@@ -231,7 +236,7 @@ the config hash is defined on, ADR 0015 rule 10), so it changes no numbers.
   |---|---|---|
   | `model` | `stamp_classifier` | `drop_rate`, `beta_loss` |
   | | `resnet` | `name` (`supervised_model`: `resnet18/34/50/152`), `beta_loss` |
-  | | `paper_stamp_classifier` | `arch` (`paper_arch`), `backbone_weights`, `group_fields`, `context`, `feature_set`, `input` (`paper_input`), `nan_approximation`, `exclude_leaked_train`, `dropout_active`, `drop_rate`, `beta_loss` |
+  | | `paper_stamp_classifier` | `arch` (`paper_arch`), `backbone_weights`, `group_fields`, `hybrid_dim`, `hybrid_depth`, `hybrid_heads`, `hybrid_readout`, `context`, `feature_set`, `input` (`paper_input`), `nan_approximation`, `exclude_leaked_train`, `dropout_active`, `drop_rate`, `beta_loss` |
   | | `rj23` | `scenario` (`rj23_scenario`), `bn_position` (`rj23_bn_position`), `large_values` (`rj23_large_values`) (task 3.4b) |
   | | `simclr` | `encoder` (`encoder_name`), `projection_dim`, `temperature`, `legacy_denominator` (`nt_xent_legacy_denominator`) |
   | | `linear_eval` | `pretrained`, `beta_loss` |
@@ -860,6 +865,8 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
 | `p4`, `context: avgpool63` | B7 with the 63×63 context (B1') | 228,915 | 53,978,880 (+1.7 %) |
 | `convnext_atto`, `image_size: 63` | timm ConvNeXt-atto on the whole stamp, 4 rotations (B8; `convnext_model`) | 3,405,227 | 714,557,184 |
 | `convnext_pico`, `image_size: 63` | timm ConvNeXt-pico on the whole stamp, 4 rotations (B8) | 8,575,667 | 1,785,014,016 |
+| `hybrid` | the paper's convolutions, 2 attention blocks over the 6×6 grid, 4 rotations (B9; `hybrid_model`) | 371,251 | 221,357,824 |
+| `hybrid_p4` | the p4 trunk, orientation-pooled, 2 attention blocks with C4-tied positions, 1 pass (B9) | 153,907 | 55,246,720 |
 
 - `GroupStampClassifier(group, *, group_fields=None, with_features, dropout_active,
   drop_rate, in_channels)`: the paper's geometry with group layers: `ZeroPad2d(3)`,
@@ -873,7 +880,8 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
   layers and initialisation); tested equal to `PaperStampClassifier`'s head with the same
   weights.
 - `build_paper_model(arch, *, group_fields, context, with_features, dropout_active,
-  drop_rate, n_classes, feature_set)`: the factory `PaperClassifierModule` uses; the defaults build the faithful
+  drop_rate, n_classes, feature_set, hybrid_dim, hybrid_depth, hybrid_heads,
+  hybrid_readout)`: the factory `PaperClassifierModule` uses; the defaults build the faithful
   model. `paper_in_channels(context)`, `default_group_fields(arch)`, `paper_input_side(arch)`
   (21, or 63 for the ConvNeXts: what `image_size` must be).
 - `count_parameters(model)`; `count_macs(model, *, in_channels)`: MACs per stamp of an
@@ -883,7 +891,8 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
   passes (divide by 4 for a view).
 - `VARIANTS`: name → `Variant(row, overrides, description)`: `rot4` (A), `single-aug`
   (`single` + `rot90_augment`), `p4` (B7), `p4-16`, `p4m` (B2'), `p4-context` (B1'),
-  `convnext-atto`, `convnext-pico` and `convnext-pico-zoobot` (B8). A run
+  `convnext-atto`, `convnext-pico` and `convnext-pico-zoobot` (B8), `hybrid`,
+  `hybrid-cls`, `hybrid-wide` (dim 128, 4 blocks) and `hybrid-p4` (B9). A run
   is the `carrasco2021` preset plus `--set key=value` for each override, for example
   `train-supervised --preset carrasco2021 --set paper_arch=p4 --set context=avgpool63`.
   Split runs (`--splits FILE --fold K | --screen`, 2.5-infra) take the same flags: one crop
@@ -951,6 +960,66 @@ as flags of `paper_stamp_classifier` (`Settings.paper_arch`, `group_fields`, `co
   downloader (licence gate, size, SHA-256, keys, shapes, channels), from scratch with sockets
   disabled, the settings, the run wiring; a CPU split run of `convnext_atto` in
   `tests/test_split_runs.py`; the golden fixture with `backbone_weights: none`.
+
+## `hybrid_model` (task 2.5, plan row B9)
+
+`src/astro_simclr/hybrid_model.py`: conv-attention hybrids as `paper_arch` values of
+`paper_stamp_classifier`, on the paper's 21×21 crop (and the 6-channel context). Engine-free
+(no Lightning import; tested in a fresh interpreter).
+
+- `HybridStampClassifier(arch, *, dim, depth, heads, readout, group_fields, with_features,
+  dropout_active, drop_rate, in_channels, n_classes, feature_set)`: a conv trunk down to its
+  last 6×6 grid (36 tokens) → `embed` (linear to `dim`) + `positions` (learned 2-D table)
+  [+ a CLS token] → `depth` × `EncoderBlock` → LayerNorm → mean of the grid tokens or the
+  CLS token → `fc1` to 64, ReLU, dropout per view → the mean over the views → `PaperHead`
+  (`feature_set` honoured).
+  - `hybrid`: the paper's five convolutions (64 channels per token); one positional vector
+    per cell; **4 rotations as one batch, mean after fc1**: exactly invariant by
+    averaging (one view alone is not: the free table sees where a pattern is).
+  - `hybrid_p4`: the p4 G-CNN trunk (`group_fields` F, default 8: F/2F fields) then the
+    **mean over the 4 orientations** of each field (2F channels per token); the positional
+    table is **tied across C4** (one vector per orbit of the 6×6 grid, 9 orbits;
+    `c4_orbits`). A 90° rotation of the stamp then permutes the tokens, which attention,
+    the MLPs, LayerNorm and both readouts do not see: exactly invariant **in one pass**,
+    so no 4-rotation mean (it would average 4 equal representations at 4× the cost). Not
+    built: 144 tokens of one orientation each with positions tied over the joint
+    (cell, orientation) orbits, which keeps orientation information at 16× the attention
+    cost.
+- `EncoderBlock(dim, heads)`: pre-norm; LayerNorm → `qkv` → scaled dot-product attention
+  written as two batched products and a softmax (counted by `count_macs`, the same on every
+  backend) → `proj` → residual; LayerNorm → `fc_in` (2·dim, `MLP_RATIO`) → GELU → `fc_out`
+  → residual. No dropout, no stochastic depth. Tested equal to `nn.MultiheadAttention`
+  with the same weights, and permutation-equivariant.
+- `GridPositions(side, dim, *, tied_c4)`: the tied table is expanded by a constant one-hot
+  matrix product (each cell gets an exact copy of its orbit's row), so its backward is a
+  matrix product, not `index_select`'s scatter (no deterministic MPS kernel).
+- Initialisation (seeded global generator): trunks as their models (Glorot, zero biases;
+  `group_conv` fans for p4); embedding, attention, MLP, positions and CLS from a normal of
+  std 0.02 truncated at 2σ, zero biases, LayerNorm (1, 0); fc1 and the head as the paper's.
+- | arch | Parameters | MACs per view | MACs per stamp |
+  |---|---|---|---|
+  | `rot4` (the paper's) | 441,075 | 52.6 M | 210.6 M (4 views) |
+  | `hybrid` | 371,251 | 55.3 M | 221.4 M (4 views) |
+  | `hybrid`, `hybrid_readout: cls` | 371,315 | 55.4 M | 221.7 M |
+  | `hybrid`, `hybrid_dim: 128`, `hybrid_depth: 4` | 844,915 | 73.0 M | 292.0 M |
+  | `hybrid_p4` | 153,907 | 55.2 M | 55.2 M (1 view) |
+
+  (with the 23 features; defaults dim 64, depth 2, heads 4, mean.) The paper's 2304 → 64
+  fc1 (147k parameters) becomes the embedding (4k), two blocks (66k) and a 64 → 64 fc1;
+  attention adds about 2.7 M MACs per view (5 %).
+- Settings: `hybrid_dim`, `hybrid_depth`, `hybrid_heads`, `hybrid_readout` (defaults in
+  `config.HYBRID_FLAGS`); another value with a non-hybrid arch is a `ConfigError`. They are
+  listed in the `carrasco2021` presets (a changed shape is a deviation), hash-neutral at their
+  defaults (`runs.canonical.HASH_NEUTRAL_DEFAULTS`: no existing hash moves) and recorded in
+  the module's hyperparameters only when changed (the faithful `hparams.yaml` is unchanged).
+- **Tested** (`tests/test_hybrid_model.py`): shapes; float64 invariance under the 3
+  rotations with every parameter perturbed, both archs, both readouts, with and without the
+  context (a flip visible); one view not invariant for `hybrid` and invariant for
+  `hybrid_p4`; the orbits, the tied table, the block; the pinned and the analytic counts;
+  initialisation, seed, dropout, `feature_set`; the checks; the settings, deviations,
+  hyperparameters and a reload. The golden fixture with the four flags at their defaults
+  (`tests/test_paper_variants.py`); CPU split runs of `hybrid` (CLS, C5-C7 augmentation) and
+  `hybrid_p4` (context) in `tests/test_split_runs.py`.
 
 ## `rj23_model` (task 3.4)
 
@@ -2063,7 +2132,7 @@ the Lightning path is unchanged.
 
 | Module | What it does |
 |---|---|
-| `loop` | `fit(build, train, validation, schedule=, device=, seed=, run_dir=, identity=, resume=, on_validation=, progress=, score=) -> (task, FitResult)`: precision and flags (`DevicePolicy.apply`), `seed_everything`, `build()` on the CPU, the move, `make_optimizer()`; per step forward, `zero_grad(set_to_none=True)`, backward, `step()`, `Task.after_step(step)` (a scheduler step, a weight EMA update; plan row D3); a fresh fit validates first when the grid is `at_start`; after each step the grid, then the validation (`zero_grad`, every submodule's mode captured, `eval()`, `no_grad`, the modes restored), the policies (`Monitor`, `Horizon`, `EarlyStop.update` or the `StopRule` on the history), `last` if due (never at step 0); the loop ends when `steps_done >= horizon` or the stop rule stopped, after that (a resumed run whose rule had stopped trains nothing). `evaluate(task, sources)` (`inference_mode`) and `evaluate_kept(task, result, sources, keep)` (`stop` first, then the restored best). `FitResult`: `last_step`, `horizon`, `best_step`, `best_score`, the derived `best_epoch` / `last_epoch`, this fit's `validations`, `steps`, `fit_seconds`, the best weights, the run's `history` (with a stop rule). The monitored value is `loss_val` (the mean of the batch losses) unless a `score` of the validation's outputs is given, under the monitor's name (task 3.4b: `macro_f1_val`); `scalars.jsonl` and the progress line use that name. |
+| `loop` | `fit(build, train, validation, schedule=, device=, seed=, run_dir=, identity=, resume=, on_validation=, progress=, score=) -> (task, FitResult)`: precision and flags (`DevicePolicy.apply`), `seed_everything`, `build()` on the CPU, the move, `make_optimizer()`; per step forward, `zero_grad(set_to_none=True)`, backward, `step()`, `Task.after_step(step)` (a scheduler step, a weight EMA update; plan row D3); a fresh fit validates first when the grid is `at_start` (that validation's epoch is 0, as Lightning's `current_epoch`, not the `-1` of `(steps - 1) // batches_per_pass`); after each step the grid, then the validation (`zero_grad`, every submodule's mode captured, `eval()`, `no_grad`, the modes restored), the policies (`Monitor`, `Horizon`, `EarlyStop.update` or the `StopRule` on the history), `last` if due (never at step 0); the loop ends when `steps_done >= horizon` or the stop rule stopped, after that (a resumed run whose rule had stopped trains nothing). `evaluate(task, sources)` (`inference_mode`) and `evaluate_kept(task, result, sources, keep)` (`stop` first, then the restored best). `FitResult`: `last_step`, `horizon`, `best_step`, `best_score`, the derived `best_epoch` / `last_epoch`, this fit's `validations`, `steps`, `fit_seconds`, the best weights, the run's `history` (with a stop rule). The monitored value is `loss_val` (the mean of the batch losses) unless a `score` of the validation's outputs is given, under the monitor's name (task 3.4b: `macro_f1_val`); `scalars.jsonl` and the progress line use that name. |
 | `checkpoint` (4.1 part) | `capture_rng` / `restore_rng` (Python, NumPy's global, torch CPU, CUDA or MPS); `numerics_record`; `save_checkpoint` (atomic: a temporary file, then a rename); `load_checkpoint` (`weights_only`, `check_resumable`); `check_identity` (run id and split run; the attempt may differ) and `check_numerics` (precision and determinism); `BestWeights`, `ckpt/best.pt`'s record (weights of the best validation, not resumable), read by `load_best`. |
 | `policies` (4.1 part) | `EarlyStop.update(value, best, wait, mode)`: Lightning's `_evaluate_stopping_criteria` in its order and float32 arithmetic. |
 | `precision` | ADR 0010's `apply_fp32_precision(precision)` and `fp32_precision_record(device)`, moved from `training.runs` (which delegates). |
@@ -2104,8 +2173,10 @@ to the plain runner. Since task 3.4b's plain adapter it also runs the `rj23` sch
 (`training.rj23.run_rj23` against `run_plain`) on a synthetic 5-class `raw-alerts` layout:
 each scenario, the replication and the decision protocols, `rj23_bn_position:
 before_concat`, `rj23_keep: best`, `rj23_large_values: code`, a stop by patience and one at
-the cap, and a mid-run plain resume (then a resume of the finished run, which trains
-nothing). They agree bit for bit on the initial weights, every validation from step 0 (its
+the cap, a mid-run plain resume (then a resume of the finished run, which trains
+nothing), and plain resumes two validations, one validation and zero steps before a
+patience stop (the restored wait and best decide the same stop, from the best kept before
+the resume point). They agree bit for bit on the initial weights, every validation from step 0 (its
 macro-F1 and the weights), every training batch (each Lightning batch is the plain
 source's, and its labels are the classes drawn from `host_generator(seed, step, 10)`),
 `metrics.json` (also without each keep's checkpoint file), both keeps' predictions files
@@ -2487,6 +2558,9 @@ randomness, so no random stream). Modes `TTA_MODES = ("rot4", "d4", "d4_shift")`
   cyclic-pooling: its forward averages the 64-d **features** of the 4 rotations after fc1,
   before the head. The ConvNeXt rows pool their 4 rotations the same way, `p4` its 4
   orientations, `p4m` the 8 of D4 (`ARCH_SYMMETRY`: `c4`, `d4` or `none` for `single`).
+  The B9 hybrids are `c4`: `hybrid` averages the features of its 4 rotations, and
+  `hybrid_p4` pools its p4 orientations before the attention, with positional embeddings
+  tied across C4, so a rotation only permutes its tokens (neither is reflection-invariant).
   A TTA view goes through the whole model, so its extra views are averaged at the
   **logit** level, outside it (`combine_view_logits`: the mean of the views' logits; the
   caller applies the softmax). Re-feeding the rotations to a C4-pooled model would only
@@ -2495,7 +2569,7 @@ randomness, so no random stream). Modes `TTA_MODES = ("rot4", "d4", "d4_shift")`
 
   | Model symmetry | `rot4` | `d4` | `d4_shift` |
   |---|---|---|---|
-  | `c4` (rot4, p4, ConvNeXt) | 1 view | identity, flip (2) | 2 × 9 offsets (18) |
+  | `c4` (rot4, p4, ConvNeXt, hybrid, hybrid_p4) | 1 view | identity, flip (2) | 2 × 9 offsets (18) |
   | `d4` (p4m) | 1 view | 1 view | 1 × 9 offsets (9) |
   | `none` (single) | 1 view | the 8 dihedral views | 8 × 9 offsets (72) |
 
@@ -2531,7 +2605,11 @@ randomness, so no random stream). Modes `TTA_MODES = ("rot4", "d4", "d4_shift")`
   `PaperNet`). A Lightning checkpoint holds no run id, so what it holds is checked: its
   `global_step` is the run's `best_step`, its `augment_seed` the seed, and each saved
   hyperparameter the config's value (a copy from another run of the same config, seed and
-  best step would pass).
+  best step would pass). A plan row D3 run with `checkpoint_selection: final` is scored on
+  its last weights: `ckpt/last.pt` (run id and `last_step` checked) or
+  `checkpoints/last.ckpt` (its `global_step` checked against `last_step`); a run with
+  `ema_decay` gets its `PaperNet.ema`, so the `eval()` forward runs the EMA weights, as
+  the run did.
 - `evaluation_parts`: the part's evaluation stamps from `paper_crops` and
   `protocol_splits` (pool index for a fold, Validation index for the screen), and Test
   only with `--test`; `shifted_images` re-crops them for `d4_shift` from the memory-mapped

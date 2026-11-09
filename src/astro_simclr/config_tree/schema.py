@@ -253,14 +253,22 @@ class PaperStampClassifier:
     KINDS: ClassVar = ("paper_stamp_classifier",)
     COMMAND: ClassVar = "train-supervised"
     kind: str = _flat("supervised_model", "paper_stamp_classifier")
-    #: ``rot4`` (faithful), ``single``, ``p4``, ``p4m``, ``convnext_atto``, ``convnext_pico``
-    #: (``config.PAPER_ARCHS``; the ConvNeXt ones take ``data.image_size: 63``, ADR 0022).
+    #: ``rot4`` (faithful), ``single``, ``p4``, ``p4m``, ``convnext_atto``, ``convnext_pico``,
+    #: ``hybrid``, ``hybrid_p4`` (``config.PAPER_ARCHS``; the ConvNeXt ones take
+    #: ``data.image_size: 63``, ADR 0022; the hybrids are plan row B9, ``hybrid_model``).
     arch: str = _flat("paper_arch")
     #: ``convnext_*`` only: the backbone's initial weights, ``none`` (from scratch) or
     #: ``zoobot`` (``convnext_pico`` only; ``config.BACKBONE_WEIGHTS_CHOICES``; ADR 0022).
     backbone_weights: str = _flat("backbone_weights")
-    #: ``p4`` / ``p4m`` only: fields of conv1-conv2; null is ``32 // |G|``.
+    #: ``p4`` / ``p4m`` / ``hybrid_p4`` only: fields of conv1-conv2; null is ``32 // |G|``.
     group_fields: int | None = _flat("group_fields")
+    #: ``hybrid`` / ``hybrid_p4`` only (plan row B9): the attention blocks' token width (a
+    #: multiple of ``hybrid_heads``), their number, their heads, and the readout of the
+    #: tokens, ``mean`` or ``cls`` (``config.HYBRID_FLAGS``).
+    hybrid_dim: int = _flat("hybrid_dim")
+    hybrid_depth: int = _flat("hybrid_depth")
+    hybrid_heads: int = _flat("hybrid_heads")
+    hybrid_readout: str = _flat("hybrid_readout")
     #: ``none`` or ``avgpool63`` (``config.CONTEXTS``).
     context: str = _flat("context")
     #: The alert features the head reads: ``all`` (faithful), ``position``, ``none``

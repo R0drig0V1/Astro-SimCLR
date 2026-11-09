@@ -450,6 +450,10 @@ def build_paper_task(
         dropout_active=settings.dropout_active,
         drop_rate=settings.drop_rate,
         feature_set=settings.feature_set,
+        hybrid_dim=settings.hybrid_dim,
+        hybrid_depth=settings.hybrid_depth,
+        hybrid_heads=settings.hybrid_heads,
+        hybrid_readout=settings.hybrid_readout,
     )
     load_backbone(settings, model, info, download=download)
     # After the backbone weights, so the EMA starts from them (plan row D3).

@@ -64,6 +64,18 @@ NESTED_CASES: Final[Mapping[str, tuple[str, tuple[str, ...]]]] = {
         "carrasco2021",
         ("model.arch=convnext_pico", "data.image_size=63", "model.backbone_weights=zoobot"),
     ),
+    "carrasco2021+hybrid": ("carrasco2021", ("model.arch=hybrid",)),
+    "carrasco2021+hybrid-p4-wide-cls": (
+        "carrasco2021",
+        (
+            "model.arch=hybrid_p4",
+            "model.group_fields=16",
+            "model.hybrid_dim=128",
+            "model.hybrid_depth=4",
+            "model.hybrid_heads=8",
+            "model.hybrid_readout=cls",
+        ),
+    ),
     "pretrain-legacy": ("pretrain-legacy", ()),
     "train-supervised-legacy": ("train-supervised-legacy", ()),
 }

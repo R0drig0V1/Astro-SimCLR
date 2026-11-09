@@ -112,6 +112,12 @@ _CARRASCO2021: Final[Mapping[str, object]] = {
     # The ConvNeXt backbone's initial weights (plan row B8; ADR 0022): listed so that a
     # Zoobot-initialised run is recorded as a deviation.
     "backbone_weights": "none",
+    # The conv-attention hybrids' shape (plan row B9): listed so that a hybrid run with
+    # another width, depth, head count or readout is recorded as a deviation.
+    "hybrid_dim": 64,
+    "hybrid_depth": 2,
+    "hybrid_heads": 4,
+    "hybrid_readout": "mean",
     # The features the head reads (a 2.5 diagnostic; ADR 0016): all 23. Listed so that a
     # position-only or images-only run is recorded as a deviation.
     "feature_set": "all",

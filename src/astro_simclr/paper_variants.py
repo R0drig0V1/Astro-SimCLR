@@ -20,8 +20,14 @@ arch        Trunk                                                  Parameters  M
 values on the whole 63x63 stamp instead of the crop, ``convnext_atto`` and
 ``convnext_pico`` (:class:`~astro_simclr.convnext_model.ConvNeXtStampClassifier`, ADR
 0022): timm backbones, 4-rotation averaged, with the same head; 3.4 M and 8.6 M parameters.
-:func:`paper_input_side` gives each ``arch``'s input side. :class:`GroupStampClassifier` is
-the G-CNN: the paper's geometry, 21 zero-padded to 27, a 4x4 valid lifting convolution
+:func:`paper_input_side` gives each ``arch``'s input side. Plan row B9 adds the
+conv-attention hybrids ``hybrid`` (the paper's trunk, 4 rotations) and ``hybrid_p4`` (the
+p4 trunk, single pass) on the 21x21 crop
+(:class:`~astro_simclr.hybrid_model.HybridStampClassifier`): 2 pre-norm transformer
+blocks over the trunk's 6x6 grid, then the same head; their shape is set by
+``hybrid_dim``, ``hybrid_depth``, ``hybrid_heads`` and ``hybrid_readout``.
+:class:`GroupStampClassifier` is the G-CNN: the paper's geometry, 21 zero-padded to
+27, a 4x4 valid lifting convolution
 (-> 24), a 5x5 "same" group convolution, 2x2 max-pool (-> 12), three 5x5 group
 convolutions, 2x2 max-pool (-> 6); fc1 becomes a 6x6 group convolution to 64 fields
 (:class:`~astro_simclr.group_conv.GroupReadout`), ReLU and the dropout layer per
@@ -57,7 +63,17 @@ import torch.nn.functional as F
 from torch import nn
 from torch.utils.flop_counter import FlopCounterMode
 
-from astro_simclr.config import CONTEXTS, CONVNEXT_ARCHS, PAPER_ARCHS
+from astro_simclr.config import (
+    CONTEXTS,
+    CONVNEXT_ARCHS,
+    DEFAULT_HYBRID_DEPTH,
+    DEFAULT_HYBRID_DIM,
+    DEFAULT_HYBRID_HEADS,
+    DEFAULT_HYBRID_READOUT,
+    HYBRID_ARCHS,
+    HYBRID_FLAGS,
+    PAPER_ARCHS,
+)
 from astro_simclr.data.schema import STAMP_SHAPE
 from astro_simclr.feature_sets import feature_columns
 from astro_simclr.group_conv import (
@@ -317,6 +333,10 @@ def build_paper_model(
     drop_rate: float = PAPER_DROP_RATE,
     n_classes: int = N_CLASSES,
     feature_set: str = "all",
+    hybrid_dim: int = DEFAULT_HYBRID_DIM,
+    hybrid_depth: int = DEFAULT_HYBRID_DEPTH,
+    hybrid_heads: int = DEFAULT_HYBRID_HEADS,
+    hybrid_readout: str = DEFAULT_HYBRID_READOUT,
 ) -> nn.Module:
     """The paper model or one of its 2.5 variants (module docstring), with ``n_classes`` logits.
 
@@ -327,19 +347,50 @@ def build_paper_model(
     ``arch``; ``none`` builds the ``with_features=False`` model. The ConvNeXt ``arch``
     values take the whole stamp (:func:`paper_input_side`) and no context; their backbone
     starts from timm's initialisation (pretrained weights are loaded afterwards, by
-    ``convnext_model.load_backbone_weights``).
+    ``convnext_model.load_backbone_weights``). The ``hybrid_*`` arguments shape the
+    attention part of the hybrid ``arch`` values (plan row B9; ``hybrid_model``);
+    ``group_fields`` also applies to ``hybrid_p4``.
 
     Raises:
         ValueError: for an ``arch`` not in :data:`PAPER_ARCHS`, a ``context`` not in
             :data:`CONTEXTS` (or not ``none`` for a ConvNeXt), ``group_fields`` set for an
-            ``arch`` that is not a G-CNN, an unknown ``feature_set`` (or ``position``
-            without features), or the constructors' errors.
+            ``arch`` that is not a G-CNN nor ``hybrid_p4``, a ``hybrid_*`` argument changed
+            for an ``arch`` that is not a hybrid, an unknown ``feature_set`` (or
+            ``position`` without features), or the constructors' errors.
     """
     if arch not in PAPER_ARCHS:
         raise ValueError(f"paper_arch must be one of {', '.join(PAPER_ARCHS)}, got {arch!r}")
     in_channels = paper_in_channels(context)
-    if group_fields is not None and arch not in GROUPS:
-        raise ValueError(f"group_fields applies to {' and '.join(GROUPS)} only, not {arch!r}")
+    if group_fields is not None and arch not in (*GROUPS, "hybrid_p4"):
+        msg = f"group_fields applies to {', '.join(GROUPS)} and hybrid_p4 only, not {arch!r}"
+        raise ValueError(msg)
+    hybrid = {
+        "hybrid_dim": hybrid_dim,
+        "hybrid_depth": hybrid_depth,
+        "hybrid_heads": hybrid_heads,
+        "hybrid_readout": hybrid_readout,
+    }
+    if arch in HYBRID_ARCHS:
+        # Imported here: hybrid_model imports PaperHead from this module.
+        from astro_simclr.hybrid_model import HybridStampClassifier
+
+        return HybridStampClassifier(
+            arch,
+            dim=hybrid_dim,
+            depth=hybrid_depth,
+            heads=hybrid_heads,
+            readout=hybrid_readout,
+            group_fields=group_fields,
+            with_features=with_features,
+            dropout_active=dropout_active,
+            drop_rate=drop_rate,
+            in_channels=in_channels,
+            n_classes=n_classes,
+            feature_set=feature_set,
+        )
+    changed = [key for key, value in hybrid.items() if value != HYBRID_FLAGS[key]]
+    if changed:
+        raise ValueError(f"{', '.join(changed)} apply to the hybrids only, not {arch!r}")
     if arch in CONVNEXT_ARCHS:
         if context != "none":
             msg = f"{arch} takes the whole 63x63 stamp: context must be none, got {context!r}"
@@ -466,5 +517,26 @@ VARIANTS: Final[Mapping[str, Variant]] = {
         "B8",
         {"paper_arch": "convnext_pico", "image_size": 63, "backbone_weights": "zoobot"},
         "ConvNeXt-pico at the native 63 px, 4 rotations, from the Zoobot weights",
+    ),
+    # Plan row B9: conv-attention hybrids on the 21x21 crop (hybrid_model).
+    "hybrid": Variant(
+        "B9",
+        {"paper_arch": "hybrid"},
+        "the paper's trunk, 2 attention blocks (dim 64) over its 6x6 grid, 4 rotations",
+    ),
+    "hybrid-cls": Variant(
+        "B9",
+        {"paper_arch": "hybrid", "hybrid_readout": "cls"},
+        "the hybrid with a CLS-token readout instead of the token mean",
+    ),
+    "hybrid-wide": Variant(
+        "B9",
+        {"paper_arch": "hybrid", "hybrid_dim": 128, "hybrid_depth": 4},
+        "the hybrid at dim 128 and 4 blocks (about CCT-4's attention part)",
+    ),
+    "hybrid-p4": Variant(
+        "B9",
+        {"paper_arch": "hybrid_p4"},
+        "the p4 trunk, orientation-pooled, 2 attention blocks with C4-tied positions, 1 pass",
     ),
 }

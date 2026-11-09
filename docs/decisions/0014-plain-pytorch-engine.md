@@ -442,7 +442,9 @@ paper cases pass as before; `numerics_epoch` stays 1):
 
 1. **`ValidationGrid.at_start`**: a fresh fit also validates its initial weights, before
    the first step (RJ23's "iteration 0 included"). `due` is unchanged; `last.pt` is never
-   written at step 0 (there is nothing to resume).
+   written at step 0 (there is nothing to resume). Its derived epoch is 0 (Lightning's
+   `current_epoch` before the first step), in `scalars.jsonl`, the progress line and
+   `best_epoch`; `last_epoch` of a fit with no step stays `-1`.
 2. **`fit(score=...)`**: the monitored value is a function of the validation's
    `EvalOutput`s under the monitor's name (`macro_f1_val`, `max`), instead of the mean of
    the batch losses. Without a score the monitor must be `loss_val`, as before.

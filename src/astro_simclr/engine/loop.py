@@ -23,7 +23,8 @@ validates it on one evaluation source, following ADR 0014's checklist item by it
   horizon step extends the run. No validation at an epoch boundary, none forced after the
   final step, none before training unless the grid validates at start (a fresh fit's
   initial weights, step 0: the ``rj23`` schedule). The epoch is derived, never counted:
-  ``(steps - 1) // batches_per_pass``.
+  ``(steps - 1) // batches_per_pass``, and 0 for a validation at step 0 (Lightning's
+  ``current_epoch`` before the first step).
 - **C6:** ``train_step(batch, step=steps_done)`` and ``batch(steps_done)``: every per-step
   draw is keyed by the steps done before the step.
 - **C7:** the monitored value is ``float(mean_of_batch_losses(...))`` (``loss_val``), or a
@@ -117,7 +118,9 @@ class Validation:
 
     Attributes:
         steps_done: optimizer steps done when it ran (Lightning's ``global_step``).
-        epoch: the pass running then, ``(steps_done - 1) // batches_per_pass``.
+        epoch: the pass running then, ``(steps_done - 1) // batches_per_pass``; 0 for
+            the step-0 validation (the first pass, about to run; Lightning's
+            ``current_epoch`` there).
         value: the monitored value (a Python float of the float32 mean).
         improved: whether it was a new best.
         horizon: the horizon after the update.
@@ -162,10 +165,10 @@ class FitResult:
 
     @property
     def best_epoch(self) -> int | None:
-        """The pass running at the best validation, or ``None``."""
+        """The pass running at the best validation (0 for a step-0 best), or ``None``."""
         if self.best_step is None:
             return None
-        return _epoch(self.best_step, self.batches_per_pass)
+        return _validation_epoch(self.best_step, self.batches_per_pass)
 
     @property
     def last_epoch(self) -> int:
@@ -195,6 +198,12 @@ class Evaluation:
 
 def _epoch(steps: int, batches_per_pass: int) -> int:
     return (steps - 1) // batches_per_pass
+
+
+def _validation_epoch(steps: int, batches_per_pass: int) -> int:
+    # A validation at step 0 (ValidationGrid.at_start) sees the first pass about to run:
+    # epoch 0, as Lightning's current_epoch, not the -1 of "the pass of the last step".
+    return max(0, _epoch(steps, batches_per_pass))
 
 
 def _versions() -> dict[str, str | None]:
@@ -391,7 +400,7 @@ class _Fit:
         self.stopped_early = stop
         record = Validation(
             steps_done=self.steps_done,
-            epoch=_epoch(self.steps_done, self.train.batches_per_pass),
+            epoch=_validation_epoch(self.steps_done, self.train.batches_per_pass),
             value=value,
             improved=improved,
             horizon=self.policy.horizon,
