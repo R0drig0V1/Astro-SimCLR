@@ -32,7 +32,7 @@ splits:                         # optional; without it, the file's own Train/Val
 machine:
   class: cuda-nvidia-geforce-gtx-1050   # the run id's machine class
   extra: cu126                  # `uv sync --extra` on that machine (ADR 0001)
-engine: lightning               # optional: lightning (the default) or plain
+engine: plain                   # optional: plain (the default since task 4.8)
 scratch: false                  # true: a dirty tree is allowed (never a result)
 ```
 
@@ -44,20 +44,27 @@ scratch: false                  # true: a dirty tree is allowed (never a result)
   order do not change it. The registry's `runs compare` takes it (A2).
 - Each cell (`<arm>/s<seed>/<f<fold>|screen|all>`) is one run id (ADR 0015). The seeds of
   one arm share its config hash.
-- `engine` picks the training loop of every cell: `lightning` (`run_command`) or `plain`
-  (`tasks.plain.run_plain`, task 4.6). As with `runtime.engine` of a nested config, it is
-  part of the run id but not of the config hash, so the same arms on both engines are two
-  sets of runs that `runs compare` refuses to mix unless told to. The plain engine trains
-  only `train-supervised` of `paper_stamp_classifier` on the `carrasco2021` schedule, and
-  has no `limit_train_batches` / `limit_val_batches` (a short run sets `max_steps`); a
-  spec outside that fails when its first cell starts.
+- `engine` is the training loop of every cell: `plain` (`tasks.plain.run_plain`), the
+  default and the only one that trains since task 4.8, which removed Lightning. As with
+  `runtime.engine` of a nested config, it is part of the run id but not of the config
+  hash, so the same arms on two engines are two sets of runs that `runs compare` refuses
+  to mix unless told to. The plain engine trains `train-supervised` of
+  `paper_stamp_classifier` on the `carrasco2021` schedule and RJ23's classifiers on `rj23`,
+  and has no `limit_train_batches` / `limit_val_batches` (a short run sets `max_steps`,
+  and `horizon_increment: 0` keeps it short); a spec outside that fails when its first cell
+  starts.
+- `engine: lightning` still parses, so that `runs compare` resolves the run ids of the
+  specs that trained on Lightning, but `queue submit` and `spec run-cell` refuse it
+  (`runs.spec.check_trainable`), naming the git tag `lightning-final`: such a spec is
+  re-run from a checkout of that tag. A Lightning spec written before task 4.8 without an
+  `engine` key now reads as `plain` (another set of run ids): add `engine: lightning` to it
+  to compare its stored runs.
 - **rj23** (an arm whose settings resolve to `schedule: rj23`, for example `preset:
   rj23-lowres`, on a `raw-alerts` layout): `splits.file` is the layout's object splits
   (`make-object-splits`), with `screen: true` for a decision run or `whole: true` for a
   replication on the whole Train (cells `<arm>/s<seed>/screen` or `/whole`), as `--screen`
   or no `--screen` on the command line; CV folds are refused. The alert table is the
-  layout's own. It needs `engine: plain`: the queue does not drive Lightning's
-  `training.rj23.run_rj23`.
+  layout's own. It needs `engine: plain` (the default).
 
 ## The GPU machines
 
@@ -158,7 +165,8 @@ uv run astro-simclr queue sync --host gpu-5090 --dest ~/runs/rtx5090
 - `--remote-cli` is the runner's `astro-simclr` relative to the remote home (default
   `Astro-SimCLR/.venv/bin/astro-simclr`).
 - `sync` copies the run directories without checkpoints, then the checkpoints the
-  retention policy keeps (`best` of a finished `pretrain`), then the accepted specs into
+  retention policy keeps (`best` of a finished `pretrain`, a Lightning run), then the
+  accepted specs into
   `~/.astro-simclr/specs/`, and runs `astro-simclr runs reindex <dest>`. It never copies a
   SQLite file. Rerun it after a dropped connection: rsync resumes (`--partial`).
 
@@ -171,21 +179,20 @@ then marked `cancelled` in the queue and its manifest). Each job's output is in 
 | Event | What the queue does |
 |-------|---------------------|
 | A job exits non-zero (an exception) | `failed`, not retried; resubmit for a new attempt |
-| A job killed by a signal (`kill -9`, the OOM killer) | requeued, resumes from `checkpoints/last.ckpt`; `failed` after 5 requeues |
+| A job killed by a signal (`kill -9`, the OOM killer) | requeued, resumes from `ckpt/last.pt`; `failed` after 5 requeues |
 | The worker killed (`kill -9`) | under systemd the unit's other processes die with it (the job too); in tmux the job keeps running as an orphan. When the lease (120 s) expires, the next worker (systemd restarts it after 10 s) kills the orphan if there is one, requeues the job and resumes it |
 | The worker stopped (`systemctl --user stop`, SIGTERM) | its jobs get SIGTERM, are requeued at once (not counted) and resume when a worker starts |
 | Two processes on one run directory | impossible: `spec run-cell` holds `DIR/.lock`; the second exits 75 and is retried later |
 | ssh drops during `submit` or `sync` | the command fails with the ssh error; nothing half-done remains (the enqueue is one transaction; rsync resumes); run it again |
 | `wsl --shutdown`, a reboot | the queue file is durable (`synchronous=FULL`); running jobs come back as expired leases from another boot and resume |
 
-A resumed run continues from its last checkpoint (`checkpoints/last.ckpt` on Lightning,
-`ckpt/last.pt` on the plain engine; every `checkpoint_every_n_steps`, 1000 by default): up
-to that many steps are recomputed. The plain engine's checkpoints hold the RNG streams,
-so its resumes are exact. A
-`carrasco2021` resume is exact; an `epochs` resume is not bit-identical (Lightning
-checkpoints hold no RNG state; ADR 0014). A crash *while* `last.ckpt` is being written can
-leave it truncated; the resumed job then fails and needs a new attempt (rare: the write
-takes well under a second).
+A resumed run continues from its last checkpoint, `ckpt/last.pt` (every
+`checkpoint_every_n_steps`, 1000 by default): up to that many steps are recomputed. The
+plain engine's checkpoints hold every RNG stream, so its resumes are exact (ADR 0014). The
+checkpoint is written atomically (a temporary file, then a rename), so a crash *while* it
+is being written leaves the previous one. (Lightning's `checkpoints/last.ckpt`, written
+until task 4.8, held no RNG state, and a crash while it was written could leave it
+truncated.)
 
 ## Manual survival checklist
 
@@ -198,7 +205,8 @@ format: astro-simclr-experiment-spec
 version: 1
 name: survival
 command: train-supervised
-settings: {max_epochs: 30, checkpoint_every_n_steps: 50}
+preset: carrasco2021
+settings: {max_steps: 5000, horizon_increment: 0, checkpoint_every_n_steps: 50}
 arms: {baseline: {}}
 seeds: [0, 1]
 machine: {class: cuda-nvidia-geforce-gtx-1050, extra: cu126}
@@ -215,11 +223,12 @@ scratch: true
    systemd older than 252), or `kill -9` the worker's pid in tmux. Expected: systemd
    restarts the worker within 10 s (and stops the unit's leftover job process); in tmux
    the job keeps running as an orphan. After the lease (≤ 120 s) the new worker kills the
-   orphan if it still runs, the job goes `queued` then `running` with `resumes 1`, and its
-   log shows a resume from `checkpoints/last.ckpt`. In tmux, start the new worker with
+   orphan if it still runs, the job goes `queued` then `running` with `resumes 1`, and the
+   run continues from `ckpt/last.pt` (the finished run's `metrics.json` names it in
+   `resumed_from`). In tmux, start the new worker with
    `queue tmux` (exact session name).
 4. **Job `kill -9`.** `kill -9` the `spec run-cell` process. Expected: requeued at once
-   (`resumes` +1), resumed from `last.ckpt`.
+   (`resumes` +1), resumed from `ckpt/last.pt`.
 5. **`wsl --shutdown`** (the 1050; on the 5090, skip to the reboot). From Windows, `wsl --shutdown` while a job runs, then start the
    distribution again (open a WSL terminal, or the scheduled task below). Expected: with
    systemd and lingering, the worker starts by itself; the job, an expired lease of

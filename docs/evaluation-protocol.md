@@ -1,8 +1,9 @@
 <!-- The phase-2 evaluation protocol (task 2.3 of docs/phases/02-stamp-classifier.md; the CV
      training path of task 2.5-infra): the rules, the power note and how to use the tools.
      Code: src/astro_simclr/protocol/ (groups, splits, audit, split_runs, compare), the --splits path of
-     src/astro_simclr/experiments.py and training/device_data.py,
-     src/astro_simclr/reference.py (CD21), the metrics JSON of src/astro_simclr/experiments.py.
+     src/astro_simclr/tasks/plain.py, tasks/paper.py and training/tensor_splits.py,
+     src/astro_simclr/reference.py (CD21), the metrics JSON of src/astro_simclr/tasks/plain.py
+     and tasks/results.py (experiments.py and training/device_data.py until task 4.8).
      Design choices: docs/decisions/0004-evaluation-protocol.md. The last section, "Phase 3
      benchmark metrics" (task 3.2), documents src/astro_simclr/protocol/{alerts,grouping,
      object_splits,benchmark_metrics,bench_report}.py; its choices are in ADR 0008. The
@@ -48,9 +49,11 @@ Test (about 20 % of the Validation and Test Bogus; see "Leakage" below).
 
 ## What every run reports
 
-`metrics.json` of every classifier run (`train-supervised`, `linear-eval`, `fine-tune`)
-holds, for the scored weights (the checkpoint selected on validation, unless the run sets
-`checkpoint_selection: final`; see "Which weights a run scores" below):
+`metrics.json` of every classifier run (`train-supervised`; the `linear-eval` and
+`fine-tune` runs, which train only at the git tag `lightning-final` since task 4.8, wrote
+the same keys) holds, for the scored weights (the checkpoint selected on validation,
+unless the run sets `checkpoint_selection: final`; see "Which weights a run scores"
+below):
 
 | Key | Content |
 |---|---|
@@ -59,7 +62,7 @@ holds, for the scored weights (the checkpoint selected on validation, unless the
 | `evaluation.{val,test}` | `accuracy`, `balanced_accuracy`, `macro_f1`, `recall_per_class` (by class name; `null` for a class with no stamp), the normalised and count confusion matrices, and `ece` (secondary; below) |
 | `selection` | paper runs: `checkpoint_selection`, `scored_step`, `ema`, `ece_bins` |
 | `predictions.{val,test}` | the per-stamp predictions file (`predictions_val.npz`, `predictions_test.npz`), the evaluated set and its size |
-| `machine` | `device` (the one Lightning chose), `gpu` (the CUDA device name; `null` elsewhere), `torch`, `cuda`, `cudnn`, `platform`, `processor`, `python` |
+| `machine` | `device` (the training device), `gpu` (the CUDA device name; `null` elsewhere), `torch`, `cuda`, `cudnn`, `platform`, `processor`, `python`, `engine` (`plain`; `lightning` for the runs written until task 4.8, absent and read as `lightning` before task A1) |
 
 The predictions files hold `probabilities` (float32 softmax, N × 5, columns in label order),
 `labels` and `index` (the stamp's position in the evaluated set). They are plain `.npz`
@@ -302,8 +305,9 @@ are one part of the stored splits:
   `evaluation.{selection,evaluation}` (the usual per-part block),
   `predictions.evaluation` → `predictions_evaluation.npz`, and
   `confusion_matrix_{selection,evaluation}.png`. There is no `val_acc_best` or
-  `test_acc_at_best`, so a split run can never enter the CD21 gate. The Lightning logs call
-  the evaluation part `test` (it is the data module's `Test` role).
+  `test_acc_at_best`, so a split run can never enter the CD21 gate. The logs of the
+  Lightning runs (until task 4.8) call the evaluation part `test` (it was the data module's
+  `Test` role).
 - Measured on the Mac M4 CPU (fold 0 of `red`, `--accelerator cpu --set max_steps=200
   horizon_increment=0`; `horizon_increment=0` keeps a short run short): 261 s of wall time
   in total. Of these, 217 s are the fit loop, 1.08 s per step with a 500-stamp selection
@@ -594,8 +598,9 @@ F1 is `2 TP / (2 TP + FP + FN)`. The zero-division rule:
 | predicted, no true sample | 0 | 0 (0/0 → 0) | 0 | **yes**: its false positives are real errors |
 | absent from labels and predictions | `None` | `None` | `None` | no |
 
-This is the rule of the phase-2 macro-F1 (`training.metrics.macro_f1`, torchmetrics), and a
-test checks that the two agree. A confusion row with no true sample is all zeros.
+This is the rule of the phase-2 macro-F1 (`training.metrics.macro_f1`, torchmetrics'
+computation in plain torch since task 4.8), and a test checks that the two agree. A
+confusion row with no true sample is all zeros.
 
 **Prior-reweighted macro-F1.** Precision depends on the class prevalence: a rare class's
 false positives come from the large classes. So the report also gives macro precision and
