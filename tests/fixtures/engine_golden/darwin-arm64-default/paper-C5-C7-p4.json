@@ -1,0 +1,481 @@
+{
+ "case": "paper-C5-C7-p4",
+ "format": 1,
+ "initial": "57201174e33ee37b55a0de2248464cabb1708a11e130e9bc4d4faa18f46c7f1a",
+ "metrics": {
+  "best_epoch": 8,
+  "best_step": 18,
+  "command": "train-supervised",
+  "config": {
+   "accelerator": "cpu",
+   "adam_betas": "code",
+   "aug_feature_jitter": 0.1,
+   "aug_min_r2": 0.0,
+   "aug_noise": 1.0,
+   "augmentation": "center_crop",
+   "backbone_weights": "none",
+   "batch_size": 4,
+   "beta_loss": 0.5,
+   "check_finite": true,
+   "checkpoint_every_n_steps": 3,
+   "checkpoint_selection": "best_val_loss",
+   "context": "none",
+   "dataset": "td_ztf_stamp_17_06_20_red-002",
+   "deterministic": true,
+   "devices": 1,
+   "divergence_threshold": null,
+   "drop_rate": 0.2,
+   "dropout_active": false,
+   "early_stopping": false,
+   "ema_decay": null,
+   "ema_warmup": false,
+   "encoder_name": "resnet18",
+   "eval_batch_size": 64,
+   "exclude_leaked_train": true,
+   "feature_set": "all",
+   "fine_tune_lr_factor": 0.2,
+   "flux_k_max": 1.5,
+   "flux_k_min": 0.5,
+   "flux_rescale": 0.5,
+   "fp32_precision": "ieee",
+   "group_fields": null,
+   "horizon_increment": 10,
+   "hybrid_depth": 2,
+   "hybrid_dim": 64,
+   "hybrid_heads": 4,
+   "hybrid_readout": "mean",
+   "image_size": 21,
+   "lars_legacy_trust_ratio": true,
+   "limit_train_batches": null,
+   "limit_val_batches": null,
+   "lr": 0.03,
+   "lr_schedule": "constant",
+   "lr_warmup_steps": 0,
+   "max_epochs": 220,
+   "max_steps": 10,
+   "min_delta": 0.001,
+   "monitor": "loss_val",
+   "nan_approximation": true,
+   "nt_xent_legacy_denominator": true,
+   "num_workers": 0,
+   "optimizer": "Adam",
+   "paper_arch": "p4",
+   "paper_input": "float32",
+   "patience": 40,
+   "pretrained": null,
+   "progress_bar_refresh_rate": 50,
+   "projection_dim": 300,
+   "rj23_bn_position": "after_concat",
+   "rj23_keep": "stop",
+   "rj23_large_values": "paper",
+   "rj23_scenario": "full",
+   "rot90_augment": false,
+   "schedule": "carrasco2021",
+   "seed": 0,
+   "supervised_model": "paper_stamp_classifier",
+   "synthetic_bogus": 0.25,
+   "temperature": 0.17910250439416514,
+   "val_every_n_steps": 3,
+   "with_features": true
+  },
+  "data": {
+   "class_counts": {
+    "Test": [
+     2,
+     2,
+     2,
+     2,
+     2
+    ],
+    "Train": [
+     2,
+     2,
+     2,
+     2,
+     2
+    ],
+    "Validation": [
+     2,
+     2,
+     2,
+     2,
+     2
+    ]
+   },
+   "kind": "classifier",
+   "path": "td_ztf_stamp_17_06_20_red-002",
+   "source": {
+    "name": "td_ztf_stamp_17_06_20_red-002.pkl",
+    "sha256": "32b81681746bde71e0229e28dd2445444ae9d5049a447c7bbe65e934e25a94e4",
+    "size_bytes": 1397790
+   }
+  },
+  "evaluation": {
+   "test": {
+    "accuracy": 0.3,
+    "balanced_accuracy": 0.3,
+    "confusion_counts": [
+     [
+      1,
+      0,
+      0,
+      0,
+      1
+     ],
+     [
+      1,
+      0,
+      1,
+      0,
+      0
+     ],
+     [
+      1,
+      0,
+      0,
+      1,
+      0
+     ],
+     [
+      0,
+      0,
+      1,
+      0,
+      1
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      2
+     ]
+    ],
+    "confusion_matrix": [
+     [
+      0.5,
+      0.0,
+      0.0,
+      0.0,
+      0.5
+     ],
+     [
+      0.5,
+      0.0,
+      0.5,
+      0.0,
+      0.0
+     ],
+     [
+      0.5,
+      0.0,
+      0.0,
+      0.5,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.5,
+      0.0,
+      0.5
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "ece": 0.28378253877162934,
+    "macro_f1": 0.2133333384990692,
+    "recall_per_class": {
+     "AGN": 0.5,
+     "Asteroid": 0.0,
+     "Bogus": 1.0,
+     "SN": 0.0,
+     "VS": 0.0
+    }
+   },
+   "val": {
+    "accuracy": 0.5,
+    "balanced_accuracy": 0.5,
+    "confusion_counts": [
+     [
+      2,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      1,
+      0,
+      0,
+      1
+     ],
+     [
+      0,
+      0,
+      1,
+      0,
+      1
+     ],
+     [
+      2,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      1,
+      0,
+      0,
+      1
+     ]
+    ],
+    "confusion_matrix": [
+     [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.5,
+      0.0,
+      0.0,
+      0.5
+     ],
+     [
+      0.0,
+      0.0,
+      0.5,
+      0.0,
+      0.5
+     ],
+     [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.5,
+      0.0,
+      0.0,
+      0.5
+     ]
+    ],
+    "ece": 0.32951498925685885,
+    "macro_f1": 0.4466666579246521,
+    "recall_per_class": {
+     "AGN": 1.0,
+     "Asteroid": 0.0,
+     "Bogus": 0.5,
+     "SN": 0.5,
+     "VS": 0.5
+    }
+   }
+  },
+  "figures": [
+   "confusion_matrix_val.png",
+   "confusion_matrix_test.png"
+  ],
+  "horizon": 28,
+  "labels": [
+   "AGN",
+   "SN",
+   "VS",
+   "Asteroid",
+   "Bogus"
+  ],
+  "last_epoch": 13,
+  "last_step": 28,
+  "monitor": "loss_val",
+  "monitor_best": 1.180144190788269,
+  "paper_data": {
+   "class_augment": {
+    "count": {
+     "AGN": 2,
+     "Asteroid": 2,
+     "Bogus": 2,
+     "SN": 2,
+     "VS": 1
+    },
+    "excluded": {
+     "AGN": 0.0,
+     "Asteroid": 0.0,
+     "Bogus": 0.0,
+     "SN": 0.0,
+     "VS": 0.0
+    },
+    "min_r2": 0.0
+   },
+   "crop": 21,
+   "excluded_train": [
+    3
+   ],
+   "flux_rescale": {
+    "skipped": {
+     "AGN": 0.0,
+     "Asteroid": 0.0,
+     "Bogus": 1.0,
+     "SN": 0.0,
+     "VS": 1.0
+    }
+   },
+   "input": "float32",
+   "n_tiled": 10,
+   "n_train": 9,
+   "nan_approximation": true
+  },
+  "predictions": {
+   "test": {
+    "file": "predictions_test.npz",
+    "n": 10,
+    "split": "Test"
+   },
+   "val": {
+    "file": "predictions_val.npz",
+    "n": 10,
+    "split": "Validation"
+   }
+  },
+  "preset": {
+   "deviations": {
+    "aug_feature_jitter": {
+     "preset": 0.0,
+     "value": 0.1
+    },
+    "aug_min_r2": {
+     "preset": 0.5,
+     "value": 0.0
+    },
+    "aug_noise": {
+     "preset": 0.0,
+     "value": 1.0
+    },
+    "batch_size": {
+     "preset": 64,
+     "value": 4
+    },
+    "drop_rate": {
+     "preset": 0.5,
+     "value": 0.2
+    },
+    "flux_rescale": {
+     "preset": 0.0,
+     "value": 0.5
+    },
+    "horizon_increment": {
+     "preset": 10000,
+     "value": 10
+    },
+    "lr": {
+     "preset": 0.001,
+     "value": 0.03
+    },
+    "max_steps": {
+     "preset": 30000,
+     "value": 10
+    },
+    "paper_arch": {
+     "preset": "rot4",
+     "value": "p4"
+    },
+    "synthetic_bogus": {
+     "preset": 0.0,
+     "value": 0.25
+    },
+    "val_every_n_steps": {
+     "preset": 10,
+     "value": 3
+    }
+   },
+   "diagnostics": [],
+   "faithful": false,
+   "name": "carrasco2021"
+  },
+  "resumed_from": false,
+  "seed": 0,
+  "selection": {
+   "checkpoint_selection": "best_val_loss",
+   "ece_bins": 15,
+   "ema": false,
+   "scored_step": 18
+  },
+  "test_acc_at_best": 0.3,
+  "test_macro_f1": 0.2133333384990692,
+  "val_acc_best": 0.5,
+  "val_macro_f1": 0.4466666579246521
+ },
+ "predictions": {
+  "predictions_test.npz": {
+   "index": "480809be2f606f5cecc294aa38f8981f125aded56a0ee8004ef2bf6c7f8f9211",
+   "labels": "e976928bfad47d6238f6e2b6f03c0a32afc14ff183336b3a635b63175b9c6a8c",
+   "probabilities": "0315b80da9f0108d9014acc30dd3e00bdae9faa0745e1513d3719edecd3a55de"
+  },
+  "predictions_val.npz": {
+   "index": "480809be2f606f5cecc294aa38f8981f125aded56a0ee8004ef2bf6c7f8f9211",
+   "labels": "ed8ae3551af8337cc5ff09bf2036408851ffd9e6e4152e4abed36417ab785a8a",
+   "probabilities": "8e9dbd86b28220c1042724818ec4b97d4975fac1261bf400b7392d05632b79ac"
+  }
+ },
+ "torch": "2.14.1",
+ "validations": [
+  [
+   3,
+   16.683130264282227,
+   "a93198380840b4e3458a9afffaeac98c17da514f33a67435a758014d992d0308"
+  ],
+  [
+   6,
+   1.463519811630249,
+   "3414bf16f15e5e718615b4d6be4c8c5e036ae119390fd0a6bf8af5e07411145e"
+  ],
+  [
+   9,
+   1.2674381732940674,
+   "8d225c5e4c8a5943cf0d1a259606cde7e8ecda415603044434cd0d7635836ebd"
+  ],
+  [
+   12,
+   1.1884195804595947,
+   "1ba860b0032b5fcb6a59fc10557576895b4d057f3ea6bbe20f2f55f75019e98e"
+  ],
+  [
+   15,
+   1.3027825355529785,
+   "01c177a9a28402343511e03c1e3930f47c78306f549fe457a68354592dcd82f8"
+  ],
+  [
+   18,
+   1.180144190788269,
+   "6dcc3667b8432deffdd8706c522ae966d7e5bccd626650be1cef6352df6cca3f"
+  ],
+  [
+   21,
+   1.2295525074005127,
+   "a3c49f38b4832f64b4197951e0a057a2105a3a22f90737310a9d419ed9f47dfd"
+  ],
+  [
+   24,
+   1.267845869064331,
+   "e2c806edcf57eaec1e4ff5c6d55ec9a7c4b28d5d837bb54614cbc3a889f68035"
+  ],
+  [
+   27,
+   1.3308565616607666,
+   "aab96cfd1252cd0d6f4de8a3c32fd2ea0701c57016192609c5514cb8e985d906"
+  ]
+ ]
+}

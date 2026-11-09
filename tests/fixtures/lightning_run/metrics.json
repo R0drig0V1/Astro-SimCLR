@@ -1,0 +1,437 @@
+{
+  "command": "train-supervised",
+  "seed": 0,
+  "best_epoch": 0,
+  "last_epoch": 0,
+  "best_step": 6,
+  "last_step": 6,
+  "monitor": "loss_val",
+  "monitor_best": 0.7023217082023621,
+  "checkpoints": {
+    "best": "checkpoints/best.ckpt",
+    "last": "checkpoints/last.ckpt"
+  },
+  "versions": {
+    "astro_simclr": "0.1.0",
+    "torch": "2.14.1",
+    "lightning": "2.6.6"
+  },
+  "accelerator": "CPUAccelerator",
+  "machine": {
+    "device": "cpu",
+    "gpu": null,
+    "torch": "2.14.1",
+    "cuda": null,
+    "cudnn": null,
+    "platform": "macOS-27.2-arm64-arm-64bit-Mach-O",
+    "processor": "arm64",
+    "python": "3.13.13",
+    "engine": "lightning",
+    "fp32_precision": "ieee",
+    "fp32_backends": {
+      "cudnn_conv": "ieee",
+      "cuda_matmul": "ieee",
+      "mkldnn_matmul": "ieee"
+    },
+    "compute_capability": null
+  },
+  "data": {
+    "path": "data/td_ztf_stamp_17_06_20_red-002",
+    "kind": "classifier",
+    "source": {
+      "name": "td_ztf_stamp_17_06_20_red-002.pkl",
+      "size_bytes": 3566187,
+      "sha256": "55d150776fbe50f16a453a9e5d71625208bdac5ade76f9b1aefa4c2eab19b406"
+    },
+    "class_counts": {
+      "Train": [
+        5,
+        5,
+        5,
+        5,
+        5
+      ],
+      "Validation": [
+        5,
+        5,
+        5,
+        5,
+        5
+      ],
+      "Test": [
+        5,
+        5,
+        5,
+        5,
+        5
+      ]
+    }
+  },
+  "config": {
+    "accelerator": "cpu",
+    "devices": 1,
+    "num_workers": 0,
+    "data_dir": "data",
+    "output_dir": "run",
+    "seed": 0,
+    "deterministic": true,
+    "fp32_precision": "ieee",
+    "max_epochs": 220,
+    "patience": 40,
+    "min_delta": 0.001,
+    "monitor": "loss_val",
+    "eval_batch_size": 64,
+    "nt_xent_legacy_denominator": true,
+    "check_finite": true,
+    "divergence_threshold": null,
+    "limit_train_batches": null,
+    "limit_val_batches": null,
+    "progress_bar_refresh_rate": 0,
+    "dataset": "td_ztf_stamp_17_06_20_red-002",
+    "image_size": 21,
+    "batch_size": 4,
+    "lr": 0.03,
+    "optimizer": "Adam",
+    "augmentation": "center_crop",
+    "beta_loss": 0.5,
+    "drop_rate": 0.2,
+    "with_features": true,
+    "supervised_model": "paper_stamp_classifier",
+    "encoder_name": "resnet18",
+    "projection_dim": 300,
+    "temperature": 0.17910250439416514,
+    "lars_legacy_trust_ratio": true,
+    "pretrained": null,
+    "fine_tune_lr_factor": 0.2,
+    "dropout_active": false,
+    "schedule": "carrasco2021",
+    "max_steps": 6,
+    "val_every_n_steps": 3,
+    "horizon_increment": 0,
+    "checkpoint_every_n_steps": 3,
+    "early_stopping": false,
+    "paper_input": "float32",
+    "nan_approximation": true,
+    "exclude_leaked_train": true,
+    "adam_betas": "code",
+    "paper_arch": "hybrid",
+    "backbone_weights": "none",
+    "group_fields": null,
+    "hybrid_dim": 8,
+    "hybrid_depth": 1,
+    "hybrid_heads": 1,
+    "hybrid_readout": "mean",
+    "context": "none",
+    "rot90_augment": false,
+    "feature_set": "all",
+    "aug_noise": 0.0,
+    "aug_feature_jitter": 0.0,
+    "synthetic_bogus": 0.0,
+    "aug_min_r2": 0.5,
+    "flux_rescale": 0.0,
+    "flux_k_min": 0.5,
+    "flux_k_max": 1.5,
+    "rj23_scenario": "full",
+    "rj23_bn_position": "after_concat",
+    "rj23_keep": "stop",
+    "rj23_large_values": "paper",
+    "checkpoint_selection": "best_val_loss",
+    "lr_schedule": "constant",
+    "lr_warmup_steps": 0,
+    "ema_decay": null,
+    "ema_warmup": false
+  },
+  "run": {
+    "run_id": "bf6a7ed0e233f873a8994e7e1c2ec0a63451c42f57d0cb175a41a6c0a340490d",
+    "attempt": 1,
+    "config_sha256": "0ee08b6dff5ac686baa9784c9b7fe693c615bd81f240aed015d5495027362f56"
+  },
+  "resumed_from": null,
+  "timing": {
+    "fit_seconds": 0.19669537499976286,
+    "steps": 6,
+    "seconds_per_step": 0.03278256249996048
+  },
+  "horizon": 6,
+  "paper_data": {
+    "input": "float32",
+    "crop": 21,
+    "nan_approximation": true,
+    "excluded_train": [
+      3
+    ],
+    "n_train": 34,
+    "n_tiled": 35
+  },
+  "preset": {
+    "name": "carrasco2021",
+    "faithful": false,
+    "deviations": {
+      "drop_rate": {
+        "value": 0.2,
+        "preset": 0.5
+      },
+      "batch_size": {
+        "value": 4,
+        "preset": 64
+      },
+      "lr": {
+        "value": 0.03,
+        "preset": 0.001
+      },
+      "max_steps": {
+        "value": 6,
+        "preset": 30000
+      },
+      "val_every_n_steps": {
+        "value": 3,
+        "preset": 10
+      },
+      "horizon_increment": {
+        "value": 0,
+        "preset": 10000
+      },
+      "paper_arch": {
+        "value": "hybrid",
+        "preset": "rot4"
+      },
+      "hybrid_dim": {
+        "value": 8,
+        "preset": 64
+      },
+      "hybrid_depth": {
+        "value": 1,
+        "preset": 2
+      },
+      "hybrid_heads": {
+        "value": 1,
+        "preset": 4
+      }
+    },
+    "diagnostics": []
+  },
+  "protocol": {
+    "mode": "fold",
+    "fold": 2,
+    "splits_file": "splits.json",
+    "splits_sha256": "1127e316866bf486c548778548e7f6fb7dc59590d97503e566498154bc8856f6",
+    "dataset": "td_ztf_stamp_17_06_20_red-002",
+    "evaluation_part": "fold 2 evaluation part (pool)",
+    "evaluation_index": "pool",
+    "n_training": 34,
+    "n_selection": 5,
+    "n_evaluation": 10,
+    "excluded_train": [
+      3
+    ],
+    "grouping": {
+      "method": "position",
+      "radius_arcsec": 1.5,
+      "n_groups": 49,
+      "n_screen_excluded_train": 1
+    }
+  },
+  "selection_acc_best": 0.4,
+  "evaluation_accuracy": 0.4,
+  "evaluation_balanced_accuracy": 0.4,
+  "labels": [
+    "AGN",
+    "SN",
+    "VS",
+    "Asteroid",
+    "Bogus"
+  ],
+  "evaluation": {
+    "selection": {
+      "accuracy": 0.4,
+      "balanced_accuracy": 0.4,
+      "macro_f1": 0.2666666805744171,
+      "recall_per_class": {
+        "AGN": 0.0,
+        "SN": 1.0,
+        "VS": 1.0,
+        "Asteroid": 0.0,
+        "Bogus": 0.0
+      },
+      "confusion_matrix": [
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "confusion_counts": [
+        [
+          0,
+          0,
+          0,
+          0,
+          1
+        ],
+        [
+          0,
+          1,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0,
+          0,
+          0
+        ]
+      ],
+      "ece": 0.4832762122154236
+    },
+    "evaluation": {
+      "accuracy": 0.4,
+      "balanced_accuracy": 0.4,
+      "macro_f1": 0.30000001192092896,
+      "recall_per_class": {
+        "AGN": 0.0,
+        "SN": 0.5,
+        "VS": 1.0,
+        "Asteroid": 0.0,
+        "Bogus": 0.5
+      },
+      "confusion_matrix": [
+        [
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.5,
+          0.0,
+          0.0,
+          0.5
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.5,
+          0.5,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.5,
+          0.0,
+          0.5
+        ]
+      ],
+      "confusion_counts": [
+        [
+          0,
+          2,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          0,
+          0,
+          1
+        ],
+        [
+          0,
+          0,
+          2,
+          0,
+          0
+        ],
+        [
+          0,
+          1,
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          0,
+          1
+        ]
+      ],
+      "ece": 0.28119794130325315
+    }
+  },
+  "predictions": {
+    "evaluation": {
+      "file": "predictions_evaluation.npz",
+      "split": "fold 2 evaluation part (pool)",
+      "n": 10
+    }
+  },
+  "figures": [
+    "confusion_matrix_selection.png",
+    "confusion_matrix_evaluation.png"
+  ],
+  "selection": {
+    "checkpoint_selection": "best_val_loss",
+    "scored_step": 6,
+    "ema": false,
+    "ece_bins": 15
+  }
+}

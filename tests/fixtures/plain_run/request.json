@@ -1,0 +1,17 @@
+{
+  "about": "manifest.json is the plain run of `astro-simclr run configs/runs/carrasco2021.yaml --set <overrides>` on the synthetic 100 % file (make-synthetic seed 0, 10 stamps per split, prepare-data --images float32), recorded on main 36bfb75 before task 4.8; tests/test_run_identity_stability.py",
+  "config_file": "configs/runs/carrasco2021.yaml",
+  "overrides": [
+    "runtime.engine=plain",
+    "runtime.accelerator=cpu",
+    "runtime.deterministic=true",
+    "run.output_dir=run",
+    "data.dir=data",
+    "data.batch_size=4",
+    "schedule.max_steps=3",
+    "schedule.val_every_n_steps=3",
+    "schedule.horizon_increment=0",
+    "schedule.checkpoint_every_n_steps=3",
+    "runtime.progress_bar_refresh_rate=0"
+  ]
+}

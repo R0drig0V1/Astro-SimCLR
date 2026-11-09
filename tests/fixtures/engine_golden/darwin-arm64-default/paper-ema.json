@@ -1,0 +1,450 @@
+{
+ "case": "paper-ema",
+ "format": 1,
+ "initial": "21c6174d1652e14c8758bd1eb0142641cde8a1c617c29293ca61180c62a5e97c",
+ "metrics": {
+  "best_epoch": 13,
+  "best_step": 27,
+  "command": "train-supervised",
+  "config": {
+   "accelerator": "cpu",
+   "adam_betas": "code",
+   "aug_feature_jitter": 0.0,
+   "aug_min_r2": 0.5,
+   "aug_noise": 0.0,
+   "augmentation": "center_crop",
+   "backbone_weights": "none",
+   "batch_size": 4,
+   "beta_loss": 0.5,
+   "check_finite": true,
+   "checkpoint_every_n_steps": 3,
+   "checkpoint_selection": "best_val_loss",
+   "context": "none",
+   "dataset": "td_ztf_stamp_17_06_20_red-002",
+   "deterministic": true,
+   "devices": 1,
+   "divergence_threshold": null,
+   "drop_rate": 0.2,
+   "dropout_active": false,
+   "early_stopping": false,
+   "ema_decay": 0.9,
+   "ema_warmup": false,
+   "encoder_name": "resnet18",
+   "eval_batch_size": 64,
+   "exclude_leaked_train": true,
+   "feature_set": "all",
+   "fine_tune_lr_factor": 0.2,
+   "flux_k_max": 1.5,
+   "flux_k_min": 0.5,
+   "flux_rescale": 0.0,
+   "fp32_precision": "ieee",
+   "group_fields": null,
+   "horizon_increment": 10,
+   "hybrid_depth": 2,
+   "hybrid_dim": 64,
+   "hybrid_heads": 4,
+   "hybrid_readout": "mean",
+   "image_size": 21,
+   "lars_legacy_trust_ratio": true,
+   "limit_train_batches": null,
+   "limit_val_batches": null,
+   "lr": 0.03,
+   "lr_schedule": "constant",
+   "lr_warmup_steps": 0,
+   "max_epochs": 220,
+   "max_steps": 10,
+   "min_delta": 0.001,
+   "monitor": "loss_val",
+   "nan_approximation": true,
+   "nt_xent_legacy_denominator": true,
+   "num_workers": 0,
+   "optimizer": "Adam",
+   "paper_arch": "rot4",
+   "paper_input": "float32",
+   "patience": 40,
+   "pretrained": null,
+   "progress_bar_refresh_rate": 50,
+   "projection_dim": 300,
+   "rj23_bn_position": "after_concat",
+   "rj23_keep": "stop",
+   "rj23_large_values": "paper",
+   "rj23_scenario": "full",
+   "rot90_augment": false,
+   "schedule": "carrasco2021",
+   "seed": 0,
+   "supervised_model": "paper_stamp_classifier",
+   "synthetic_bogus": 0.0,
+   "temperature": 0.17910250439416514,
+   "val_every_n_steps": 3,
+   "with_features": true
+  },
+  "data": {
+   "class_counts": {
+    "Test": [
+     2,
+     2,
+     2,
+     2,
+     2
+    ],
+    "Train": [
+     2,
+     2,
+     2,
+     2,
+     2
+    ],
+    "Validation": [
+     2,
+     2,
+     2,
+     2,
+     2
+    ]
+   },
+   "kind": "classifier",
+   "path": "td_ztf_stamp_17_06_20_red-002",
+   "source": {
+    "name": "td_ztf_stamp_17_06_20_red-002.pkl",
+    "sha256": "32b81681746bde71e0229e28dd2445444ae9d5049a447c7bbe65e934e25a94e4",
+    "size_bytes": 1397790
+   }
+  },
+  "evaluation": {
+   "test": {
+    "accuracy": 0.4,
+    "balanced_accuracy": 0.4,
+    "confusion_counts": [
+     [
+      0,
+      1,
+      0,
+      0,
+      1
+     ],
+     [
+      0,
+      0,
+      1,
+      1,
+      0
+     ],
+     [
+      0,
+      0,
+      2,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      1,
+      1,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      1,
+      1
+     ]
+    ],
+    "confusion_matrix": [
+     [
+      0.0,
+      0.5,
+      0.0,
+      0.0,
+      0.5
+     ],
+     [
+      0.0,
+      0.0,
+      0.5,
+      0.5,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.5,
+      0.5,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      0.5,
+      0.5
+     ]
+    ],
+    "ece": 0.3519479274749756,
+    "macro_f1": 0.31333333253860474,
+    "recall_per_class": {
+     "AGN": 0.0,
+     "Asteroid": 0.5,
+     "Bogus": 0.5,
+     "SN": 0.0,
+     "VS": 1.0
+    }
+   },
+   "val": {
+    "accuracy": 0.8,
+    "balanced_accuracy": 0.8,
+    "confusion_counts": [
+     [
+      2,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      1,
+      1,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      1,
+      0,
+      1
+     ],
+     [
+      0,
+      0,
+      0,
+      2,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      2
+     ]
+    ],
+    "confusion_matrix": [
+     [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.5,
+      0.5,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.5,
+      0.0,
+      0.5
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "ece": 0.35467959344387057,
+    "macro_f1": 0.7933333516120911,
+    "recall_per_class": {
+     "AGN": 1.0,
+     "Asteroid": 1.0,
+     "Bogus": 1.0,
+     "SN": 0.5,
+     "VS": 0.5
+    }
+   }
+  },
+  "figures": [
+   "confusion_matrix_val.png",
+   "confusion_matrix_test.png"
+  ],
+  "horizon": 37,
+  "labels": [
+   "AGN",
+   "SN",
+   "VS",
+   "Asteroid",
+   "Bogus"
+  ],
+  "last_epoch": 18,
+  "last_step": 37,
+  "monitor": "loss_val",
+  "monitor_best": 0.26406794786453247,
+  "paper_data": {
+   "crop": 21,
+   "excluded_train": [
+    3
+   ],
+   "input": "float32",
+   "n_tiled": 10,
+   "n_train": 9,
+   "nan_approximation": true
+  },
+  "predictions": {
+   "test": {
+    "file": "predictions_test.npz",
+    "n": 10,
+    "split": "Test"
+   },
+   "val": {
+    "file": "predictions_val.npz",
+    "n": 10,
+    "split": "Validation"
+   }
+  },
+  "preset": {
+   "deviations": {
+    "batch_size": {
+     "preset": 64,
+     "value": 4
+    },
+    "drop_rate": {
+     "preset": 0.5,
+     "value": 0.2
+    },
+    "ema_decay": {
+     "preset": null,
+     "value": 0.9
+    },
+    "horizon_increment": {
+     "preset": 10000,
+     "value": 10
+    },
+    "lr": {
+     "preset": 0.001,
+     "value": 0.03
+    },
+    "max_steps": {
+     "preset": 30000,
+     "value": 10
+    },
+    "val_every_n_steps": {
+     "preset": 10,
+     "value": 3
+    }
+   },
+   "diagnostics": [],
+   "faithful": false,
+   "name": "carrasco2021"
+  },
+  "resumed_from": false,
+  "seed": 0,
+  "selection": {
+   "checkpoint_selection": "best_val_loss",
+   "ece_bins": 15,
+   "ema": true,
+   "scored_step": 27
+  },
+  "test_acc_at_best": 0.4,
+  "test_macro_f1": 0.31333333253860474,
+  "val_acc_best": 0.8,
+  "val_macro_f1": 0.7933333516120911
+ },
+ "predictions": {
+  "predictions_test.npz": {
+   "index": "480809be2f606f5cecc294aa38f8981f125aded56a0ee8004ef2bf6c7f8f9211",
+   "labels": "e976928bfad47d6238f6e2b6f03c0a32afc14ff183336b3a635b63175b9c6a8c",
+   "probabilities": "10d703ff835b87ceed9b38a2d4ffca88b73e4e21200919368784184ddb0b4749"
+  },
+  "predictions_val.npz": {
+   "index": "480809be2f606f5cecc294aa38f8981f125aded56a0ee8004ef2bf6c7f8f9211",
+   "labels": "ed8ae3551af8337cc5ff09bf2036408851ffd9e6e4152e4abed36417ab785a8a",
+   "probabilities": "41af5b8fc6dda5f4ef5ed1c70b8e3fd29bc7c150bb3f7e48c26400d25d87d9fb"
+  }
+ },
+ "torch": "2.14.1",
+ "validations": [
+  [
+   3,
+   0.8181079626083374,
+   "2061feaa09652a493727494513adb35d919bebb48b2a8afe320e9e39397de0fd"
+  ],
+  [
+   6,
+   0.7323224544525146,
+   "d5cc484eeca7fa19a4b45b6b1a27e543afac0ef8c7a8b629991853344ce0c21d"
+  ],
+  [
+   9,
+   0.6853257417678833,
+   "2c550873f8e7eaf0a4b2c4a36fb5d208150d6920a75c46ce16837551eb80b221"
+  ],
+  [
+   12,
+   0.608492910861969,
+   "339a3484460b7fc9c273315ac547e5ba41822a6f6911e51e65960de315b6c645"
+  ],
+  [
+   15,
+   0.5049518942832947,
+   "2ec2e700167963e73d86abbc3ecf3de110ffa2ace1a1d1bc25b04a7115efbfb5"
+  ],
+  [
+   18,
+   0.42965543270111084,
+   "5c8c0981c9f9de201451dded7d161a5d6e91608f85bcd78d6820c0a269a845d7"
+  ],
+  [
+   21,
+   0.35497891902923584,
+   "f1d0d55406809b06d46727d6e017d30b97b379e3927c1a74f9dc6708b0ac4632"
+  ],
+  [
+   24,
+   0.2829861640930176,
+   "420ba2448b2b1810a37d091049ce860e26180b737d9d74f175ef293eca98cc05"
+  ],
+  [
+   27,
+   0.26406794786453247,
+   "05f6b26ba073703c270ac474aedf365df61bea60b0eedfa68c67faa09b14d454"
+  ],
+  [
+   30,
+   0.30992311239242554,
+   "cd3d318997b8c31c21b7fe0645b6608396fc87461d8b9ad7dd0d0bbf3a4bcb49"
+  ],
+  [
+   33,
+   0.389955997467041,
+   "249bbb968402014c0b14987449622330c4801752a1a4f85839b763c060790b5f"
+  ],
+  [
+   36,
+   0.44238561391830444,
+   "bab1a1d664e289b2fbe7cb1ddb47f1ba8b4bb3c78b24c3a3a1ffb5d8d8fb7b19"
+  ]
+ ]
+}
