@@ -1,12 +1,13 @@
-"""Record a run's manifest from ``experiments.run_command`` (phase 4, task A1; ADR 0015).
+"""Record a run's manifest from the training runner (phase 4, task A1; ADR 0015).
 
 :func:`start_run` computes the run's identity, decides its attempt from the manifest
 already in the run directory, and writes ``manifest.json`` as ``queued`` then ``running``;
-:meth:`RunRecord.end` writes the final status. ``run_command`` calls them around
-``trainer.fit``: ``finished`` after ``metrics.json`` is written, ``failed`` on an exception,
-``cancelled`` on ``KeyboardInterrupt`` or ``SystemExit`` (Lightning turns a Ctrl-C during
-the fit into ``SystemExit``). A run that fails before the manifest exists (a bad config,
-missing data) never started and leaves none.
+:meth:`RunRecord.end` writes the final status. The plain engine's runners
+(``tasks.plain.run_plain``, ``tasks.rj23.run_rj23_plain``; Lightning's ``run_command``
+until task 4.8) call them around the fit: ``finished`` after ``metrics.json`` is written,
+``failed`` on an exception, ``cancelled`` on ``KeyboardInterrupt`` or ``SystemExit``. A
+run that fails before the manifest exists (a bad config, missing data) never started and
+leaves none.
 
 **Attempts in today's layout.** ``--output-dir`` holds one run directory chosen by the
 user, so it keeps the manifest of its latest attempt only (the queue, A3, gives each
@@ -25,7 +26,7 @@ silently replaced.
 
 **Queued runs** (task A3, :class:`QueueAttempt`). The queue names each attempt's directory
 and fixes its attempt number and machine class (the spec's, ADR 0015 rule 7) before the
-run starts; ``spec run-cell`` passes them through ``run_command(queued=...)``. Then the
+run starts; ``spec run-cell`` passes them through ``run_plain(queued=...)``. Then the
 attempt is the queue's, not inferred: a fresh directory starts it, and a manifest of the
 same run id and attempt still ``queued`` or ``running`` (a ``kill -9``, a lost lease, a
 SIGTERM, a reboot) continues it, whether or not a ``last`` checkpoint was written yet. Any
@@ -189,7 +190,7 @@ def start_run(
     object_splits: Path | None = None,
     pretrained_file: Path | None = None,
     resumed: bool = False,
-    engine: Engine = "lightning",
+    engine: Engine = "plain",
     root: Path | None = None,
     concurrent_jobs: int | None = None,
     at: str | None = None,
@@ -198,7 +199,7 @@ def start_run(
     """Write the ``running`` manifest of a run about to train; return its record.
 
     ``data`` is the prepared layout, ``machine`` the run's machine record
-    (``experiments.machine_record``: ``device``, ``gpu``, ``processor``, ...), ``split`` the
+    (``engine.record.machine_record``: ``device``, ``gpu``, ``processor``, ...), ``split`` the
     split request, ``object_splits`` the object-splits file of an ``rj23`` replication run
     (trained on its whole Train: hashed as the splits, split part :data:`WHOLE`; task 3.4b; an
     ``rj23`` decision run passes ``split`` as a screen instead), ``pretrained_file`` the

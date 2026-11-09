@@ -36,7 +36,7 @@ from typing import Any, Final, Literal, NotRequired, TypedDict, cast
 import numpy as np
 import torch
 
-from astro_simclr.config import ConfigError
+from astro_simclr.config import LIGHTNING_TAG, ConfigError
 from astro_simclr.engine.device import DevicePolicy
 from astro_simclr.engine.precision import fp32_precision_record
 
@@ -180,13 +180,14 @@ def check_resumable(checkpoint: Mapping[str, Any]) -> None:
     """Refuse, before anything is built, a checkpoint the plain engine cannot continue.
 
     Raises:
-        ConfigError: for a Lightning checkpoint (in-flight Lightning runs finish on
-            Lightning), another engine, another format version, or missing keys.
+        ConfigError: for a Lightning checkpoint (a Lightning run resumes only from a
+            checkout of the git tag ``lightning-final``), another engine, another format
+            version, or missing keys.
     """
     if _LIGHTNING_KEY in checkpoint:
         msg = (
             "this is a Lightning checkpoint: the plain engine does not resume Lightning runs "
-            "(finish them on Lightning, ADR 0014)"
+            f"(ADR 0014; resume it from a checkout of the git tag {LIGHTNING_TAG})"
         )
         raise ConfigError(msg)
     engine = checkpoint.get("engine")

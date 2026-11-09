@@ -23,7 +23,7 @@ version 1 (:data:`SPEC_FORMAT`, :data:`SPEC_VERSION`)::
     machine:
       class: cuda-nvidia-geforce-gtx-1050   # the run id's machine class (ADR 0015, rule 7)
       extra: cu126                  # the `uv sync --extra` of that machine (ADR 0001); optional
-    engine: lightning               # optional: lightning (the default) or plain (task 4.6)
+    engine: plain                   # optional: plain (the default since task 4.8)
     scratch: false                  # optional: true allows a dirty tree (never a result)
 
 **Settings of a cell** (:meth:`ExperimentSpec.arm_settings`) resolve in the order of
@@ -43,11 +43,15 @@ command line. The alert table is the layout's own. Such a spec needs ``engine: p
 (the queue does not drive Lightning's ``training.rj23.run_rj23``); ``whole: true`` is
 refused for any other schedule.
 
-**Engine.** ``engine`` is the training loop of every cell: ``lightning``
-(``experiments.run_command``) or ``plain`` (``tasks.plain.run_plain``, which trains only the
-paper classifier on the ``carrasco2021`` schedule and has no ``limit_*_batches``). Like
-``runtime.engine`` of a nested config (ADR 0017), it is a run-id component, not a setting:
-the arms' config hashes do not depend on it, their run ids do.
+**Engine.** ``engine`` is the training loop of every cell: ``plain``
+(``tasks.plain.run_plain``: the paper classifier on ``carrasco2021`` and RJ23's on
+``rj23``; no ``limit_*_batches``), the default since task 4.8. ``lightning``
+(the default before it) still parses, so that ``runs compare`` resolves the run ids of a
+spec that trained on Lightning, but :func:`check_trainable` (``queue submit``, ``spec
+run-cell``) refuses it, naming the git tag ``lightning-final``. A Lightning spec written
+before task 4.8 without an ``engine`` key now reads as ``plain``: add ``engine: lightning``
+to compare its runs. Like ``runtime.engine`` of a nested config (ADR 0017), it is a run-id
+component, not a setting: the arms' config hashes do not depend on it, their run ids do.
 
 **Identity.** :attr:`ExperimentSpec.spec_id`, the experiment-spec id that a comparison
 takes (A2), is the SHA-256 of the canonical JSON (``runs.canonical.canonical_json``) of
@@ -74,7 +78,7 @@ from typing import Final, cast
 
 import yaml
 
-from astro_simclr.config import RJ23, ConfigError, Settings, settings_from_mapping
+from astro_simclr.config import LIGHTNING_TAG, RJ23, ConfigError, Settings, settings_from_mapping
 from astro_simclr.hparams import COMMAND_DEFAULTS
 from astro_simclr.runs.canonical import CanonicalError, canonical_json, config_sha256, sha256_text
 from astro_simclr.runs.identity import (
@@ -97,6 +101,7 @@ __all__ = [
     "ExperimentSpec",
     "SpecError",
     "SpecSplits",
+    "check_trainable",
     "expected_run_ids",
     "load_spec",
     "parse_spec",
@@ -257,7 +262,7 @@ class ExperimentSpec:
     machine_class: str
     extra: str | None
     scratch: bool
-    engine: Engine = "lightning"
+    engine: Engine = "plain"
 
     def to_plain(self) -> dict[str, object]:
         """The spec as plain values, in the file's form (what :attr:`spec_id` hashes)."""
@@ -465,7 +470,7 @@ def _from_plain(data: Mapping[str, object]) -> ExperimentSpec:
     if scratch is not True and scratch is not False:
         raise SpecError(f"scratch must be true or false, got {scratch!r}")
     machine_class, extra = _parse_machine(data["machine"])
-    engine = data.get("engine", "lightning")
+    engine = data.get("engine", "plain")
     if engine not in ENGINES:
         raise SpecError(f"engine {engine!r} is not one of: {', '.join(ENGINES)}")
     spec = ExperimentSpec(
@@ -501,6 +506,20 @@ def _check_schedule(spec: ExperimentSpec, arm: str, settings: Settings) -> None:
         raise SpecError(msg)
     if spec.engine != "plain":
         raise SpecError(f"arm {arm}: schedule {RJ23} is queued on `engine: plain` only")
+
+
+def check_trainable(spec: ExperimentSpec) -> None:
+    """Refuse a spec this checkout cannot train: ``engine: lightning`` (task 4.8).
+
+    Raises:
+        SpecError: for ``engine: lightning``, naming the git tag that keeps the engine.
+    """
+    if spec.engine != "plain":
+        msg = (
+            f"spec {spec.name} has engine {spec.engine}, removed in task 4.8: queue it on "
+            f"plain, or submit it from a checkout of the git tag {LIGHTNING_TAG}"
+        )
+        raise SpecError(msg)
 
 
 def parse_spec(text: str) -> ExperimentSpec:

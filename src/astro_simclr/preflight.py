@@ -1,4 +1,4 @@
-"""``astro-simclr preflight``: check that a machine can run the reference runs, before it does.
+"""``astro-simclr preflight``: check that a machine can run the CD21 runs, before it does.
 
 ``scripts/gpu-preflight.sh`` is a thin wrapper around this subcommand. The checks run in
 order, each prints PASS, FAIL, WARN or SKIP, and the exit code is the result (0: no FAIL):
@@ -19,20 +19,18 @@ order, each prints PASS, FAIL, WARN or SKIP, and the exit code is the result (0:
    ``meta.json`` and the SHA-256 of every array, memory-mapped).
 4. **Manifest** (:func:`check_manifest`): the first run writes ``data-manifest.json`` in
    the data directory; later runs verify the data against it.
-5. **Dry chain** (:func:`dry_chain`): the reference configs (``configs/reference/``) in dry
-   mode (1 epoch, a few batches): pretrain, linear-eval (on that checkpoint), fine-tune,
-   then the supervised runs, on the requested accelerator and at the reference batch sizes
-   (so an out-of-memory GPU fails here, not after hours). Then **CD21** (task 4.6): the
-   ``carrasco2021`` preset (the paper replication) on the **plain engine** (ADR 0014),
-   ``steps + 1`` optimizer steps and one validation; it needs ``red-002`` with float32
-   stamps. R1-R4 run on Lightning (their modules are frozen at ``lightning-final``, plan
-   4.6); ``--runs CD21`` alone never imports Lightning. A run named in ``--runs`` that cannot
-   run (its dataset is not prepared) fails; without ``--runs`` it is skipped.
+5. **Dry chain** (:func:`dry_chain`): **CD21**, the ``carrasco2021`` preset (the paper
+   replication) on the plain engine (ADR 0014), ``steps + 1`` optimizer steps and one
+   validation, on the requested accelerator and at the preset's batch size (so an
+   out-of-memory GPU fails here, not after hours); it needs ``red-002`` with float32
+   stamps. Named in ``--runs``, it fails when it cannot run (its dataset is not prepared);
+   without ``--runs`` it is skipped. The R1-R4 dry runs (``configs/reference/``: pretrain,
+   linear-eval, fine-tune and the supervised baselines) trained on Lightning; task 4.8
+   removed them with it, and naming one in ``--runs`` is refused with the git tag that
+   keeps them, ``lightning-final`` (plan 4.6).
 6. **Throughput** (:func:`estimate`): steps/s measured during step 5 with the real data path
-   (:class:`ThroughputTimer`, engine-free), and the GPU-hour estimate from the Train counts,
-   batch sizes and ``max_epochs`` for R1-R4 (an upper bound: EarlyStopping usually stops
-   sooner) and from the initial horizon for CD21 (a lower bound: a new best extends it);
-   validation time is not included.
+   (:class:`ThroughputTimer`), and the GPU-hour estimate from the initial horizon (a lower
+   bound: a new best extends it); validation time is not included.
 
 ``--synthetic`` first writes the synthetic stand-ins of the four files (``make-synthetic``,
 ``prepare-data``; the 100 % file with float32 stamps too, for CD21) under the output
@@ -53,26 +51,24 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from functools import partial
 from pathlib import Path
 from typing import Any, Final, Literal, TextIO
 
 import numpy as np
 import torch
 
-from astro_simclr.config import ConfigError, load_settings
+from astro_simclr.config import LIGHTNING_TAG, ConfigError, load_settings
 from astro_simclr.data.prepared import RAW_ALERTS_KIND, is_prepared, layout_kind, read_meta
 from astro_simclr.data.schema import DataError
-from astro_simclr.hparams import LABEL_FRACTION_DATASETS
 
 # At import, not in the step: it imports torchvision (and torch._dynamo), which must not
 # happen after a test has replaced torch.backends.mps.is_available.
 from astro_simclr.tasks.common import AcceleratorError, check_accelerator
 
 __all__ = [
+    "CD21_RUN",
     "MANIFEST_NAME",
     "REAL_TRAIN_COUNTS",
-    "REFERENCE_RUNS",
     "GpuInfo",
     "StepResult",
     "ThroughputTimer",
@@ -108,33 +104,14 @@ _RAM_HEADROOM: Final = 2 * 1024**3
 #: (ssh, cron, IDE terminals) often do not.
 WSL_NVIDIA_SMI: Final = Path("/usr/lib/wsl/lib/nvidia-smi")
 
-#: The reference runs as the dry chain runs them: (name, subcommand, config file). The R3
-#: entries run in this order (linear-eval and fine-tune load the pretrain checkpoint);
-#: ``R3-fine-tune`` checks the fine-tune subcommand and is not a reference run itself.
-REFERENCE_RUNS: Final = (
-    ("R3-pretrain", "pretrain", "R3-pretrain.yaml"),
-    ("R3-linear-eval", "linear-eval", "R3-linear-eval.yaml"),
-    ("R3-fine-tune", "fine-tune", "R3-linear-eval.yaml"),
-    ("R1", "train-supervised", "R1.yaml"),
-    ("R2", "train-supervised", "R2.yaml"),
-    ("R4", "train-supervised", "R4.yaml"),
-)
-#: The paper replication's run (task 4.6): the ``carrasco2021`` preset on the plain engine,
-#: the dry run that needs no Lightning.
+#: The paper replication's run (task 4.6): the ``carrasco2021`` preset on the plain engine.
 CD21_RUN: Final = "CD21"
-#: The reference runs ``--runs`` can name.
-_ALL_RUNS: Final = ("R1", "R2", "R3", "R4", CD21_RUN)
-#: Seeds of the full set per reference run (the minimal set is 1 seed each).
-_FULL_SEEDS: Final = {
-    "R1": 5,
-    "R2": 5,
-    "R3-pretrain": 1,
-    "R3-linear-eval": 1,
-    "R4": 1,
-    CD21_RUN: 5,
-}
-#: R3's linear evaluation runs at these label fractions (one run each).
-_R3_FRACTIONS: Final = tuple(LABEL_FRACTION_DATASETS.values())
+#: The runs ``--runs`` can name.
+_ALL_RUNS: Final = (CD21_RUN,)
+#: The reference runs whose dry runs trained on Lightning (task 4.8 removed them).
+_LIGHTNING_RUNS: Final = ("R1", "R2", "R3", "R4")
+#: Seeds of the full set per run (the minimal set is 1 seed each).
+_FULL_SEEDS: Final = {CD21_RUN: 5}
 #: Train-split sizes of the real files (``docs/data.md``), for the synthetic estimate. The
 #: 100 % entry is ``red-002`` (the deduplicated original); the pretraining set is approximate.
 REAL_TRAIN_COUNTS: Final = {
@@ -642,9 +619,8 @@ class ThroughputTimer:
 
     :meth:`tick` after each step (after a device synchronisation) records the interval
     since the previous tick; :meth:`reset` forgets the clock, so the next step is not
-    timed. On Lightning (:func:`lightning_timer`) it resets at each epoch start, so the
-    first batch of each epoch is not timed (worker start-up, cuDNN benchmarking); on the
-    plain engine (``engine.fit(on_step=...)``) only the fit's first step is not. Each
+    timed. On the plain engine (``engine.fit(on_step=...)``) only the fit's first step is
+    not (cuDNN benchmarking, the first upload). Each
     interval includes the data's wait (and a validation that ran in it), so the rate is
     what a real run gets.
     """
@@ -672,25 +648,6 @@ class ThroughputTimer:
         return len(self.intervals) / total if self.intervals and total > 0 else None
 
 
-def lightning_timer(timer: ThroughputTimer) -> Any:
-    """A Lightning ``Callback`` that drives ``timer`` (imports Lightning; the R1-R4 runs).
-
-    It resets ``timer`` at each training epoch's start and ticks it at each batch's end.
-    """
-    from lightning.pytorch.callbacks import Callback
-
-    class _LightningTimer(Callback):
-        def on_train_epoch_start(self, trainer: Any, pl_module: Any) -> None:
-            timer.reset()
-
-        def on_train_batch_end(
-            self, trainer: Any, pl_module: Any, outputs: Any, batch: Any, batch_idx: int
-        ) -> None:
-            timer.tick(pl_module.device)
-
-    return _LightningTimer()
-
-
 @dataclass(slots=True)
 class Timed:
     """What step 6 needs from one dry run."""
@@ -698,13 +655,12 @@ class Timed:
     name: str
     dataset: str
     batch_size: int
-    max_epochs: int
     measured_batch_size: int
     steps_per_second: float | None
     n_steps: int
-    #: The optimizer steps of a full run when it is counted in steps (CD21: the initial
-    #: horizon, a lower bound since a new best extends it); None: epochs x batches.
-    planned_steps: int | None = None
+    #: The optimizer steps of a full run (CD21: the initial horizon, a lower bound since a
+    #: new best extends it).
+    planned_steps: int
 
 
 def _train_count(data_dir: Path, dataset: str) -> int | None:
@@ -712,52 +668,6 @@ def _train_count(data_dir: Path, dataset: str) -> int | None:
     if not is_prepared(path):
         return None
     return int(read_meta(path)["splits"]["Train"]["n"])
-
-
-def _run_one(
-    name: str,
-    command: str,
-    config: Path,
-    overrides: list[str],
-    forced: list[str],
-    data_dir: Path,
-    out: list[str],
-    skip: Callable[[str], None],
-) -> Timed | None:
-    """One dry run. ``reference`` (config + ``--set``) gives the batch size and epochs the
-    estimate assumes; ``forced`` (dry mode, paths, accelerator) applies on top of it."""
-    from astro_simclr.experiments import run_command
-    from astro_simclr.hparams import COMMAND_DEFAULTS
-
-    defaults = COMMAND_DEFAULTS[command]
-    reference = load_settings(config, overrides, defaults=defaults)
-    settings = load_settings(config, [*overrides, *forced], defaults=defaults)
-    n_train = _train_count(data_dir, settings.dataset)
-    if n_train is None:
-        skip(f"{name}: dataset {settings.dataset} is not prepared in {data_dir}")
-        return None
-    batch = min(reference.batch_size, n_train)
-    settings = settings.replace(batch_size=batch)
-    timer = ThroughputTimer()
-    started = time.perf_counter()
-    run_command(command, settings, callbacks=[lightning_timer(timer)], progress_bar=False)
-    seconds = time.perf_counter() - started
-    rate = timer.steps_per_second
-    rate_text = "not measured" if rate is None else f"{rate:.2f} steps/s"
-    capped = "" if batch == reference.batch_size else f" (capped from {reference.batch_size})"
-    out.append(
-        f"{name} ({command}, {reference.dataset}, batch {batch}{capped}): ok in {seconds:.1f} s, "
-        f"{rate_text} over {len(timer.intervals)} steps"
-    )
-    return Timed(
-        name,
-        reference.dataset,
-        reference.batch_size,
-        reference.max_epochs,
-        batch,
-        rate,
-        len(timer.intervals),
-    )
 
 
 def _run_cd21(
@@ -817,28 +727,11 @@ def _run_cd21(
         CD21_RUN,
         reference.dataset,
         reference.batch_size,
-        reference.max_epochs,
         batch,
         rate,
         len(timer.intervals),
         planned_steps=reference.max_steps,
     )
-
-
-def _dry_overrides(
-    command: str, name: str, accelerator: str, data_dir: Path, chain: Path, steps: int
-) -> list[str]:
-    forced = [
-        f"accelerator={accelerator}",
-        f"data_dir={data_dir}",
-        f"output_dir={chain / name}",
-        "max_epochs=1",
-        f"limit_train_batches={steps + 1}",
-        "limit_val_batches=2",
-    ]
-    if command in ("linear-eval", "fine-tune"):
-        forced.append(f"pretrained={chain / 'R3-pretrain'}")
-    return forced
 
 
 def _attempt(step: StepResult, label: str, run: Callable[[], Timed | None]) -> Timed | None:
@@ -860,7 +753,6 @@ def _attempt(step: StepResult, label: str, run: Callable[[], Timed | None]) -> T
 
 def dry_chain(
     *,
-    reference_dir: Path,
     data_dir: Path,
     output_dir: Path,
     accelerator: str,
@@ -869,14 +761,13 @@ def dry_chain(
     steps: int,
     strict: bool = False,
 ) -> tuple[StepResult, list[Timed]]:
-    """Step 5: every selected reference config, in dry mode, on ``accelerator``.
+    """Step 5: the selected dry runs (CD21, the only one since task 4.8), on ``accelerator``.
 
-    Each run gets ``max_epochs=1``, ``limit_train_batches=steps + 1`` (one untimed batch),
-    ``limit_val_batches=2`` and its own output directory under ``output_dir/dry-chain``;
-    ``overrides`` (``--set``) come before these. A batch size larger than the Train split
-    is capped to it. A run that cannot run (its dataset is not prepared, or R3's pretrain
-    did not run) is skipped: a WARN, or a FAIL with ``strict`` (the runs were requested
-    explicitly with ``--runs``). Any error fails.
+    CD21 runs ``steps + 1`` optimizer steps (one untimed) and one validation in its own
+    output directory under ``output_dir/dry-chain``; ``overrides`` (``--set``) come before
+    these. A batch size larger than the Train split is capped to it. A run that cannot run
+    (its dataset is not prepared with float32 stamps) is skipped: a WARN, or a FAIL with
+    ``strict`` (the run was requested explicitly with ``--runs``). Any error fails.
 
     Raises:
         AcceleratorError: if the accelerator is not available (step 1 should have failed).
@@ -884,7 +775,6 @@ def dry_chain(
     step = StepResult("dry-chain", "PASS")
     timed: list[Timed] = []
     chain = output_dir / "dry-chain"
-    pretrained = False
 
     def skip(line: str) -> None:
         if strict:
@@ -893,21 +783,6 @@ def dry_chain(
         else:
             step.warn(f"SKIP {line}")
 
-    for name, command, config_name in REFERENCE_RUNS:
-        if name.split("-")[0] not in runs:
-            continue
-        if command in ("linear-eval", "fine-tune") and not pretrained:
-            skip(f"{name}: no pretrain checkpoint from R3-pretrain")
-            continue
-        forced = _dry_overrides(command, name, accelerator, data_dir, chain, steps)
-        config = reference_dir / config_name
-        run = partial(
-            _run_one, name, command, config, list(overrides), forced, data_dir, step.lines, skip
-        )
-        result = _attempt(step, f"{name} ({command})", run)
-        if result is not None:
-            pretrained = pretrained or command == "pretrain"
-            timed.append(result)
     if CD21_RUN in runs:
         result = _attempt(
             step,
@@ -919,43 +794,32 @@ def dry_chain(
         if result is not None:
             timed.append(result)
     if not timed and step.status != "FAIL":
-        step.lines.append("no reference run could run (no prepared dataset?)")
+        step.lines.append("no dry run could run (no prepared dataset?)")
         step.status = "FAIL"
     return step, timed
 
 
-def _hours(n_train: int, timed: Timed) -> float | None:
+def _hours(timed: Timed) -> float | None:
     if timed.steps_per_second is None:
         return None
-    steps = timed.planned_steps
-    if steps is None:
-        steps = (n_train // timed.batch_size) * timed.max_epochs
-    return steps / timed.steps_per_second / 3600
+    return timed.planned_steps / timed.steps_per_second / 3600
 
 
 def estimate(timed: Sequence[Timed], train_count: Callable[[str], int | None]) -> StepResult:
-    """Step 6: GPU-hours of each reference run, full and minimal set.
+    """Step 6: GPU-hours of each timed run, full and minimal set.
 
-    ``train_count(dataset)`` gives the Train size the estimate assumes (the prepared real
-    data, or :data:`REAL_TRAIN_COUNTS` for a synthetic preflight).
+    ``train_count(dataset)`` tells whether the run's dataset is known (the prepared real
+    data, or :data:`REAL_TRAIN_COUNTS` for a synthetic preflight): a run counted in steps
+    needs no Train size, but an unknown dataset is reported, not estimated.
     """
     step = StepResult("throughput", "PASS")
     total_full = total_minimal = 0.0
     for run in timed:
         if run.name not in _FULL_SEEDS:
             continue
-        datasets = _R3_FRACTIONS if run.name == "R3-linear-eval" else (run.dataset,)
-        hours = 0.0
-        missing = []
-        for dataset in datasets:
-            n_train = train_count(dataset)
-            per_seed = None if n_train is None else _hours(n_train, run)
-            if per_seed is None:
-                missing.append(dataset)
-            else:
-                hours += per_seed
-        if missing:
-            step.warn(f"{run.name}: no estimate for {', '.join(missing)}")
+        hours = None if train_count(run.dataset) is None else _hours(run)
+        if hours is None:
+            step.warn(f"{run.name}: no estimate for {run.dataset}")
             continue
         full, minimal = hours * _FULL_SEEDS[run.name], hours
         total_full += full
@@ -965,21 +829,14 @@ def estimate(timed: Sequence[Timed], train_count: Callable[[str], int | None]) -
             note = f" (measured at batch {run.measured_batch_size}, not {run.batch_size})"
         if run.n_steps < 5:
             note += f" (only {run.n_steps} timed steps: rough)"
-        if run.planned_steps is not None:
-            step.lines.append(
-                f"{run.name}: >= {full:.1f} GPU-h full set, {minimal:.1f} minimal "
-                f"({run.planned_steps} steps at least: a new best extends the horizon; "
-                f"batch {run.batch_size}){note}"
-            )
-            continue
         step.lines.append(
-            f"{run.name}: <= {full:.1f} GPU-h full set, {minimal:.1f} minimal "
-            f"({run.max_epochs} epochs max, batch {run.batch_size}){note}"
+            f"{run.name}: >= {full:.1f} GPU-h full set, {minimal:.1f} minimal "
+            f"({run.planned_steps} steps at least: a new best extends the horizon; "
+            f"batch {run.batch_size}){note}"
         )
     step.lines.append(
-        f"total: <= {total_full:.1f} GPU-h full set, {total_minimal:.1f} GPU-h minimal set "
-        "(upper bound for R1-R4: EarlyStopping usually stops sooner; CD21 counts its initial "
-        "horizon; validation not included)"
+        f"total: >= {total_full:.1f} GPU-h full set, {total_minimal:.1f} GPU-h minimal set "
+        "(CD21 counts its initial horizon; validation not included)"
     )
     return step
 
@@ -1010,17 +867,20 @@ def _print(step: StepResult, stream: TextIO) -> None:
     stream.flush()
 
 
-def _check_arguments(
-    synthetic: bool, data_dir: Path | None, runs: Sequence[str] | None, reference_dir: Path
-) -> None:
+def _check_arguments(synthetic: bool, data_dir: Path | None, runs: Sequence[str] | None) -> None:
     if synthetic == (data_dir is not None):
         raise ConfigError("preflight needs exactly one of --synthetic and --data-dir DIR")
+    removed = sorted(set(runs or ()) & set(_LIGHTNING_RUNS))
+    if removed:
+        msg = (
+            f"the {', '.join(removed)} dry runs trained on Lightning, removed in task 4.8: "
+            f"run them from the git tag {LIGHTNING_TAG}"
+        )
+        raise ConfigError(msg)
     unknown = sorted(set(runs or ()) - set(_ALL_RUNS))
     if unknown:
         valid = ", ".join(_ALL_RUNS)
         raise ConfigError(f"unknown reference run(s) {', '.join(unknown)}; valid: {valid}")
-    if not (reference_dir / "R1.yaml").is_file():
-        raise ConfigError(f"{reference_dir} has no reference configs (R1.yaml, ...)")
 
 
 def _accelerator_step(
@@ -1042,7 +902,6 @@ def run_preflight(
     data_dir: Path | None = None,
     synthetic: bool = False,
     accelerator: str = "cuda",
-    reference_dir: Path = Path("configs/reference"),
     runs: Sequence[str] | None = None,
     overrides: Sequence[str] = (),
     n_per_split: int = 2400,
@@ -1054,8 +913,8 @@ def run_preflight(
     """Run the six steps (module docstring) and print them; True if none failed.
 
     Exactly one of ``synthetic`` and ``data_dir`` is required. ``runs`` None means every
-    reference run whose data is present (a missing dataset only warns); runs named
-    explicitly must all run, or the preflight fails. ``gpu_query`` is injectable for tests
+    dry run whose data is present (a missing dataset only warns); runs named explicitly
+    must all run, or the preflight fails. ``gpu_query`` is injectable for tests
     (a mocked ``nvidia-smi``); ``stream`` defaults to the current ``sys.stdout``.
 
     The steps stop at the first FAIL of step 1, 2 (resources: checked from file sizes,
@@ -1063,10 +922,10 @@ def run_preflight(
     step 2 or 3).
 
     Raises:
-        ConfigError: if both or neither data source is given, ``reference_dir`` has no
-            reference configs, or a run name is unknown.
+        ConfigError: if both or neither data source is given, or a run name is unknown or
+            one of the Lightning reference runs R1-R4 (removed in task 4.8).
     """
-    _check_arguments(synthetic, data_dir, runs, reference_dir)
+    _check_arguments(synthetic, data_dir, runs)
     stream = sys.stdout if stream is None else stream
     done: list[StepResult] = []
 
@@ -1088,7 +947,6 @@ def run_preflight(
             stream.write("preflight: FAIL (the dry chain did not run)\n")
             return False
     chain, timed = dry_chain(
-        reference_dir=reference_dir,
         data_dir=data_dir,
         output_dir=output_dir,
         accelerator=accelerator,

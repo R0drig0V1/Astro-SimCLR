@@ -59,7 +59,7 @@ from astro_simclr.runs.layout import (
     retention,
 )
 from astro_simclr.runs.manifest import MANIFEST_FILE, ManifestError, is_finished, read_manifest
-from astro_simclr.runs.spec import load_spec
+from astro_simclr.runs.spec import check_trainable, load_spec
 
 __all__ = [
     "DEFAULT_REMOTE_CLI",
@@ -206,11 +206,12 @@ def submit(
     Returns the runner's JSON report (``queue enqueue``).
 
     Raises:
-        SpecError: if the spec is invalid.
+        SpecError: if the spec is invalid or its engine is ``lightning`` (task 4.8).
         SubmitError: for a dirty tree or an unpushed commit with a non-scratch spec, a
             spec outside the tree, ssh failing, or the runner refusing.
     """
     spec = load_spec(spec_path)
+    check_trainable(spec)
     state = git_state(repo_root)
     if state.sha is None:
         raise SubmitError(f"{repo_root} is not a git checkout")

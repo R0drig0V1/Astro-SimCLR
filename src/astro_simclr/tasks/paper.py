@@ -76,6 +76,7 @@ __all__ = [
     "paper_augment",
     "paper_crops",
     "paper_inputs",
+    "paper_model",
     "with_train_fits",
 ]
 
@@ -421,6 +422,34 @@ def check_paper_task(settings: Settings) -> None:
         )
 
 
+def paper_model(settings: Settings) -> nn.Module:
+    """``build_paper_model`` with every model field of ``settings`` (from the global generator).
+
+    The one place that maps the settings to the model's arguments: the variant
+    (``paper_arch``, ``group_fields``, ``context``), the head (``with_features``,
+    ``dropout_active``, ``drop_rate``, ``feature_set``) and the hybrids' shapes
+    (``hybrid_dim``, ``hybrid_depth``, ``hybrid_heads``, ``hybrid_readout``; plan row B9).
+    :func:`build_paper_task` trains it and ``ensemble_eval.member_net`` reloads a run's
+    weights into it, so a stored run is always rebuilt with its own shapes.
+
+    Raises:
+        ValueError: as ``build_paper_model`` (an unknown or inconsistent variant).
+    """
+    return build_paper_model(
+        settings.paper_arch,
+        group_fields=settings.group_fields,
+        context=settings.context,
+        with_features=settings.with_features,
+        dropout_active=settings.dropout_active,
+        drop_rate=settings.drop_rate,
+        feature_set=settings.feature_set,
+        hybrid_dim=settings.hybrid_dim,
+        hybrid_depth=settings.hybrid_depth,
+        hybrid_heads=settings.hybrid_heads,
+        hybrid_readout=settings.hybrid_readout,
+    )
+
+
 def build_paper_task(
     settings: Settings, info: dict[str, Any], *, download: Callable[[Any], Path] | None = None
 ) -> PaperTask:
@@ -442,19 +471,7 @@ def build_paper_task(
     reads_features = bool(columns)
     criterion = P_stamps_loss(settings.beta_loss)
     augment = paper_augment(settings)
-    model = build_paper_model(
-        settings.paper_arch,
-        group_fields=settings.group_fields,
-        context=settings.context,
-        with_features=settings.with_features,
-        dropout_active=settings.dropout_active,
-        drop_rate=settings.drop_rate,
-        feature_set=settings.feature_set,
-        hybrid_dim=settings.hybrid_dim,
-        hybrid_depth=settings.hybrid_depth,
-        hybrid_heads=settings.hybrid_heads,
-        hybrid_readout=settings.hybrid_readout,
-    )
+    model = paper_model(settings)
     load_backbone(settings, model, info, download=download)
     # After the backbone weights, so the EMA starts from them (plan row D3).
     ema = (

@@ -1,17 +1,16 @@
-"""Run checks shared by both engines' runners (Lightning-free; task 4.6).
+"""Run checks of the plain engine's runners (``tasks.plain``, ``tasks.rj23``; task 4.6).
 
-Moved from ``experiments`` (which re-exports them under their old names) so that the plain
-engine's runner (``tasks.plain``) refuses exactly what ``run_command`` refuses, with the
-same messages, without importing Lightning:
+They lived in ``experiments`` (the Lightning runner, removed in task 4.8) and keep its
+messages:
 
 - :func:`check_accelerator` (:class:`AcceleratorError`) and :func:`dataset_path`;
-- :func:`check_names` (the augmentation registry);
 - :func:`check_schedule` and :func:`check_paper_variant`: the ``carrasco2021`` schedule,
   the paper model and its 2.5 flags go together;
-- :func:`check_split`: a split run is ``train-supervised`` on ``carrasco2021``;
-- :func:`refuse_rj23`: phase 3's ``rj23`` schedule has its own runners (task 3.4b):
-  ``training.rj23.run_rj23`` on Lightning, so ``run_command`` refuses it, and
-  ``tasks.rj23.run_rj23_plain``, which ``tasks.plain.run_plain`` dispatches to.
+- :func:`check_split`: a split run is ``train-supervised`` on ``carrasco2021``.
+
+``Settings.augmentation`` (the legacy PIL augmentations of ``pretrain`` / ``linear-eval``
+/ ``fine-tune``, frozen at the git tag ``lightning-final``) is no longer checked: no
+remaining runner reads it, and the field stays only because the config hash covers it.
 """
 
 from __future__ import annotations
@@ -22,8 +21,7 @@ from typing import Final
 
 import torch
 
-from astro_simclr.augmentations import resolve_augmentation_name
-from astro_simclr.config import CARRASCO2021, HYBRID_FLAGS, RJ23, ConfigError, Settings
+from astro_simclr.config import CARRASCO2021, HYBRID_FLAGS, ConfigError, Settings
 from astro_simclr.data.prepared import is_prepared
 from astro_simclr.data.schema import DataError
 from astro_simclr.paper_variants import paper_input_side
@@ -34,12 +32,10 @@ __all__ = [
     "PAPER_VARIANT_DEFAULTS",
     "AcceleratorError",
     "check_accelerator",
-    "check_names",
     "check_paper_variant",
     "check_schedule",
     "check_split",
     "dataset_path",
-    "refuse_rj23",
 ]
 
 #: ``train-supervised`` model of the ``carrasco2021`` schedule (task 2.2a).
@@ -92,28 +88,6 @@ def dataset_path(settings: Settings) -> Path:
         )
         raise DataError(msg)
     return path
-
-
-def refuse_rj23(settings: Settings) -> None:
-    """The ``rj23`` schedule trains through ``training.rj23.run_rj23``, not a generic runner.
-
-    Raises:
-        ConfigError: for ``schedule: rj23`` (the message gives the command that trains it).
-    """
-    if settings.schedule == RJ23:
-        msg = (
-            f"schedule {RJ23} trains through training.rj23.run_rj23: `astro-simclr "
-            "train-supervised --preset rj23-<scenario> --splits OBJECT_SPLITS`"
-        )
-        raise ConfigError(msg)
-
-
-def check_names(settings: Settings) -> None:
-    """Refuse an unknown augmentation name (``ConfigError``, not ``ValueError``)."""
-    try:
-        resolve_augmentation_name(settings.augmentation)
-    except ValueError as err:
-        raise ConfigError(str(err)) from None
 
 
 def check_schedule(command: str, settings: Settings) -> None:

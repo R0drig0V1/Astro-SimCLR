@@ -62,6 +62,7 @@ from typing import Any, ClassVar, Final, get_type_hints
 from astro_simclr.config import (
     CARRASCO2021,
     EPOCHS,
+    LIGHTNING_TAG,
     RJ23,
     RJ23_MODEL,
     ConfigError,
@@ -110,9 +111,10 @@ __all__ = [
     "semantic_config_of",
 ]
 
-#: ``runtime.engine`` values: ``lightning`` (the default until task 4.7/4.8) or ``plain`` (the
-#: plain-PyTorch engine of ADR 0014, task 4.6: the paper classifier on ``carrasco2021``).
-ENGINES: Final = ("lightning", "plain")
+#: ``runtime.engine`` values: ``plain``, the plain-PyTorch engine of ADR 0014 (the default
+#: and the only one since task 4.8). Lightning trained until then; a config that asks for it
+#: is refused, naming the git tag that keeps it (``config.LIGHTNING_TAG``).
+ENGINES: Final = ("plain",)
 #: ``model.name`` of the ``resnet`` variant (``models.build_encoder``'s torchvision ResNets).
 RESNETS: Final = ("resnet18", "resnet34", "resnet50", "resnet152")
 
@@ -164,7 +166,7 @@ class Runtime:
 
     #: The training loop; see :data:`ENGINES`. Not a flat field: it is the run id's
     #: ``engine`` component (ADR 0015), never part of the config hash.
-    engine: str = "lightning"
+    engine: str = "plain"
     accelerator: str = _flat("accelerator")
     devices: int | str = _flat("devices")
     num_workers: int = _flat("num_workers")
@@ -176,8 +178,15 @@ class Runtime:
         """Check the engine name (the other values are checked by ``Settings``).
 
         Raises:
-            ConfigError: if ``engine`` is not in :data:`ENGINES`.
+            ConfigError: if ``engine`` is not in :data:`ENGINES` (``lightning`` names the
+                git tag that keeps it).
         """
+        if self.engine == "lightning":
+            msg = (
+                "runtime.engine lightning was removed in task 4.8: train on plain (the "
+                f"default), or re-run a Lightning config from the git tag {LIGHTNING_TAG}"
+            )
+            raise ConfigError(msg)
         if self.engine not in ENGINES:
             raise ConfigError(f"runtime.engine {self.engine!r} is not one of: {', '.join(ENGINES)}")
 
@@ -850,7 +859,7 @@ def _raise_section(cls: type, view: Mapping[str, object], section: str) -> Any:
     return _build_section(section, values)
 
 
-def config_from_settings(command: str, settings: Settings, *, engine: str = "lightning") -> Config:
+def config_from_settings(command: str, settings: Settings, *, engine: str = "plain") -> Config:
     """The nested config of a flat run (``command`` with ``settings``): the shim.
 
     The variants are chosen from the flat values (``supervised_model`` and the command,

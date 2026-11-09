@@ -11,28 +11,29 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
 - ``run CONFIG [--set section.key=value | key=value ...]`` (task 4.2,
   :mod:`astro_simclr.config_tree`, ADR 0017): resolve a nested config (its preset or its
   command's legacy one, the file, the dotted overrides, then the flat ones on the flat
-  view), lower it to the flat settings and train it on ``runtime.engine``: ``lightning``
-  (``run_command``, the default) or ``plain`` (``tasks.plain.run_plain``, task 4.6: the paper
-  classifier on ``carrasco2021``, and RJ23's on ``rj23`` since task 3.4b, without
-  Lightning). A flat file needs ``--command``;
+  view), lower it to the flat settings and train it on the plain engine
+  (``tasks.plain.run_plain``, ADR 0014: the paper classifier on ``carrasco2021``, and RJ23's
+  on ``rj23``). ``runtime.engine`` is ``plain`` (the default; ``lightning`` is refused
+  since task 4.8, naming the git tag ``lightning-final``). A flat file needs ``--command``;
   ``--show`` prints the resolved config and its config hash without training; ``--resume``
-  and ``--splits FILE --fold K | --screen`` as below. The four training subcommands are its
-  aliases until task 4.8;
-- training (task 1.7, :mod:`astro_simclr.experiments`): ``pretrain``, ``linear-eval``,
-  ``fine-tune``, ``train-supervised``. Their settings resolve as: the ``Settings``
-  defaults, the subcommand's legacy protocol (``hparams.COMMAND_DEFAULTS``), ``--preset``
-  (``train-supervised`` only: ``carrasco2021`` or ``carrasco2021-no-features``, the paper
-  replication of task 2.2c; :mod:`astro_simclr.presets`; and ``--splits FILE --fold K |
-  --screen``, a split run of task 2.5-infra: :mod:`astro_simclr.protocol.split_runs`; or
-  ``rj23-full``, ``rj23-cropped``, ``rj23-lowres``, ``rj23-multiscale``, RJ23's regime of
-  task 3.4b on a ``raw-alerts`` layout, which needs ``--splits OBJECT_SPLITS`` (the paper
-  protocol; with ``--screen``, a decision run on the selection half) and optionally
-  ``--alerts ALERTS.csv``: :mod:`astro_simclr.training.rj23`),
-  ``--hparams``
-  (a legacy ``results/hparams_best_*.yaml``, through the mapping of
-  :mod:`astro_simclr.hparams`), ``--config``, ``--set``, then the explicit flags
-  (``--data-dir``, ``--output-dir``, ``--seed``, ``--accelerator``, ``--pretrained``);
-  later wins. The legacy file comes first so that a config can correct it (R1's AdamW);
+  and ``--splits FILE --fold K | --screen`` as below;
+- ``train-supervised`` (task 1.7), the flat alias of ``run``, on the plain engine. Its
+  settings resolve as: the ``Settings`` defaults, the subcommand's legacy protocol
+  (``hparams.COMMAND_DEFAULTS``), ``--preset`` (``carrasco2021`` or
+  ``carrasco2021-no-features``, the paper replication of task 2.2c;
+  :mod:`astro_simclr.presets`; and ``--splits FILE --fold K | --screen``, a split run of
+  task 2.5-infra: :mod:`astro_simclr.protocol.split_runs`; or ``rj23-full``,
+  ``rj23-cropped``, ``rj23-lowres``, ``rj23-multiscale``, RJ23's regime of task 3.4b on a
+  ``raw-alerts`` layout, which needs ``--splits OBJECT_SPLITS`` (the paper protocol; with
+  ``--screen``, a decision run on the selection half) and optionally ``--alerts
+  ALERTS.csv``: :mod:`astro_simclr.tasks.rj23`), ``--hparams`` (a legacy
+  ``results/hparams_best_*.yaml``, through the mapping of :mod:`astro_simclr.hparams`),
+  ``--config``, ``--set``, then the explicit flags (``--data-dir``, ``--output-dir``,
+  ``--seed``, ``--accelerator``); later wins. The legacy file comes first so that a config
+  can correct it. The legacy commands ``pretrain``, ``linear-eval`` and ``fine-tune`` (and
+  ``train-supervised``'s ResNet and stamp baselines) trained on Lightning; they were
+  removed in task 4.8 and stay re-runnable from the git tag ``lightning-final`` (plan 4.6):
+  naming one prints that and exits 2;
 - ``compare-reference RUN_DIR... --ref R1|R2|R3|R4|CD21 [--oracle-report FILE]``
   (:mod:`astro_simclr.reference`): exit 0 for PASS or REPORT, 1 for FAIL;
 - protocol (task 2.3, :mod:`astro_simclr.protocol`): ``make-splits`` writes the stored
@@ -66,7 +67,8 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   ``verify-label-budgets FILE`` with the same parent options exits 0 if the file belongs to
   the verified parent, else 1. Registered by
   :func:`astro_simclr.protocol.budget_parser.add_budget_commands`.
-- ``preflight`` (:mod:`astro_simclr.preflight`): exit 0 if no step failed, else 1.
+- ``preflight`` (:mod:`astro_simclr.preflight`; the CD21 dry run on the plain engine):
+  exit 0 if no step failed, else 1.
 - the run registry (task A2, :mod:`astro_simclr.registry`): ``runs reindex [ROOT ...]``,
   ``runs ls``, ``runs show KEY`` and ``runs compare SPEC`` (by experiment spec); exit 1
   when the registry cannot be used or a comparison does not resolve. Registered by
@@ -108,7 +110,7 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   oids, 1.5" of any CD21 alert, near-duplicate stamps) and one alert per oid, and writes
   the index that ``simclr-pilot`` reads (exit 0).
 
-The heavy modules (torch, Lightning) are imported inside the handlers, so ``show-config``
+The heavy modules (torch, the engine) are imported inside the handlers, so ``show-config``
 and ``--help`` stay fast. A :class:`~astro_simclr.data.DataError` (bad, truncated or missing
 data) prints one ``astro-simclr: error: ...`` line and exits with 1; invalid settings,
 arguments or an unavailable accelerator exit with 2.
@@ -135,6 +137,7 @@ import yaml
 from astro_simclr.archive.commands import add_corpus_index_command
 from astro_simclr.config import (
     ACCELERATORS,
+    LIGHTNING_TAG,
     RJ23,
     ConfigError,
     Settings,
@@ -387,7 +390,6 @@ def training_settings(command: str, args: argparse.Namespace) -> Settings:
         "output_dir": args.output_dir,
         "seed": args.seed,
         "accelerator": args.accelerator,
-        "pretrained": getattr(args, "pretrained", None),
     }
     data.update({key: value for key, value in flags.items() if value is not None})
     return settings_from_mapping(data)
@@ -435,31 +437,22 @@ def _train(args: argparse.Namespace) -> int:
     return _execute(command, training_settings(command, args), args)
 
 
-def _execute(
-    command: str, settings: Settings, args: argparse.Namespace, *, engine: str = "lightning"
-) -> int:
-    """Run ``command`` with ``settings`` on ``engine`` and print its summary.
+def _execute(command: str, settings: Settings, args: argparse.Namespace) -> int:
+    """Run ``command`` with ``settings`` on the plain engine and print its summary.
 
-    ``lightning``: ``experiments.run_command``; ``plain``: ``tasks.plain.run_plain`` (task
-    4.6, ADR 0014), which never imports Lightning. ``schedule: rj23`` (its ``--splits`` is
-    the object splits) goes to ``training.rj23.run_rj23`` on Lightning and to
-    ``tasks.plain.run_plain`` (``tasks.rj23.run_rj23_plain``) on the plain engine.
+    ``tasks.plain.run_plain`` (ADR 0014); ``schedule: rj23`` (its ``--splits`` is the
+    object splits) goes to ``tasks.rj23.run_rj23_plain`` through it.
 
     Raises:
-        ConfigError: for ``--alerts`` outside ``schedule: rj23``.
+        ConfigError: for ``--alerts`` outside ``schedule: rj23``, or what ``run_plain``
+            refuses (another command or model: frozen at ``lightning-final``).
     """
     from astro_simclr.runs.layout import METRICS_FILE
+    from astro_simclr.tasks.plain import run_plain
 
     if settings.schedule == RJ23:
         request = _rj23_request(args)
-        if engine == "plain":
-            from astro_simclr.tasks.plain import run_plain
-
-            metrics = run_plain(command, settings, resume=args.resume, rj23=request)
-        else:
-            from astro_simclr.training.rj23 import run_rj23
-
-            metrics = run_rj23(settings, request, resume=args.resume)
+        metrics = run_plain(command, settings, resume=args.resume, rj23=request)
         evaluation = metrics["evaluation"]
         scores = ", ".join(
             f"{stage} macro-F1 {e['macro_f1']:.4f}" for stage, e in evaluation.items()
@@ -473,14 +466,7 @@ def _execute(
     if getattr(args, "alerts", None) is not None:
         raise ConfigError("--alerts belongs to the rj23 schedule (--preset rj23-<scenario>)")
     split = _split_request(args)
-    if engine == "plain":
-        from astro_simclr.tasks.plain import run_plain
-
-        metrics = run_plain(command, settings, resume=args.resume, split=split)
-    else:
-        from astro_simclr import experiments
-
-        metrics = experiments.run_command(command, settings, resume=args.resume, split=split)
+    metrics = run_plain(command, settings, resume=args.resume, split=split)
     shown = {**metrics, "seconds_per_step": metrics.get("timing", {}).get("seconds_per_step")}
     summary = ", ".join(
         f"{key} {shown[key]}"
@@ -509,21 +495,21 @@ def _run(args: argparse.Namespace) -> int:
         sys.stdout.write(f"# command: {config.command}\n# config hash: {config_sha256(config)}\n")
         sys.stdout.write(yaml.safe_dump(config_to_plain(config), sort_keys=False))
         return 0
-    # Both engines take the flat view (the config hash's definition, ADR 0015); the engine
-    # is a run-id component, not a setting (ADR 0017).
-    return _execute(config.command, config.to_settings(), args, engine=config.runtime.engine)
+    # The engine takes the flat view (the config hash's definition, ADR 0015); the engine
+    # is a run-id component, not a setting (ADR 0017), and only plain trains since 4.8.
+    return _execute(config.command, config.to_settings(), args)
 
 
 def _add_run_command(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     run = commands.add_parser(
         "run",
-        help="train from a nested config (task 4.2; the training subcommands are its aliases)",
+        help="train from a nested config (task 4.2; train-supervised is its flat alias)",
         description="Resolve a nested config (sections run, runtime, data, model, optim, "
         "schedule, augment, eval; ADR 0017) and train it. Order: its preset (or its "
         "command's legacy one), the file, --set section.key=value, then --set key=value on "
         "the flat view. A flat settings file needs --command. The model decides the "
-        "training command; runtime.engine picks the loop: lightning (the default) or plain "
-        "(the paper classifier on carrasco2021, task 4.6, and RJ23's on rj23, task 3.4b).",
+        "training command; it trains on the plain engine (runtime.engine plain, the only "
+        "one since task 4.8): the paper classifier on carrasco2021 and RJ23's on rj23.",
     )
     run.add_argument("config_file", type=Path, metavar="CONFIG", help="nested or flat YAML")
     run.add_argument(
@@ -550,8 +536,7 @@ def _add_run_command(commands: argparse._SubParsersAction[argparse.ArgumentParse
     run.add_argument(
         "--resume",
         metavar="PATH|auto",
-        help="continue from a checkpoint; auto: OUTPUT_DIR/checkpoints/last.ckpt if any "
-        "(runtime.engine plain: OUTPUT_DIR/ckpt/last.pt)",
+        help="continue from a checkpoint; auto: OUTPUT_DIR/ckpt/last.pt if any",
     )
     _add_split_arguments(run)
     run.set_defaults(handler=_run)
@@ -568,12 +553,19 @@ _TRAINING_PRESETS: Final = (
     "rj23-multiscale",
 )
 
-_TRAINING_HELP = {
-    "pretrain": "SimCLR pretraining of an encoder (legacy iter_clr.py)",
-    "linear-eval": "linear evaluation of a pretrained encoder (legacy linear_classifier.py)",
-    "fine-tune": "fine-tuning of a pretrained encoder (legacy fine_tuning.py)",
-    "train-supervised": "supervised CE baseline: stamp classifier or ResNet (iter_ce_*.py)",
-}
+#: The legacy training subcommands removed with Lightning (task 4.8; plan 4.6): their
+#: modules are frozen at the git tag ``lightning-final``. ``main`` refuses them by name.
+REMOVED_COMMANDS: Final = ("pretrain", "linear-eval", "fine-tune")
+
+
+def removed_command_message(command: str) -> str:
+    """The error of a legacy command removed in task 4.8 (it names the tag)."""
+    return (
+        f"{command} trained on Lightning, removed in task 4.8: it is frozen at the git tag "
+        f"{LIGHTNING_TAG} (`git worktree add ../astro-simclr-lf {LIGHTNING_TAG}`, then "
+        "`uv sync --locked` and the command there); phase 5 writes SimCLR pretraining and "
+        "its evaluation fresh (simclr-pilot, simclr-probe)"
+    )
 
 
 def _add_split_arguments(sub: argparse.ArgumentParser) -> None:
@@ -615,55 +607,48 @@ def _add_split_arguments(sub: argparse.ArgumentParser) -> None:
 def _add_training_commands(
     commands: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
-    for command in COMMANDS:
-        sub = commands.add_parser(
-            command,
-            help=_TRAINING_HELP[command],
-            description=f"{_TRAINING_HELP[command]}. Writes checkpoints, metrics.json and "
-            "(classifiers) confusion-matrix figures under the output directory. Dry mode: "
-            "--set max_epochs=1 limit_train_batches=2 limit_val_batches=2. An alias of "
-            "'astro-simclr run' on a flat config, kept until task 4.8.",
-        )
-        add_settings_arguments(sub)
-        sub.add_argument(
-            "--hparams",
-            type=Path,
-            metavar="FILE",
-            help="legacy results/hparams_best_*.yaml, mapped per subcommand (applied before "
-            "--config)",
-        )
-        sub.add_argument("--data-dir", metavar="DIR", help="parent of the prepared datasets")
-        sub.add_argument("--output-dir", metavar="DIR", help="where every output goes")
-        sub.add_argument("--seed", type=int, metavar="N", help="random seed")
-        sub.add_argument(
-            "--accelerator", choices=sorted(ACCELERATORS), help="cpu, cuda, mps, gpu or auto"
-        )
-        sub.add_argument(
-            "--resume",
-            metavar="PATH|auto",
-            help="continue from a checkpoint; auto: OUTPUT_DIR/checkpoints/last.ckpt if any",
-        )
-        if command == "train-supervised":
-            sub.add_argument(
-                "--preset",
-                choices=_TRAINING_PRESETS,
-                default=None,
-                help="named settings applied after the legacy protocol and before --hparams, "
-                "--config and --set: carrasco2021 is the paper replication of Carrasco-Davis "
-                "et al. 2021 (float input, Adam (0.9, 0.999), the iteration schedule; ADR "
-                "0003), carrasco2021-no-features its without-features variant; rj23-<scenario> "
-                "trains RJ23's classifier of that input on a raw-alerts layout with their "
-                "regime (Keras Adam, class-uniform batches, macro-F1 patience; ADR 0023) and "
-                "needs --splits",
-            )
-            _add_split_arguments(sub)
-        if command in ("linear-eval", "fine-tune"):
-            sub.add_argument(
-                "--pretrained",
-                metavar="PATH",
-                help="the pretrain checkpoint, or a pretrain output directory",
-            )
-        sub.set_defaults(handler=_train)
+    command = "train-supervised"
+    sub = commands.add_parser(
+        command,
+        help="train the paper classifier or RJ23's on the plain engine (run's flat alias)",
+        description="Train train-supervised on the plain engine: the paper classifier "
+        "(--preset carrasco2021) or RJ23's (--preset rj23-<scenario>). Writes checkpoints, "
+        "metrics.json and confusion-matrix figures under the output directory. The flat "
+        "alias of 'astro-simclr run'. The stamp and ResNet baselines trained on Lightning "
+        f"and are frozen at the git tag {LIGHTNING_TAG}.",
+    )
+    add_settings_arguments(sub)
+    sub.add_argument(
+        "--hparams",
+        type=Path,
+        metavar="FILE",
+        help="legacy results/hparams_best_*.yaml, mapped per subcommand (applied before --config)",
+    )
+    sub.add_argument("--data-dir", metavar="DIR", help="parent of the prepared datasets")
+    sub.add_argument("--output-dir", metavar="DIR", help="where every output goes")
+    sub.add_argument("--seed", type=int, metavar="N", help="random seed")
+    sub.add_argument(
+        "--accelerator", choices=sorted(ACCELERATORS), help="cpu, cuda, mps, gpu or auto"
+    )
+    sub.add_argument(
+        "--resume",
+        metavar="PATH|auto",
+        help="continue from a checkpoint; auto: OUTPUT_DIR/ckpt/last.pt if any",
+    )
+    sub.add_argument(
+        "--preset",
+        choices=_TRAINING_PRESETS,
+        default=None,
+        help="named settings applied after the legacy protocol and before --hparams, "
+        "--config and --set: carrasco2021 is the paper replication of Carrasco-Davis "
+        "et al. 2021 (float input, Adam (0.9, 0.999), the iteration schedule; ADR "
+        "0003), carrasco2021-no-features its without-features variant; rj23-<scenario> "
+        "trains RJ23's classifier of that input on a raw-alerts layout with their "
+        "regime (Keras Adam, class-uniform batches, macro-F1 patience; ADR 0023) and "
+        "needs --splits",
+    )
+    _add_split_arguments(sub)
+    sub.set_defaults(handler=_train)
 
 
 def _compare_reference(args: argparse.Namespace) -> int:
@@ -894,7 +879,6 @@ def _preflight(args: argparse.Namespace) -> int:
         data_dir=args.data_dir,
         synthetic=args.synthetic,
         accelerator=args.accelerator,
-        reference_dir=args.reference_dir,
         runs=runs,
         overrides=args.overrides,
         n_per_split=args.n_per_split,
@@ -928,10 +912,11 @@ def _add_check_commands(commands: argparse._SubParsersAction[argparse.ArgumentPa
 
     preflight = commands.add_parser(
         "preflight",
-        help="check that this machine can run the reference runs",
+        help="check that this machine can run the CD21 runs",
         description="CUDA and torch build, RAM and disk, the data and its manifest, a dry "
-        "run of every reference config and the GPU-hour estimate. Exit 0 if no step "
-        "failed, else 1.",
+        "run of the carrasco2021 preset (CD21) on the plain engine and the GPU-hour "
+        "estimate. Exit 0 if no step failed, else 1. The R1-R4 dry runs trained on "
+        f"Lightning and are frozen at the git tag {LIGHTNING_TAG}.",
     )
     source = preflight.add_mutually_exclusive_group(required=True)
     source.add_argument(
@@ -945,14 +930,11 @@ def _add_check_commands(commands: argparse._SubParsersAction[argparse.ArgumentPa
         "--accelerator", default="cuda", choices=sorted(ACCELERATORS), help="default: cuda"
     )
     preflight.add_argument(
-        "--reference-dir", type=Path, default=Path("configs/reference"), metavar="DIR"
-    )
-    preflight.add_argument(
         "--runs",
         default=None,
         metavar="LIST",
-        help="comma-separated, e.g. R1,R2,R4 or CD21 (the carrasco2021 preset on the plain "
-        "engine); each must run (default: every run whose data is present)",
+        help="comma-separated run names: CD21 (the carrasco2021 preset on the plain engine), "
+        "the only one; it must run (default: CD21 if its data is present)",
     )
     preflight.add_argument(
         "--n-per-split", type=int, default=2400, metavar="N", help="synthetic stamps per split"
@@ -1853,12 +1835,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the CLI on ``argv`` (default: ``sys.argv[1:]``) and return the exit code.
 
-    Without a subcommand it prints the help and returns 2. Invalid settings print one
-    ``error:`` line on stderr and return 2; argparse usage errors exit with 2 as well.
+    Without a subcommand it prints the help and returns 2; a legacy command removed in task
+    4.8 (:data:`REMOVED_COMMANDS`) prints where it is frozen and returns 2. Invalid settings
+    print one ``error:`` line on stderr and return 2; argparse usage errors exit with 2 as well.
     Unusable data (a ``DataError``) prints one ``error:`` line and returns 1.
     """
     from astro_simclr.data.schema import DataError
 
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] in REMOVED_COMMANDS:
+        sys.stderr.write(f"astro-simclr: error: {removed_command_message(argv[0])}\n")
+        return EXIT_USAGE
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command is None:

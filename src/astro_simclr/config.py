@@ -54,6 +54,7 @@ __all__ = [
     "HYBRID_ARCHS",
     "HYBRID_FLAGS",
     "HYBRID_READOUTS",
+    "LIGHTNING_TAG",
     "LR_SCHEDULES",
     "PAPER_ARCHS",
     "PAPER_INPUTS",
@@ -87,6 +88,9 @@ SCHEDULES: Final = (EPOCHS, CARRASCO2021, RJ23)
 RJ23_MODEL: Final = "rj23"
 #: The validation metric of the ``rj23`` schedule: the macro-F1 on the selection part.
 RJ23_MONITOR: Final = "macro_f1_val"
+#: The git tag of the last commit with the Lightning engine (task 4.8): the legacy commands
+#: and every Lightning run stay re-runnable from it. Refusals of removed paths name it.
+LIGHTNING_TAG: Final = "lightning-final"
 #: ``Settings.rj23_scenario``: RJ23's four inputs (``data.rj23_input.VIEW_NAMES``).
 RJ23_SCENARIOS: Final = ("full", "cropped", "lowres", "multiscale")
 #: ``Settings.rj23_bn_position`` (``rj23_model.BNPosition``; ADR 0013's sensitivity arm).
