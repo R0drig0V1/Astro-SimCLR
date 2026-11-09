@@ -88,6 +88,7 @@ __all__ = [
     "load_candid_exclusions",
     "read_corpus_index",
     "write_corpus_index",
+    "write_npz_atomically",
 ]
 
 #: ``format`` of the index's ``meta``; its version is :data:`INDEX_VERSION`.
@@ -439,6 +440,22 @@ def write_corpus_index(index: CorpusIndex, path: Path, *, overwrite: bool = Fals
         DataError: if ``path`` exists and ``overwrite`` is False.
         OSError: if the file cannot be written.
     """
+    write_npz_atomically(path, {"rows": index.rows}, index.meta, overwrite=overwrite)
+
+
+def write_npz_atomically(
+    path: Path, arrays: dict[str, npt.NDArray[Any]], meta: dict[str, Any], *, overwrite: bool
+) -> None:
+    """Write ``arrays`` and ``meta`` (a JSON 0-d string) to the ``.npz`` ``path``, atomically.
+
+    The file goes through a temporary file in the same directory, ``fsync`` and a rename,
+    then the directory is synced: a reader sees the old file or the whole new one. The
+    corpus index and its fits sidecar (:mod:`.corpus_fits`) are written this way.
+
+    Raises:
+        DataError: if ``path`` exists and ``overwrite`` is False.
+        OSError: if the file cannot be written.
+    """
     if path.exists() and not overwrite:
         raise DataError(f"{path} already exists; pass overwrite to replace it")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -446,8 +463,8 @@ def write_corpus_index(index: CorpusIndex, path: Path, *, overwrite: bool = Fals
     tmp = Path(name)
     try:
         with os.fdopen(fd, "wb") as handle:
-            meta = np.array(json.dumps(index.meta, sort_keys=True))
-            np.savez(handle, rows=index.rows, meta=meta)
+            payload = {**arrays, "meta": np.array(json.dumps(meta, sort_keys=True))}
+            np.savez(handle, allow_pickle=False, **payload)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)

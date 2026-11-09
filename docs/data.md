@@ -879,15 +879,50 @@ The tiers (ADR 0018):
 | `host` | The whole corpus normalised once in host memory | Refused above `--host-cap-gb` (default 24): 390k stamps are about 18.6 GB |
 | `device` | On the training device | Refused for a corpus |
 
-The tiers give the same batches. The noise view needs per-stamp fits, so a corpus run
-refuses `--noise-scale`.
+The tiers give the same batches.
+
+**The noise view on a corpus: the fits sidecar.** The C5 noise view (`--noise-scale`)
+needs, per stamp, the fit `diff ~ a*sci + b*tmpl + c`, its R² and the background sigmas
+(`stamp_relation.stamp_fits`, 6 float32 values). A layout run fits its Train stamps when
+it starts. A corpus run reads them from a sidecar that `build-corpus-fits` computes once
+per index (`src/astro_simclr/archive/corpus_fits.py`; ADR 0019, amendment of 2026-11-09):
+
+```bash
+uv run astro-simclr build-corpus-fits INDEX_FILE --out FITS_FILE [--archive ARCHIVE_DIR]
+uv run astro-simclr simclr-pilot INDEX_FILE --noise-scale 3 --corpus-fits FITS_FILE ...
+```
+
+- **Values:** row `i` is `stamp_fits` of index position `i`, on the stamp normalised as
+  above (the reader's float32), channels first: the input a layout run gives `stamp_fits`.
+  A CPU test checks that a stamp written both to an archive and to a layout gets the same
+  fits bit for bit through both paths, and that a corpus run with noise trains the same
+  model as the layout run with noise on those stamps.
+- **The file:** an `.npz` without pickles, written atomically, not committed (it names
+  local paths): `fits`, float32 `(n, 6)` in index order (24 bytes a row, 3.5 MB for 145k
+  rows), and `meta`, a JSON string (format `astro-simclr-corpus-fits` v1): the index's
+  path, SHA-256, `n` and `exclusion_sha256`, the archive, the columns and how the values
+  were computed.
+- **Binding:** the pilot refuses a sidecar whose index SHA-256 or row count is not the
+  index's ("the fits of another index"), a corpus run with `--noise-scale` and no
+  `--corpus-fits` (the message gives the command), and `--corpus-fits` without noise or
+  with a layout. `pilot.json` records `data.pretrain.fits` (path, SHA-256, format, the
+  index SHA-256 it names) and `config.corpus_fits`; a resume refuses fits rebuilt since
+  the checkpoint (another SHA-256).
+- **Why a sidecar** rather than a field of the index: the fits are a function of the index
+  and the archive, not part of the exclusion. An index already built stays valid (its
+  `exclusion_sha256` too), and a run without noise needs nothing new.
+- **Cost** (Apple M4, CPU, shared): computing the fits takes about 1.6 s per 10k stamps
+  (`stamp_fits` alone, float64) and 2.7 s per 10k with the read and the normalisation
+  (page cache warm): about 40 s for 145k rows. During training, the lookup of a batch's
+  fits (one gather of 256 rows) takes about 3 µs; the stamps' read of a batch takes about
+  66 ms on the 5090 host.
 
 The pilot refuses an index built with weaker rules: a radius below 1.5″, or
 `--no-near-duplicates`. `--allow-weak-index` overrides the refusal for a test; it is
 recorded in the config, and the record lists `weak_rules`. A resume refuses a checkpoint
 trained on another index (another `index_sha256`, `exclusion_sha256` or `n`), even at the
 same path. `pilot.json` records the index (path and SHA-256), the archive,
-the `exclusion_sha256`, the counts and the rules.
+the `exclusion_sha256`, the counts and the rules, and with noise the fits sidecar.
 
 ### Sampling plan and budget
 

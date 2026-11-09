@@ -23,8 +23,12 @@ index file (``build-corpus-index``, task 5.1).
   the layout the index excluded, as recorded in it; its source SHA-256 must be that one)
   gives the Train stamps of the kNN bank and of the embedding dump, and Validation, with
   ``splits`` as above. ``archive`` (default: the recorded archive) must hold the indexed
-  nights unchanged (``corpus_index.check_archive``). The noise view needs per-stamp fits,
-  not computed for the corpus, so ``noise_scale`` must be 0.
+  nights unchanged (``corpus_index.check_archive``). The noise view needs per-stamp fits:
+  a corpus run with ``noise_scale > 0`` reads them from ``corpus_fits``, the sidecar of
+  ``build-corpus-fits`` (:mod:`~astro_simclr.archive.corpus_fits`: ``stamp_fits`` of each
+  index row on the stamp as read here), which must name this index's SHA-256 and row
+  count; without it the run is refused. A layout run computes its fits from its Train
+  stamps when it starts, as before.
 
 **Tiers** of the pretraining stamps (ADR 0018's tiers, in this loop): ``"device"`` keeps
 them on the training device (2.4 GB for CD21 Train; refused for a corpus, about 18.6 GB for
@@ -32,7 +36,9 @@ them on the training device (2.4 GB for CD21 Train; refused for a corpus, about 
 refused above ``host_cap_gb``) and uploads each batch; ``"memmap"`` (a corpus only) reads
 each batch from the night shards, sorted by file offset, normalises it on the host into a
 pinned buffer (CUDA) and uploads it without blocking. The tiers give the same batches: the
-tier is not part of the numbers.
+tier is not part of the numbers. The stamp fits of the noise view are indexed by the
+same stored positions as the stamps (a layout's Train rows, a corpus's index positions):
+on the stamps' device for a layout, on the training device for a corpus (24 bytes a row).
 
 **Stream** (:class:`BatchOrder`): pass ``p`` over the pretraining stamps is the permutation
 ``default_rng([seed, p, simclr_batch_order])``; step ``s`` takes batch ``s mod
@@ -89,6 +95,7 @@ import numpy as np
 import numpy.typing as npt
 import torch
 
+from astro_simclr.archive.corpus_fits import read_corpus_fits, verify_corpus_fits
 from astro_simclr.archive.corpus_index import check_archive, read_corpus_index
 from astro_simclr.archive.reader import CorpusStamps
 from astro_simclr.config import ConfigError
@@ -224,6 +231,8 @@ class PilotConfig:
     online_probe: bool = False
     online_probe_batch: int = ONLINE_BATCH
     online_probe_lr: float = ONLINE_LR
+    # The stamp fits of a corpus index (archive.corpus_fits; the record omits it unset).
+    corpus_fits: str | None = None
 
     def __post_init__(self) -> None:
         if (self.epochs is None) == (self.steps is None):
@@ -255,6 +264,8 @@ class PilotConfig:
             raise ConfigError("fp32_precision must be ieee|tf32 and tier device|host|memmap")
         if not self.host_cap_gb > 0:
             raise ConfigError(f"host_cap_gb must be > 0, got {self.host_cap_gb}")
+        if self.corpus_fits is not None and not self.noise_scale > 0:
+            raise ConfigError("corpus_fits is read only by the noise view: set noise_scale > 0")
         self._check_monitors()
 
     def _check_monitors(self) -> None:
@@ -269,13 +280,14 @@ class PilotConfig:
             raise ConfigError(f"online_probe_lr must be > 0, got {self.online_probe_lr}")
 
     def to_plain(self) -> dict[str, Any]:
-        """The config as a JSON-ready dict: every field, but a monitor field at its default.
+        """The config as a JSON-ready dict: every field, but an optional one at its default.
 
-        The monitors' fields are left out while they hold their defaults, so a run without
-        the monitors writes the same record and checkpoint config as before they existed.
+        The monitors' fields and ``corpus_fits`` are left out while they hold their
+        defaults, so a run without them writes the same record and checkpoint config as
+        before they existed.
         """
         plain = asdict(self)
-        for name in _MONITOR_FIELDS:
+        for name in _OPTIONAL_FIELDS:
             if plain[name] == _DEFAULTS[name]:
                 del plain[name]
         return plain
@@ -303,6 +315,8 @@ _MONITOR_FIELDS: Final = (
     "online_probe_batch",
     "online_probe_lr",
 )
+#: Every field :meth:`PilotConfig.to_plain` omits at its default.
+_OPTIONAL_FIELDS: Final = (*_MONITOR_FIELDS, "corpus_fits")
 _DEFAULTS: Final = {f.name: f.default for f in fields(PilotConfig)}
 
 
@@ -313,11 +327,15 @@ class CorpusPretrain:
     Attributes:
         stamps: the index's archive rows, memory-mapped.
         record: what ``pilot.json`` records about them (the index, its SHA-256, the
-            archive, the exclusion SHA-256 and counts).
+            archive, the exclusion SHA-256 and counts; with the noise view, ``fits``: the
+            sidecar's path, SHA-256 and the index SHA-256 it names).
+        fits: float32 ``(n, 6)``, the stamp fits of every index position (the
+            ``corpus_fits`` sidecar), or ``None`` without the noise view.
     """
 
     stamps: CorpusStamps
     record: dict[str, Any]
+    fits: npt.NDArray[np.float32] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,16 +379,20 @@ def load_pilot_data(config: PilotConfig) -> PilotData:
     "Data").
 
     Raises:
-        DataError: if the layout, the index, the archive or the splits file is unusable,
-            the splits file was made for other data (``verify_splits``), the evaluation
-            layout is not the one the index excluded, or the archive changed since the
-            index was built.
-        ConfigError: if fewer stamps remain than one batch, or a corpus run asks for the
-            noise view.
+        DataError: if the layout, the index, the archive, the splits file or the corpus
+            fits are unusable, the splits file was made for other data (``verify_splits``),
+            the evaluation layout is not the one the index excluded, the archive changed
+            since the index was built, or the fits belong to another index.
+        ConfigError: if fewer stamps remain than one batch, a corpus run asks for the
+            noise view without ``corpus_fits``, or a layout run is given ``corpus_fits``.
     """
     path = Path(config.data)
     if path.is_file():
         return _load_corpus_data(config, path)
+    if config.corpus_fits is not None:
+        raise ConfigError(
+            "corpus_fits belongs to a corpus index run; a layout run fits its own Train stamps"
+        )
     data = _load_layout(config, path)
     if data.rows.size < config.batch_size:
         raise ConfigError(
@@ -428,8 +450,11 @@ def _weak_rules(rules: dict[str, Any]) -> list[str]:
 
 def _load_corpus_data(config: PilotConfig, path: Path) -> PilotData:
     """A corpus run's data: the index's archive rows, and CD21 for the evaluation."""
-    if config.noise_scale > 0:
-        raise ConfigError("the noise view needs stamp fits, not computed for a corpus")
+    if config.noise_scale > 0 and config.corpus_fits is None:
+        raise ConfigError(
+            f"the noise view needs the stamp fits of {path}: build them with `astro-simclr "
+            "build-corpus-fits INDEX_FILE --out FITS_FILE` and pass --corpus-fits FITS_FILE"
+        )
     index = read_corpus_index(path)
     weak = _weak_rules(index.meta["rules"])
     if weak and not config.allow_weak_index:
@@ -452,10 +477,11 @@ def _load_corpus_data(config: PilotConfig, path: Path) -> PilotData:
         raise ConfigError(
             f"{len(stamps)} pretraining stamps, fewer than a batch of {config.batch_size}"
         )
-    pretrain = {
+    index_sha256 = sha256_file(path)
+    pretrain: dict[str, Any] = {
         "kind": "archive-corpus",
         "index": str(path),
-        "index_sha256": sha256_file(path),
+        "index_sha256": index_sha256,
         "archive": str(archive),
         "n": len(stamps),
         "input": "raw cutouts, per-channel min-max over 63 px, NaN -> 0 (normalise_stamps)",
@@ -464,8 +490,22 @@ def _load_corpus_data(config: PilotConfig, path: Path) -> PilotData:
         "rules": index.meta["rules"],
         "weak_rules": _weak_rules(index.meta["rules"]),
     }
+    fits = None
+    if config.corpus_fits is not None:
+        fits_path = Path(config.corpus_fits)
+        sidecar = read_corpus_fits(fits_path)
+        verify_corpus_fits(sidecar, index_sha256=index_sha256, n=len(stamps), source=fits_path)
+        fits = sidecar.fits
+        pretrain["fits"] = {
+            "path": str(fits_path),
+            "sha256": sha256_file(fits_path),
+            "format": sidecar.meta["format"],
+            "format_version": sidecar.meta["format_version"],
+            "index_sha256": sidecar.index_sha256,
+            "created_by": sidecar.meta.get("created_by"),
+        }
     record = {**evaluation.record, "n_pretrain": len(stamps), "pretrain": pretrain}
-    return replace(evaluation, record=record, corpus=CorpusPretrain(stamps, pretrain))
+    return replace(evaluation, record=record, corpus=CorpusPretrain(stamps, pretrain, fits))
 
 
 @dataclass(frozen=True, slots=True)
@@ -838,10 +878,10 @@ class PilotRun:
             if data.corpus is None and isinstance(stamps, TensorStamps)
             else data.train
         )
+        #: The stamp fits of the noise view, indexed by stored position (module docstring).
         self.fits: torch.Tensor | None = None
         if config.views.noise:
-            fits = stamp_fits(data.train.numpy())
-            self.fits = torch.from_numpy(fits).to(self.train_images.device)
+            self.fits = _noise_fits(data, self.train_images.device, device)
         self._init_monitors()
 
     def _init_monitors(self) -> None:
@@ -970,7 +1010,7 @@ class PilotRun:
             raise ConfigError("not a pilot checkpoint of this version")
         if _with_defaults(payload["config"]) != asdict(self.config):
             raise ConfigError("the checkpoint was written with another config; refusing to resume")
-        # The same paths may now hold other data (an index rebuilt with --overwrite).
+        # The same paths may now hold other data (an index or fits rebuilt with --overwrite).
         saved, current = payload["data"].get("pretrain"), self.data.record.get("pretrain")
         keys = ("index_sha256", "exclusion_sha256", "n")
         if (saved is None) != (current is None) or (
@@ -979,6 +1019,8 @@ class PilotRun:
             and any(saved.get(k) != current.get(k) for k in keys)
         ):
             raise ConfigError("the checkpoint was trained on another corpus index; refusing")
+        if _fits_sha256(saved) != _fits_sha256(current):
+            raise ConfigError("the checkpoint was trained with other corpus fits; refusing")
         monitor = payload.get("monitor") or {}
         abort = monitor.get("abort")
         if abort is not None and abort.get("aborted"):
@@ -996,14 +1038,30 @@ class PilotRun:
                 self.online.load(monitor["online"])
 
 
+def _noise_fits(data: PilotData, layout_device: torch.device, device: torch.device) -> torch.Tensor:
+    """The noise view's stamp fits, float32 ``(N, 6)`` by stored position (module docstring).
+
+    A layout run fits its Train stamps now (``stamp_fits``), on the stamps' device; a corpus
+    run takes its sidecar's (read by :func:`load_pilot_data`), on the training device.
+
+    Raises:
+        ConfigError: for a corpus run whose data carries no fits.
+    """
+    if data.corpus is None:
+        return torch.from_numpy(stamp_fits(data.train.numpy())).to(layout_device)
+    if data.corpus.fits is None:
+        raise ConfigError("the noise view on a corpus needs its stamp fits (corpus_fits)")
+    return torch.from_numpy(data.corpus.fits).to(device)
+
+
 def _with_defaults(saved: dict[str, Any]) -> dict[str, Any]:
     """A saved config with the fields added since it was written at their defaults.
 
     The fields of task 5.1 (``archive``, ``eval_data``, ``host_cap_gb``,
     ``allow_weak_index``) do not change a layout run's numbers, so a checkpoint written
-    before them resumes; the monitors' fields are left out of a record at their defaults
-    (:meth:`PilotConfig.to_plain`). A list (a JSON or older record) of ``probe_budgets`` is
-    read as the tuple.
+    before them resumes; the monitors' fields and ``corpus_fits`` are left out of a record
+    at their defaults (:meth:`PilotConfig.to_plain`). A list (a JSON or older record) of
+    ``probe_budgets`` is read as the tuple.
     """
     merged = {**{k: _DEFAULTS[k] for k in _DEFAULTS if k not in saved}, **saved}
     merged["probe_budgets"] = tuple(merged["probe_budgets"])
@@ -1083,6 +1141,12 @@ def _probe_scores(run: PilotRun, selection_h: torch.Tensor) -> dict[str, float]:
         )
         for budget, budget_rows in rows.items()
     }
+
+
+def _fits_sha256(pretrain: dict[str, Any] | None) -> str | None:
+    """The corpus fits' SHA-256 a pretraining record names, or ``None``."""
+    fits = (pretrain or {}).get("fits")
+    return None if fits is None else str(fits["sha256"])
 
 
 def load_checkpoint(path: Path) -> dict[str, Any]:
