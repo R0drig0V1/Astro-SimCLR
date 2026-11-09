@@ -508,6 +508,12 @@ Raw logs: `~/runs/p25/cv/` on the 5090. The test set was not used.
 
 - rot4-plain's pooled 0.9365 matches the Lightning rot4 CV (0.9345) within its fold-to-fold std (0.0040).
 
+**D3 declaration (2026-11-09, before any D3 run; the user chose D3 next).**
+- **Recipe:** `schedule.selection=final`, `schedule.lr_schedule=cosine`, `schedule.lr_warmup_steps=0`, `schedule.ema_decay=0.999`, `schedule.ema_warmup=true`, `schedule.horizon_increment=0`, `schedule.max_steps=15000`; everything else as `carrasco2021` (images and all features, rot4 training, Adam 1e-3, batch 64).
+- **Why 15,000 steps:** in the rot4-plain CV every run went to 30,000 steps and its best validation loss came at a median step of about 6,400 (3,370–13,840): later steps overfit at a constant rate. A cosine over T steps moves the weights about as much as T/2 steps at the full rate, so T = 15,000 matches the median best step with room for the late folds, and halves the cost.
+- **Why 0.999:** an averaging window of about 1,000 steps (1.6 passes over a fold's training part); the warmup ramp keeps the early shadow from holding the random initial weights.
+- **Arms and test:** 5 folds × seeds {0, 1}, plain engine, RTX 5090, against the stored rot4-plain CV (same engine, machine and build). The registered hypothesis: `compare-variants --rule non-inferiority --margin 0.001` (mean at least baseline − 0.1 pts), plus a fold-to-fold std at least 20 % smaller and a lower mean ECE (secondary, reported). One trial: no other decay or length is tried before this result is recorded.
+
 **Improvement rows from the literature (research, 2026-11-08).** The full ranked report
 (18 ideas, every claim marked verified or inferred) is in the scratchpad `improvements.md`.
 
