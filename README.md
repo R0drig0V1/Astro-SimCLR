@@ -22,6 +22,10 @@ difference cutouts plus alert features into AGN, SN, VS, Asteroid or Bogus), bui
 
 History: the repository began as a 2021 course project on SimCLR for ZTF stamps.
 That code was retired from the tree and stays readable at the git tag `legacy-final`.
+Training ran on PyTorch Lightning until plan task 4.8 replaced it with a plain-PyTorch
+engine (bit for bit the same results); the Lightning code, its legacy commands
+(`pretrain`, `linear-eval`, `fine-tune`) and its stamp and ResNet baselines stay
+re-runnable at the git tag `lightning-final` ([below](#repository-map)).
 
 ## Status
 
@@ -103,7 +107,9 @@ uv run astro-simclr compare-reference $R/with-features/seed-{0..4} \
     --ref CD21 --oracle-report $R/m1_oracle.json
 ```
 
-The same runs from a nested config (task 4.2; ADR 0017), which has the same config hash:
+`train-supervised` trains the paper classifier (the `carrasco2021` presets) and RJ23's
+(`rj23-*`, below) on the plain engine. The same runs from a nested config (task 4.2; ADR
+0017), which has the same config hash:
 
 ```bash
 uv run --no-sync astro-simclr run configs/runs/carrasco2021.yaml \
@@ -114,8 +120,10 @@ uv run --no-sync astro-simclr run configs/runs/carrasco2021.yaml \
 its section (`--set model.arch=p4`, `--set augment.flux_rescale=0.5`).
 
 `--preset carrasco2021-no-features` is the advisory without-features line (test
-0.8724 ± 0.0095 against the paper's 0.883 ± 0.006; `CD21: REPORT`). Training is not bitwise
-deterministic, so a rerun gives close but not identical numbers.
+0.8724 ± 0.0095 against the paper's 0.883 ± 0.006; `CD21: REPORT`). GPU training is not
+bitwise deterministic by default (`deterministic: false`, as the legacy runs), so a rerun
+gives close but not identical numbers; an interrupted run continues exactly with
+`--resume auto`.
 
 ### 3. Compare a variant on the stored splits
 
@@ -203,10 +211,8 @@ uv run astro-simclr train-supervised --preset rj23-multiscale --splits SPLITS.js
 uv run astro-simclr bench-report OUT/rj23-ms/seed-* --splits SPLITS.json --alerts ALERTS.csv
 ```
 
-The same run trains on the plain engine (no Lightning; bit for bit the same results, and an
-exact resume) from a nested config with `runtime.engine: plain`, e.g. `uv run astro-simclr
-run RJ23.yaml --splits SPLITS.json --set runtime.engine=plain` with `preset: rj23-multiscale`
-in `RJ23.yaml`.
+The same run from a nested config: `uv run astro-simclr run RJ23.yaml --splits SPLITS.json`
+with `preset: rj23-multiscale` in `RJ23.yaml`.
 
 ### 5. The SimCLR pilot (phase 5, task 5.0b)
 
@@ -257,11 +263,14 @@ corpus", "Corpus index") and [ADR 0019](docs/decisions/0019-archive-corpus.md).
 
 ```
 src/astro_simclr/   the package: data, models (paper model, p4/p4m variants), losses,
-                    augmentations, training, protocol (splits, gates, comparisons), oracle,
-                    alerts (raw-alert retrieval), r5 (the R5 build), simclr (the
-                    phase-5 pilot), CLI
+                    engine and tasks (the plain training engine), training (its
+                    augmentations, metrics, optimizers), protocol (splits, gates,
+                    comparisons), oracle, alerts (raw-alert retrieval), r5 (the R5 build),
+                    runs, queue and registry (run identity, the run queue, the run index),
+                    simclr (the phase-5 pilot), CLI
 tests/              pytest suite (branch coverage >= 80 %)
-configs/reference/  R1-R4 legacy reference-run configs, with provenance
+configs/reference/  R1-R4 legacy reference-run configs, with provenance (they train at
+                    the git tag lightning-final)
 configs/splits/     stored phase-2 decision splits (make-splits)
 configs/label-budgets/  stored phase-5 label-budget subsets (make-label-budgets)
 configs/runs/       nested configs for `astro-simclr run` (ADR 0017)
@@ -269,7 +278,8 @@ results/            phase2/ (replication archive, augmentation inspections); 202
 docs/               architecture.md (one section per module), data.md, evaluation-protocol.md,
                     phases/ (the plan), decisions/ (ADRs), plan-reviews/
 scripts/            check.sh (+ check-lock.sh), gpu-preflight.sh, check-torch-wheels.sh,
-                    inspection scripts, characterize/ (legacy fixture generators)
+                    inspection scripts, characterize/ (fixture generators, some run
+                    from the legacy-final or lightning-final tags)
 jupyter_examples/   2021 exploratory notebooks (they import the legacy code)
 ```
 
@@ -281,6 +291,18 @@ Module responsibilities: [docs/architecture.md](docs/architecture.md). Design de
 git fetch origin tag legacy-final        # once, if the tag is not local
 git show legacy-final:utils/training.py  # read one legacy file
 git worktree add ../Astro-SimCLR-legacy legacy-final   # the whole tree (to run the notebooks)
+```
+
+The Lightning engine (removed in plan task 4.8) is at the tag `lightning-final`: the
+commands `pretrain`, `linear-eval` and `fine-tune` (here they exit 2 and name the tag), the
+`stamp_classifier` and ResNet baselines of `train-supervised`, the R1-R4 preflight dry runs,
+and any config or experiment spec with `engine: lightning`. Runs it wrote stay readable
+here (`ensemble-eval`, `compare-variants`, `report-phase2`, `runs reindex`, `queue sync`).
+
+```bash
+git fetch origin tag lightning-final
+git worktree add ../Astro-SimCLR-lightning lightning-final && cd ../Astro-SimCLR-lightning
+uv sync --locked && uv run astro-simclr pretrain --help
 ```
 
 ## Evaluation rules
