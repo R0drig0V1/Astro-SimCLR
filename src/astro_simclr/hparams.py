@@ -28,7 +28,7 @@ Two kinds of legacy file exist, told apart by their keys:
   ``fine-tune`` the second; ``augmentation`` is the *pretraining* augmentation there.
 
 Augmentation names may be legacy aliases (``without_aug``, ``rotation_v3``, ...): they are
-passed through, and the data modules resolve them.
+passed through (the legacy data modules resolved them; frozen at lightning-final since 4.8).
 """
 
 from __future__ import annotations
