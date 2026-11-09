@@ -310,10 +310,12 @@ check_lock_acquire() {
                     seen=$now
                     released=$now
                 fi
-                if [[ $((now - released)) -lt $grace ]]; then
+                # Whole seconds truncate both ends: a difference above the grace (not
+                # equal to it) guarantees at least `grace` real seconds.
+                if [[ $((now - released)) -le $grace ]]; then
                     take=0
                     if [[ $grace_logged != "$released" ]]; then
-                        check_lock_log "the lock is free; leaving it $((released + grace - now)) s" \
+                        check_lock_log "the lock is free; leaving it $((released + grace + 1 - now)) s" \
                             "to pollers outside the queue (ASTRO_SIMCLR_CHECK_LOCK_GRACE)"
                         grace_logged=$released
                     fi
