@@ -7,6 +7,7 @@
   `checkpoint.py`, `device.py`, `data.py`, `randomness.py`); the loop itself in task 4.1
   (`loop.py`, `precision.py`, `scalars.py`, `record.py`; amendment below), the config in
   4.2, the data tiers in 4.3, the tasks in 4.6 (`src/astro_simclr/tasks/`; amendment below),
+  the `rj23` schedule's extension points in 3.4b (amendment below),
   `Task.after_step` in plan row D3 (amendment below)
 - **Amended by:** ADR 0018 (the data tiers, task 4.3: section 3's `pinned` tier pins the
   staging buffers, not the dataset; the shuffle granularity; the stream definition)
@@ -432,6 +433,30 @@ settled here:
    its initial horizon (a lower bound). `--synthetic` prepares the 100 % file with float32
    stamps. R1-R4 still run on Lightning: their modules are not ported (plan 4.6, "Cut").
 
+## Amendment: task 3.4b, the `rj23` schedule on the plain engine (2026-11-08)
+
+RJ23's classifiers train on the plain engine (`tasks.rj23`, ADR 0023 point 10), with the
+policy objects of `rj23_regime` as they are. The loop gained three extension points, each
+off by default, so the `carrasco2021` path and its checkpoints are unchanged (the gate's
+paper cases pass as before; `numerics_epoch` stays 1):
+
+1. **`ValidationGrid.at_start`**: a fresh fit also validates its initial weights, before
+   the first step (RJ23's "iteration 0 included"). `due` is unchanged; `last.pt` is never
+   written at step 0 (there is nothing to resume).
+2. **`fit(score=...)`**: the monitored value is a function of the validation's
+   `EvalOutput`s under the monitor's name (`macro_f1_val`, `max`), instead of the mean of
+   the batch losses. Without a score the monitor must be `loss_val`, as before.
+3. **`Schedule.stop_rule`**: a `StopRule` (`decide(step, history) -> .stop`), an
+   engine-free policy on the whole history of monitored values; exclusive with
+   `early_stop`. The history is in the checkpoint's `policy` (`history`, only with a stop
+   rule), so a resume decides again exactly; a resumed run whose rule had stopped trains
+   nothing. `FitResult.history` returns it.
+
+Point 4 of the 4.6 amendment changes accordingly: `run_plain` trains `schedule: rj23` when
+given its `RJ23Request` (`tasks.rj23.run_rj23_plain`); `run_command` still refuses it (its
+Lightning runner is `training.rj23.run_rj23`). The 4.7(a) gate gained the rj23 cases.
+
+
 ## Amendment: plan row D3, `Task.after_step` (2026-11-08)
 
 Plan row D3 (the paper classifier's weight EMA and per-step learning-rate schedule;
@@ -455,6 +480,12 @@ method, the only change to the interface:
   EMA is a submodule (`model`), the scheduler's state is `Task.state()` (`task`), restored
   in section 2's resume order (`optimizer`, then `task`). A task without a scheduler keeps
   an empty task state.
+- **Order with the 3.4b extension points.** `after_step` runs inside the step, so before
+  both the step's `stop_rule` decision and its `due()` validation: they see the weights
+  after the EMA update (and the next step's learning rate is set). The `at_start`
+  validation of a fresh fit runs before any step, so it sees the initial weights, with
+  no EMA update yet (the shadow equals the model then). `RJ23Task`, which has nothing to
+  do after a step, implements it as a no-op.
 - C2 (the step order) reads: forward, `zero_grad(set_to_none=True)`, backward,
   `optimizer.step()`, `after_step(step)`. Checked by `tests/test_engine_loop.py` (called
   once per step with the steps done before it) and by the D3 cases of

@@ -347,6 +347,8 @@ def test_reserved_streams_are_the_augmentations_numbers() -> None:
         "simclr_batch_order": 8,
         "simclr_diagnostics": 9,
         "rj23_class_uniform": rj23_regime.STREAM,
+        # Task 5.1's corpus index (build-corpus-index --duplicates random).
+        "corpus_duplicates": 11,
     }
     assert len(set(RESERVED_STREAMS.values())) == len(RESERVED_STREAMS)
 

@@ -168,3 +168,45 @@ importing anything from the `training` package imports Lightning (its `__init__`
   is not part of this package yet.
 - The noise is off by default: it is an option of 5.2 whose admission test (a single-view
   accuracy drop of at most 1 point) has not been run.
+
+## Amendment (2026-11-08, task 5.1): pretraining on the corpus index
+
+`simclr-pilot` also accepts a corpus index file (ADR 0019, amendment) as DATA. The
+pretraining stamps are then the index's archive rows, normalised exactly as the stored
+stamps (the 63-px input of point 2). Evaluation stays on CD21:
+- the layout the index excluded (`--eval-data`, whose source SHA-256 must match) gives the
+  kNN bank, the screen's selection half and the embedding dump;
+- `--splits` keeps its meaning.
+
+The pretraining stamps have three tiers:
+
+| `--tier` | Use |
+|---|---|
+| `memmap` | The default for an index. Each batch is read sorted by file offset, normalised on the host into a pinned tensor (CUDA) and uploaded without blocking. The next step's batch is prefetched in one worker thread |
+| `host` | The corpus normalised once in host memory, refused above `--host-cap-gb` (default 24) |
+| `device` | Refused for a corpus: about 18.6 GB for 390k stamps, too much beside other jobs (ADR 0018) |
+
+The tiers give identical batches; a CPU test checks that `memmap` and `host` give the same
+model.
+
+The prefetch matters because LARS synchronises with the device at every step, so an
+unhidden read adds to each step. An interleaved A/B on the shared 5090, with batch 256 and
+the GPU busy with another job, measured 0.624 s per step without the prefetch and 0.550 s
+with it, about the 66-ms read.
+
+The noise view needs per-stamp fits, which are not computed for a corpus, so a corpus run
+refuses `noise_scale > 0`.
+
+`pilot.json` records the index (path and SHA-256), the archive, the `exclusion_sha256`,
+the counts and the rules.
+
+The pilot refuses an index weaker than the plan's exclusion: a radius below 1.5″, or no
+near-duplicate check. `--allow-weak-index` (the config's `allow_weak_index`, recorded)
+overrides it for tests.
+
+A resume compares the checkpoint's index SHA-256, `exclusion_sha256` and row count with
+the current ones. An index rebuilt at the same path is therefore refused, not mixed in.
+
+`PilotConfig` gains `archive`, `eval_data`, `host_cap_gb` and `allow_weak_index`. They do
+not change a layout run's numbers, so a checkpoint written before them resumes with them at
+their defaults.
