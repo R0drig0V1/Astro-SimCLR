@@ -6,8 +6,8 @@ modes, ``zero_grad(set_to_none=True)``, ``backward``, ``optimizer.step()``, ``no
 during the fit's validations, the validation grid, the horizon, checkpoints and the RNG
 streams. A task never reads a global step counter of its own: the loop passes ``step``,
 the number of optimizer steps done before the batch, which is what Lightning's
-``LightningModule.global_step`` is inside ``training_step`` (the augmentations of
-``PaperClassifierModule`` are keyed by it).
+``LightningModule.global_step`` was inside ``training_step`` (the paper task's
+augmentations are keyed by it, as ``PaperClassifierModule``'s were).
 
 Contracts only (task B0): the loop that calls a task arrives in 4.1, the paper classifier
 task in 4.6.
@@ -90,7 +90,7 @@ def mean_of_batch_losses(losses: Sequence[torch.Tensor]) -> torch.Tensor:
 
     The mean of the per-batch mean losses in loader order, the last (partial) batch
     weighing as much as a full one: TF's "mean of batch-64 means", what
-    ``ClassifierModule._log_epoch`` logs as ``loss_val`` and Lightning passes on unchanged
+    ``ClassifierModule._log_epoch`` logged as ``loss_val`` and Lightning passed on unchanged
     (ADR 0014, "Monitor value"). It is not the per-sample mean.
 
     Raises:

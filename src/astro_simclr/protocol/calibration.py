@@ -11,7 +11,7 @@ exactly ``m / M`` is in bin ``m``, and 1.0 in the last), ``acc`` is the fraction
 bin's stamps predicted correctly and ``conf`` their mean confidence; empty bins add
 nothing. It is a **secondary** metric of the phase-2 comparisons (never a decision input,
 ``docs/evaluation-protocol.md``): ``metrics.json`` records it per evaluated stage
-(``tasks.results.evaluation_entry``, both engines), and ``compare-variants`` and
+(``tasks.results.evaluation_entry``; Lightning runs recorded it too), and ``compare-variants`` and
 ``report-phase2`` report it per run from the predictions files.
 
 Computed in float64 on the stored float32 probabilities. The right-closed rule is exact

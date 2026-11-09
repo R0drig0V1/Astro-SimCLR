@@ -1,4 +1,6 @@
 # R4: CE stamp classifier, R1's config without features, 1 % labels (one seed).
+# Lightning only: task 4.8 removed the engine and these commands; run this config from a
+# checkout of the git tag lightning-final (the commands below are that checkout's).
 # Run: astro-simclr train-supervised --config configs/reference/R4.yaml --seed 0
 #      --output-dir OUT/R4/seed-0
 # Gate: astro-simclr compare-reference OUT/R4/seed-0 --ref R4 (report only: the comparison

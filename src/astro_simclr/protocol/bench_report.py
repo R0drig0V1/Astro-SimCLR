@@ -8,8 +8,8 @@ contract of ``metrics.json``:
 
 =============================  ===========================================================
 ``seed``                       the run's seed (one run per seed and side)
-``machine``                    the machine block of ``experiments`` (device, gpu, torch,
-                               cuda); runs of one report must share it
+``machine``                    the run's machine block (``engine.record.machine_record``:
+                               device, gpu, torch, cuda); runs of one report must share it
 ``benchmark.splits_sha256``    SHA-256 of the object-splits file the run was trained on
 ``predictions.<stage>.file``   the predictions file of ``stage`` (``test`` or ``val``)
 =============================  ===========================================================

@@ -1,0 +1,592 @@
+{
+ "case": "rj23-multiscale-decision",
+ "format": 1,
+ "initial": "58018c0f26706cb091b74d5e325883ef8b94778592fd52b9b0fecec81d5fc9ff",
+ "metrics": {
+  "benchmark": {
+   "alerts": null,
+   "mode": "decision",
+   "parts": {
+    "Train": {
+     "class_counts": [
+      12,
+      12,
+      12,
+      12,
+      12
+     ],
+     "n": 60
+    },
+    "decision": {
+     "class_counts": [
+      2,
+      2,
+      2,
+      2,
+      2
+     ],
+     "n": 10
+    },
+    "selection": {
+     "class_counts": [
+      2,
+      2,
+      2,
+      2,
+      2
+     ],
+     "n": 10
+    }
+   },
+   "splits": "splits.json",
+   "splits_sha256": "15ea64f05b404b0c8e9ab4df8ff1877ae1d01c03fe4576d132706a9b6fa9bd54"
+  },
+  "best_step": 0,
+  "command": "train-supervised",
+  "config": {
+   "accelerator": "cpu",
+   "adam_betas": "code",
+   "aug_feature_jitter": 0.0,
+   "aug_min_r2": 0.5,
+   "aug_noise": 0.0,
+   "augmentation": "center_crop",
+   "backbone_weights": "none",
+   "batch_size": 16,
+   "beta_loss": 0.016063800410738464,
+   "check_finite": true,
+   "checkpoint_every_n_steps": 2,
+   "checkpoint_selection": "best_val_loss",
+   "context": "none",
+   "dataset": "r5-synthetic",
+   "deterministic": true,
+   "devices": 1,
+   "divergence_threshold": null,
+   "drop_rate": 0.2,
+   "dropout_active": false,
+   "early_stopping": false,
+   "ema_decay": null,
+   "ema_warmup": false,
+   "encoder_name": "resnet18",
+   "eval_batch_size": 8,
+   "exclude_leaked_train": true,
+   "feature_set": "all",
+   "fine_tune_lr_factor": 0.2,
+   "flux_k_max": 1.5,
+   "flux_k_min": 0.5,
+   "flux_rescale": 0.0,
+   "fp32_precision": "ieee",
+   "group_fields": null,
+   "horizon_increment": 10000,
+   "hybrid_depth": 2,
+   "hybrid_dim": 64,
+   "hybrid_heads": 4,
+   "hybrid_readout": "mean",
+   "image_size": 27,
+   "lars_legacy_trust_ratio": true,
+   "limit_train_batches": null,
+   "limit_val_batches": null,
+   "lr": 0.0007445,
+   "lr_schedule": "constant",
+   "lr_warmup_steps": 0,
+   "max_epochs": 220,
+   "max_steps": 40,
+   "min_delta": 0.001,
+   "monitor": "macro_f1_val",
+   "nan_approximation": true,
+   "nt_xent_legacy_denominator": true,
+   "num_workers": 0,
+   "optimizer": "Adam",
+   "paper_arch": "rot4",
+   "paper_input": "float32",
+   "patience": 2,
+   "pretrained": null,
+   "progress_bar_refresh_rate": 0,
+   "projection_dim": 300,
+   "rj23_bn_position": "after_concat",
+   "rj23_keep": "stop",
+   "rj23_large_values": "paper",
+   "rj23_scenario": "multiscale",
+   "rot90_augment": false,
+   "schedule": "rj23",
+   "seed": 0,
+   "supervised_model": "rj23",
+   "synthetic_bogus": 0.0,
+   "temperature": 0.17910250439416514,
+   "val_every_n_steps": 2,
+   "with_features": false
+  },
+  "data": {
+   "class_counts": [
+    20,
+    20,
+    20,
+    20,
+    20
+   ],
+   "kind": "raw-alerts",
+   "label_names": [
+    "AGN",
+    "SN",
+    "VS",
+    "Asteroid",
+    "Bogus"
+   ],
+   "path": "r5-synthetic",
+   "source": {
+    "name": "syn"
+   }
+  },
+  "evaluation": {
+   "decision": {
+    "accuracy": 0.2,
+    "balanced_accuracy": 0.2,
+    "confusion_counts": [
+     [
+      0,
+      2,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      2,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      2,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      2,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      2,
+      0,
+      0,
+      0
+     ]
+    ],
+    "macro_f1": 0.06666666666666667,
+    "n": 10,
+    "recall_per_class": {
+     "AGN": 0.0,
+     "Asteroid": 0.0,
+     "Bogus": 0.0,
+     "SN": 1.0,
+     "VS": 0.0
+    }
+   },
+   "selection": {
+    "accuracy": 0.2,
+    "balanced_accuracy": 0.2,
+    "confusion_counts": [
+     [
+      0,
+      2,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      2,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      2,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      2,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      2,
+      0,
+      0,
+      0
+     ]
+    ],
+    "macro_f1": 0.06666666666666667,
+    "n": 10,
+    "recall_per_class": {
+     "AGN": 0.0,
+     "Asteroid": 0.0,
+     "Bogus": 0.0,
+     "SN": 1.0,
+     "VS": 0.0
+    }
+   }
+  },
+  "keep": {
+   "best": {
+    "evaluation": {
+     "decision": {
+      "accuracy": 0.5,
+      "balanced_accuracy": 0.5,
+      "confusion_counts": [
+       [
+        0,
+        2,
+        0,
+        0,
+        0
+       ],
+       [
+        0,
+        2,
+        0,
+        0,
+        0
+       ],
+       [
+        0,
+        1,
+        1,
+        0,
+        0
+       ],
+       [
+        0,
+        0,
+        0,
+        2,
+        0
+       ],
+       [
+        0,
+        1,
+        0,
+        1,
+        0
+       ]
+      ],
+      "macro_f1": 0.3933333333333333,
+      "n": 10,
+      "recall_per_class": {
+       "AGN": 0.0,
+       "Asteroid": 1.0,
+       "Bogus": 0.0,
+       "SN": 1.0,
+       "VS": 0.5
+      }
+     },
+     "selection": {
+      "accuracy": 0.2,
+      "balanced_accuracy": 0.2,
+      "confusion_counts": [
+       [
+        0,
+        1,
+        0,
+        1,
+        0
+       ],
+       [
+        0,
+        2,
+        0,
+        0,
+        0
+       ],
+       [
+        0,
+        0,
+        0,
+        2,
+        0
+       ],
+       [
+        0,
+        1,
+        1,
+        0,
+        0
+       ],
+       [
+        0,
+        0,
+        2,
+        0,
+        0
+       ]
+      ],
+      "macro_f1": 0.13333333333333333,
+      "n": 10,
+      "recall_per_class": {
+       "AGN": 0.0,
+       "Asteroid": 0.0,
+       "Bogus": 0.0,
+       "SN": 1.0,
+       "VS": 0.0
+      }
+     }
+    },
+    "predictions": {
+     "decision": {
+      "file": "predictions_decision_best.npz",
+      "n": 10,
+      "split": "decision"
+     },
+     "selection": {
+      "file": "predictions_selection_best.npz",
+      "n": 10,
+      "split": "selection"
+     }
+    },
+    "step": 0
+   },
+   "primary": "stop",
+   "stop": {
+    "evaluation": {
+     "decision": {
+      "accuracy": 0.2,
+      "balanced_accuracy": 0.2,
+      "confusion_counts": [
+       [
+        0,
+        2,
+        0,
+        0,
+        0
+       ],
+       [
+        0,
+        2,
+        0,
+        0,
+        0
+       ],
+       [
+        0,
+        2,
+        0,
+        0,
+        0
+       ],
+       [
+        0,
+        2,
+        0,
+        0,
+        0
+       ],
+       [
+        0,
+        2,
+        0,
+        0,
+        0
+       ]
+      ],
+      "macro_f1": 0.06666666666666667,
+      "n": 10,
+      "recall_per_class": {
+       "AGN": 0.0,
+       "Asteroid": 0.0,
+       "Bogus": 0.0,
+       "SN": 1.0,
+       "VS": 0.0
+      }
+     },
+     "selection": {
+      "accuracy": 0.2,
+      "balanced_accuracy": 0.2,
+      "confusion_counts": [
+       [
+        0,
+        2,
+        0,
+        0,
+        0
+       ],
+       [
+        0,
+        2,
+        0,
+        0,
+        0
+       ],
+       [
+        0,
+        2,
+        0,
+        0,
+        0
+       ],
+       [
+        0,
+        2,
+        0,
+        0,
+        0
+       ],
+       [
+        0,
+        2,
+        0,
+        0,
+        0
+       ]
+      ],
+      "macro_f1": 0.06666666666666667,
+      "n": 10,
+      "recall_per_class": {
+       "AGN": 0.0,
+       "Asteroid": 0.0,
+       "Bogus": 0.0,
+       "SN": 1.0,
+       "VS": 0.0
+      }
+     }
+    },
+    "predictions": {
+     "decision": {
+      "file": "predictions_decision.npz",
+      "n": 10,
+      "split": "decision"
+     },
+     "selection": {
+      "file": "predictions_selection.npz",
+      "n": 10,
+      "split": "selection"
+     }
+    },
+    "step": 4
+   }
+  },
+  "labels": [
+   "AGN",
+   "SN",
+   "VS",
+   "Asteroid",
+   "Bogus"
+  ],
+  "last_step": 4,
+  "monitor": "macro_f1_val",
+  "monitor_best": 0.13333333333333333,
+  "predictions": {
+   "decision": {
+    "file": "predictions_decision.npz",
+    "n": 10,
+    "split": "decision"
+   },
+   "selection": {
+    "file": "predictions_selection.npz",
+    "n": 10,
+    "split": "selection"
+   }
+  },
+  "preset": {
+   "deviations": {
+    "batch_size": {
+     "preset": 256,
+     "value": 16
+    },
+    "max_steps": {
+     "preset": 100000,
+     "value": 40
+    },
+    "patience": {
+     "preset": 5,
+     "value": 2
+    },
+    "val_every_n_steps": {
+     "preset": 500,
+     "value": 2
+    }
+   },
+   "diagnostics": [],
+   "faithful": false,
+   "name": "rj23-multiscale"
+  },
+  "resumed_from": false,
+  "schedule": {
+   "best_step": 0,
+   "capped": false,
+   "eval_every": 2,
+   "history": [
+    [
+     0,
+     0.13333333333333333
+    ],
+    [
+     2,
+     0.06666666666666667
+    ],
+    [
+     4,
+     0.06666666666666667
+    ]
+   ],
+   "max_steps": 40,
+   "name": "rj23",
+   "patience": 2,
+   "selection": "selection",
+   "stop_step": 4,
+   "stopped_by": "patience"
+  },
+  "seed": 0,
+  "stop_step": 4
+ },
+ "predictions": {
+  "predictions_decision.npz": {
+   "index": "525d200579e488ee8c738cc7ef264e4984afcc12726c86dccef35d87ed1a3adc",
+   "labels": "22102e0c2264872eff9a57c9fb82836ad77f4c6e335d0d8074bcfbe528cacc77",
+   "probabilities": "80e903cf09f4436d6da862aa885e89711837b41a3ed3831405f5ca7d2c2be571"
+  },
+  "predictions_decision_best.npz": {
+   "index": "525d200579e488ee8c738cc7ef264e4984afcc12726c86dccef35d87ed1a3adc",
+   "labels": "22102e0c2264872eff9a57c9fb82836ad77f4c6e335d0d8074bcfbe528cacc77",
+   "probabilities": "7025e8190c0e8e40cab8461deddccce27318bc858eaf5044da6f637df88d218d"
+  },
+  "predictions_selection.npz": {
+   "index": "c534795525adc5555c07bf12cdb190d27cd5e71a9430cd235d6881642a170ff2",
+   "labels": "2b37af5c5869139769e1c70cff1301ed98a9f82e5ca827f73b8b447ef35aedd1",
+   "probabilities": "6de72d06204c97637da8c1138e11b714553429666746524fb327734a2ae26161"
+  },
+  "predictions_selection_best.npz": {
+   "index": "c534795525adc5555c07bf12cdb190d27cd5e71a9430cd235d6881642a170ff2",
+   "labels": "2b37af5c5869139769e1c70cff1301ed98a9f82e5ca827f73b8b447ef35aedd1",
+   "probabilities": "b85b1732bd9e1263a1d62ab8b848aa22903702b7dfc3a2a4747e7141925b8032"
+  }
+ },
+ "torch": "2.14.1",
+ "validations": [
+  [
+   0,
+   0.13333333333333333,
+   "58018c0f26706cb091b74d5e325883ef8b94778592fd52b9b0fecec81d5fc9ff"
+  ],
+  [
+   2,
+   0.06666666666666667,
+   "0bd1f2927a282c3073f8f21401bcee6ae1758349de37a1bd8b57d9cebd947a51"
+  ],
+  [
+   4,
+   0.06666666666666667,
+   "86fd73bf1dcc190cb037e7d2fc0d5ae7a0dae630c72b380c940895c9ee31ab6c"
+  ]
+ ]
+}

@@ -1,6 +1,6 @@
 """Builders for the registry tests: run directories (manifest and legacy), plans, a fake spec.
 
-- :func:`manifest_run` writes a run directory as task A1's ``run_command`` will: a
+- :func:`manifest_run` writes a run directory as task A1's runners do: a
   ``manifest.json`` (A0's writer) and, once finished, a ``metrics.json``.
 - :func:`legacy_run` writes a run directory with only a ``metrics.json``, in the form of
   the archived phase-2 runs (``results/phase2/replication``).

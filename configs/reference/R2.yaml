@@ -1,4 +1,6 @@
 # R2: CE ResNet-18, hparams_best_ce_resnet.yaml, 100 % labels.
+# Lightning only: task 4.8 removed the engine and these commands; run this config from a
+# checkout of the git tag lightning-final (the commands below are that checkout's).
 # Run: astro-simclr train-supervised --config configs/reference/R2.yaml --seed S
 #      --output-dir OUT/R2/seed-S   (full set: seeds 0-4; minimal set: seed 0)
 # Gate: astro-simclr compare-reference OUT/R2/seed-* --ref R2 (pass rule vs 0.9027 ± 0.0099,

@@ -25,7 +25,8 @@ BN is the one on the 23 features (``paper_model``); the ConvNeXt rows use LayerN
 have no buffers.
 
 **Where it lives.** The shadow is a deep copy of the model, a submodule of the module that
-trains (``PaperClassifierModule.ema``, ``tasks.paper.PaperNet.ema``): it moves with the
+trains (``tasks.paper.PaperNet.ema``; ``PaperClassifierModule.ema`` on the Lightning
+path until task 4.8): it moves with the
 model to its device, its tensors are part of ``state_dict()`` (so ``last`` checkpoints
 save it and a resume restores it exactly, and the best weights kept by the
 ``best_val_loss`` selection are the shadow's too), and its parameters have
@@ -35,8 +36,8 @@ A module with an EMA evaluates with the shadow: its forward in ``eval()`` mode
 training model.
 
 Nothing here imports Lightning (CLAUDE.md, "New training flags are engine-free"): the
-Lightning module and the plain task call :meth:`EmaWeights.update` after the optimizer
-step with the step number, and nothing in it draws a random number.
+plain task calls :meth:`EmaWeights.update` after the optimizer step with the step
+number (as the Lightning module did), and nothing in it draws a random number.
 """
 
 from __future__ import annotations

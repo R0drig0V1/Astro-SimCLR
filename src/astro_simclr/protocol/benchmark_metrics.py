@@ -21,8 +21,8 @@ predictions of any number of classes:
   0) and F1 0, and it counts too: its false positives are real errors.
 - A class **absent from both** the labels and the predictions has no defined score: its
   per-class values are ``None`` and it is left out of the macro means. This is the rule of
-  :mod:`astro_simclr.training.metrics` (torchmetrics' macro averages leave out classes
-  with ``TP + FP + FN = 0``), so a phase-2 macro-F1 and this one agree.
+  :mod:`astro_simclr.training.metrics` (it leaves out classes with ``TP + FP + FN = 0``,
+  as torchmetrics' macro averages did), so a phase-2 macro-F1 and this one agree.
 - A row of the normalised confusion matrix with no true sample is all zeros (as
   ``training.metrics.confusion_matrix``).
 

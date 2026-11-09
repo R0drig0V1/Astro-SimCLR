@@ -25,7 +25,7 @@ The kinds and their adapters:
   inf kept), ``index["label"]``, and the 23 CD21 features as float32 (not standardised,
   NaN kept) when the layout has them; a split selects rows by ``candid``;
 - ``arrays`` (:class:`Dataset` itself): any float32 images and columns, for example a
-  ``device_data.TensorSplit``'s arrays (the paper's crops).
+  ``training.tensor_splits.TensorSplit``'s arrays (the paper's crops).
 
 Only float32 stamps are served: the uint8 ``images.npy`` is the quantised legacy input
 (plan finding F6); storing images as uint8 or float16 is an explicit, recorded tier choice
@@ -187,7 +187,7 @@ class Dataset:
 
 
 def _kept_features(features: npt.NDArray[np.float64]) -> npt.NDArray[np.float32]:
-    """The 23 kept features of the 26 stored ones, as float32 (``device_data._labelled``)."""
+    """The 23 kept features of the 26 stored ones, as float32 (as ``tensor_splits._labelled``)."""
     kept = np.delete(np.asarray(features), list(DISCARDED_FEATURES), axis=1)
     return kept.astype(np.float32)
 

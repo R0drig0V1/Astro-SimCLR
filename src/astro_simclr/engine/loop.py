@@ -303,7 +303,7 @@ class _Policy:
         """Update after a validation of value ``value``; ``(improved, stop)``.
 
         A strict improvement keeps the weights (when ``best`` is kept) and extends the
-        horizon (``HorizonCallback.on_validation_end``); early stopping, when configured,
+        horizon (as Lightning's ``HorizonCallback`` did); early stopping, when configured,
         counts on its own best (``EarlyStopping``).
         """
         schedule = self.schedule
@@ -410,7 +410,7 @@ class _Fit:
         self.validations.append(record)
         every = self.schedule.checkpoint_every_n_steps
         if every is not None and self.steps_done > 0 and self.steps_done % every == 0:
-            # After the policy update, so a resume owes no validation (HorizonCallback);
+            # After the policy update, so a resume owes no validation (as HorizonCallback);
             # never at step 0 (a fresh fit's start validation): there is nothing to resume.
             self.save_last()
         return record
@@ -632,7 +632,7 @@ def _drive(
                 validate()
         seconds = time.perf_counter() - started
         if run.steps_done > start and run.schedule.checkpoint_every_n_steps is not None:
-            run.save_last()  # the last weights, at the end of training (HorizonCallback)
+            run.save_last()  # the last weights, at the end of training (as HorizonCallback)
         run.save_best()
     finally:
         if log is not None:

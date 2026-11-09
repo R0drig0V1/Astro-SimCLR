@@ -24,20 +24,17 @@ from astro_simclr.cli import main
 from astro_simclr.config import ConfigError
 from astro_simclr.preflight import (
     GpuInfo,
-    Timed,
     arch_supported,
     check_cuda,
     check_data,
     check_manifest,
     check_resources,
     choose_torch_build,
-    estimate,
     query_gpus,
     run_preflight,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-REFERENCE = ROOT / "configs" / "reference"
 #: torch 2.14 cu126 and default (CUDA 13) architecture lists.
 CU126_ARCHS = ["sm_50", "sm_60", "sm_70", "sm_75", "sm_80", "sm_86", "sm_90"]
 CU13_ARCHS = ["sm_75", "sm_80", "sm_86", "sm_90", "sm_100", "sm_120", "compute_120"]
@@ -381,39 +378,13 @@ def test_manifest_differences_are_listed() -> None:
 # --- Steps 5-6 and the whole preflight -----------------------------------------------------
 
 
-def test_estimate() -> None:
-    timed = [
-        Timed("R1", "full", 45, 220, 45, 10.0, 20),
-        Timed("R3-linear-eval", "sup_1", 45, 220, 30, 10.0, 3),
-        Timed("R3-fine-tune", "sup_1", 45, 220, 45, 10.0, 20),
-        Timed("R4", "missing", 45, 220, 45, 10.0, 20),
-    ]
-    counts = {
-        "full": 45_000,
-        "td_ztf_stamp_17_06_20_sup_1": 450,
-        "td_ztf_stamp_17_06_20_sup_10": 4_500,
-        FULL: 45_000,
-    }
-    step = estimate(timed, counts.get)
-    text = "\n".join(step.lines)
-    # R1: 1000 steps/epoch * 220 epochs / 10 steps/s = 22000 s = 6.1 h per seed, 5 seeds.
-    assert "R1: <= 30.6 GPU-h full set, 6.1 minimal" in text
-    assert "measured at batch 30, not 45" in text
-    assert "only 3 timed steps" in text
-    assert "R4: no estimate for missing" in text
-    assert "R3-fine-tune" not in text
-    assert step.status == "WARN"
-
-
 def test_synthetic_preflight_on_cpu(tmp_path: Path) -> None:
     stream = io.StringIO()
     passed = run_preflight(
         output_dir=tmp_path,
         synthetic=True,
         accelerator="cpu",
-        reference_dir=REFERENCE,
-        runs=["R3", "R4"],
-        overrides=["num_workers=0"],
+        runs=["CD21"],
         n_per_split=20,
         steps=2,
         stream=stream,
@@ -428,10 +399,10 @@ def test_synthetic_preflight_on_cpu(tmp_path: Path) -> None:
         "preflight: PASS",
     ):
         assert line in text
-    for name in ("R3-pretrain", "R3-linear-eval", "R3-fine-tune", "R4"):
-        assert (tmp_path / "dry-chain" / name / "metrics.json").is_file()
-    assert "batch 20 (capped from 550)" in text
-    assert "R1" not in text.split("[PASS] dry-chain")[1].split("[")[0]
+    assert (tmp_path / "dry-chain" / "CD21" / "metrics.json").is_file()
+    assert "CD21 (train-supervised, plain engine" in text
+    assert "batch 20 (capped from 64)" in text
+    assert "CD21: >= " in text  # the estimate counts its initial horizon
     assert not (tmp_path / "synthetic" / "raw").exists()
 
 
@@ -443,7 +414,6 @@ def test_preflight_stops_when_cuda_fails(tmp_path: Path, monkeypatch: pytest.Mon
     assert not run_preflight(
         output_dir=tmp_path,
         synthetic=True,
-        reference_dir=REFERENCE,
         gpu_query=lambda: None,
         stream=stream,
     )
@@ -451,44 +421,34 @@ def test_preflight_stops_when_cuda_fails(tmp_path: Path, monkeypatch: pytest.Mon
     assert not (tmp_path / "synthetic").exists()
 
 
-def test_preflight_on_a_data_dir_without_the_reference_datasets(
+def test_a_requested_run_that_cannot_run_fails(data_copy: Path, tmp_path: Path) -> None:
+    # The synthetic copies hold uint8 stamps only: CD21 needs float32 ones.
+    stream = io.StringIO()
+    passed = run_preflight(
+        output_dir=tmp_path / "out",
+        data_dir=data_copy,
+        accelerator="cpu",
+        runs=["CD21"],
+        stream=stream,
+    )
+    # CD21 was requested explicitly: it must run, so missing float32 stamps fail.
+    assert not passed
+    text = stream.getvalue()
+    assert f"FAIL CD21: dataset {FULL} is not prepared with float32 stamps" in text
+    assert "(requested with --runs)" in text
+
+
+def test_default_runs_skip_missing_data_and_fail_if_none_ran(
     data_copy: Path, tmp_path: Path
 ) -> None:
-    for name in ("td_ztf_stamp_17_06_20_sup_1",):
-        shutil.rmtree(data_copy / name)
     stream = io.StringIO()
     passed = run_preflight(
-        output_dir=tmp_path / "out",
-        data_dir=data_copy,
-        accelerator="cpu",
-        reference_dir=REFERENCE,
-        runs=["R4"],
-        stream=stream,
-    )
-    # R4 was requested explicitly: it must run, so a missing dataset fails.
-    assert not passed
-    assert "FAIL R4: dataset td_ztf_stamp_17_06_20_sup_1 is not prepared" in stream.getvalue()
-    assert "(requested with --runs)" in stream.getvalue()
-
-
-def test_default_runs_skip_missing_data_with_a_warning(data_copy: Path, tmp_path: Path) -> None:
-    for name in ("td_ztf_stamp_simclr_300", FULL):  # R3 pretrain, R1 and R2 cannot run
-        shutil.rmtree(data_copy / name)
-    stream = io.StringIO()
-    passed = run_preflight(
-        output_dir=tmp_path / "out",
-        data_dir=data_copy,
-        accelerator="cpu",
-        reference_dir=REFERENCE,
-        overrides=["num_workers=0"],
-        steps=1,
-        stream=stream,
+        output_dir=tmp_path / "out", data_dir=data_copy, accelerator="cpu", steps=1, stream=stream
     )
     text = stream.getvalue()
-    assert passed, text
-    assert "[WARN] dry-chain" in text
-    assert "SKIP R1: dataset td_ztf_stamp_17_06_20_red-002 is not prepared" in text
-    assert "SKIP R3-linear-eval: no pretrain checkpoint" in text
+    assert not passed, text
+    assert f"SKIP CD21: dataset {FULL} is not prepared with float32 stamps" in text
+    assert "no dry run could run" in text
 
 
 def test_resources_are_checked_before_the_data_is_read(
@@ -502,7 +462,6 @@ def test_resources_are_checked_before_the_data_is_read(
         output_dir=tmp_path,
         data_dir=data_copy,
         accelerator="cpu",
-        reference_dir=REFERENCE,
         stream=stream,
     )
     assert "[FAIL] resources" in stream.getvalue()
@@ -517,7 +476,6 @@ def test_preflight_fails_on_bad_data(data_copy: Path, tmp_path: Path) -> None:
         output_dir=tmp_path,
         data_dir=data_copy,
         accelerator="cpu",
-        reference_dir=REFERENCE,
         stream=stream,
     )
     assert "the dry chain did not run" in stream.getvalue()
@@ -526,11 +484,12 @@ def test_preflight_fails_on_bad_data(data_copy: Path, tmp_path: Path) -> None:
 
 def test_preflight_argument_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(ConfigError, match="exactly one"):
-        run_preflight(output_dir=tmp_path, reference_dir=REFERENCE)
+        run_preflight(output_dir=tmp_path)
     with pytest.raises(ConfigError, match="unknown reference run"):
-        run_preflight(output_dir=tmp_path, synthetic=True, runs=["R9"], reference_dir=REFERENCE)
-    with pytest.raises(ConfigError, match="no reference configs"):
-        run_preflight(output_dir=tmp_path, synthetic=True, reference_dir=tmp_path)
+        run_preflight(output_dir=tmp_path, synthetic=True, runs=["R9"])
+    # Task 4.8: R1-R4 trained on Lightning; the refusal names the tag that keeps them.
+    with pytest.raises(ConfigError, match=r"R1, R3 dry runs trained on Lightning.*lightning-final"):
+        run_preflight(output_dir=tmp_path, synthetic=True, runs=["R3", "R1", "CD21"])
     with pytest.raises(SystemExit):
         main(["preflight"])  # --synthetic or --data-dir is required
     code = main(["preflight", "--synthetic", "--runs", "R9", "--output-dir", str(tmp_path)])
@@ -549,8 +508,6 @@ def test_preflight_cli_with_an_unavailable_accelerator(
         "mps",
         "--output-dir",
         str(tmp_path),
-        "--reference-dir",
-        str(REFERENCE),
     ]
     assert main(argv) == 1
     assert "accelerator 'mps' was requested" in capsys.readouterr().out

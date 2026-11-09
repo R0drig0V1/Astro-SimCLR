@@ -10,8 +10,8 @@ per-step generators of :mod:`.randomness` need no state, being functions of the 
 The **stream position** is ``steps_done``: the next batch is stream batch ``steps_done``
 (:class:`~astro_simclr.engine.data.BatchSource`), so no loader position is stored, only the
 stream definition to check. ``last`` is written after the validation of its step and the
-policy update, so a resume owes no validation (the reason ``HorizonCallback`` writes it
-there).
+policy update, so a resume owes no validation (the reason Lightning's ``HorizonCallback``
+wrote it there too).
 
 The resume order (ADR 0014, "Resume") is: :func:`check_resumable`; seed; build the task on
 the CPU; load ``model``; move to the device; build the optimizer and load ``optimizer``;
@@ -36,7 +36,7 @@ from typing import Any, Final, Literal, NotRequired, TypedDict, cast
 import numpy as np
 import torch
 
-from astro_simclr.config import ConfigError
+from astro_simclr.config import LIGHTNING_TAG, ConfigError
 from astro_simclr.engine.device import DevicePolicy
 from astro_simclr.engine.precision import fp32_precision_record
 
@@ -135,7 +135,7 @@ class Checkpoint(TypedDict):
     #: ``BatchSource.state()``: the stream definition to check, not a position.
     stream: dict[str, Any]
     rng: RngState
-    #: ``training.runs.fp32_precision_record`` and the determinism flags at save time; a
+    #: ``engine.precision.fp32_precision_record`` and the determinism flags at save time; a
     #: resume under another precision policy is refused (ADR 0010).
     numerics: dict[str, Any]
     #: ``astro_simclr`` and ``torch`` versions and the git SHA, for the record, as plain
@@ -180,13 +180,14 @@ def check_resumable(checkpoint: Mapping[str, Any]) -> None:
     """Refuse, before anything is built, a checkpoint the plain engine cannot continue.
 
     Raises:
-        ConfigError: for a Lightning checkpoint (in-flight Lightning runs finish on
-            Lightning), another engine, another format version, or missing keys.
+        ConfigError: for a Lightning checkpoint (a Lightning run resumes only from a
+            checkout of the git tag ``lightning-final``), another engine, another format
+            version, or missing keys.
     """
     if _LIGHTNING_KEY in checkpoint:
         msg = (
             "this is a Lightning checkpoint: the plain engine does not resume Lightning runs "
-            "(finish them on Lightning, ADR 0014)"
+            f"(ADR 0014; resume it from a checkout of the git tag {LIGHTNING_TAG})"
         )
         raise ConfigError(msg)
     engine = checkpoint.get("engine")

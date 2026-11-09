@@ -1,10 +1,17 @@
 """The paper model's splits as arrays: :class:`TensorSplit` and the crop builders (Lightning-free).
 
-Split out of ``training.device_data`` (task 4.6) so that the plain engine (ADR 0014) builds
-exactly the arrays the Lightning ``DeviceTensorDataModule`` trains on without importing
-Lightning; ``device_data`` re-exports every name, so existing imports are unchanged. The
-design (the float path, the uint8 diagnostic, the leaked stamps, the roles of a split run)
-is described in ``device_data``'s docstring.
+Split out of the Lightning ``training.device_data`` (task 4.6; task 4.8 removed it) so that
+the plain engine (ADR 0014) builds exactly the arrays the Lightning
+``DeviceTensorDataModule`` trained on. The crops of every split are built once per run and
+kept whole; the plain engine's data tiers (:mod:`astro_simclr.engine.tiers`) serve them,
+gathering each batch by index (no worker processes, no per-item ``DataLoader``).
+:func:`float_crops` is 2.1's float path (``data.float_input.crop_split`` on the stored
+float32 stamps, with the context channels or the whole stamp on request);
+:func:`interim_uint8_crops`, the stand-in of task 2.2a, stays as the ``paper_input:
+uint8`` diagnostic. A split run (:mod:`astro_simclr.protocol.split_runs`) reads only the
+splits it needs and gathers its parts into three roles (``Train`` trained on and tiled,
+``Validation`` the checkpoint-selection part, ``Test`` the held-out evaluation part); its
+identity goes into every checkpoint, so a resume never continues another fold or mode.
 
 - :class:`TensorSplit`: one labelled split, float32 crops (or whole stamps), the 23 kept
   features, int64 labels and the optional C5-C7 fits;
@@ -67,13 +74,14 @@ IMAGE_CHANNELS = (3, 6)
 #: (the ConvNeXt rows, plan row B8; whole stamps have 3 channels only).
 IMAGE_SIDES = (PAPER_CROP, STAMP_SHAPE[0])
 
-#: (crops, features, one-hot labels), as ``ClassifierModule`` expects.
+#: (crops, features, one-hot labels): the engine's batch format (``engine.data.Batch``).
 Batch = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 #: A training batch: a :data:`Batch`, plus the stamp fits when the Train split has them.
 TrainBatch = Batch | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
 #: A :data:`TrainBatch` followed by its uploaded augmentation plan.
 PlannedTrainBatch = tuple[Any, ...]
-#: ``planner(host_batch, step) -> plan``: ``PaperClassifierModule.augment_plan``.
+#: ``planner(host_batch, step) -> plan``, the shape of ``PaperAugment.plan``
+#: (``training.paper_augment``; Lightning's ``PaperClassifierModule.augment_plan``).
 Planner = Callable[[Any, int], dict[str, Any]]
 _TRAIN, _VALIDATION, _TEST = SPLITS
 
@@ -91,7 +99,7 @@ class TensorSplit:
         fits: float32 (N, 6) ``class_augment.stamp_fits`` of the crops, or (N, 11) with
             ``flux_rescale.fit_central_psf`` after them (C7), or None (the default). Only a
             training split that C5 / C6 / C7 augment carries them; the training batches
-            then have a fourth element (:class:`DeviceTensorDataModule`).
+            then have a fourth element (``engine.data.TrainBatch``).
         n_classes: the number of classes, the width of the one-hot labels (default 5,
             CD21's; an N-class dataset passes its own, task 3.1b).
 
@@ -218,7 +226,7 @@ def interim_uint8_crops(
     The stand-in of task 2.2a, now the ``paper_input: uint8`` diagnostic: the centre
     ``side`` x ``side`` (21, or 63 for the whole stamp) of the stored uint8 stamps, divided
     by 255 (no re-normalisation on the crop), with the 23 kept features (columns 13-15
-    dropped, as in ``StampDataset``) as float32.
+    dropped, as in the legacy ``StampDataset``) as float32.
 
     Raises:
         DataError: if ``path`` is not a valid prepared layout of a classifier file.

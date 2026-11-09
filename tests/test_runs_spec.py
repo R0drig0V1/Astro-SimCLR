@@ -15,6 +15,7 @@ from astro_simclr.runs.spec import (
     Cell,
     ExperimentSpec,
     SpecError,
+    check_trainable,
     expected_run_ids,
     load_spec,
     parse_spec,
@@ -33,6 +34,7 @@ arms:
 seeds: [0, 1]
 splits: {file: configs/splits/x.json, folds: [1, 0]}
 machine: {class: cuda-nvidia-geforce-gtx-1050, extra: cu126}
+engine: plain
 """
 
 
@@ -103,7 +105,7 @@ def test_expected_run_ids() -> None:
         spec.arm_settings("flux", 1),
         data_sha256=SHA,
         machine_class=spec.machine_class,
-        engine="lightning",
+        engine="plain",
         split=0,
         splits_sha256="b" * 64,
     )
@@ -117,12 +119,13 @@ def test_expected_run_ids() -> None:
 
 
 def test_the_engine_changes_run_ids_not_config_hashes() -> None:
-    """``engine`` is a run-id component, not a setting (ADR 0017)."""
-    lightning = parse_spec(FULL)
-    plain = parse_spec(FULL + "engine: plain\n")
+    """``engine`` is a run-id component, not a setting (ADR 0017); required since 4.8."""
+    plain = parse_spec(FULL)
+    lightning = parse_spec(FULL.replace("engine: plain", "engine: lightning"))
     assert lightning.engine == "lightning" and plain.engine == "plain"
     assert plain.spec_id != lightning.spec_id
-    assert parse_spec(FULL + "engine: lightning\n").spec_id == lightning.spec_id
+    with pytest.raises(SpecError, match=r"engine is required since task 4\.8"):
+        parse_spec(FULL.replace("engine: plain\n", ""))
     assert plain.arm_config_sha256("flux") == lightning.arm_config_sha256("flux")
 
     def ids(spec: ExperimentSpec, engine: Engine | None = None) -> dict[Cell, str]:
@@ -223,7 +226,7 @@ def test_cell_keys() -> None:
         (("machine: {", "machine: ["), "YAML"),
         (("name: c5-screen", "name: c5-screen\nowner: me"), "unknown"),
         (("name: c5-screen\n", ""), "missing keys"),
-        (("name: c5-screen", "name: c5-screen\nengine: jax"), "engine"),
+        (("engine: plain", "engine: jax"), "engine"),
     ],
 )
 def test_invalid_specs(edit: tuple[str, str], message: str) -> None:
@@ -264,11 +267,13 @@ def test_load_spec(tmp_path: Path) -> None:
 
 
 def test_spec_without_preset_or_splits_uses_the_legacy_protocol() -> None:
-    spec = parse_spec(spec_text())
+    spec = parse_spec(spec_text().replace("preset: carrasco2021\n", ""))
     assert spec.preset is None and spec.splits is None
     assert spec.split_parts() == (None,)
     settings = spec.arm_settings("wide", 1)
-    assert settings.drop_rate == 0.5 and settings.batch_size == 5 and settings.seed == 1
+    # The Settings defaults (the train-supervised legacy protocol), then the spec's.
+    assert settings.supervised_model == "stamp_classifier" and settings.max_epochs == 220
+    assert settings.lr == 0.01 and settings.batch_size == 4 and settings.seed == 1
 
 
 def test_the_registry_reads_a_real_spec(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -291,3 +296,12 @@ def test_the_registry_reads_a_real_spec(tmp_path: Path, monkeypatch: pytest.Monk
     from astro_simclr.data.files import sha256_file
 
     assert plan.splits_sha256 == sha256_file(splits)
+
+
+def test_a_lightning_spec_parses_but_is_not_trainable() -> None:
+    # Task 4.8: an old Lightning spec still resolves its run ids (runs compare), but the
+    # queue refuses to train it, naming the tag that keeps the engine.
+    lightning = parse_spec(FULL.replace("engine: plain", "engine: lightning"))
+    with pytest.raises(SpecError, match="lightning-final"):
+        check_trainable(lightning)
+    check_trainable(parse_spec(FULL))

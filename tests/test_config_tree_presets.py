@@ -18,7 +18,12 @@ import pytest
 from _canonical_cases import CONFIG_CASES, FIXTURE, case_settings
 
 from astro_simclr.cli import build_parser, training_settings
-from astro_simclr.config import Settings, settings_from_mapping, settings_to_plain
+from astro_simclr.config import (
+    Settings,
+    read_settings_file,
+    settings_from_mapping,
+    settings_to_plain,
+)
 from astro_simclr.config_tree import (
     LEGACY_PRESETS,
     PRESETS,
@@ -151,7 +156,12 @@ def test_flat_files_list_every_reference_config() -> None:
 
 @pytest.mark.parametrize(("path", "command"), list(_FLAT_FILES.items()))
 def test_the_shim_reads_the_flat_configs_with_their_old_hash(path: str, command: str) -> None:
-    old = training_settings(command, build_parser().parse_args([command, "--config", path]))
+    # What `<command> --config PATH` resolved to: the legacy protocol, then the file (the
+    # legacy commands are frozen at lightning-final since task 4.8; their configs still read).
+    old = settings_from_mapping({**COMMAND_DEFAULTS[command], **read_settings_file(ROOT / path)})
+    if command == "train-supervised":
+        args = build_parser().parse_args([command, "--config", str(ROOT / path)])
+        assert training_settings(command, args) == old
     nested = resolve_config(ROOT / path, command=command)
     assert nested.to_settings() == old
     assert config_sha256(nested) == config_sha256_of(semantic_config(command, old))

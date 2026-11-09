@@ -1,4 +1,4 @@
-"""Data: schemas, preprocessing, the pickle loader, the prepared layout and the datasets.
+"""Data: schemas, preprocessing, the pickle loader, the prepared layout and model inputs.
 
 Submodules (``docs/data.md`` has the file schemas, ``docs/architecture.md`` the design):
 
@@ -14,12 +14,11 @@ Submodules (``docs/data.md`` has the file schemas, ``docs/architecture.md`` the 
   the four views, the unit-sphere position);
 - :mod:`~astro_simclr.data.m1_features`: M1's feature statistics and the
   de-standardisation check;
-- :mod:`~astro_simclr.data.datasets`: ``StampDataset`` and ``ContrastiveDataset`` (torch);
 - :mod:`~astro_simclr.data.synthetic`: the synthetic stand-ins of the four pickles;
 - :mod:`~astro_simclr.data.inspection`: what ``inspect-data`` prints.
 
-The torch datasets are not re-exported here, so that the CLI's data commands do not pay
-for importing torch; import them from :mod:`astro_simclr.data.datasets`.
+The legacy torch datasets (``data.datasets``: ``StampDataset``, ``ContrastiveDataset``)
+were removed with Lightning in task 4.8.
 """
 
 from astro_simclr.data.pickle_loader import load_pickle

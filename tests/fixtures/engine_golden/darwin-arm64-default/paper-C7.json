@@ -1,0 +1,451 @@
+{
+ "case": "paper-C7",
+ "format": 1,
+ "initial": "6f70c218c7a85bcf4a505a78d3cd2864d490920b7c027c55c4512721839b39d0",
+ "metrics": {
+  "best_epoch": 5,
+  "best_step": 12,
+  "command": "train-supervised",
+  "config": {
+   "accelerator": "cpu",
+   "adam_betas": "code",
+   "aug_feature_jitter": 0.0,
+   "aug_min_r2": 0.5,
+   "aug_noise": 0.0,
+   "augmentation": "center_crop",
+   "backbone_weights": "none",
+   "batch_size": 4,
+   "beta_loss": 0.5,
+   "check_finite": true,
+   "checkpoint_every_n_steps": 3,
+   "checkpoint_selection": "best_val_loss",
+   "context": "none",
+   "dataset": "td_ztf_stamp_17_06_20_red-002",
+   "deterministic": true,
+   "devices": 1,
+   "divergence_threshold": null,
+   "drop_rate": 0.2,
+   "dropout_active": false,
+   "early_stopping": false,
+   "ema_decay": null,
+   "ema_warmup": false,
+   "encoder_name": "resnet18",
+   "eval_batch_size": 64,
+   "exclude_leaked_train": true,
+   "feature_set": "all",
+   "fine_tune_lr_factor": 0.2,
+   "flux_k_max": 1.5,
+   "flux_k_min": 0.5,
+   "flux_rescale": 0.5,
+   "fp32_precision": "ieee",
+   "group_fields": null,
+   "horizon_increment": 10,
+   "hybrid_depth": 2,
+   "hybrid_dim": 64,
+   "hybrid_heads": 4,
+   "hybrid_readout": "mean",
+   "image_size": 21,
+   "lars_legacy_trust_ratio": true,
+   "limit_train_batches": null,
+   "limit_val_batches": null,
+   "lr": 0.03,
+   "lr_schedule": "constant",
+   "lr_warmup_steps": 0,
+   "max_epochs": 220,
+   "max_steps": 10,
+   "min_delta": 0.001,
+   "monitor": "loss_val",
+   "nan_approximation": true,
+   "nt_xent_legacy_denominator": true,
+   "num_workers": 0,
+   "optimizer": "Adam",
+   "paper_arch": "rot4",
+   "paper_input": "float32",
+   "patience": 40,
+   "pretrained": null,
+   "progress_bar_refresh_rate": 50,
+   "projection_dim": 300,
+   "rj23_bn_position": "after_concat",
+   "rj23_keep": "stop",
+   "rj23_large_values": "paper",
+   "rj23_scenario": "full",
+   "rot90_augment": false,
+   "schedule": "carrasco2021",
+   "seed": 0,
+   "supervised_model": "paper_stamp_classifier",
+   "synthetic_bogus": 0.0,
+   "temperature": 0.17910250439416514,
+   "val_every_n_steps": 3,
+   "with_features": true
+  },
+  "data": {
+   "class_counts": {
+    "Test": [
+     2,
+     2,
+     2,
+     2,
+     2
+    ],
+    "Train": [
+     2,
+     2,
+     2,
+     2,
+     2
+    ],
+    "Validation": [
+     2,
+     2,
+     2,
+     2,
+     2
+    ]
+   },
+   "kind": "classifier",
+   "path": "td_ztf_stamp_17_06_20_red-002",
+   "source": {
+    "name": "td_ztf_stamp_17_06_20_red-002.pkl",
+    "sha256": "32b81681746bde71e0229e28dd2445444ae9d5049a447c7bbe65e934e25a94e4",
+    "size_bytes": 1397790
+   }
+  },
+  "evaluation": {
+   "test": {
+    "accuracy": 0.3,
+    "balanced_accuracy": 0.3,
+    "confusion_counts": [
+     [
+      1,
+      0,
+      0,
+      0,
+      1
+     ],
+     [
+      1,
+      0,
+      1,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      1,
+      0,
+      1
+     ],
+     [
+      1,
+      0,
+      0,
+      0,
+      1
+     ],
+     [
+      0,
+      0,
+      0,
+      1,
+      1
+     ]
+    ],
+    "confusion_matrix": [
+     [
+      0.5,
+      0.0,
+      0.0,
+      0.0,
+      0.5
+     ],
+     [
+      0.5,
+      0.0,
+      0.5,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.5,
+      0.0,
+      0.5
+     ],
+     [
+      0.5,
+      0.0,
+      0.0,
+      0.0,
+      0.5
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      0.5,
+      0.5
+     ]
+    ],
+    "ece": 0.29072746336460115,
+    "macro_f1": 0.24666666984558105,
+    "recall_per_class": {
+     "AGN": 0.5,
+     "Asteroid": 0.0,
+     "Bogus": 0.5,
+     "SN": 0.0,
+     "VS": 0.5
+    }
+   },
+   "val": {
+    "accuracy": 0.8,
+    "balanced_accuracy": 0.8,
+    "confusion_counts": [
+     [
+      2,
+      0,
+      0,
+      0,
+      0
+     ],
+     [
+      1,
+      1,
+      0,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      1,
+      0,
+      1
+     ],
+     [
+      0,
+      0,
+      0,
+      2,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      2
+     ]
+    ],
+    "confusion_matrix": [
+     [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.5,
+      0.5,
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.5,
+      0.0,
+      0.5
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "ece": 0.39017072021961213,
+    "macro_f1": 0.7866666316986084,
+    "recall_per_class": {
+     "AGN": 1.0,
+     "Asteroid": 1.0,
+     "Bogus": 1.0,
+     "SN": 0.5,
+     "VS": 0.5
+    }
+   }
+  },
+  "figures": [
+   "confusion_matrix_val.png",
+   "confusion_matrix_test.png"
+  ],
+  "horizon": 22,
+  "labels": [
+   "AGN",
+   "SN",
+   "VS",
+   "Asteroid",
+   "Bogus"
+  ],
+  "last_epoch": 10,
+  "last_step": 22,
+  "monitor": "loss_val",
+  "monitor_best": 0.4307590126991272,
+  "paper_data": {
+   "class_augment": {
+    "count": {
+     "AGN": 2,
+     "Asteroid": 2,
+     "Bogus": 2,
+     "SN": 2,
+     "VS": 1
+    },
+    "excluded": {
+     "AGN": 0.0,
+     "Asteroid": 0.0,
+     "Bogus": 1.0,
+     "SN": 0.0,
+     "VS": 0.0
+    },
+    "min_r2": 0.5
+   },
+   "crop": 21,
+   "excluded_train": [
+    3
+   ],
+   "flux_rescale": {
+    "skipped": {
+     "AGN": 0.0,
+     "Asteroid": 0.0,
+     "Bogus": 1.0,
+     "SN": 0.0,
+     "VS": 1.0
+    }
+   },
+   "input": "float32",
+   "n_tiled": 10,
+   "n_train": 9,
+   "nan_approximation": true
+  },
+  "predictions": {
+   "test": {
+    "file": "predictions_test.npz",
+    "n": 10,
+    "split": "Test"
+   },
+   "val": {
+    "file": "predictions_val.npz",
+    "n": 10,
+    "split": "Validation"
+   }
+  },
+  "preset": {
+   "deviations": {
+    "batch_size": {
+     "preset": 64,
+     "value": 4
+    },
+    "drop_rate": {
+     "preset": 0.5,
+     "value": 0.2
+    },
+    "flux_rescale": {
+     "preset": 0.0,
+     "value": 0.5
+    },
+    "horizon_increment": {
+     "preset": 10000,
+     "value": 10
+    },
+    "lr": {
+     "preset": 0.001,
+     "value": 0.03
+    },
+    "max_steps": {
+     "preset": 30000,
+     "value": 10
+    },
+    "val_every_n_steps": {
+     "preset": 10,
+     "value": 3
+    }
+   },
+   "diagnostics": [],
+   "faithful": false,
+   "name": "carrasco2021"
+  },
+  "resumed_from": false,
+  "seed": 0,
+  "selection": {
+   "checkpoint_selection": "best_val_loss",
+   "ece_bins": 15,
+   "ema": false,
+   "scored_step": 12
+  },
+  "test_acc_at_best": 0.3,
+  "test_macro_f1": 0.24666666984558105,
+  "val_acc_best": 0.8,
+  "val_macro_f1": 0.7866666316986084
+ },
+ "predictions": {
+  "predictions_test.npz": {
+   "index": "480809be2f606f5cecc294aa38f8981f125aded56a0ee8004ef2bf6c7f8f9211",
+   "labels": "e976928bfad47d6238f6e2b6f03c0a32afc14ff183336b3a635b63175b9c6a8c",
+   "probabilities": "f1de66469ed917ca510c95eacb08b4c37f05463ab9e40b4a84a1744cc39ac528"
+  },
+  "predictions_val.npz": {
+   "index": "480809be2f606f5cecc294aa38f8981f125aded56a0ee8004ef2bf6c7f8f9211",
+   "labels": "ed8ae3551af8337cc5ff09bf2036408851ffd9e6e4152e4abed36417ab785a8a",
+   "probabilities": "b65142e8acf00cd1e6d9687641fddc0857771c1e91c7171a33a66a8f7b50d718"
+  }
+ },
+ "torch": "2.14.1",
+ "validations": [
+  [
+   3,
+   7.8718695640563965,
+   "abf9c44c1a3a10952683624996f25f6ebf7d416a8281a313978d2866ef8b187e"
+  ],
+  [
+   6,
+   12.243847846984863,
+   "4d131ac64e3e2cdc325bf888922f2fcc448b692542076953713a6d2478e138e2"
+  ],
+  [
+   9,
+   1.1091705560684204,
+   "8c65a6d53833669af58cddb2daf17dda5780894c49d0d7bd1c6425fe8315920a"
+  ],
+  [
+   12,
+   0.4307590126991272,
+   "532ec64c30c8792d03ed1afb783fa79ab7acf1c090921cac714c6c201e98020e"
+  ],
+  [
+   15,
+   0.5151969790458679,
+   "d8beabbfe24bcf708e3d3299f96bfd6838cc2a46e90bcbbcc07705f1fac2c5dc"
+  ],
+  [
+   18,
+   0.5549322962760925,
+   "f671a0a5394145f1b9388128abe29be09d96b149d94285d932f3d6f734ea3c1e"
+  ],
+  [
+   21,
+   0.5062093734741211,
+   "1e974c87efaa4f423696bd62c35bdf3735654ba9e400795e7e63d5f2728cf04f"
+  ]
+ ]
+}

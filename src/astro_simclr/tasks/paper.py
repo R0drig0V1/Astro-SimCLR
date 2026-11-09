@@ -1,32 +1,38 @@
 """The paper classifier as a plain-engine task, and its data (task 4.6; ADR 0014).
 
-What ``experiments._build_paper`` and ``PaperClassifierModule`` do for the Lightning path,
-without Lightning, sharing every piece that decides the numbers:
+What ``experiments._build_paper`` and ``PaperClassifierModule`` did for the Lightning path
+(removed in task 4.8), without Lightning, with every piece that decides the numbers the
+one they used:
 
 - :func:`paper_crops`: the splits as the run's model sees them (also ``ensemble-eval``'s);
 - :func:`paper_inputs`: the run's splits as ``training.tensor_splits.TensorSplit`` (the
   float path or the uint8 diagnostic, the leaked Train stamps removed, a split run's
   roles, the C5-C7 fits of the Train role) and the ``paper_data`` metrics entry. The
-  Lightning path's ``_build_paper`` calls it too, so both engines train on the same arrays.
-- :func:`load_backbone` (the ConvNeXt pretrained backbone, ADR 0022), also shared.
+  Lightning path's ``_build_paper`` called it too, so both engines trained on the same
+  arrays.
+- :func:`load_backbone` (the ConvNeXt pretrained backbone, ADR 0022).
 - :class:`PaperNet`: the model under the attribute ``model`` (``build_paper_model``), so its
-  ``state_dict`` keys are ``PaperClassifierModule``'s; the loss ``P_stamps_loss`` is its
-  ``criterion``; with ``ema_decay`` (plan row D3) the weight EMA ``training.ema.EmaWeights``
-  is its ``ema``, and its forward in ``eval()`` mode runs the EMA weights. With
-  ``feature_set: none`` the forward ignores the features, as the Lightning module does.
+  ``state_dict`` keys are Lightning's ``PaperClassifierModule``'s; the loss
+  ``P_stamps_loss`` is its ``criterion``; with ``ema_decay`` (plan row D3) the weight EMA
+  ``training.ema.EmaWeights`` is its ``ema``, and its forward in ``eval()`` mode runs the
+  EMA weights. With ``feature_set: none`` the forward ignores the features, as the
+  Lightning module did.
 - :class:`PaperTask`: the engine ``Task``. A training step plans the augmentation of step
   ``step`` on a host copy of the batch (``training.paper_augment.PaperAugment``, the same
-  object the Lightning module delegates to), uploads the plan, applies it, then computes
-  the loss: ``PaperClassifierModule.training_step`` with the loader's plan (the
+  object the Lightning module delegated to), uploads the plan, applies it, then computes
+  the loss: what ``PaperClassifierModule.training_step`` did with the loader's plan (the
   host-planned augmentation of PR #38). The optimizer is ``build_optimizer`` over every
   parameter but the EMA's, with the configured Adam betas, and the learning-rate schedule
   of plan row D3 (``training.lr_schedule``) when one is set; ``after_step`` steps that
   schedule and updates the EMA, as the Lightning module's scheduler and
-  ``on_train_batch_end`` do.
+  ``on_train_batch_end`` did.
 - :func:`build_paper_task`: the task of a ``Settings``, built on the CPU (the loop calls
   it after seeding, ADR 0014, C1).
 
-``tests/test_engine_differential.py`` holds the two engines bit for bit equal on it.
+Until task 4.8 a differential test held the two engines bit for bit equal on it; the golden
+regression set (``tests/test_engine_regression.py``, cases in ``tests/_engine_cases.py``,
+goldens in ``tests/fixtures/engine_golden/``) now holds its numbers fixed, and
+``tests/test_engine_resume.py`` its exact resume.
 """
 
 from __future__ import annotations
@@ -76,6 +82,7 @@ __all__ = [
     "paper_augment",
     "paper_crops",
     "paper_inputs",
+    "paper_model",
     "with_train_fits",
 ]
 
@@ -231,7 +238,7 @@ def load_backbone(
 
 
 def paper_augment(settings: Settings) -> PaperAugment:
-    """The training augmentation of ``settings`` (``PaperClassifierModule``'s).
+    """The training augmentation of ``settings`` (the one ``PaperClassifierModule`` used).
 
     Raises:
         ValueError: as :class:`PaperAugment` and ``check_augment_context``.
@@ -263,7 +270,7 @@ def lr_schedule_of(settings: Settings) -> LrSchedule:
 
 
 class PaperNet(nn.Module):
-    """The paper model (``model``) and its loss (``criterion``), as ``PaperClassifierModule``.
+    """The paper model (``model``) and its loss (``criterion``), as in ``PaperClassifierModule``.
 
     ``reads_features`` is whether the head reads the features (false for ``feature_set:
     none``, or without features): the forward then passes ``None``. ``ema`` (plan row D3)
@@ -369,7 +376,7 @@ class PaperTask:
             self.net.ema.update(self.net.model, step)
 
     def eval_step(self, batch: Batch) -> EvalOutput:
-        """The batch's loss, probabilities and labels (``ClassifierModule._step``'s)."""
+        """The batch's loss, probabilities and labels (Lightning's ``ClassifierModule._step``)."""
         images, features, targets = batch
         logits = self.net(images, features)
         loss = self.net.criterion(logits, targets)
@@ -421,28 +428,20 @@ def check_paper_task(settings: Settings) -> None:
         )
 
 
-def build_paper_task(
-    settings: Settings, info: dict[str, Any], *, download: Callable[[Any], Path] | None = None
-) -> PaperTask:
-    """The task of ``settings``, on the CPU, from the global generator (call after seeding).
+def paper_model(settings: Settings) -> nn.Module:
+    """``build_paper_model`` with every model field of ``settings`` (from the global generator).
 
-    The model is built exactly as ``PaperClassifierModule`` builds it (the loss first, then
-    ``build_paper_model`` with the same arguments: the same draws), then the ConvNeXt
-    backbone weights are loaded if configured (:func:`load_backbone`), then the weight EMA
-    is copied from it if ``ema_decay`` is set (no draw).
+    The one place that maps the settings to the model's arguments: the variant
+    (``paper_arch``, ``group_fields``, ``context``), the head (``with_features``,
+    ``dropout_active``, ``drop_rate``, ``feature_set``) and the hybrids' shapes
+    (``hybrid_dim``, ``hybrid_depth``, ``hybrid_heads``, ``hybrid_readout``; plan row B9).
+    :func:`build_paper_task` trains it and ``ensemble_eval.member_net`` reloads a run's
+    weights into it, so a stored run is always rebuilt with its own shapes.
 
     Raises:
-        UnknownOptimizerError, ValueError: as ``PaperClassifierModule`` (an unknown
-            optimizer, betas, augmentation value, variant or feature set; C5's noise, C6
-            or C7 on a ConvNeXt).
-        WeightsError: as :func:`load_backbone`.
+        ValueError: as ``build_paper_model`` (an unknown or inconsistent variant).
     """
-    check_paper_task(settings)
-    columns = feature_columns(settings.feature_set, with_features=settings.with_features)
-    reads_features = bool(columns)
-    criterion = P_stamps_loss(settings.beta_loss)
-    augment = paper_augment(settings)
-    model = build_paper_model(
+    return build_paper_model(
         settings.paper_arch,
         group_fields=settings.group_fields,
         context=settings.context,
@@ -455,6 +454,30 @@ def build_paper_task(
         hybrid_heads=settings.hybrid_heads,
         hybrid_readout=settings.hybrid_readout,
     )
+
+
+def build_paper_task(
+    settings: Settings, info: dict[str, Any], *, download: Callable[[Any], Path] | None = None
+) -> PaperTask:
+    """The task of ``settings``, on the CPU, from the global generator (call after seeding).
+
+    The model is built exactly as ``PaperClassifierModule`` built it (the loss first, then
+    ``build_paper_model`` with the same arguments: the same draws), then the ConvNeXt
+    backbone weights are loaded if configured (:func:`load_backbone`), then the weight EMA
+    is copied from it if ``ema_decay`` is set (no draw).
+
+    Raises:
+        UnknownOptimizerError, ValueError: for an unknown optimizer, betas, augmentation
+            value, variant or feature set, or C5's noise, C6 or C7 on a ConvNeXt (the
+            refusals of ``PaperClassifierModule``).
+        WeightsError: as :func:`load_backbone`.
+    """
+    check_paper_task(settings)
+    columns = feature_columns(settings.feature_set, with_features=settings.with_features)
+    reads_features = bool(columns)
+    criterion = P_stamps_loss(settings.beta_loss)
+    augment = paper_augment(settings)
+    model = paper_model(settings)
     load_backbone(settings, model, info, download=download)
     # After the backbone weights, so the EMA starts from them (plan row D3).
     ema = (

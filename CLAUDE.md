@@ -4,18 +4,21 @@
 
 Astro-SimCLR: contrastive learning (SimCLR, Chen et al. 2020, and supervised SimCLR, Khosla
 et al. 2020) on ZTF astronomical event stamps, evaluated with a linear classifier and
-fine-tuning; built on PyTorch and PyTorch Lightning. The code is the typed, tested package
-`src/astro_simclr/`. The original research code (2021 course project: root scripts,
-`utils/`, `models/`, `losses/`, `env.yml`) was retired in task 1.8 and stays readable at the
-git tag `legacy-final` (`git show legacy-final:utils/training.py`); the characterization
-generators read it from there (`scripts/characterize/legacy_tree.py`). The dataset
-(`dataset/`) is not versioned.
+fine-tuning; built on PyTorch with a plain training loop of its own (`engine/`; PyTorch
+Lightning was removed in task 4.8 and every Lightning run stays re-runnable from the git
+tag `lightning-final`). The code is the typed, tested package `src/astro_simclr/`. The
+original research code (2021 course project: root scripts, `utils/`, `models/`, `losses/`,
+`env.yml`) was retired in task 1.8 and stays readable at the git tag `legacy-final`
+(`git show legacy-final:utils/training.py`); the characterization generators read it from
+there (`scripts/characterize/legacy_tree.py`). The dataset (`dataset/`) is not versioned.
 
 ## Layout
 
 ```
 src/astro_simclr/  the refactored, typed package (the target of every migration)
-tests/             pytest suite for src/ (branch coverage >= 80%)
+tests/             pytest suite for src/ (branch coverage >= 80%); fixtures/engine_golden/ the
+                   plain engine's golden regression set, fixtures/lightning_run/ a stored
+                   Lightning run (old runs stay readable)
 jupyter_examples/  2021 exploratory notebooks (they import the legacy code: run them from a
                    checkout of legacy-final); results/ saved metrics and figures
 .github/           CI (check.sh), quality (zizmor, actionlint, gitleaks, pip-audit), CodeQL,
@@ -31,7 +34,8 @@ configs/runs/       nested configs for `astro-simclr run` (task 4.2; ADR 0017)
 docs/        architecture.md (one section per module), phases/ (the plan), decisions/
              (ADRs), plan-reviews/, evaluation-protocol.md (phase-2 rules), data.md,
              queue.md (the run queue: specs, worker, ssh submission, survival checklist)
-scripts/     characterize/ (fixture generators; legacy code via the legacy-final tag),
+scripts/     characterize/ (fixture generators; legacy code via the legacy-final tag, the
+             Lightning run fixture via the lightning-final tag),
              check.sh (all checks), check-lock.sh (its FIFO machine lock and worker cap;
              `run` for other projects), check-torch-wheels.sh (ADR 0001 lock assertions),
              gpu-preflight.sh (wraps `astro-simclr preflight`), integrator.sh; optional
@@ -55,6 +59,7 @@ uv sync --locked                   # .venv with the package and dev tools (Pytho
 uv sync --locked --extra cpu       # CPU torch (CI); then UV_NO_SYNC=1 for every uv run (ADR 0001)
 uv run astro-simclr --help         # the CLI (src/astro_simclr/cli.py)
 uv run astro-simclr run configs/runs/carrasco2021.yaml --show   # a nested config, resolved
+ASTRO_SIMCLR_RECORD_GOLDEN=1 uv run pytest tests/test_engine_regression.py  # record goldens
 uv run astro-simclr runs reindex results/phase2   # the run registry (~/.astro-simclr; ADR 0024)
 scripts/gpu-preflight.sh --synthetic   # GPU machine check (astro-simclr preflight; ADR 0001)
 uv run ruff format . && uv run ruff check --fix .   # fix formatting and most lint findings
@@ -98,26 +103,31 @@ uvx copier@9.19.1 update           # pull python-template improvements (clean tr
   reason in the PR. Runtime dependencies go in `pyproject.toml` (`uv add`). torch/torchvision
   pins and extras follow ADR 0001. To compare with the legacy implementation, read it at the
   tag (`git show legacy-final:<path>`); never restore it to the tree.
-- **Typing:** mypy strict; `# type: ignore[override]` only on Lightning hook overrides.
+- **Typing:** mypy strict; `# type: ignore[override]` only on overrides of torch hooks whose
+  stubs do not fit (`Optimizer.step`); the Lightning hooks it also allowed are gone (4.8).
 - **Python changes semantics, not only style:** keep training results reproducible (seeds,
   splits, augmentations) unless the PR says otherwise.
-- **New training flags are engine-free** (ADR 0014) until Lightning is removed (task 4.8).
+- **New training flags run on the plain engine and join the golden regression set**
+  (ADR 0014, amendments 4.6 and 4.8). Lightning is gone (task 4.8): nothing may import
+  `lightning` or `torchmetrics` (`tests/test_lightning_retired.py` greps for it), and a
+  Lightning result is re-run from the tag `lightning-final`, never through a shim.
   Checklist for the author of a flag (a model variant, augmentation, sampler or schedule):
-  1. Write it as a pure function or a policy object outside both engines: no
-     `lightning` import, no `self.global_step` / `self.trainer` / `self.log` inside it. It
-     takes `step` (optimizer steps done before the step) as an argument.
+  1. Write it as a pure function or a policy object of the plain engine's tasks
+     (`tasks.paper`, `tasks.rj23`, `training.*`): no hidden counters. It takes `step`
+     (optimizer steps done before the step) as an argument.
   2. Draw its randomness from `engine.randomness.host_generator` (per-sample parameters) or
      `device_generator` (per-pixel fields, recorded as device-dependent), with a new
      number in `RESERVED_STREAMS`; never from a global or unseeded generator.
-  3. Wire it into each engine with a thin adapter (the Lightning module and the plain
-     `Task`; for the paper model both delegate to `training.paper_augment.PaperAugment` and
-     `tasks.paper`), and test the pure function directly.
-  4. Add it to the 4.7(a) CPU differential test's parametrisation (`_FLAGS` in
-     `tests/test_engine_differential.py`): the flag must give bit-identical runs on both
-     engines.
-  5. If it changes the numbers of an existing config, say so in the PR (and bump
-     `numerics_epoch` once task A0 lands); a non-faithful default is a preset deviation.
-  6. A new `Settings` field gets one nested home in `config_tree.schema` (ADR 0017), with
+  3. Test the pure function directly, and add the flag to the golden regression set: a
+     case in `FLAGS` (or `RJ23_CASES`) of `tests/_engine_cases.py`, and its golden recorded
+     with `ASTRO_SIMCLR_RECORD_GOLDEN=1 uv run pytest tests/test_engine_regression.py`
+     (review the diff of `tests/fixtures/engine_golden/` before committing it). The
+     goldens hold on the platform that recorded them (`darwin-arm64-default` today);
+     elsewhere their cases skip.
+  4. A change that moves the numbers of an existing case (a fix, a reordering, a torch
+     upgrade) says so in the PR, records the affected goldens again and bumps
+     `NUMERICS_EPOCH`; a non-faithful default is a preset deviation.
+  5. A new `Settings` field gets one nested home in `config_tree.schema` (ADR 0017), with
      `_flat("<field>")`, in the section and variants that read it; the coverage test of
      `tests/test_config_tree_presets.py` fails otherwise.
 

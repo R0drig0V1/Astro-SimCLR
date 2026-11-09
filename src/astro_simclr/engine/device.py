@@ -4,16 +4,17 @@ What Lightning's ``Trainer(accelerator, devices, deterministic, benchmark)`` dec
 implicitly is one frozen record here (ADR 0014, "Determinism"):
 
 - **one device**: ``world_size > 1`` is refused (multi-GPU is out of scope);
-- ``cudnn.benchmark = not deterministic`` (``training.runs.build_trainer``);
+- ``cudnn.benchmark = not deterministic`` (as ``training.runs.build_trainer`` set it);
 - ``torch.use_deterministic_algorithms(deterministic)``, always called (False included);
 - ``CUBLAS_WORKSPACE_CONFIG=":4096:8"`` set only when deterministic, never unset, as
   Lightning's ``_set_torch_flags`` does;
 - the float32 precision of ADR 0010 (``ieee`` | ``tf32``), applied by
-  ``training.runs.apply_fp32_precision`` before any module is built and recorded.
+  :func:`~.precision.apply_fp32_precision` before any module is built and recorded.
 
-:meth:`DevicePolicy.torch_flags` states what the loop applies, so a test can compare it with
-Lightning's; :meth:`DevicePolicy.apply` applies it (task 4.1), with the precision, before any
-module is built and before any CUDA work (so the cuBLAS setting takes effect).
+:meth:`DevicePolicy.torch_flags` states what the loop applies, so a test can check it (it
+was compared with Lightning's until task 4.8); :meth:`DevicePolicy.apply` applies it
+(task 4.1), with the precision, before any module is built and before any CUDA work (so
+the cuBLAS setting takes effect).
 """
 
 from __future__ import annotations
@@ -97,7 +98,7 @@ class DevicePolicy:
         Process-global, as Lightning's ``Trainer`` sets them: ``cudnn.benchmark``,
         ``torch.use_deterministic_algorithms`` (``False`` too) and, when deterministic,
         ``CUBLAS_WORKSPACE_CONFIG``, never unset. Nothing here touches the device: an
-        unavailable accelerator is the caller's to refuse (``experiments.check_accelerator``).
+        unavailable accelerator is the caller's to refuse (``tasks.common.check_accelerator``).
         """
         apply_fp32_precision(self.fp32_precision)
         flags = self.torch_flags()

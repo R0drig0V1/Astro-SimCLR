@@ -9,8 +9,10 @@
 4. **Pretrained weights** without the network: a fake downloader serves a local file; the
    licence gate, the size and SHA-256 checks and the strict key check are exercised. A
    from-scratch model is built and run with sockets disabled.
-5. The settings (``image_size`` 63, the crop-only flags refused) and the wiring of
-   ``backbone_weights`` into a run. The CPU split run is in ``tests/test_split_runs.py``.
+5. The settings (``image_size`` 63, the crop-only flags refused, by the settings and by
+   the paper task) and the wiring of ``backbone_weights`` into the plain engine's paper
+   task (``tasks.paper.build_paper_task``). The CPU split run is in
+   ``tests/test_split_runs.py``.
 """
 
 from __future__ import annotations
@@ -28,7 +30,6 @@ import torch
 from timm.models.convnext import ConvNeXt
 from torch import nn
 
-from astro_simclr import experiments
 from astro_simclr.config import ConfigError, Settings, settings_from_mapping
 from astro_simclr.convnext_model import (
     BACKBONE_WEIGHTS,
@@ -53,9 +54,10 @@ from astro_simclr.paper_variants import (
     paper_input_side,
 )
 from astro_simclr.presets import CARRASCO2021_PRESET, PRESETS, preset_report
+from astro_simclr.tasks import paper
 from astro_simclr.tasks.common import check_schedule
-from astro_simclr.training.device_data import float_crops, interim_uint8_crops
-from astro_simclr.training.modules import PaperClassifierModule
+from astro_simclr.tasks.paper import build_paper_task, check_paper_task, load_backbone
+from astro_simclr.training.tensor_splits import float_crops, interim_uint8_crops
 
 ARCHS = ("convnext_atto", "convnext_pico")
 
@@ -358,10 +360,11 @@ def test_settings_refuse_the_crop_only_flags() -> None:
     ):
         with pytest.raises(ConfigError, match=f"{flag} work on the 21x21 crop"):
             _settings(paper_arch="convnext_pico", image_size=63, **{flag: value})
+    # The task refuses it too, for a caller that bypasses the settings' checks.
+    unchecked = _settings(paper_arch="convnext_atto", image_size=63)
+    object.__setattr__(unchecked, "aug_noise", 1.0)  # frozen: past Settings' validation
     with pytest.raises(ValueError, match="work on the 21x21 crop"):
-        PaperClassifierModule(
-            beta_loss=0.5, lr=1e-3, optimizer="Adam", paper_arch="convnext_atto", aug_noise=1.0
-        )
+        check_paper_task(unchecked)
 
 
 def test_image_size_must_be_the_arch_side() -> None:
@@ -382,21 +385,22 @@ def test_a_run_loads_the_pinned_weights(tmp_path: Path, monkeypatch: pytest.Monk
     path, spec = _weights_file(tmp_path, source.backbone.state_dict())
     spec = dataclasses.replace(spec, arch="convnext_pico")
     monkeypatch.setitem(BACKBONE_WEIGHTS, "zoobot", {"convnext_pico": spec})
-    monkeypatch.setattr(experiments, "_DOWNLOAD", _served(path))
+    monkeypatch.setattr(paper, "DOWNLOAD", _served(path))
     torch.manual_seed(0)
-    module = experiments.paper_module(settings)
     info: dict[str, Any] = {}
-    experiments._load_backbone_weights(settings, module, info)
-    assert isinstance(module.model, ConvNeXtStampClassifier)
+    task = build_paper_task(settings, info)
+    model = task.net.model
+    assert isinstance(model, ConvNeXtStampClassifier)
     stem = "stem.0.weight"
-    assert torch.equal(module.model.backbone.state_dict()[stem], source.backbone.state_dict()[stem])
+    assert torch.equal(model.backbone.state_dict()[stem], source.backbone.state_dict()[stem])
     assert info["backbone_weights"] == spec.record()
     # From scratch: nothing is loaded or recorded.
     scratch: dict[str, Any] = {}
-    experiments._load_backbone_weights(
-        _settings(paper_arch="convnext_pico", image_size=63), module, scratch
-    )
+    load_backbone(_settings(paper_arch="convnext_pico", image_size=63), model, scratch)
     assert scratch == {}
+    # Weights for a ConvNeXt only (Settings refuses it first; kept for direct callers).
+    with pytest.raises(ConfigError, match="need a ConvNeXt paper_arch"):
+        load_backbone(settings, build_paper_model("rot4"), {})
 
 
 def test_the_data_path_gives_whole_stamps(classifier_f32_dir: Path) -> None:

@@ -138,7 +138,7 @@ IDENTITY_KEYS: Final[Mapping[str, str]] = {
 #:   constant``, ``lr_warmup_steps: 0``, ``ema_decay: null``, ``ema_warmup: false``: CD21's
 #:   selection on the validation loss with a constant learning rate, the only protocol
 #:   before them);
-#: - ``num_workers`` at 0. With DataLoader workers, Lightning seeds each worker, so the
+#: - ``num_workers`` at 0. With DataLoader workers, Lightning seeded each worker, so the
 #:   worker count decides which augmentations are drawn: 0, 2 and 3 workers are three
 #:   different runs, and a false run-id match would contaminate a comparison, while a
 #:   missed one only costs a rerun. At 0 (the default, and what the carrasco2021 schedule

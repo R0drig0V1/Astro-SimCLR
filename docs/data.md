@@ -158,8 +158,8 @@ On the three complete real files, `images.npy` is exactly `round(255 · images_f
 and its bytes are identical to the version-1 layouts. Stamps are converted
 with the legacy `img_float2int` arithmetic in the *stored* dtype. The prepared arrays are
 bit-identical to applying the legacy function to every stored stamp, which was checked on
-all three complete real files. The features keep float64, and the datasets cast them to
-float32 as the legacy code did.
+all three complete real files. The features keep float64, and training casts them to
+float32 (`training.tensor_splits`) as the legacy code did.
 
 Training opens it with `np.load(allow_pickle=False, mmap_mode="r")`, so no pickle is ever
 read again and the stamps are paged in on demand: `red` takes 596 MB prepared, against
@@ -327,7 +327,7 @@ It is ours, not ALeRCE's. The decisions (ADR 0005):
   not depend on the order of the pixels and commutes exactly with the rotations (tested;
   in float32 the order changes the last bit, which would break exact invariance).
 
-`context_split(images_f32)` applies it to a split in chunks; `training.device_data.
+`context_split(images_f32)` applies it to a split in chunks; `training.tensor_splits.
 float_crops(..., context=True)` concatenates it to the crops (6 channels, about 270 MB more
 for `red`). Only the float input path has it: `context` with `paper_input: uint8` is an
 error.

@@ -1,16 +1,17 @@
-"""End-to-end smoke test of the CLI (task 1.7): the whole chain, in-process, on the CPU.
+"""End-to-end smoke test of the CLI: the whole chain, in-process, on the CPU.
 
-``make-synthetic`` -> ``prepare-data`` -> ``pretrain`` -> ``linear-eval`` (on the pretrain
-checkpoint) -> ``fine-tune`` -> ``train-supervised``, each through ``cli.main([...])`` on a
-tiny synthetic dataset in ``tmp_path``, in the dry mode of the plan (``max_epochs=1
-limit_train_batches=2 limit_val_batches=2``, small batches, the ``stamp1`` encoder), plus
-the ``--resume`` equivalence. It runs inside ``scripts/check.sh`` with no skip marker; the
-plan's budget is 60 s on CI.
+``make-synthetic`` -> ``prepare-data --images float32`` -> ``train-supervised --preset
+carrasco2021`` (the paper classifier on the plain engine) -> ``train-supervised --resume
+auto``, each through ``cli.main([...])`` on a tiny synthetic dataset in ``tmp_path``. It
+runs inside ``scripts/check.sh`` with no skip marker.
 
-``train-supervised`` is the one exception to the dry mode: the plan asks for a validation
-accuracy >= 0.5 with seed 0, and the stamp classifier's BatchNorm statistics need a few
-dozen steps before evaluation-mode accuracy means anything, so it trains 8 short epochs
-(about 5 s; seed 0 reaches about 0.8, seeds 1-2 about 0.7).
+Until task 4.8 the chain was ``pretrain`` -> ``linear-eval`` -> ``fine-tune`` ->
+``train-supervised`` on Lightning; those commands are frozen at the git tag
+``lightning-final`` (their exit 2 is tested in ``test_cli_training.py``).
+
+The run is short (60 steps of batch 8, a validation every 10) but long enough that the
+classifier learns the synthetic classes: the plan asks for a validation accuracy of at
+least 0.5 with seed 0.
 """
 
 from __future__ import annotations
@@ -21,14 +22,21 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import torch
 
 from astro_simclr.cli import main
-from astro_simclr.data.synthetic import CLASSIFIER_FILES, PRETRAINING_FILE
+from astro_simclr.data.synthetic import CLASSIFIER_FILES
+from astro_simclr.engine import load_best, load_checkpoint
 
-#: Stamps per split: enough for 8 batches of 5, small enough to stay fast.
+#: Stamps per split: enough for a few batches of 8, small enough to stay fast.
 _N = 40
-_DRY = ["max_epochs=1", "limit_train_batches=2", "limit_val_batches=2"]
+#: A short carrasco2021 run (no horizon extension, so it ends at max_steps).
+_SHORT = [
+    "batch_size=8",
+    "max_steps=60",
+    "val_every_n_steps=10",
+    "horizon_increment=0",
+    "checkpoint_every_n_steps=10",
+]
 
 
 def _finite_numbers(value: object) -> bool:
@@ -53,116 +61,52 @@ def _metrics(out: Path) -> dict[str, Any]:
 
 @pytest.fixture(scope="module")
 def prepared(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """make-synthetic and prepare-data through the CLI; returns the data directory."""
+    """make-synthetic and prepare-data (float32 stamps) through the CLI: the data directory."""
     root = tmp_path_factory.mktemp("smoke")
     raw, data = root / "raw", root / "data"
     assert main(["make-synthetic", "--out", str(raw), "--n-per-split", str(_N)]) == 0
-    for name in (*CLASSIFIER_FILES, PRETRAINING_FILE):
-        assert main(["prepare-data", str(raw / name), "--out", str(data)]) == 0
+    source = raw / CLASSIFIER_FILES[0]
+    assert main(["prepare-data", str(source), "--out", str(data), "--images", "float32"]) == 0
     return data
 
 
-def _train(command: str, data: Path, out: Path, *settings: str, extra: tuple[str, ...] = ()) -> int:
-    return main(
-        [
-            command,
-            "--data-dir",
-            str(data),
-            "--output-dir",
-            str(out),
-            "--accelerator",
-            "cpu",
-            "--seed",
-            "0",
-            *extra,
-            "--set",
-            "num_workers=0",
-            *settings,
-        ]
-    )
+def _train(data: Path, out: Path, *extra: str) -> int:
+    base = ["train-supervised", "--preset", "carrasco2021", "--data-dir", str(data)]
+    base += ["--output-dir", str(out), "--accelerator", "cpu", "--seed", "0", *extra]
+    return main([*base, "--set", *_SHORT])
 
 
 def test_full_chain(prepared: Path, tmp_path: Path) -> None:
-    pretrain = tmp_path / "pretrain"
-    assert _train("pretrain", prepared, pretrain, "encoder_name=stamp1", "batch_size=8", *_DRY) == 0
-    chained = {
-        "linear-eval": tmp_path / "linear-eval",
-        "fine-tune": tmp_path / "fine-tune",
-    }
-    for command, out in chained.items():
-        code = _train(
-            command, prepared, out, "batch_size=5", *_DRY, extra=("--pretrained", str(pretrain))
-        )
-        assert code == 0
-    supervised = tmp_path / "supervised"
-    assert _train("train-supervised", prepared, supervised, "batch_size=5", "max_epochs=8") == 0
-
-    for out in (pretrain, *chained.values(), supervised):
-        assert (out / "checkpoints" / "best.ckpt").is_file()
-        assert (out / "checkpoints" / "last.ckpt").is_file()
-        metrics = _metrics(out)
-        assert metrics["seed"] == 0
-        assert metrics["config"]["seed"] == 0
-        assert _finite_numbers(metrics["monitor_best"])
-        assert metrics["best_epoch"] is not None
-    assert _metrics(pretrain)["monitor"] == "loss_train_enc"
-    assert _metrics(pretrain)["config"]["encoder_name"] == "stamp1"
-
-    for out in (*chained.values(), supervised):
-        metrics = _metrics(out)
-        for key in ("val_acc_best", "test_acc_at_best", "val_macro_f1", "test_macro_f1"):
-            assert _finite_numbers(metrics[key]), key
-        assert _finite_numbers(metrics["evaluation"])
-        assert len(metrics["evaluation"]["test"]["confusion_matrix"]) == 5
-        assert (out / "confusion_matrix_val.png").stat().st_size > 0
-        assert (out / "confusion_matrix_test.png").stat().st_size > 0
-    # linear-eval and fine-tune really used the pretrain checkpoint's encoder.
-    for out in chained.values():
-        assert _metrics(out)["config"]["pretrained"] == str(pretrain)
-    assert _metrics(supervised)["val_acc_best"] >= 0.5
+    out = tmp_path / "supervised"
+    assert _train(prepared, out) == 0
+    assert (out / "ckpt" / "best.pt").is_file() and (out / "ckpt" / "last.pt").is_file()
+    metrics = _metrics(out)
+    assert metrics["seed"] == metrics["config"]["seed"] == 0
+    assert metrics["machine"]["engine"] == "plain"
+    assert _finite_numbers(metrics["monitor_best"]) and metrics["best_step"] is not None
+    for key in ("val_acc_best", "test_acc_at_best", "val_macro_f1", "test_macro_f1"):
+        assert _finite_numbers(metrics[key]), key
+    assert _finite_numbers(metrics["evaluation"])
+    assert len(metrics["evaluation"]["test"]["confusion_matrix"]) == 5
+    assert (out / "confusion_matrix_val.png").stat().st_size > 0
+    assert (out / "confusion_matrix_test.png").stat().st_size > 0
+    assert metrics["val_acc_best"] >= 0.5
+    assert metrics["last_step"] == 60
 
 
-def _last_state(out: Path) -> dict[str, Any]:
-    checkpoint = torch.load(
-        out / "checkpoints" / "last.ckpt", map_location="cpu", weights_only=True
-    )
-    (early_stopping,) = (
-        state for key, state in checkpoint["callbacks"].items() if key.startswith("EarlyStopping")
-    )
-    return {
-        "epoch": checkpoint["epoch"],
-        "global_step": checkpoint["global_step"],
-        "lr": checkpoint["optimizer_states"][0]["param_groups"][0]["lr"],
-        "scheduler_epoch": checkpoint["lr_schedulers"][0]["last_epoch"],
-        "wait_count": early_stopping["wait_count"],
-    }
-
-
-def test_resume_matches_an_uninterrupted_run(prepared: Path, tmp_path: Path) -> None:
-    # SimCLR, because its learning rate changes every epoch (cosine warmup). A huge
-    # min_delta makes every epoch after the first a non-improvement, so wait_count grows by
-    # one per epoch whatever the losses are: an EarlyStopping restarted from scratch would
-    # end at 1 instead of 3. (Resume does not restore the random generators, so the losses
-    # themselves are not compared.)
-    common = (
-        "encoder_name=stamp1",
-        "batch_size=8",
-        "limit_train_batches=2",
-        "min_delta=1000",
-        "patience=10",
-    )
-    resumed, straight = tmp_path / "resumed", tmp_path / "straight"
-    assert _train("pretrain", prepared, resumed, *common, "max_epochs=2") == 0
-    assert _last_state(resumed)["epoch"] == 1
-    assert (
-        _train("pretrain", prepared, resumed, *common, "max_epochs=4", extra=("--resume", "auto"))
-        == 0
-    )
-    assert _train("pretrain", prepared, straight, *common, "max_epochs=4") == 0
-
-    state = _last_state(resumed)
-    assert state == _last_state(straight)
-    assert state["epoch"] == 3
-    assert state["wait_count"] == 3
-    assert _metrics(resumed)["resumed_from"] == str(resumed / "checkpoints" / "last.ckpt")
-    assert _metrics(resumed)["last_epoch"] == 3
+def test_resume_of_a_finished_run_reproduces_it(prepared: Path, tmp_path: Path) -> None:
+    # The final last.pt is at the horizon: a resume trains nothing and reports the same
+    # results (exact mid-run resumes are in test_engine_resume.py).
+    out = tmp_path / "run"
+    assert _train(prepared, out) == 0
+    first = _metrics(out)
+    assert load_checkpoint(out / "ckpt" / "last.pt")["steps_done"] == 60
+    assert _train(prepared, out, "--resume", "auto") == 0
+    again = _metrics(out)
+    assert again["timing"]["steps"] == 0
+    assert again["resumed_from"] == str(out / "ckpt" / "last.pt")
+    for key in ("best_step", "monitor_best", "val_acc_best", "test_acc_at_best", "evaluation"):
+        assert again[key] == first[key], key
+    assert again["run"]["run_id"] == first["run"]["run_id"]
+    assert again["run"]["attempt"] == first["run"]["attempt"] + 1
+    assert load_best(out / "ckpt" / "best.pt")["steps_done"] == first["best_step"]

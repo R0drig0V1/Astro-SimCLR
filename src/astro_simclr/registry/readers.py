@@ -12,9 +12,9 @@ machine). :func:`read_run_dir` reads either into the same record:
   records the source pickle's SHA-256 only, kept as ``data_source_sha256``), the
   pretrained checkpoint's SHA-256, the git state, ``uv.lock`` and ``numerics_epoch`` (the
   runs predate it). Three fields are derived instead, each from a fact of the code at the
-  time: ``status`` is ``finished`` (``run_command`` writes ``metrics.json`` only when the fit
-  has ended), ``engine`` is ``lightning`` (the only engine before task A1, and every run
-  since writes a manifest), and ``machine_class`` is
+  time: ``status`` is ``finished`` (Lightning's ``run_command`` wrote ``metrics.json`` only
+  when the fit had ended), ``engine`` is ``lightning`` (the only engine before task A1,
+  and every run since writes a manifest), and ``machine_class`` is
   :func:`~astro_simclr.runs.identity.default_machine_class` of the recorded machine.
 
 **Config formats.** The recorded config is read by the reader of its ``config_format``

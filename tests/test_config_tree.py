@@ -88,7 +88,8 @@ def test_presets_decide_the_command() -> None:
         (lambda: StampClassifier(kind="resnet"), "StampClassifier kind must be one of"),
         (lambda: AdamOptim(kind="SGD"), "AdamOptim kind must be one of: AdamW, Adam"),
         (lambda: ResNetClassifier(name="resnet7"), "model.name 'resnet7' is not one of"),
-        (lambda: Runtime(engine="jax"), "runtime.engine 'jax' is not one of: lightning, plain"),
+        (lambda: Runtime(engine="jax"), "runtime.engine 'jax' is not one of: plain"),
+        (lambda: Runtime(engine="lightning"), "removed in task 4.8.*lightning-final"),
         (lambda: Config(model=PaperStampClassifier()), "go together"),
         (
             lambda: Config(
@@ -199,7 +200,8 @@ def test_lossy_or_unknown_flat_settings_are_refused(
 
 def test_the_shim_keeps_the_engine() -> None:
     config = config_from_settings("train-supervised", Settings())
-    assert config.runtime.engine == "lightning"
+    assert config.runtime.engine == "plain"
+    assert Runtime().engine == "plain"
 
 
 # --- Resolution ----------------------------------------------------------------------------

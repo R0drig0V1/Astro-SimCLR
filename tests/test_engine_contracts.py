@@ -1,34 +1,26 @@
 """Tests of the plain engine's frozen contracts (``astro_simclr.engine``, task B0, ADR 0014).
 
-Two kinds:
-
-- the contracts themselves (dataclass checks, the pure policy rules, the checkpoint key set,
-  the generators, the engine-free import rule);
-- **Lightning reference facts**: what Lightning 2.6.6 and today's ``training`` code do, as
-  ADR 0014's checklist states them, pinned here so that a Lightning upgrade that changes
-  one fails before the 4.7(a) differential test is written against it. Each policy rule is
-  checked against the Lightning-side code it replaces (``HorizonCallback._improves``,
-  ``_set_torch_flags``, ``class_augment.augment_rng``).
+The contracts themselves: the dataclass checks, the pure policy rules (the monitor's strict
+comparison, the validation grid, the horizon, the device flags), the checkpoint key set,
+the generators and the engine-free import rule. Until task 4.8 several rules were checked
+against the Lightning code they replaced (``HorizonCallback._improves``, Lightning's
+``_set_torch_flags``); those expectations are now written out here, and the loop that
+follows them is ``test_engine_loop.py``'s.
 """
 
 from __future__ import annotations
 
 import io
 import math
-import os
 import random
 import subprocess
 import sys
-from pathlib import Path
 from typing import Any
 
-import lightning as L
 import numpy as np
 import pytest
 import torch
-from lightning.pytorch.trainer.connectors.accelerator_connector import _set_torch_flags
 from torch import nn
-from torch.utils.data import DataLoader
 
 from astro_simclr import rj23_regime
 from astro_simclr.config import ConfigError, Settings
@@ -52,8 +44,7 @@ from astro_simclr.engine import (
 )
 from astro_simclr.engine import data as engine_data
 from astro_simclr.engine import stream as engine_stream
-from astro_simclr.training import class_augment, device_data, flux_rescale
-from astro_simclr.training.schedule import HorizonCallback
+from astro_simclr.training import class_augment, flux_rescale, tensor_splits
 
 # --- the engine-free rule and the frozen batch format ---------------------------------
 
@@ -61,33 +52,59 @@ from astro_simclr.training.schedule import HorizonCallback
 def test_engine_imports_no_lightning() -> None:
     code = (
         "import sys, astro_simclr.engine; "
-        "roots = ('lightning', 'pytorch_lightning'); "
+        "roots = ('lightning', 'pytorch_lightning', 'torchmetrics'); "
         "bad = sorted(m for m in sys.modules if m.split('.')[0] in roots); "
         "assert not bad, bad"
     )
-    # A fresh interpreter: this process has imported Lightning already.
+    # A fresh interpreter: another test of this process may have imported them.
     subprocess.run([sys.executable, "-c", code], check=True)  # noqa: S603 (fixed argv)
 
 
-def test_batch_format_is_device_data_s() -> None:
-    assert engine_data.Batch == device_data.Batch
-    assert engine_data.TrainBatch == device_data.TrainBatch
+def test_batch_format_is_the_tensor_splits_one() -> None:
+    assert engine_data.Batch == tensor_splits.Batch
+    assert engine_data.TrainBatch == tensor_splits.TrainBatch
 
 
 # --- monitor ----------------------------------------------------------------------------
 
-_VALUES = [0.5, 0.25, 0.5000001, float("nan"), float("inf"), -1.0]
+#: The best as the engine stores it: the Python float of a float32 value.
+_F32_HALF_PLUS = float(torch.tensor(0.5000001))  # 0.50000011920928955...
 
 
-@pytest.mark.parametrize("mode", ["min", "max"])
-def test_monitor_rule_is_horizon_callback_s(mode: str, tmp_path: Path) -> None:
-    monitor = Monitor("loss_val", mode)  # type: ignore[arg-type]
-    callback = HorizonCallback(dirpath=tmp_path, mode=mode)  # type: ignore[arg-type]
-    for best in [None, *_VALUES]:
-        callback.best_model_score = None if best is None else torch.tensor(best)
-        stored = None if best is None else float(torch.tensor(best))
-        for value in _VALUES:
-            assert monitor.improves(value, stored) == callback._improves(value), (best, value)
+@pytest.mark.parametrize(
+    ("mode", "best", "value", "improves"),
+    [
+        # No best yet: anything but NaN is one (inf too).
+        ("min", None, 0.5, True),
+        ("min", None, math.inf, True),
+        ("min", None, math.nan, False),
+        ("max", None, -math.inf, True),
+        ("max", None, math.nan, False),
+        # Strict: an equal value is not a new best.
+        ("min", 0.5, 0.5, False),
+        ("max", 0.5, 0.5, False),
+        ("min", 0.5, 0.25, True),
+        ("min", 0.5, -1.0, True),
+        ("min", 0.5, math.inf, False),
+        ("max", 0.5, math.inf, True),
+        ("max", 0.5, -1.0, False),
+        # The comparison is on Python floats: 0.5000001 is above 0.5, and below the float32
+        # rounding of itself (which is how a stored best holds it).
+        ("min", 0.5, 0.5000001, False),
+        ("max", 0.5, 0.5000001, True),
+        ("min", _F32_HALF_PLUS, 0.5000001, True),
+        ("max", _F32_HALF_PLUS, 0.5000001, False),
+        # NaN never improves, and nothing improves on a NaN best.
+        ("min", 0.5, math.nan, False),
+        ("max", 0.5, math.nan, False),
+        ("min", math.nan, -1.0, False),
+        ("max", math.nan, 1.0, False),
+        ("min", math.inf, 0.5, True),
+        ("max", -1.0, math.inf, True),
+    ],
+)
+def test_monitor_rule(mode: str, best: float | None, value: float, improves: bool) -> None:
+    assert Monitor("loss_val", mode).improves(value, best) is improves  # type: ignore[arg-type]
 
 
 def test_monitor_is_strict_and_nan_never_improves() -> None:
@@ -184,122 +201,47 @@ def test_schedule_checks() -> None:
         Schedule(checkpoint_every_n_steps=0)
 
 
-# --- Lightning reference facts (ADR 0014 checklist) -------------------------------------
-
-_STEPS_PER_EPOCH = 7  # not a multiple of the validation interval
+# --- device flags ------------------------------------------------------------------------
 
 
-class _Probe(L.LightningModule):
-    """Records what the model sees at every fit validation."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.w = nn.Parameter(torch.zeros(1))
-        self.head = nn.Dropout(0.5)
-        self.head.eval()  # a submodule left in eval: Lightning restores per submodule
-        self.seen: list[dict[str, Any]] = []
-        self.train_steps: list[int] = []
-
-    def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
-        self.train_steps.append(self.global_step)
-        return self.w.sum()
-
-    def validation_step(self, batch: Any, batch_idx: int) -> None:
-        self.seen.append(
+@pytest.mark.parametrize(
+    ("accelerator", "deterministic", "expected"),
+    [
+        # cudnn.benchmark is on unless deterministic (the legacy benchmark=True), as the
+        # Lightning Trainer set it; CUBLAS_WORKSPACE_CONFIG only for a deterministic run.
+        (
+            "cuda",
+            False,
             {
-                "step": self.global_step,
-                "training": self.training,
-                "grad": self.w.grad,
-                "grad_enabled": torch.is_grad_enabled(),
-                "inference": torch.is_inference_mode_enabled(),
-                "fn": self.trainer.state.fn,
-            }
-        )
-
-    def on_train_batch_start(self, batch: Any, batch_idx: int) -> None:
-        # After a validation, the module is back in train mode with the eval child kept.
-        assert self.training and not self.head.training
-
-    def configure_optimizers(self) -> torch.optim.Optimizer:
-        return torch.optim.SGD(self.parameters(), lr=0.1)
-
-    def train_dataloader(self) -> DataLoader[torch.Tensor]:
-        return DataLoader(torch.zeros(_STEPS_PER_EPOCH, 1), batch_size=1)  # type: ignore[arg-type]
-
-    def val_dataloader(self) -> DataLoader[torch.Tensor]:
-        return DataLoader(torch.zeros(1, 1), batch_size=1)  # type: ignore[arg-type]
-
-
-def _fit(max_steps: int, tmp_path: Path) -> tuple[_Probe, L.Trainer]:
-    module = _Probe()
-    trainer = L.Trainer(
-        accelerator="cpu",
-        max_epochs=-1,
-        max_steps=max_steps,
-        val_check_interval=10,
-        check_val_every_n_epoch=None,
-        num_sanity_val_steps=0,
-        logger=False,
-        enable_checkpointing=False,
-        enable_progress_bar=False,
-        enable_model_summary=False,
-        default_root_dir=tmp_path,
-    )
-    trainer.fit(module)
-    return module, trainer
-
-
-@pytest.mark.parametrize("max_steps", [25, 30])
-def test_lightning_validation_grid_and_epochs(max_steps: int, tmp_path: Path) -> None:
-    module, trainer = _fit(max_steps, tmp_path)
-    grid = ValidationGrid(10)
-    # On the grid only: not at the 7-step epoch ends, not forced after a final step off it.
-    assert [seen["step"] for seen in module.seen] == [
-        s for s in range(1, max_steps + 1) if grid.due(s)
-    ]
-    # global_step inside training_step is the steps done before the step.
-    assert module.train_steps == list(range(max_steps))
-    # metrics.json's last_epoch (current_epoch - 1) is the epoch of the last step.
-    assert trainer.current_epoch - 1 == (max_steps - 1) // _STEPS_PER_EPOCH
-
-
-def test_lightning_fit_validation_mode(tmp_path: Path) -> None:
-    module, _ = _fit(20, tmp_path)
-    for seen in module.seen:
-        assert seen["training"] is False  # eval()
-        assert seen["grad"] is None  # zero_grad(set_to_none=True) before the validation
-        # The fit's validations run under no_grad, NOT inference_mode (the epoch loop
-        # builds its validation loop with inference_mode=False).
-        assert seen["grad_enabled"] is False
-        assert seen["inference"] is False
-
-
-def test_lightning_validate_uses_inference_mode(tmp_path: Path) -> None:
-    module, trainer = _fit(10, tmp_path)
-    module.seen.clear()
-    trainer.validate(module, verbose=False)
-    assert module.seen and all(seen["inference"] for seen in module.seen)
-
-
-@pytest.mark.parametrize("deterministic", [False, True])
-def test_device_flags_are_lightning_s(deterministic: bool, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
-    saved = (
-        torch.backends.cudnn.benchmark,
-        torch.are_deterministic_algorithms_enabled(),
-        torch.is_deterministic_algorithms_warn_only_enabled(),
-    )
-    try:
-        _set_torch_flags(deterministic=deterministic, benchmark=not deterministic)
-        lightning = {
-            "cudnn.benchmark": torch.backends.cudnn.benchmark,
-            "use_deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
-            "CUBLAS_WORKSPACE_CONFIG": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
-        }
-    finally:
-        torch.backends.cudnn.benchmark = saved[0]
-        torch.use_deterministic_algorithms(saved[1], warn_only=saved[2])
-    assert DevicePolicy("cpu", deterministic=deterministic).torch_flags() == lightning
+                "cudnn.benchmark": True,
+                "use_deterministic_algorithms": False,
+                "CUBLAS_WORKSPACE_CONFIG": None,
+            },
+        ),
+        (
+            "cpu",
+            True,
+            {
+                "cudnn.benchmark": False,
+                "use_deterministic_algorithms": True,
+                "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+            },
+        ),
+        (
+            "cpu",
+            False,
+            {
+                "cudnn.benchmark": True,
+                "use_deterministic_algorithms": False,
+                "CUBLAS_WORKSPACE_CONFIG": None,
+            },
+        ),
+    ],
+)
+def test_device_flags(accelerator: str, deterministic: bool, expected: dict[str, object]) -> None:
+    policy = DevicePolicy(accelerator, deterministic=deterministic)  # type: ignore[arg-type]
+    assert policy.torch_flags() == expected
+    assert CUBLAS_WORKSPACE_CONFIG == ":4096:8"
 
 
 # --- device, data tiers -----------------------------------------------------------------
@@ -462,7 +404,7 @@ def test_checkpoint_is_plain_values_and_resumable() -> None:
 
 
 def test_check_resumable_refuses_other_checkpoints() -> None:
-    lightning = {"pytorch-lightning_version": L.__version__, "state_dict": {}, "loops": {}}
+    lightning = {"pytorch-lightning_version": "2.6.6", "state_dict": {}, "loops": {}}
     with pytest.raises(ConfigError, match="Lightning checkpoint"):
         check_resumable(lightning)
     with pytest.raises(ConfigError, match="engine"):

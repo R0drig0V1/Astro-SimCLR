@@ -1,4 +1,6 @@
 # R3, step 2: linear evaluation of the R3 encoder, with R1's classifier hyperparameters.
+# Lightning only: task 4.8 removed the engine and these commands; run this config from a
+# checkout of the git tag lightning-final (the commands below are that checkout's).
 # Run, for each label fraction (one seed each):
 #   astro-simclr linear-eval --config configs/reference/R3-linear-eval.yaml --seed 0
 #     --pretrained OUT/R3/pretrain --set dataset=DATASET --output-dir OUT/R3/linear-eval-P

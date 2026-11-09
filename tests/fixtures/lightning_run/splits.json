@@ -1,0 +1,63 @@
+{
+  "format": "astro-simclr-protocol-splits",
+  "format_version": 2,
+  "created_by": "astro-simclr 0.1.0",
+  "dataset": {
+    "name": "td_ztf_stamp_17_06_20_red-002",
+    "source_sha256": "55d150776fbe50f16a453a9e5d71625208bdac5ade76f9b1aefa4c2eab19b406",
+    "labels_sha256": {
+      "Train": "5effafa36156f7b09cd1d387a8d8d6e342f66f2d61ba20e5b8edf0215094815d",
+      "Validation": "74029c5753833d7969dc2c3acf6e41e1f42325f178f27a450fe3756a9fb7f574"
+    },
+    "n": {
+      "Train": 25,
+      "Validation": 25
+    }
+  },
+  "seed": 0,
+  "pool": "Train indices 0..n_train-1, then Validation index j as n_train + j",
+  "leakage": {
+    "duplicates": [
+      {
+        "split_a": "Train",
+        "index_a": 3,
+        "split_b": "Validation",
+        "index_b": 7,
+        "label_a": "SN",
+        "label_b": "Asteroid",
+        "features_equal": true
+      }
+    ],
+    "excluded_train": [3]
+  },
+  "grouping": {
+    "method": "position",
+    "radius_arcsec": 1.5,
+    "coordinates": "ra, dec de-standardised with M1_FEATURE_NORM_STATS",
+    "source": null,
+    "rows": "pool indices",
+    "n_groups": 49,
+    "groups": [
+      [3, 32]
+    ],
+    "screen_excluded_train": [3],
+    "screen_fallback": null
+  },
+  "screen": {
+    "per_class": 1,
+    "selection": [6, 10, 11, 19, 24],
+    "decision": [2, 4, 16, 22, 23]
+  },
+  "cv": {
+    "n_folds": 5,
+    "selection_per_class": 1,
+    "fold_of": "230-1142400234330334201302021140421331431412204210",
+    "selection": [
+      [11, 14, 15, 28, 35],
+      [12, 13, 27, 45, 47],
+      [6, 19, 28, 30, 45],
+      [0, 4, 6, 16, 26],
+      [9, 17, 24, 31, 44]
+    ]
+  }
+}

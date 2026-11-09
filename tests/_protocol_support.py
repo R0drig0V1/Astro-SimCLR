@@ -16,7 +16,7 @@ from astro_simclr.data.schema import FEATURE_NAMES, LABEL_NAMES, STAMP_SHAPE, Sp
 from astro_simclr.protocol.predictions import Predictions, predictions_file, save_predictions
 
 N_CLASSES = len(LABEL_NAMES)
-#: The machine block of a fake run (what ``experiments.machine_record`` writes).
+#: The machine block of a fake run (what ``engine.record.machine_record`` writes).
 MACHINE: dict[str, Any] = {"device": "cpu", "gpu": None, "torch": "2.14.0", "cuda": None}
 
 

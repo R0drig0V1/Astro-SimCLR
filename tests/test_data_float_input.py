@@ -8,6 +8,9 @@ produced once by scripts/characterize/data/alerce_crop.py running ALeRCE's code.
 
 The 63x63 context of task 2.5-models (context_then_normalise, context_split) is ours, not
 ALeRCE's: its tests check the definition directly (block means, then the crop's min-max).
+
+The uint8 diagnostic (``paper_input: uint8``, ``training.tensor_splits``'s centre crop of
+the stored uint8 stamps) is checked to crop the same pixels as the float path.
 """
 
 from pathlib import Path
@@ -16,7 +19,6 @@ from typing import Any
 import numpy as np
 import pytest
 
-from astro_simclr.augmentations import get_augmentation
 from astro_simclr.data.float_input import (
     CONTEXT_FACTOR,
     PAPER_CROP,
@@ -29,6 +31,7 @@ from astro_simclr.data.float_input import (
     former_nan_mask,
 )
 from astro_simclr.data.preprocessing import stamp_to_uint8
+from astro_simclr.training.tensor_splits import _centre_crop_unit
 
 FIXTURE = Path(__file__).parent / "fixtures" / "data" / "alerce_crop.npz"
 ATOL = 1e-6
@@ -200,20 +203,20 @@ def test_approximated_stamps(alerce: Golden) -> None:
 def test_uint8_and_float_crops_cover_the_same_pixels(
     alerce: Golden,
 ) -> None:
-    # The alignment check of 2.1: the phase-1 uint8 path (center_crop at 27, torchvision's
-    # CenterCrop) and the float crop of 21 are concentric, 3 pixels apart on every side,
-    # which is the paper's zero padding back to 27.
-    view = get_augmentation("center_crop", 27)
+    # The alignment check of 2.1, on the uint8 diagnostic (``interim_uint8_crops``' centre
+    # crop of the stored uint8 stamps, divided by 255): it and the float crop of 21 are the
+    # same pixels.
     begin, end = crop_bounds(63, PAPER_CROP)
     for stamp in alerce["stored"]:
         uint8 = stamp_to_uint8(stamp)
-        crop27 = np.round(view.view(uint8).numpy() * 255).astype(np.uint8).transpose(1, 2, 0)
-        np.testing.assert_array_equal(crop27[3:24, 3:24], uint8[begin:end, begin:end])
+        unit = _centre_crop_unit(uint8[None], PAPER_CROP)[0]
+        crop21 = np.round(unit * 255).astype(np.uint8).transpose(1, 2, 0)
+        np.testing.assert_array_equal(crop21, uint8[begin:end, begin:end])
         # Same pixels, so the float crop and the re-normalised uint8 crop agree to within
         # the uint8 quantisation (half a step of 1/255 on each end, rescaled).
         floats = crop_then_normalise(stamp, nan_approximation=False)
         quantised = crop_then_normalise(
-            crop27[3:24, 3:24].astype(np.float64), PAPER_CROP, nan_approximation=False
+            crop21.astype(np.float64), PAPER_CROP, nan_approximation=False
         )
         span = np.ptp(uint8[begin:end, begin:end].astype(np.float64), axis=(0, 1)) / 255
         ok = span > 0.05  # skip near-constant crops, where quantisation dominates
@@ -222,8 +225,9 @@ def test_uint8_and_float_crops_cover_the_same_pixels(
 
     # The check is discriminating: one pixel off and the uint8 crop no longer matches.
     uint8 = stamp_to_uint8(alerce["stored"][0])
-    crop27 = np.round(view.view(uint8).numpy() * 255).astype(np.uint8).transpose(1, 2, 0)
-    assert not np.array_equal(crop27[4:25, 3:24], uint8[begin:end, begin:end])
+    unit = _centre_crop_unit(uint8[None], PAPER_CROP)[0]
+    crop21 = np.round(unit * 255).astype(np.uint8).transpose(1, 2, 0)
+    assert not np.array_equal(crop21, uint8[begin + 1 : end + 1, begin:end])
 
 
 # --- The 63x63 context (task 2.5-models) ------------------------------------------------

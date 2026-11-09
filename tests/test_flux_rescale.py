@@ -6,12 +6,15 @@
 3. The features match the image: a refit of the rescaled difference has ``k`` times the flux,
    and ``magpsf`` / ``sigmapsf`` move by ``-2.5 log10 k`` and ``1 / k``.
 4. The alert constraint holds; Bogus is never rescaled; the draws are seeded.
-5. The module, the settings and a CPU run (split runs: ``test_split_runs.py``).
+5. The plain engine's paper task (``tasks.paper``, through
+   ``training.paper_augment.PaperAugment``), the settings and a run on each accelerator
+   (split runs: ``test_split_runs.py``).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -21,15 +24,16 @@ from _training_support import ACCELERATORS
 from astro_simclr.config import ConfigError, settings_from_mapping
 from astro_simclr.data.m1_features import M1_FEATURE_NORM_STATS
 from astro_simclr.data.schema import LABEL_NAMES
-from astro_simclr.experiments import paper_module, run_command
+from astro_simclr.engine.checkpoint import load_best
 from astro_simclr.presets import CARRASCO2021_PRESET, PRESETS, preset_report
+from astro_simclr.tasks.paper import PaperTask, build_paper_task, paper_augment
+from astro_simclr.tasks.plain import run_plain
 from astro_simclr.training.class_augment import (
     KEPT_FEATURE_NAMES,
     augment_rng,
     renormalise,
     stamp_fits,
 )
-from astro_simclr.training.device_data import TensorSplit
 from astro_simclr.training.flux_rescale import (
     AUGMENT_COLUMNS,
     FLUX_STREAM,
@@ -42,7 +46,8 @@ from astro_simclr.training.flux_rescale import (
     rescale_transient,
     rescaled_features,
 )
-from astro_simclr.training.modules import PaperClassifierModule
+from astro_simclr.training.paper_augment import PaperAugment, check_augment_context
+from astro_simclr.training.tensor_splits import TensorSplit
 
 _SIDE = 21
 _BOGUS = LABEL_NAMES.index("Bogus")
@@ -282,33 +287,42 @@ def test_flux_rescale_edges() -> None:
         flux_rescale(images, features, targets, table, 1.0, (1.5, 0.5), rng)
 
 
-# --- 5. Module, settings and a run --------------------------------------------------------
+# --- 5. The task, settings and a run ------------------------------------------------------
 
 
-def _module(preset: str = CARRASCO2021_PRESET, /, **changes: object) -> PaperClassifierModule:
+def _task(preset: str = CARRASCO2021_PRESET, /, **changes: object) -> PaperTask:
     torch.manual_seed(0)
-    return paper_module(settings_from_mapping({**PRESETS[preset], **changes}))
+    return build_paper_task(settings_from_mapping({**PRESETS[preset], **changes}), {})
 
 
-def test_module_rescales_training_batches_only() -> None:
+def _augment(**changes: object) -> PaperAugment:
+    return paper_augment(settings_from_mapping({**PRESETS[CARRASCO2021_PRESET], **changes}))
+
+
+def test_the_task_rescales_training_batches_only() -> None:
     images = torch.from_numpy(_normalised(_stamps()))
     table = _table(images.numpy())
     targets = torch.nn.functional.one_hot(torch.tensor([0, 1, 2, 3, 0, 1]), 5).float()
     features = _features(6, magpsf=19.0, diffmaglim=21.0)
-    module = _module(paper_arch="p4", flux_rescale=1.0, seed=7).eval()
-    plain = _module(paper_arch="p4").eval()
-    plain.load_state_dict(module.state_dict())
-    loss = module.training_step((images, features, targets, table), 0)
+    task = _task(paper_arch="p4", flux_rescale=1.0, seed=7)
+    net = task.net.eval()
+    plain = _task(paper_arch="p4")
+    plain.net.eval()
+    plain.net.load_state_dict(net.state_dict())
+    loss = task.train_step((images, features, targets, table), 0)
     expected_images, expected_features, _ = flux_rescale(
         images, features, targets, table, 1.0, (0.5, 1.5), augment_rng(7, 0, FLUX_STREAM)
     )
-    expected = module.compute_loss(module(expected_images, expected_features), targets)
+    expected = net.criterion(net(expected_images, expected_features), targets)
     torch.testing.assert_close(loss, expected)
     assert not torch.equal(expected_images, images)
     batch = (images, features, targets)
-    torch.testing.assert_close(module.validation_step(batch, 0), plain.validation_step(batch, 0))
+    with torch.no_grad():
+        rescaled, faithful = task.eval_step(batch), plain.eval_step(batch)
+    torch.testing.assert_close(rescaled.loss, faithful.loss)
+    torch.testing.assert_close(rescaled.probabilities, faithful.probabilities)
     with pytest.raises(ValueError, match="need the stamp fits"):
-        module.training_step(batch, 0)
+        task.train_step(batch, 0)
 
 
 def _residual(target: np.ndarray, columns: list[np.ndarray]) -> float:
@@ -329,9 +343,10 @@ def test_rescaling_composes_with_rot90_at_the_rotated_transient() -> None:
     targets = torch.nn.functional.one_hot(torch.zeros(4, dtype=torch.long), 5).float()
     features = _features(4, magpsf=19.0, diffmaglim=21.0)
     changes = {"flux_rescale": 1.0, "flux_k_min": 2.0, "flux_k_max": 2.0}
-    module = _module(paper_arch="single", rot90_augment=True, seed=3, **changes)
-    out, _, _ = module.augmented_batch((images, features, targets, table))
-    turns = module.rotation_steps(4, 0)
+    augment = _augment(paper_arch="single", rot90_augment=True, seed=3, **changes)
+    batch = (images, features, targets, table)
+    out, _, _ = augment.apply(batch, augment.plan(batch, 0))
+    turns = augment.rotation_steps(4, 0)
     assert set(turns.tolist()) - {0}  # some rows really are rotated
     # Exactly "rescale, then rotate".
     rescaled, _, k = flux_rescale(
@@ -353,15 +368,18 @@ def test_rescaling_composes_with_rot90_at_the_rotated_transient() -> None:
             assert _residual(diff, [original, psf.numpy()]) > 0.05
 
 
-def test_module_and_settings_reject_bad_values() -> None:
-    base = {"beta_loss": 0.5, "lr": 1e-3, "optimizer": "Adam"}
-    for bad, match in (
+def test_the_augmentation_and_settings_reject_bad_values() -> None:
+    cases: list[tuple[dict[str, Any], str]] = [
         ({"flux_rescale": 1.5}, r"\[0, 1\]"),
         ({"flux_k_min": 2.0}, "0 < min <= max"),
-        ({"flux_rescale": 0.5, "context": "avgpool63"}, "context='none'"),
-    ):
+    ]
+    for values, match in cases:
         with pytest.raises(ValueError, match=match):
-            PaperClassifierModule(**base, **bad)  # type: ignore[arg-type]
+            PaperAugment(**values)
+    with pytest.raises(ValueError, match="context='none'"):
+        check_augment_context(0.0, 0.5, "avgpool63", 5)
+    with pytest.raises(ValueError, match="need the 5 CD21 classes"):
+        check_augment_context(0.0, 0.5, "none", 3)
     preset = PRESETS[CARRASCO2021_PRESET]
     for bad, match in (
         ({"flux_rescale": -0.1}, r"flux_rescale must be in \[0, 1\]"),
@@ -399,9 +417,11 @@ def test_flux_rescaled_p4_run_trains_and_records_the_skips(
             **changes,
         }
     )
-    metrics = run_command("train-supervised", settings, progress_bar=False)
+    metrics = run_plain("train-supervised", settings)
     assert metrics["last_step"] == 4
     assert set(metrics["paper_data"]["flux_rescale"]["skipped"]) == set(LABEL_NAMES)
-    checkpoint = torch.load(tmp_path / "checkpoints" / "best.ckpt", weights_only=True)
-    restored = PaperClassifierModule(**checkpoint["hyper_parameters"])
-    assert restored.flux_rescale == 0.5
+    assert metrics["config"]["flux_rescale"] == 0.5
+    # The best weights load back into the run's model.
+    restored = _task(**changes)
+    restored.net.load_state_dict(load_best(tmp_path / "ckpt" / "best.pt")["model"])
+    assert restored.augment.flux_rescale == 0.5

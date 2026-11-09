@@ -20,13 +20,12 @@ no shell, no interpolated string (ADR 0026).
   3. it reads the manifest already in ``DIR``, if any. A ``finished`` attempt exits 0 at
      once (a requeue after the job ended but before the worker recorded it); a
      ``failed`` or ``cancelled`` one, or one of another run id or attempt, is refused;
-  4. on the spec's ``engine``, ``experiments.run_command`` (``lightning``) or
-     ``tasks.plain.run_plain`` (``plain``; for an ``rj23`` arm with an ``RJ23Request`` of
-     the object splits, a decision run for ``screen``, a replication for ``whole``), with
-     ``resume="auto"`` and
-     ``queued=QueueAttempt(N, spec machine class)``: a fresh start, or the continuation of
-     ``checkpoints/last.ckpt`` (``ckpt/last.pt`` on the plain engine). Either writes the
-     manifest (task A1, ``runs.record``): ``queued -> running``, then
+  4. ``tasks.plain.run_plain`` (for an ``rj23`` arm with an ``RJ23Request`` of the object
+     splits, a decision run for ``screen``, a replication for ``whole``), with
+     ``resume="auto"`` and ``queued=QueueAttempt(N, spec machine class)``: a fresh start,
+     or the continuation of ``ckpt/last.pt``. A spec with ``engine: lightning`` is refused
+     before anything (``runs.spec.check_trainable``; task 4.8 removed that engine). It
+     writes the manifest (task A1, ``runs.record``): ``queued -> running``, then
      ``finished`` or ``failed``; an attempt left ``running`` by a crash goes
      ``running -> queued -> running`` and keeps its start time;
   5. SIGTERM, SIGINT or SIGHUP (the worker stopping it) end the process at once with
@@ -71,7 +70,7 @@ from astro_simclr.runs.identity import (
     run_identity,
 )
 from astro_simclr.runs.manifest import MANIFEST_FILE, read_manifest
-from astro_simclr.runs.spec import Cell, ExperimentSpec, SpecError, load_spec
+from astro_simclr.runs.spec import Cell, ExperimentSpec, SpecError, check_trainable, load_spec
 
 __all__ = [
     "EXIT_BUSY",
@@ -269,23 +268,9 @@ def _train(
     queued = QueueAttempt(attempt=attempt, machine_class=spec.machine_class, run_id=identity.run_id)
     try:
         with _signals_exit():
-            if spec.engine == "plain":
-                from astro_simclr.tasks.plain import run_plain
+            from astro_simclr.tasks.plain import run_plain
 
-                run_plain(
-                    spec.command, settings, resume="auto", split=split, rj23=rj23, queued=queued
-                )
-            else:
-                from astro_simclr.experiments import run_command
-
-                run_command(
-                    spec.command,
-                    settings,
-                    resume="auto",
-                    split=split,
-                    progress_bar=False,
-                    queued=queued,
-                )
+            run_plain(spec.command, settings, resume="auto", split=split, rj23=rj23, queued=queued)
     except Exception:
         traceback.print_exc()
         return EXIT_FAILED
@@ -308,11 +293,13 @@ def run_cell(
     """Run one cell of a spec in ``run_dir`` (module docstring); return the exit code.
 
     Raises:
-        SpecError: if the spec or the cell is invalid.
+        SpecError: if the spec or the cell is invalid, or the spec's engine is
+            ``lightning``.
         ManifestError: if ``run_dir`` holds an invalid manifest.
         DataError: if the dataset is missing or invalid.
     """
     spec = load_spec(spec_path)
+    check_trainable(spec)
     cell = Cell.parse(cell_key)
     spec.arm(cell.arm)
     if cell not in spec.cells():

@@ -2,12 +2,12 @@
 
 The policy (``ieee`` | ``tf32``) covers cuDNN convolutions and matmuls together. It is
 process-global, so every run sets it before any module is built, also when an earlier run
-in the same process set another one (the preflight, the tests, the 4.7(a) differential
-test that runs both engines in one process).
+in the same process set another one (the preflight, the tests, the golden regression set
+``tests/test_engine_regression.py``, which runs many cases in one process).
 
-These functions lived in ``training.runs`` (which imports Lightning, so the plain engine
-could not use them); ``training.runs`` now delegates here, with the same behaviour, so the
-two engines set and record the policy through one implementation.
+These functions lived in ``training.runs`` (which imported Lightning, so the plain engine
+could not use them); ``training.runs`` delegated here until task 4.8 removed it, so the
+two engines set and recorded the policy through one implementation.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ def apply_fp32_precision(precision: str) -> None:
     ``torch.set_float32_matmul_precision`` instead of
     ``torch.backends.cuda.matmul.fp32_precision``: after the latter is set to ``tf32``,
     ``torch.get_float32_matmul_precision()`` raises (torch reports mixed legacy and new
-    APIs, measured on 2.14.1), and Lightning's CUDA accelerator calls it on Ampere GPUs.
+    APIs, measured on 2.14.1), and Lightning's CUDA accelerator called it on Ampere GPUs.
     ``high`` also lets oneDNN use TF32 for CPU matmuls on CPUs that support it.
 
     Raises:

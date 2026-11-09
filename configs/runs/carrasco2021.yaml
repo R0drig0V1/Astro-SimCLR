@@ -13,5 +13,8 @@
 preset: carrasco2021
 
 runtime:
+  # The plain engine (ADR 0014), the default and the only one since task 4.8; not part of
+  # the config hash (a run-id component). Lightning runs are re-run from lightning-final.
+  engine: plain
   # A missing GPU must fail instead of training on the CPU.
   accelerator: cuda

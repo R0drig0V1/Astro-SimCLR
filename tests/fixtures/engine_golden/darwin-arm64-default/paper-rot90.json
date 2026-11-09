@@ -1,0 +1,440 @@
+{
+ "case": "paper-rot90",
+ "format": 1,
+ "initial": "6f70c218c7a85bcf4a505a78d3cd2864d490920b7c027c55c4512721839b39d0",
+ "metrics": {
+  "best_epoch": 10,
+  "best_step": 21,
+  "command": "train-supervised",
+  "config": {
+   "accelerator": "cpu",
+   "adam_betas": "code",
+   "aug_feature_jitter": 0.0,
+   "aug_min_r2": 0.5,
+   "aug_noise": 0.0,
+   "augmentation": "center_crop",
+   "backbone_weights": "none",
+   "batch_size": 4,
+   "beta_loss": 0.5,
+   "check_finite": true,
+   "checkpoint_every_n_steps": 3,
+   "checkpoint_selection": "best_val_loss",
+   "context": "none",
+   "dataset": "td_ztf_stamp_17_06_20_red-002",
+   "deterministic": true,
+   "devices": 1,
+   "divergence_threshold": null,
+   "drop_rate": 0.2,
+   "dropout_active": false,
+   "early_stopping": false,
+   "ema_decay": null,
+   "ema_warmup": false,
+   "encoder_name": "resnet18",
+   "eval_batch_size": 64,
+   "exclude_leaked_train": true,
+   "feature_set": "all",
+   "fine_tune_lr_factor": 0.2,
+   "flux_k_max": 1.5,
+   "flux_k_min": 0.5,
+   "flux_rescale": 0.0,
+   "fp32_precision": "ieee",
+   "group_fields": null,
+   "horizon_increment": 10,
+   "hybrid_depth": 2,
+   "hybrid_dim": 64,
+   "hybrid_heads": 4,
+   "hybrid_readout": "mean",
+   "image_size": 21,
+   "lars_legacy_trust_ratio": true,
+   "limit_train_batches": null,
+   "limit_val_batches": null,
+   "lr": 0.03,
+   "lr_schedule": "constant",
+   "lr_warmup_steps": 0,
+   "max_epochs": 220,
+   "max_steps": 10,
+   "min_delta": 0.001,
+   "monitor": "loss_val",
+   "nan_approximation": true,
+   "nt_xent_legacy_denominator": true,
+   "num_workers": 0,
+   "optimizer": "Adam",
+   "paper_arch": "rot4",
+   "paper_input": "float32",
+   "patience": 40,
+   "pretrained": null,
+   "progress_bar_refresh_rate": 50,
+   "projection_dim": 300,
+   "rj23_bn_position": "after_concat",
+   "rj23_keep": "stop",
+   "rj23_large_values": "paper",
+   "rj23_scenario": "full",
+   "rot90_augment": true,
+   "schedule": "carrasco2021",
+   "seed": 0,
+   "supervised_model": "paper_stamp_classifier",
+   "synthetic_bogus": 0.0,
+   "temperature": 0.17910250439416514,
+   "val_every_n_steps": 3,
+   "with_features": true
+  },
+  "data": {
+   "class_counts": {
+    "Test": [
+     2,
+     2,
+     2,
+     2,
+     2
+    ],
+    "Train": [
+     2,
+     2,
+     2,
+     2,
+     2
+    ],
+    "Validation": [
+     2,
+     2,
+     2,
+     2,
+     2
+    ]
+   },
+   "kind": "classifier",
+   "path": "td_ztf_stamp_17_06_20_red-002",
+   "source": {
+    "name": "td_ztf_stamp_17_06_20_red-002.pkl",
+    "sha256": "32b81681746bde71e0229e28dd2445444ae9d5049a447c7bbe65e934e25a94e4",
+    "size_bytes": 1397790
+   }
+  },
+  "evaluation": {
+   "test": {
+    "accuracy": 0.2,
+    "balanced_accuracy": 0.2,
+    "confusion_counts": [
+     [
+      0,
+      1,
+      0,
+      0,
+      1
+     ],
+     [
+      0,
+      0,
+      1,
+      1,
+      0
+     ],
+     [
+      0,
+      0,
+      1,
+      1,
+      0
+     ],
+     [
+      0,
+      0,
+      1,
+      1,
+      0
+     ],
+     [
+      0,
+      0,
+      1,
+      1,
+      0
+     ]
+    ],
+    "confusion_matrix": [
+     [
+      0.0,
+      0.5,
+      0.0,
+      0.0,
+      0.5
+     ],
+     [
+      0.0,
+      0.0,
+      0.5,
+      0.5,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.5,
+      0.5,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.5,
+      0.5,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.5,
+      0.5,
+      0.0
+     ]
+    ],
+    "ece": 0.5086546331644058,
+    "macro_f1": 0.13333334028720856,
+    "recall_per_class": {
+     "AGN": 0.0,
+     "Asteroid": 0.5,
+     "Bogus": 0.0,
+     "SN": 0.0,
+     "VS": 0.5
+    }
+   },
+   "val": {
+    "accuracy": 0.7,
+    "balanced_accuracy": 0.7,
+    "confusion_counts": [
+     [
+      1,
+      0,
+      0,
+      1,
+      0
+     ],
+     [
+      0,
+      1,
+      1,
+      0,
+      0
+     ],
+     [
+      0,
+      0,
+      1,
+      0,
+      1
+     ],
+     [
+      0,
+      0,
+      0,
+      2,
+      0
+     ],
+     [
+      0,
+      0,
+      0,
+      0,
+      2
+     ]
+    ],
+    "confusion_matrix": [
+     [
+      0.5,
+      0.0,
+      0.0,
+      0.5,
+      0.0
+     ],
+     [
+      0.0,
+      0.5,
+      0.5,
+      0.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.5,
+      0.0,
+      0.5
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    ],
+    "ece": 0.31750293672084806,
+    "macro_f1": 0.68666672706604,
+    "recall_per_class": {
+     "AGN": 0.5,
+     "Asteroid": 1.0,
+     "Bogus": 1.0,
+     "SN": 0.5,
+     "VS": 0.5
+    }
+   }
+  },
+  "figures": [
+   "confusion_matrix_val.png",
+   "confusion_matrix_test.png"
+  ],
+  "horizon": 31,
+  "labels": [
+   "AGN",
+   "SN",
+   "VS",
+   "Asteroid",
+   "Bogus"
+  ],
+  "last_epoch": 15,
+  "last_step": 31,
+  "monitor": "loss_val",
+  "monitor_best": 0.32382261753082275,
+  "paper_data": {
+   "crop": 21,
+   "excluded_train": [
+    3
+   ],
+   "input": "float32",
+   "n_tiled": 10,
+   "n_train": 9,
+   "nan_approximation": true
+  },
+  "predictions": {
+   "test": {
+    "file": "predictions_test.npz",
+    "n": 10,
+    "split": "Test"
+   },
+   "val": {
+    "file": "predictions_val.npz",
+    "n": 10,
+    "split": "Validation"
+   }
+  },
+  "preset": {
+   "deviations": {
+    "batch_size": {
+     "preset": 64,
+     "value": 4
+    },
+    "drop_rate": {
+     "preset": 0.5,
+     "value": 0.2
+    },
+    "horizon_increment": {
+     "preset": 10000,
+     "value": 10
+    },
+    "lr": {
+     "preset": 0.001,
+     "value": 0.03
+    },
+    "max_steps": {
+     "preset": 30000,
+     "value": 10
+    },
+    "rot90_augment": {
+     "preset": false,
+     "value": true
+    },
+    "val_every_n_steps": {
+     "preset": 10,
+     "value": 3
+    }
+   },
+   "diagnostics": [],
+   "faithful": false,
+   "name": "carrasco2021"
+  },
+  "resumed_from": false,
+  "seed": 0,
+  "selection": {
+   "checkpoint_selection": "best_val_loss",
+   "ece_bins": 15,
+   "ema": false,
+   "scored_step": 21
+  },
+  "test_acc_at_best": 0.2,
+  "test_macro_f1": 0.13333334028720856,
+  "val_acc_best": 0.7,
+  "val_macro_f1": 0.68666672706604
+ },
+ "predictions": {
+  "predictions_test.npz": {
+   "index": "480809be2f606f5cecc294aa38f8981f125aded56a0ee8004ef2bf6c7f8f9211",
+   "labels": "e976928bfad47d6238f6e2b6f03c0a32afc14ff183336b3a635b63175b9c6a8c",
+   "probabilities": "c10eb5836a09fc1f42c031964999f0fc31d58b1c39d2b8ea8850ecfe3b1b6eb8"
+  },
+  "predictions_val.npz": {
+   "index": "480809be2f606f5cecc294aa38f8981f125aded56a0ee8004ef2bf6c7f8f9211",
+   "labels": "ed8ae3551af8337cc5ff09bf2036408851ffd9e6e4152e4abed36417ab785a8a",
+   "probabilities": "4108880e761877cf5e4f71a3f11fa6187ed4aeec192d9aab221219d3afd5846d"
+  }
+ },
+ "torch": "2.14.1",
+ "validations": [
+  [
+   3,
+   1.0779756307601929,
+   "e4d381a86e7be348e768aa189b9a125efcbcc2d79f8d2352816b364ead762c03"
+  ],
+  [
+   6,
+   1.6017531156539917,
+   "35b32df9d8be8a10e522dadecef12a7bbe850e8ca3d04f2ab164347078f0ccca"
+  ],
+  [
+   9,
+   1.0687381029129028,
+   "d672f7127a160ad5ea0513b51c650d6088343882e841b3172ebbeec349d5028d"
+  ],
+  [
+   12,
+   0.5316952466964722,
+   "c7e54749f490973a76fadbfc1b3d351698eeeb933570cbb2eaf85b44863e9cab"
+  ],
+  [
+   15,
+   2.087597131729126,
+   "37e2cab072fa2d6c89cd76dc34e8efc39de682d62a6aa1d4fbfa497862bbc55a"
+  ],
+  [
+   18,
+   0.3247145414352417,
+   "244add879765883e1d767d6355c607f097b9315c58f58aa7994bad513bb32aad"
+  ],
+  [
+   21,
+   0.32382261753082275,
+   "cff8056208db30c1d066949780be6b62030f8bf00b1480ae8e2e25e79c0ff56a"
+  ],
+  [
+   24,
+   0.35801154375076294,
+   "a4e72061595dcce85c4197e3344fe33027284d88aaf6a1b8b4afddbd73c78819"
+  ],
+  [
+   27,
+   0.6400557160377502,
+   "ab27bcead4e6a0624cd02c4443b3921b6618b89888632eb5c804c454b74bd99f"
+  ],
+  [
+   30,
+   0.722809910774231,
+   "6d2dcb9e2b9ad98366f8b1e331a12124a472ea34cc443987c4e49e13f677cfc1"
+  ]
+ ]
+}

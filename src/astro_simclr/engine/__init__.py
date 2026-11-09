@@ -31,13 +31,15 @@ Task 4.1 implements the engine core:
 - :mod:`.loop`: :func:`~.loop.fit` (the loop, its validations, checkpoints and exact
   resume), :func:`~.loop.evaluate` and :func:`~.loop.evaluate_kept` (the final evaluation
   of the kept weights);
-- :mod:`.precision`: ADR 0010's float32 policy (shared with the Lightning path);
+- :mod:`.precision`: ADR 0010's float32 policy;
 - :mod:`.scalars`: the local scalars, ``scalars.jsonl``;
 - :mod:`.record`: the machine record and the manifest's lifecycle (``engine: plain``).
 
-**Engine-free rule** (ADR 0014, CLAUDE.md): nothing in this package imports Lightning, so a
-flag written against these contracts works on both engines until Lightning is removed (4.8).
-``tests/test_engine_contracts.py`` checks it.
+**Engine-free rule** (ADR 0014, CLAUDE.md): nothing in ``src/`` imports Lightning (task 4.8
+removed it). A new training flag is written against these contracts and joins the golden
+regression set (``tests/test_engine_regression.py``, its cases in
+``tests/_engine_cases.py``, its goldens in ``tests/fixtures/engine_golden/``).
+``tests/test_engine_contracts.py`` checks the contracts.
 """
 
 from __future__ import annotations

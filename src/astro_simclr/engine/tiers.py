@@ -8,8 +8,9 @@ the bytes are, and how they reach the device, changes:
 1. ``device`` (:class:`DataTier.DEVICE`): the whole dataset on the training device; a batch
    is a gather there, by indices uploaded once per pass (each pass's row order is moved to
    the device once and sliced, so a step does no host-to-device copy at all). This is
-   ``device_data.DeviceTensorDataModule``'s design, and its batches are ``torch.equal`` to
-   that module's (``tests/test_engine_tiers.py``).
+   the Lightning ``DeviceTensorDataModule``'s design, and its batches were ``torch.equal``
+   to that module's until task 4.8 removed it; ``tests/test_engine_tiers.py`` now checks
+   them against the tiled stream's rows, gathered by hand.
 2. ``pinned``: the dataset in host memory; per step the host gathers the batch's rows into a
    **pinned staging buffer** and issues a ``non_blocking`` upload, one step ahead (the next
    step's batch is gathered and enqueued as soon as the current one is handed out). Two
@@ -279,7 +280,7 @@ class _DeviceFetch(_Fetch):
         return {name: tensor[index] for name, tensor in self._columns.items()}
 
     def span(self, start: int, stop: int) -> Columns:
-        """Views of the rows ``start ... stop - 1`` (as ``device_data``'s evaluation batches)."""
+        """Views of the rows ``start ... stop - 1`` (the Lightning loader's evaluation batches)."""
         return {name: tensor[start:stop] for name, tensor in self._columns.items()}
 
 
@@ -389,7 +390,7 @@ def _fetch(
 
 
 def _classifier_batch(columns: Columns, n_classes: int | None) -> Batch:
-    """``(images, features, one-hot labels)``; the one-hot is int64, as ``device_data``'s.
+    """``(images, features, one-hot labels)``; the one-hot is int64, as the Lightning loader's.
 
     Raises:
         ConfigError: if the dataset has no labels or features (an unlabelled kind).

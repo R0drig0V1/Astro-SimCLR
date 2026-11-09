@@ -1,37 +1,39 @@
-"""``run_command`` on the plain engine: the paper classifier's run (task 4.6; ADR 0014).
+"""The training runner: the plain engine's run of a config, end to end (task 4.6; ADR 0014).
 
-:func:`run_plain` is ``experiments.run_command`` for the path the plain engine trains today,
-``train-supervised`` of the paper classifier on the ``carrasco2021`` schedule (every 2.5
-flag, split runs, ``fp32_precision``), without Lightning. ``schedule: rj23`` (RJ23's
-classifiers, task 3.4b) is ``training.rj23.run_rj23``'s counterpart,
-``tasks.rj23.run_rj23_plain``, which ``run_plain`` dispatches to with the run's
-``RJ23Request`` (object splits, mode, alert table). It refuses what ``run_command``
-refuses (``tasks.common``), trains with :func:`astro_simclr.engine.fit` and writes the same
-outputs, so a plain run and a Lightning run of one config are compared file by file:
+:func:`run_plain` trains ``train-supervised`` of the paper classifier on the
+``carrasco2021`` schedule (every 2.5 flag, split runs, ``fp32_precision``) and, with the
+run's ``RJ23Request`` (object splits, mode, alert table), RJ23's classifiers on ``schedule:
+rj23`` (task 3.4b; ``tasks.rj23.run_rj23_plain``). It is what ``astro-simclr run``,
+``train-supervised`` and the queue's ``spec run-cell`` call; Lightning's
+``experiments.run_command``, which it replaced bit for bit (the 4.7 gate), was removed in
+task 4.8 and stays at the git tag ``lightning-final``. It refuses what that runner
+refused (``tasks.common``, the same messages), trains with
+:func:`astro_simclr.engine.fit` and writes the outputs the Lightning runs wrote, so the
+stored runs of both engines are read and compared alike:
 
-- ``metrics.json``: the keys of ``run_command``'s, with ``machine.engine`` ``plain``, the
-  plain checkpoints (``ckpt/best.pt``, ``ckpt/last.pt``) and no Lightning version;
+- ``metrics.json``: the Lightning runs' keys, with ``machine.engine`` ``plain``, the plain
+  checkpoints (``ckpt/best.pt``, ``ckpt/last.pt``) and no Lightning version;
   ``best_epoch`` / ``last_epoch`` derived from the steps (ADR 0014, C5);
 - ``manifest.json`` (ADR 0015) with ``engine: plain``, which is also part of the run id;
 - ``scalars.jsonl``, ``ckpt/{last,best}.pt`` (the engine's), ``predictions_*.npz`` and the
-  confusion-matrix figures (``tasks.results``, shared with Lightning).
+  confusion-matrix figures (``tasks.results``).
 
-**Order of a run.** The checks (accelerator, names, schedule, split, resume), the data
-(``tasks.paper.paper_inputs``: the arrays the Lightning path trains on, on the ``device``
-tier), the manifest (``running``), then :func:`~astro_simclr.engine.fit` (precision, flags,
-seed, the task built on the CPU, ...), the final evaluation of the scored weights (the
-restored best ones, or the last ones with ``checkpoint_selection: final``, plan row D3:
-``Schedule.keep`` ``stop``), ``metrics.json`` and the manifest's ``finished``. A run
-refused before the manifest exists never started and leaves none (``run_command``'s rule,
-task A1).
+**Order of a run.** The checks (accelerator, schedule, split, resume), the data
+(``tasks.paper.paper_inputs``, on the ``device`` tier), the manifest (``running``), then
+:func:`~astro_simclr.engine.fit` (precision, flags, seed, the task built on the CPU, ...),
+the final evaluation of the scored weights (the restored best ones, or the last ones with
+``checkpoint_selection: final``, plan row D3: ``Schedule.keep`` ``stop``),
+``metrics.json`` and the manifest's ``finished``. A run refused before the manifest exists
+never started and leaves none (task A1).
 
 **Resume.** ``resume="auto"`` continues from ``OUTPUT_DIR/ckpt/last.pt`` when it exists (a
 fresh start otherwise); a path must exist. The engine refuses a Lightning checkpoint, another
 run id (another config, data, machine class or split), another precision or determinism
 policy and another stream. Because the run id holds the config, a resume cannot extend a
-run by raising ``max_steps`` (Lightning allows it): that is a new run.
+run by raising ``max_steps``: that is a new run.
 
-**Not on the plain engine yet:** the legacy commands and models (frozen at
+**Not trained here:** the legacy commands and models (``pretrain``, ``linear-eval``,
+``fine-tune``, the ResNet and stamp ``SupervisedCE*`` baselines: frozen at
 ``lightning-final``, plan 4.6), and ``limit_train_batches`` / ``limit_val_batches``
 (Lightning's dry-run limits: a plain dry run sets ``max_steps``).
 """
@@ -48,6 +50,7 @@ import torch
 
 from astro_simclr.config import (
     CARRASCO2021,
+    LIGHTNING_TAG,
     RJ23,
     RJ23_MODEL,
     ConfigError,
@@ -84,7 +87,6 @@ from astro_simclr.runs.record import QueueAttempt, RunRecord, start_run
 from astro_simclr.tasks.common import (
     PAPER_STAMP_CLASSIFIER,
     check_accelerator,
-    check_names,
     check_schedule,
     check_split,
     dataset_path,
@@ -195,8 +197,8 @@ def _check_plain(command: str, settings: Settings) -> None:
             f"the plain engine trains train-supervised with supervised_model="
             f"{PAPER_STAMP_CLASSIFIER} on schedule {CARRASCO2021} (task 4.6) or with "
             f"supervised_model={RJ23_MODEL} on schedule {RJ23} (task 3.4b); got {command} "
-            f"with {settings.supervised_model} on {settings.schedule}: use runtime.engine "
-            "lightning"
+            f"with {settings.supervised_model} on {settings.schedule}: the other models and "
+            f"commands are frozen at the git tag {LIGHTNING_TAG} (plan task 4.6)"
         )
         raise ConfigError(msg)
     check_plain_runtime(settings)
@@ -393,7 +395,6 @@ def run_plain(
             queued=queued,
         )
     check_accelerator(settings.accelerator)
-    check_names(settings)
     _check_plain(command, settings)
     check_schedule(command, settings)
     data = dataset_path(settings)

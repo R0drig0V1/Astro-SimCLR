@@ -5,15 +5,15 @@ One attempt of one run is one directory, named :func:`run_dir_name` (the run id'
 (the queue's, A3; today ``--output-dir``). Its files::
 
     manifest.json          the manifest (runs.manifest), written first, updated on each status
-    metrics.json           the results (experiments.run_command)
+    metrics.json           the results (tasks.plain.run_plain)
     scalars.jsonl          local scalars, one JSON object per line (the plain engine)
     tb/                    TensorBoard event files (the plain engine)
     predictions_*.npz      per-stamp probabilities (protocol.predictions)
     ckpt/last.pt           the latest state, what a resume continues from (the plain engine)
     ckpt/best.pt           the selected weights (the plain engine)
 
-A Lightning run (``engine: lightning``, until task 4.8) keeps today's names for the same
-roles: ``checkpoints/last.ckpt``, ``checkpoints/best.ckpt`` and ``lightning_logs/``.
+A Lightning run (``engine: lightning``, written until task 4.8) has other names for the
+same roles: ``checkpoints/last.ckpt``, ``checkpoints/best.ckpt`` and ``lightning_logs/``.
 :func:`classify_artefact` knows both.
 
 **Retention** (:func:`retention`): what to keep of an attempt, as a pure function of its
@@ -70,7 +70,7 @@ CHECKPOINT_DIR: Final = "ckpt"
 LAST_CHECKPOINT: Final = f"{CHECKPOINT_DIR}/last.pt"
 #: ``ckpt/best.pt``: the selected weights.
 BEST_CHECKPOINT: Final = f"{CHECKPOINT_DIR}/best.pt"
-#: The Lightning engine's ``last`` (``experiments.CHECKPOINT_DIR`` / ``LAST_CHECKPOINT``).
+#: The Lightning engine's ``last`` (its ``experiments.LAST_CHECKPOINT``, ``lightning-final``).
 LIGHTNING_LAST: Final = "checkpoints/last.ckpt"
 #: The Lightning engine's ``best``.
 LIGHTNING_BEST: Final = "checkpoints/best.ckpt"

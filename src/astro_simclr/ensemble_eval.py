@@ -48,7 +48,7 @@ step, seed and hyperparameters checked against the run, which holds no run id), 
 run with ``checkpoint_selection: final`` (plan row D3), the scored last weights of
 ``ckpt/last.pt`` / ``checkpoints/last.ckpt`` (the same checks, against ``last_step``),
 with the weight EMA when the run had one (``ema_decay``; its ``eval()`` forward), in the model
-``build_paper_model`` builds from the manifest's config, the input of
+``tasks.paper.paper_model`` builds from the manifest's config, the input of
 ``tasks.paper.paper_crops``, the engine's evaluation batches (``engine.open_eval``) of the
 config's ``eval_batch_size``, in ``eval()`` and ``inference_mode``, with the config's
 float32 precision and determinism (``engine.DevicePolicy``). With ``--tta rot4`` (the
@@ -88,7 +88,6 @@ from astro_simclr.engine import (
 from astro_simclr.engine.record import machine_record
 from astro_simclr.feature_sets import feature_columns
 from astro_simclr.losses import P_stamps_loss
-from astro_simclr.paper_variants import build_paper_model
 from astro_simclr.protocol.predictions import Predictions, ensemble, save_predictions
 from astro_simclr.protocol.split_runs import SplitRequest, SplitRun, file_sha256, open_split_run
 from astro_simclr.reference import load_run, machine_signature
@@ -106,7 +105,7 @@ from astro_simclr.tasks.common import (
     check_schedule,
     dataset_path,
 )
-from astro_simclr.tasks.paper import PaperNet, paper_crops
+from astro_simclr.tasks.paper import PaperNet, paper_crops, paper_model
 from astro_simclr.tasks.plain import resolve_accelerator
 from astro_simclr.tasks.results import StageOutput, evaluation_entry, finite
 from astro_simclr.training.ema import EmaWeights
@@ -304,8 +303,8 @@ def _check_lightning_best(
     (``best_step``, or ``last_step`` for ``last.ckpt``; ``metrics.json``), its
     ``augment_seed`` the run's seed, and every hyperparameter it saved equals the manifest
     config's value of the same name. A checkpoint copied from another run of the same
-    config, seed and step would pass: the weaker guarantee of the Lightning engine, until
-    task 4.8 retires it.
+    config, seed and step would pass: the weaker guarantee of the Lightning engine (retired
+    by task 4.8; its runs are still read).
 
     Raises:
         ConfigError: on the first mismatch, naming it.
@@ -332,22 +331,16 @@ def _check_lightning_best(
 def member_net(member: Member, settings: Settings) -> PaperNet:
     """The run's model with its selected weights, on the CPU, in ``eval()``.
 
-    Built as ``tasks.paper.build_paper_task`` builds it, without the ConvNeXt backbone
+    Built as ``tasks.paper.build_paper_task`` builds it (``tasks.paper.paper_model``: every
+    model field of the config, the hybrids' shapes included), without the ConvNeXt backbone
     download (every weight comes from the checkpoint).
 
     Raises:
         ConfigError: as :func:`_best_state`, or if the weights do not fit the model.
     """
     columns = feature_columns(settings.feature_set, with_features=settings.with_features)
-    model = build_paper_model(
-        settings.paper_arch,
-        group_fields=settings.group_fields,
-        context=settings.context,
-        with_features=settings.with_features,
-        dropout_active=settings.dropout_active,
-        drop_rate=settings.drop_rate,
-        feature_set=settings.feature_set,
-    )
+    # Every model field, the hybrids' shapes included (plan row B9): tasks.paper.paper_model.
+    model = paper_model(settings)
     # A D3 run's state has the weight EMA (``ema.shadow.*``), which its eval() forward ran.
     ema = None if settings.ema_decay is None else EmaWeights(model, settings.ema_decay)
     net = PaperNet(model, P_stamps_loss(settings.beta_loss), reads_features=bool(columns), ema=ema)

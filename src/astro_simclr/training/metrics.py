@@ -1,108 +1,50 @@
-"""The classification metrics and the confusion matrix, shared by every classifier module.
+"""The confusion matrices and the macro-F1 of the classifier results, in plain torch.
 
-The legacy ``utils/training.py`` had four copies of a ``metrics`` method and four of a
-``confusion_matrix`` method, written for torchmetrics 0.6. This module is the one
-implementation that replaces them, on torchmetrics >= 1 (``task="multiclass"``).
+``tasks.results`` writes these into every classifier's ``metrics.json``. They were
+torchmetrics calls (``multiclass_confusion_matrix``, ``multiclass_f1_score``) until task
+4.8 removed torchmetrics with Lightning; the functions below compute the same operations in
+the same order and dtypes, so every recorded number is unchanged bit for bit (the golden
+regression set, ``tests/test_engine_regression.py``, holds the evaluation entries of every
+case):
 
-Averaging, as in the legacy code:
+- **the counts** (:func:`confusion_counts`): entry ``[i, j]`` counts the samples of true
+  class ``i`` predicted as ``j``, an int64 ``bincount`` of ``true * num_classes + pred``;
+- **the confusion matrix is normalised over the true labels** (:func:`confusion_matrix`;
+  each row sums to 1): the float32 counts divided by their row sums; a class with no true
+  sample gives a row of zeros, not NaN (as torchmetrics did, and torchmetrics 0.6 before
+  it);
+- **macro-F1** (:func:`macro_f1`) is the unweighted mean of the per-class F1, ``2 tp / (2 tp
+  + fn + fp)`` in float32 (0 where the denominator is 0), over the classes present in the
+  predictions or the targets: each present class's F1 is divided by their number, then
+  summed (torchmetrics' ``_adjust_weights_safe_divide``, whose rounding this keeps).
 
-- **accuracy is micro** (correct predictions / all predictions). torchmetrics 0.6
-  ``Accuracy(num_classes=5)`` defaulted to micro; ``MulticlassAccuracy`` now defaults to
-  *macro*, so ``average="micro"`` is passed explicitly. Every legacy accuracy (the Ray Tune
-  tables, the reference numbers of the plan) is micro.
-- **precision and recall are macro** (the legacy code asked for ``average='macro'``).
-  Classes absent from both the predictions and the targets are left out of the mean, in
-  torchmetrics 0.6 and 1.x alike.
-- **the confusion matrix is normalised over the true labels** (``normalize="true"``: each
-  row sums to 1); a class with no true sample gives a row of zeros, as in torchmetrics 0.6.
-- **macro-F1** (new, for the metrics JSON of the CLI; the legacy code had none) is the
-  unweighted mean of the per-class F1 over the classes present in the predictions or the
-  targets, consistent with the precision and recall above.
-
-Inputs are integer class labels, already ``argmax``-ed. The functions work on the device of
-their inputs (no device is named here).
+Inputs are integer class labels, already ``argmax``-ed, in ``[0, num_classes)``. The
+functions work on the device of their inputs (no device is named here). An empty input or a
+label outside the range raises ``ValueError``, deliberately and with no guard in
+``tasks.results``: it always passes a split's labels and the argmax of its probabilities
+over ``num_classes`` logits, so a raise there is a bug (an empty split, labels of another
+class set), never a result to report around. torchmetrics raised on both too.
 """
 
 from __future__ import annotations
 
-from typing import Final
-
 import torch
-from torchmetrics.functional.classification import (
-    multiclass_accuracy,
-    multiclass_confusion_matrix,
-    multiclass_f1_score,
-    multiclass_precision,
-    multiclass_recall,
-)
 
 from astro_simclr.models import N_CLASSES
 
-__all__ = [
-    "METRIC_NAMES",
-    "classification_metrics",
-    "confusion_counts",
-    "confusion_matrix",
-    "macro_f1",
-]
-
-#: Keys of :func:`classification_metrics`, in logging order.
-METRIC_NAMES: Final = ("accuracy", "precision", "recall")
+__all__ = ["confusion_counts", "confusion_matrix", "macro_f1"]
 
 
-def _check_labels(y_pred: torch.Tensor, y_true: torch.Tensor) -> None:
+def _check_labels(y_pred: torch.Tensor, y_true: torch.Tensor, num_classes: int) -> None:
     if y_pred.ndim != 1 or y_pred.shape != y_true.shape or y_pred.numel() == 0:
         msg = (
             "y_pred and y_true must be non-empty 1-D label tensors of the same shape, got "
             f"{tuple(y_pred.shape)} and {tuple(y_true.shape)}"
         )
         raise ValueError(msg)
-
-
-def classification_metrics(
-    y_pred: torch.Tensor,
-    y_true: torch.Tensor,
-    *,
-    num_classes: int = N_CLASSES,
-    validate_args: bool = True,
-) -> dict[str, torch.Tensor]:
-    """Micro accuracy, macro precision and macro recall of the labels ``y_pred``.
-
-    Returns ``{"accuracy": ..., "precision": ..., "recall": ...}``, each a 0-d float tensor
-    on the inputs' device. ``validate_args=False`` skips torchmetrics' checks of the label
-    values (dtype and range; extra kernels and a host sync on a GPU) and gives the same
-    numbers; only for labels known to be in ``[0, num_classes)``, such as argmaxes. The
-    shape check below always runs.
-
-    Raises:
-        ValueError: if the inputs are not non-empty 1-D tensors of the same shape.
-    """
-    _check_labels(y_pred, y_true)
-    return {
-        "accuracy": multiclass_accuracy(
-            y_pred, y_true, num_classes, average="micro", validate_args=validate_args
-        ),
-        "precision": multiclass_precision(
-            y_pred, y_true, num_classes, average="macro", validate_args=validate_args
-        ),
-        "recall": multiclass_recall(
-            y_pred, y_true, num_classes, average="macro", validate_args=validate_args
-        ),
-    }
-
-
-def confusion_matrix(
-    y_pred: torch.Tensor, y_true: torch.Tensor, *, num_classes: int = N_CLASSES
-) -> torch.Tensor:
-    """The (num_classes, num_classes) confusion matrix, rows normalised to sum to 1.
-
-    Entry ``[i, j]`` is the fraction of the samples of true class ``i`` predicted as ``j``.
-
-    Raises:
-        ValueError: if the inputs are not non-empty 1-D tensors of the same shape.
-    """
-    _check_labels(y_pred, y_true)
-    return multiclass_confusion_matrix(y_pred, y_true, num_classes, normalize="true")
+    for name, labels in (("y_pred", y_pred), ("y_true", y_true)):
+        if labels.is_floating_point() or int(labels.min()) < 0 or int(labels.max()) >= num_classes:
+            raise ValueError(f"{name} must hold integer labels in [0, {num_classes})")
 
 
 def confusion_counts(
@@ -111,17 +53,48 @@ def confusion_counts(
     """The (num_classes, num_classes) confusion matrix of counts (int64, not normalised).
 
     Raises:
-        ValueError: if the inputs are not non-empty 1-D tensors of the same shape.
+        ValueError: if the inputs are not non-empty 1-D tensors of the same shape, or hold
+            a label outside ``[0, num_classes)``.
     """
-    _check_labels(y_pred, y_true)
-    return multiclass_confusion_matrix(y_pred, y_true, num_classes)
+    _check_labels(y_pred, y_true, num_classes)
+    bins = y_true.to(torch.long) * num_classes + y_pred.to(torch.long)
+    counts = torch.bincount(bins, minlength=num_classes**2)
+    return counts.reshape(num_classes, num_classes)
+
+
+def confusion_matrix(
+    y_pred: torch.Tensor, y_true: torch.Tensor, *, num_classes: int = N_CLASSES
+) -> torch.Tensor:
+    """The (num_classes, num_classes) confusion matrix, rows normalised to sum to 1.
+
+    Entry ``[i, j]`` is the fraction of the samples of true class ``i`` predicted as ``j``;
+    the row of a class without true samples is zeros.
+
+    Raises:
+        ValueError: as :func:`confusion_counts`.
+    """
+    counts = confusion_counts(y_pred, y_true, num_classes=num_classes).float()
+    matrix = counts / counts.sum(dim=-1, keepdim=True)
+    return torch.nan_to_num(matrix, nan=0.0)
 
 
 def macro_f1(y_pred: torch.Tensor, y_true: torch.Tensor, *, num_classes: int = N_CLASSES) -> float:
     """Macro-averaged F1 of the labels ``y_pred`` (classes absent from both are left out).
 
     Raises:
-        ValueError: if the inputs are not non-empty 1-D tensors of the same shape.
+        ValueError: as :func:`confusion_counts`.
     """
-    _check_labels(y_pred, y_true)
-    return float(multiclass_f1_score(y_pred, y_true, num_classes, average="macro"))
+    counts = confusion_counts(y_pred, y_true, num_classes=num_classes)
+    tp = counts.diag()
+    fp = counts.sum(0) - tp
+    fn = counts.sum(1) - tp
+    # The order and dtypes of torchmetrics' _fbeta_reduce with beta = 1 (module docstring).
+    numerator = 2.0 * tp
+    denominator = 2.0 * tp + 1.0 * fn + fp
+    zero = torch.zeros((), dtype=numerator.dtype, device=numerator.device)
+    score = torch.where(denominator != 0, numerator / denominator, zero)
+    weights = torch.ones_like(score)
+    weights[tp + fp + fn == 0] = 0.0
+    total = weights.sum(-1, keepdim=True)
+    weighted = torch.where(total != 0, weights * score / total, zero)
+    return float(weighted.sum(-1))

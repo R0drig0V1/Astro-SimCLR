@@ -1,7 +1,9 @@
-"""Tests of the training subcommands' settings, errors and outputs (``experiments``, ``cli``).
+"""Tests of ``train-supervised``'s settings, errors and outputs (``cli``, ``tasks.plain``).
 
-The full chain and ``--resume`` are in ``test_smoke.py``; these cover the resolution order
-of the settings, every clear failure the plan asks for, and the metrics JSON details.
+The resolution order of the settings, every clear failure the plan asks for, the metrics
+JSON details, and the legacy commands removed with Lightning (task 4.8), which exit 2
+naming the git tag that keeps them. Full runs of every flag are in
+``test_engine_regression.py``; resumes in ``test_engine_resume.py``.
 """
 
 from __future__ import annotations
@@ -13,26 +15,22 @@ import numpy as np
 import pytest
 import torch
 
-from astro_simclr.cli import build_parser, main, training_settings
-from astro_simclr.config import ConfigError, Settings
-from astro_simclr.experiments import (
-    AcceleratorError,
-    check_accelerator,
-    load_pretrained,
-    resolve_resume,
-)
+from astro_simclr.cli import REMOVED_COMMANDS, build_parser, main, training_settings
+from astro_simclr.config import Settings
 from astro_simclr.protocol.predictions import load_predictions
+from astro_simclr.tasks.common import AcceleratorError, check_accelerator
 from astro_simclr.tasks.results import finite as _finite
 from astro_simclr.tasks.results import recalls_of as _recalls
 
 ROOT = Path(__file__).resolve().parents[1]
-_DRY = ["max_epochs=1", "limit_train_batches=1", "limit_val_batches=1", "num_workers=0"]
-
-
-@pytest.fixture(scope="module")
-def data_dir(synthetic_prepared: dict[str, Path]) -> Path:
-    """The directory that holds the four prepared synthetic datasets."""
-    return next(iter(synthetic_prepared.values())).parent
+#: A short carrasco2021 run: 3 steps of batch 4, one validation, no horizon extension.
+_SHORT = [
+    "max_steps=3",
+    "val_every_n_steps=3",
+    "horizon_increment=0",
+    "checkpoint_every_n_steps=3",
+    "batch_size=4",
+]
 
 
 def _args(command: str, *argv: str) -> Settings:
@@ -40,22 +38,17 @@ def _args(command: str, *argv: str) -> Settings:
     return training_settings(command, args)
 
 
-def _run(command: str, data: Path, out: Path, *argv: str) -> int:
-    base = [command, "--data-dir", str(data), "--output-dir", str(out), "--accelerator", "cpu"]
-    return main([*base, *argv])
+def _run(data: Path, out: Path, *argv: str) -> int:
+    base = ["train-supervised", "--preset", "carrasco2021", "--data-dir", str(data)]
+    return main([*base, "--output-dir", str(out), "--accelerator", "cpu", *argv])
 
 
 @pytest.fixture(scope="module")
-def runs(data_dir: Path, tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
-    """One dry pretrain run and one dry supervised run, shared by the tests below."""
-    root = tmp_path_factory.mktemp("runs")
-    pretrain, supervised = root / "pretrain", root / "supervised"
-    assert (
-        _run("pretrain", data_dir, pretrain, "--set", "encoder_name=stamp1", "batch_size=4", *_DRY)
-        == 0
-    )
-    assert _run("train-supervised", data_dir, supervised, "--set", "batch_size=5", *_DRY) == 0
-    return {"pretrain": pretrain, "supervised": supervised}
+def run(classifier_f32_dir: Path, tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """One short paper-classifier run through the CLI, shared by the tests below."""
+    out = tmp_path_factory.mktemp("runs") / "supervised"
+    assert _run(classifier_f32_dir.parent, out, "--set", *_SHORT) == 0
+    return out
 
 
 # --- Settings resolution -------------------------------------------------------------------
@@ -90,22 +83,6 @@ def test_resolution_order(tmp_path: Path) -> None:
     assert settings.accelerator == "cpu"
 
 
-def test_pretrain_gets_the_legacy_protocol() -> None:
-    settings = _args("pretrain")
-    assert (settings.monitor, settings.max_epochs, settings.patience) == (
-        "loss_train_enc",
-        400,
-        100,
-    )
-    assert settings.dataset == "td_ztf_stamp_simclr_300"
-
-
-def test_skipped_legacy_keys_are_reported(capsys: pytest.CaptureFixture[str]) -> None:
-    settings = _args("pretrain", "--hparams", str(ROOT / "results" / "hparams_best_simclr.yaml"))
-    assert settings.batch_size == 150
-    assert "not used by pretrain: batch_size_classifier" in capsys.readouterr().err
-
-
 def test_set_takes_several_items(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["show-config", "--set", "seed=1", "devices=2", "--set", "max_epochs=3"]) == 0
     out = capsys.readouterr().out
@@ -120,29 +97,20 @@ def test_set_takes_several_items(capsys: pytest.CaptureFixture[str]) -> None:
 @pytest.mark.parametrize("accelerator", ["cuda", "gpu", "mps"])
 def test_missing_accelerator_fails_clearly(
     accelerator: str,
-    data_dir: Path,
+    classifier_f32_dir: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
-    code = main(
-        [
-            "train-supervised",
-            "--data-dir",
-            str(data_dir),
-            "--output-dir",
-            str(tmp_path),
-            "--accelerator",
-            accelerator,
-        ]
-    )
-    assert code == 2
+    argv = ["train-supervised", "--preset", "carrasco2021", "--data-dir"]
+    argv += [str(classifier_f32_dir.parent), "--output-dir", str(tmp_path)]
+    assert main([*argv, "--accelerator", accelerator]) == 2
     err = capsys.readouterr().err
     assert f"accelerator {accelerator!r} was requested, but it is not available" in err
     assert "preflight" in err
-    assert not (tmp_path / "checkpoints").exists()  # failed before training
+    assert not (tmp_path / "manifest.json").exists()  # failed before the run started
 
 
 def test_cpu_and_auto_always_work(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -162,131 +130,92 @@ def test_cpu_and_auto_always_work(monkeypatch: pytest.MonkeyPatch) -> None:
             1,
             "nope is not a prepared dataset; run `astro-simclr prepare-data",
         ),
-        (["--set", "augmentation=astro"], 2, "astro"),
-        (["--set", "supervised_model=vgg"], 2, "supervised_model 'vgg' is not"),
-        (["--set", "monitor=loss_train_enc"], 2, "monitor 'loss_train_enc' is not a metric"),
+        (["--set", "supervised_model=resnet18"], 2, "frozen at the git tag lightning-final"),
         (["--set", "optimizer=RMSprop"], 2, "unknown optimizer"),
-        (["--resume", "missing.ckpt"], 2, "--resume missing.ckpt: no such checkpoint"),
-        (["--set", "batch_size=1000"], 1, "fewer than batch_size 1000"),
+        (["--resume", "missing.pt"], 2, "--resume missing.pt: no such checkpoint"),
+        (["--set", "limit_train_batches=2"], 2, "Lightning's dry-run limits"),
     ],
 )
 def test_supervised_errors(
     argv: list[str],
     code: int,
     message: str,
-    data_dir: Path,
+    classifier_f32_dir: Path,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert _run("train-supervised", data_dir, tmp_path, *argv) == code
+    assert _run(classifier_f32_dir.parent, tmp_path, *argv) == code
     assert message in capsys.readouterr().err
 
 
-def test_pretrain_rejects_the_classifier_monitor(
-    data_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("command", REMOVED_COMMANDS)
+def test_the_legacy_commands_name_the_tag(
+    command: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert (
-        _run("pretrain", data_dir, tmp_path, "--set", "monitor=accuracy_val", "batch_size=4") == 2
-    )
-    assert "valid: loss_train_enc" in capsys.readouterr().err
-
-
-def test_downstream_errors(
-    runs: dict[str, Path], data_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    assert _run("linear-eval", data_dir, tmp_path) == 2
-    assert "needs the pretrain checkpoint" in capsys.readouterr().err
-    assert _run("linear-eval", data_dir, tmp_path, "--pretrained", str(tmp_path / "x.ckpt")) == 2
-    assert "no such file" in capsys.readouterr().err
-    assert _run("fine-tune", data_dir, tmp_path, "--pretrained", str(runs["supervised"])) == 2
-    assert "is not a pretrain (SimCLR) checkpoint" in capsys.readouterr().err
-    code = _run(
-        "fine-tune",
-        data_dir,
-        tmp_path,
-        "--pretrained",
-        str(runs["pretrain"]),
-        "--set",
-        "image_size=63",
-    )
-    assert code == 2
-    assert "trained on 27 px, but image_size is 63" in capsys.readouterr().err
-
-
-def test_load_pretrained_accepts_a_directory_or_a_file(runs: dict[str, Path]) -> None:
-    by_dir = load_pretrained(runs["pretrain"])
-    by_file = load_pretrained(runs["pretrain"] / "checkpoints" / "best.ckpt")
-    assert by_dir.encoder_name == by_file.encoder_name == "stamp1"
-
-
-def test_resolve_resume(tmp_path: Path) -> None:
-    assert resolve_resume(None, tmp_path) is None
-    assert resolve_resume("auto", tmp_path) is None  # nothing to resume: a fresh start
-    last = tmp_path / "checkpoints" / "last.ckpt"
-    last.parent.mkdir()
-    last.write_bytes(b"")
-    assert resolve_resume("auto", tmp_path) == last
-    assert resolve_resume(str(last), tmp_path) == last
-    with pytest.raises(ConfigError):
-        resolve_resume(str(tmp_path / "other.ckpt"), tmp_path)
+    # Task 4.8: they trained on Lightning; any arguments, even invalid ones, get the pointer.
+    assert main([command, "--output-dir", str(tmp_path / "out"), "--bogus"]) == 2
+    err = capsys.readouterr().err
+    assert f"{command} trained on Lightning" in err and "lightning-final" in err
+    assert not (tmp_path / "out").exists()
+    with pytest.raises(SystemExit):  # not a subcommand of the parser any more
+        build_parser().parse_args([command])
+    capsys.readouterr()
 
 
 # --- Outputs -------------------------------------------------------------------------------
 
 
-def test_outputs_stay_under_the_output_dir(runs: dict[str, Path]) -> None:
-    out = runs["supervised"]
-    names = {path.relative_to(out).parts[0] for path in out.rglob("*")}
+def test_outputs_stay_under_the_output_dir(run: Path) -> None:
+    names = {path.relative_to(run).parts[0] for path in run.rglob("*")}
     assert names == {
-        "checkpoints",
-        "lightning_logs",
+        "ckpt",
         "manifest.json",  # task A1
         "metrics.json",
+        "scalars.jsonl",
         "confusion_matrix_val.png",
         "confusion_matrix_test.png",
         "predictions_val.npz",
         "predictions_test.npz",
     }
-    metrics = json.loads((out / "metrics.json").read_text())
+    metrics = json.loads((run / "metrics.json").read_text())
     assert metrics["data"]["class_counts"]["Validation"] == [2, 2, 2, 2, 2]
-    assert metrics["config"]["batch_size"] == 5
+    assert metrics["config"]["batch_size"] == 4
     counts = metrics["evaluation"]["val"]["confusion_counts"]
     assert sum(map(sum, counts)) == 10  # every validation stamp, counted once
 
 
-def test_the_registry_reads_what_runs_write(runs: dict[str, Path], tmp_path: Path) -> None:
-    """Task A2 on task A1's output: the run directories index as manifest runs."""
+def test_the_registry_reads_what_runs_write(run: Path, tmp_path: Path) -> None:
+    """Task A2 on task A1's output: the run directory indexes as a manifest run."""
     from astro_simclr.registry.index import reindex
     from astro_simclr.registry.store import load_records, open_registry
 
     conn = open_registry(tmp_path / "registry.sqlite")
     try:
-        report = reindex(conn, [runs["pretrain"].parent], specs=tmp_path / "specs")
+        report = reindex(conn, [run.parent], specs=tmp_path / "specs")
         assert report.skipped == []
-        records = {record.command: record for record in load_records(conn)}
-        kinds = dict(
-            conn.execute("SELECT path, kind FROM artefacts WHERE path LIKE 'checkpoints/%'")
-        )
+        records = load_records(conn)
+        kinds = dict(conn.execute("SELECT path, kind FROM artefacts WHERE path LIKE 'ckpt/%'"))
     finally:
         conn.close()
-    assert set(records) == {"pretrain", "train-supervised"}
-    for record in records.values():
-        assert not record.legacy and record.status == "finished" and record.engine == "lightning"
-        assert record.run_id is not None and record.numerics_epoch is not None
-    assert records["train-supervised"].metrics["val.balanced_accuracy"] >= 0
-    assert kinds["checkpoints/best.ckpt"] == "best_checkpoint"
-    assert kinds["checkpoints/last.ckpt"] == "last_checkpoint"
+    [record] = records
+    assert record.command == "train-supervised"
+    assert not record.legacy and record.status == "finished" and record.engine == "plain"
+    assert record.run_id is not None and record.numerics_epoch is not None
+    assert record.metrics["val.balanced_accuracy"] >= 0
+    assert kinds["ckpt/best.pt"] == "best_checkpoint"
+    assert kinds["ckpt/last.pt"] == "last_checkpoint"
 
 
-def test_metrics_record_the_protocol_fields(runs: dict[str, Path]) -> None:
+def test_metrics_record_the_protocol_fields(run: Path) -> None:
     """Task 2.3: machine, per-class recall, balanced accuracy and per-stamp predictions."""
-    out = runs["supervised"]
+    out = run
     metrics = json.loads((out / "metrics.json").read_text())
     machine = metrics["machine"]
     assert machine["device"] == "cpu" and machine["gpu"] is None
     assert machine["torch"] == torch.__version__ and machine["cuda"] == torch.version.cuda
     assert {"platform", "processor", "python", "cudnn"} <= set(machine)
     assert machine["fp32_precision"] == "ieee"  # ADR 0010: the default, recorded
+    assert machine["engine"] == "plain"
     for stage, split in (("val", "Validation"), ("test", "Test")):
         evaluation = metrics["evaluation"][stage]
         counts = evaluation["confusion_counts"]
@@ -309,25 +238,6 @@ def test_metrics_record_the_protocol_fields(runs: dict[str, Path]) -> None:
 def test_recalls_of_an_absent_class() -> None:
     counts = [[2, 0, 0, 0, 0], [1, 1, 0, 0, 0], [0] * 5, [0, 0, 0, 3, 1], [0, 0, 0, 0, 0]]
     assert _recalls(counts) == {"AGN": 1.0, "SN": 0.5, "VS": None, "Asteroid": 0.75, "Bogus": None}
-
-
-def test_resnet_supervised_model(data_dir: Path, tmp_path: Path) -> None:
-    assert (
-        _run(
-            "train-supervised",
-            data_dir,
-            tmp_path,
-            "--set",
-            "supervised_model=resnet18",
-            "with_features=false",
-            "batch_size=5",
-            *_DRY,
-        )
-        == 0
-    )
-    assert json.loads((tmp_path / "metrics.json").read_text())["config"]["supervised_model"] == (
-        "resnet18"
-    )
 
 
 def test_non_finite_values_become_null() -> None:

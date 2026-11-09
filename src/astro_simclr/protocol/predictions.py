@@ -1,10 +1,10 @@
 """Per-stamp predictions of a classifier run: the file format, loading and seed ensembling.
 
-Every classifier run (``experiments.run_command``) writes, next to ``metrics.json``, one
-file per evaluated stage, ``predictions_val.npz`` and ``predictions_test.npz``, for the
-checkpoint it selected. The comparisons of task 2.3 work on these, never on the summary
-accuracies, because they pair the two variants stamp by stamp. Arrays (``np.savez``, read
-with ``allow_pickle=False``):
+Every classifier run (``tasks.plain.run_plain``; a Lightning run did too) writes, next to
+``metrics.json``, one file per evaluated stage, ``predictions_val.npz`` and
+``predictions_test.npz``, for the checkpoint it selected. The comparisons of task 2.3 work
+on these, never on the summary accuracies, because they pair the two variants stamp by
+stamp. Arrays (``np.savez``, read with ``allow_pickle=False``):
 
 =================  =====================  =================================================
 ``probabilities``  float32 (N, C)         softmax of the logits, columns in label order

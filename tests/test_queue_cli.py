@@ -54,9 +54,9 @@ def test_spec_check(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_spec_expand_and_run_cell(
-    tmp_path: Path, synthetic_prepared: dict[str, Path], capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, classifier_f32_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    data_dir = next(iter(synthetic_prepared.values())).parent
+    data_dir = classifier_f32_dir.parent
     repo = tmp_path / "repo"
     init_repo(repo)
     spec = tmp_path / "s.yaml"
@@ -121,7 +121,7 @@ def test_queue_init_status_cancel_paths(
 def test_queue_enqueue_from_stdin(
     home: Path,
     tmp_path: Path,
-    synthetic_prepared: dict[str, Path],
+    classifier_f32_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -133,7 +133,7 @@ def test_queue_enqueue_from_stdin(
     RunnerConfig(
         home=home,
         repo=repo,
-        data_dir=next(iter(synthetic_prepared.values())).parent,
+        data_dir=classifier_f32_dir.parent,
         runs_root=home / "runs",
         uv=str(uv),
         entry_point=CLI,
