@@ -287,7 +287,7 @@ the config hash is defined on, ADR 0015 rule 10), so it changes no numbers.
   `Settings` field has exactly one nested home.
 - `configs/runs/` holds nested configs (`carrasco2021.yaml`: the preset on `cuda`).
 
-## `cli` (task 1.1; subcommands from 1.2, 1.7, 3.1, 3.5 and 5.1a; `run` from 4.2)
+## `cli` (task 1.1; subcommands from 1.2, 1.7, 3.1, 3.5, 5.1a and A3; `run` from 4.2)
 
 The `astro-simclr` console script (`[project.scripts]`). `main(argv)` returns the exit code,
 so tests call it in-process. Every subcommand registers in `build_parser()` and takes the
@@ -392,6 +392,11 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   (task A2, see `registry`): the local run registry. Exit 0 on success (`reindex` also when
   it skipped directories), 1 when the registry cannot be used or a comparison does not
   resolve.
+- `spec check|expand|run-cell` and `queue init|enqueue|paths|worker|status|cancel|service|
+  tmux|submit|sync` (task A3, see `queue` and `docs/queue.md`): `spec run-cell` exits with
+  the job's code (0 finished, 1 failed, 2 refused, 75 busy, 128 + a signal); the queue's
+  own errors (location, transport, runner, schema) print one line and exit 1, an invalid
+  spec exits 2.
 - **SimCLR pilot (task 5.0b, see `simclr`):** `simclr-pilot DATA --output-dir OUT
   [--splits FILE] [--epochs N | --steps N] [--batch-size B] [--temperature T] [--lr-per-256
   X] [--warmup-epochs E] [--noise-scale S] [--seed N] [--device auto|cpu|cuda|mps]
@@ -2259,7 +2264,7 @@ through it; Lightning stays the default until 4.7/4.8.
 | `common` | The run checks of `run_command`, moved from `experiments` (which re-exports them): `check_accelerator` (`AcceleratorError`), `dataset_path`, `check_names`, `check_schedule` / `check_paper_variant`, `check_split`, and `refuse_rj23` (`run_command` sends `schedule: rj23` to `training.rj23.run_rj23`). |
 | `paper` | `paper_crops(settings, data, names)`: the splits as the run's model sees them (the float path with its context channels, or the uint8 diagnostic, at `paper_arch`'s side), shared by `paper_inputs` and `ensemble-eval`. `paper_inputs(settings, data, split_run)`: the splits as `TensorSplit`s (float path or uint8 diagnostic, leaked Train stamps removed, a split run's roles, the C5-C7 fits) and the `paper_data` entry; `experiments._build_paper` calls it too. `load_backbone` (ConvNeXt weights, ADR 0022). `PaperNet` (the model under `model`, the loss as `criterion`, the D3 weight EMA as `ema`, run in `eval()` mode: `PaperClassifierModule`'s `state_dict` keys). `PaperTask`, the engine `Task`: a step plans the augmentation of step `step` on a host copy (`training.paper_augment.PaperAugment`, the object the Lightning module delegates to), uploads and applies it, then the loss; `build_optimizer` with the configured betas over every parameter but the EMA's, the D3 `LambdaLR` if any; `after_step` steps it and updates the EMA; `state()` holds the scheduler's state (empty without one). `build_paper_task(settings, info)` builds it on the CPU (after the seed); `check_paper_task` runs its checks before the manifest. |
 | `results` | `StageOutput` and `classifier_results`: the Validation / Test (or selection / evaluation) entries of `metrics.json` (with each stage's `ece`, plan row D3), `predictions_*.npz` and the confusion-matrix figures, moved from `experiments` and used by both engines; `selection_entry` (`metrics.json["selection"]`). |
-| `plain` | `run_plain(command, settings, resume=, split=, on_step=, on_validation=, progress=)`: `run_command` for `train-supervised` of the paper classifier on `carrasco2021` (every 2.5 flag, split runs, `fp32_precision`). The same checks, the data on the `device` tier, `start_run(..., engine="plain")`, `engine.fit`, the final evaluation of the scored weights (the restored best, or the last with `checkpoint_selection: final`), `metrics.json` (the Lightning keys, with `machine.engine: plain`, `checkpoints` `ckpt/{best,last}.pt`, no Lightning version, `accelerator` the device type), the manifest `finished`. `resume="auto"`: `OUTPUT_DIR/ckpt/last.pt`. With `schedule: rj23` and `rj23=RJ23Request(...)` (required there, refused elsewhere; `split` refused with it) it returns `tasks.rj23.run_rj23_plain`'s run. Refuses other commands, models and schedules (use `lightning`), `devices != 1` and `limit_train_batches` / `limit_val_batches` (`check_plain_runtime`, both paths). |
+| `plain` | `run_plain(command, settings, resume=, split=, rj23=, on_step=, on_validation=, progress=, queued=)` (`queued`: task A3's `spec run-cell`, as `run_command`'s, on both schedules): `run_command` for `train-supervised` of the paper classifier on `carrasco2021` (every 2.5 flag, split runs, `fp32_precision`). The same checks, the data on the `device` tier, `start_run(..., engine="plain")`, `engine.fit`, the final evaluation of the scored weights (the restored best, or the last with `checkpoint_selection: final`), `metrics.json` (the Lightning keys, with `machine.engine: plain`, `checkpoints` `ckpt/{best,last}.pt`, no Lightning version, `accelerator` the device type), the manifest `finished`. `resume="auto"`: `OUTPUT_DIR/ckpt/last.pt`. With `schedule: rj23` and `rj23=RJ23Request(...)` (required there, refused elsewhere; `split` refused with it) it returns `tasks.rj23.run_rj23_plain`'s run. Refuses other commands, models and schedules (use `lightning`), `devices != 1` and `limit_train_batches` / `limit_val_batches` (`check_plain_runtime`, both paths). |
 | `rj23` | The `rj23` schedule on both engines (task 3.4b; ADR 0023). Shared with `training.rj23`: `RJ23Request(splits, mode, alerts)`, `rj23_inputs(settings, request)` (the layout, the alert table, the verified object splits, the protocol's parts, the run identity), `check_stream_state` (a resume of another run is a `ConfigError`, of another stream a `DataError`), `keep_record` (one kept weights' predictions files, the primary's plain, the other's `_<keep>`, and evaluation), `schedule_record` (from the history: `stopped_by`, `capped`, stop and best steps) and `rj23_metrics` (`metrics.json` but for each engine's own entries). The plain adapter, over `rj23_regime`'s objects as they are: `RJ23Task` (the classifier built on the CPU after the seed, cross-entropy on int64 labels, `keras_adam`; `eval_step` is `predict_probabilities` of the batch), `RJ23TrainSource` (`ClassUniformStream` batch `s` at step `s`, gathered on the device; stream 10), `RJ23EvalSource` (a part in `eval_batch_size` batches), `macro_f1_score` and `rj23_schedule` (`macro_f1_val`/`max`, `ValidationGrid(at_start=True)`, `Horizon(max_steps, 0)`, `stop_rule=RJ23Schedule`, `keep=("stop", "best")`). `run_rj23_plain`: the inputs, the parts on the device, `start_run(..., engine="plain")` (a replication's splits as `whole`, a decision's as a screen), `engine.fit`, both keeps evaluated (`stop`: the last weights, `ckpt/last.pt`; `best`: `ckpt/best.pt`), `metrics.json` and the manifest. A resume is exact (every RNG stream) and a finished run resumed trains nothing. |
 
 `training/__init__` loads its names lazily (PEP 562), so its Lightning-free submodules
@@ -2722,6 +2727,96 @@ calls `record.start_run` and `RunRecord.end` around the fit (task A1).
   An unreadable manifest is a `ConfigError`, never overwritten. The git state and the
   `uv.lock` SHA-256 come from the source checkout (`source_root()`, `None` in an installed
   wheel). `concurrent_jobs` comes from `ASTRO_SIMCLR_CONCURRENT_JOBS` (default 1).
+  `queued=QueueAttempt(attempt, machine_class, run_id)` (task A3) makes it a queued run:
+  a run id other than `run_id` is refused before training; the
+  attempt and the machine class are the queue's, a fresh directory starts that attempt,
+  an unfinished manifest of the same run id and attempt continues it (with or without a
+  `last` checkpoint), and anything else in the directory is a `ConfigError`.
+- **`spec`** (task A3; ADR 0026; `docs/queue.md`): the experiment-spec format shared by
+  the queue and the registry (A2). `parse_spec` / `load_spec` validate a YAML file
+  (`astro-simclr-experiment-spec`, version 1: name, `train-supervised`, optional preset
+  and shared settings, arms as overrides, seeds, optional splits with folds or the screen,
+  machine class and uv extra, `engine` (`lightning` or `plain`, a run-id component, not
+  a setting), `scratch`) and resolve every arm once (an `rj23` arm needs `engine: plain`
+  and its object splits as `screen: true` or `whole: true`, split parts `screen` / `whole`), so a bad setting
+  fails before anything is queued. `seed`, `data_dir`, `output_dir` and `pretrained` are
+  reserved. `ExperimentSpec.spec_id` is the SHA-256 of the canonical JSON of the parsed
+  content; `cells()` are arms × seeds × split parts (`Cell(arm, seed, split)`, key
+  `<arm>/s<seed>/<f<k>|screen|all>`); `arm_settings` resolves a cell like
+  `train-supervised` on the command line; `arm_config_sha256(arm)` is one config hash per
+  arm; `expected_run_ids` gives each cell's run id (on the spec's engine) from the data
+  and splits SHA-256.
+
+## `queue` (phase 4, task A3; ADR 0026)
+
+`src/astro_simclr/queue/` replaces the hand-written tmux/bash queues with experiment specs
+(`runs.spec`), a durable SQLite queue on the GPU machine and ssh submission. The user guide
+and the survival checklist are in `docs/queue.md`. Nothing imports torch at module level.
+
+- **`location`**: `check_queue_location(path)` refuses a queue file on a WSL Windows drive
+  (`/mnt/<letter>/`), on a mount whose type is in `UNSAFE_FSTYPES` (`9p`, `drvfs`, NFS,
+  CIFS, sshfs, ...; from `/proc/mounts`) or in a synced folder (`SYNCED_FOLDERS`: Dropbox,
+  OneDrive, iCloud, ...).
+- **`store`**: `QueueStore` over `$ASTRO_SIMCLR_HOME/queue/queue.sqlite` (WAL,
+  `synchronous=FULL`, `user_version` 1; a newer schema is refused). Tables `specs`,
+  `jobs` (one row per attempt of one cell: run id, attempt, run directory, cwd and argv,
+  status in the manifest's vocabulary, lease token / owner / expiry, host, boot id, pid,
+  slot, resumes, cancel flag, exit code) and `peak_memory` (the largest measured peak per
+  config hash and machine class). `claim` leases the head of the queue under
+  `BEGIN IMMEDIATE` if the admission callback gives it a slot (first in, first out);
+  `heartbeat`, `finish` and `requeue` name the lease token, so a worker whose lease was
+  taken over writes nothing; `requeue` counts resumes and fails a job past
+  `max_resumes` (5); `add_job` gives a run id its next attempt and skips one that is
+  queued, running or finished unless `new_attempt`.
+- **`admission`**: `Slot(name, gpu, capacity_bytes, max_jobs=1)`; `admits` and
+  `choose_slot` are pure: at most `max_jobs` per slot, an empty slot always admits, a job
+  joins others only if all of them and it have a measured peak and the sum fits under
+  `capacity × 0.9`.
+- **`job`**: the fixed entry point of the submitted commit. `expand` (`spec expand`)
+  prints the spec id and each cell's run id and config hash as JSON, without torch.
+  `run_cell` (`spec run-cell`) holds `DIR/.lock` (`flock`; exit 75 if held), refuses a
+  dirty tree for a non-scratch spec (exit 2), exits 0 for a finished attempt and refuses
+  an ended or foreign one, then trains on the spec's engine: `run_command(...,
+  resume="auto", queued=QueueAttempt(...))` for `lightning`, `tasks.plain.run_plain` with
+  the same arguments for `plain` (an `rj23` arm: `rj23=RJ23Request(object splits,
+  "decision" | "replication")` instead of `split`); SIGTERM, SIGINT and SIGHUP end it at once without writing
+  (the manifest stays `running`, resumable like after `kill -9`). `QueueAttempt` carries
+  the cell's run id, which `start_run` checks before the first step; at the end it writes
+  `job_result.json` (peak CUDA memory).
+- **`worker`**: `Worker(store, machine_class, slots, log_dir, ...)`; each `step` renews its
+  leases (a lost one: kill the child, write nothing), handles cancel requests (SIGTERM,
+  then SIGKILL after the grace), collects exits (`outcome`: 0 finished; 75 retry after a
+  lease, not counted; a signal or `128 + signal` a counted requeue; anything else
+  failed), reaps expired leases of other workers (killing the orphan's process group first
+  when it is on this host and boot and its command line names the run directory, so a
+  recycled pid is never hit), and claims while a slot admits. Jobs start with
+  `Popen(argv, cwd, start_new_session=True)`, stdin closed, output appended to
+  `logs/<job>.log`, `CUDA_VISIBLE_DEVICES` and `ASTRO_SIMCLR_CONCURRENT_JOBS` set.
+  `shutdown` (SIGTERM, SIGHUP) records the jobs that already ended, sends SIGTERM to all
+  others, waits one grace period for them together and requeues them, uncounted. The
+  reaper re-reads a lease before killing and requeues only if it is still expired
+  (`requeue(expired_only=True)`); a requeued job whose cancel was asked for is cancelled.
+  `queue cancel --spec` needs a prefix matching exactly one spec (`store.spec_ids`).
+- **`runner`**: `RunnerConfig` (`$ASTRO_SIMCLR_HOME/runner.yaml`: repo, data_dir,
+  runs_root, uv, the machine classes it serves; a spec of another class is refused). `ensure_worktree` checks a commit out into `worktrees/<sha>` (detached;
+  `git fetch origin` if missing). `enqueue` refuses a dirty worktree for a non-scratch
+  spec, runs `uv sync --locked [--extra X]`, writes `specs/<spec id>.yaml`, runs the
+  worktree's `spec expand` and queues one job per cell with the argv `<worktree>/.venv/
+  bin/astro-simclr spec run-cell ...` into `runs_root/<spec name>/<run id[:16]>-a<n>`.
+  Every command is an argv list.
+- **`remote`**: `SshTransport(host)` runs an argv as one `shlex.join` string after `--`
+  (ssh hands it to the remote shell) with stdin, and `pull`s with `rsync -a --partial`;
+  host names and remote paths are checked. `submit` refuses a dirty tree, an uncommitted
+  spec or an unpushed commit for a non-scratch spec, then sends `queue enqueue --sha HEAD -`
+  with the spec on stdin. `sync` asks `queue paths`, rsyncs the run directories without
+  checkpoints, locks or SQLite files, then the checkpoints the retention policy keeps for
+  finished attempts, then the specs, and runs `runs reindex <dest>` (skipped with a note
+  while the registry is absent).
+- **`service`**: the systemd user unit (`Restart=always`, `KillMode=mixed`,
+  `TimeoutStopSec=60`, `ExecStart` words quoted for systemd) and the tmux argvs, whose
+  targets are always `=<name>` (exact match: `-t screen25` matched `screen25c`).
+- **`cli`**: `spec check|expand|run-cell` and `queue init|enqueue|paths|worker|status|
+  cancel|service|tmux|submit|sync`; the queue's errors print one line and exit 1.
 
 ## `registry` (phase 4, task A2; ADR 0024)
 

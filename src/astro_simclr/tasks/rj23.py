@@ -90,7 +90,7 @@ from astro_simclr.rj23_regime import (
     predict_probabilities,
 )
 from astro_simclr.runs.layout import BEST_CHECKPOINT, LAST_CHECKPOINT, METRICS_FILE
-from astro_simclr.runs.record import start_run
+from astro_simclr.runs.record import QueueAttempt, start_run
 from astro_simclr.tasks.common import check_accelerator, dataset_path
 from astro_simclr.tasks.results import finite
 
@@ -564,13 +564,15 @@ def run_rj23_plain(
     on_step: Callable[[int], None] | None = None,
     on_validation: Callable[[Validation, Task], None] | None = None,
     progress: IO[str] | None = None,
+    queued: QueueAttempt | None = None,
 ) -> dict[str, Any]:
     """Train and evaluate one RJ23 run on the plain engine; return and write its metrics.
 
     The plain counterpart of ``training.rj23.run_rj23`` (module docstring): the same
     inputs, the same batches, validations, stop and kept weights, the same files.
     ``resume`` is ``None``, ``"auto"`` (``ckpt/last.pt`` if any) or a ``ckpt/last.pt``
-    path; the hooks are :func:`astro_simclr.engine.fit`'s.
+    path; the hooks are :func:`astro_simclr.engine.fit`'s. ``queued`` is a queued run's
+    fixed attempt, machine class and run id (``runs.record``, "Queued runs"; task A3).
 
     Raises:
         ConfigError: for another schedule, an unavailable accelerator, more than one
@@ -617,6 +619,7 @@ def run_rj23_plain(
         machine=machine,
         resumed=ckpt_path is not None,
         engine=ENGINE,
+        queued=queued,
         **_split_arguments(request),
     )
     identity: IdentityState = {

@@ -71,6 +71,10 @@ the same ``--config FILE`` and ``--set key=value [key=value ...]`` options. Subc
   ``runs ls``, ``runs show KEY`` and ``runs compare SPEC`` (by experiment spec); exit 1
   when the registry cannot be used or a comparison does not resolve. Registered by
   :func:`astro_simclr.registry.parser.add_runs_command`, whose handlers load on use.
+- experiment specs and the run queue (task A3, :mod:`astro_simclr.queue.cli`,
+  ``docs/queue.md``): ``spec check|expand|run-cell`` and ``queue init|enqueue|paths|
+  worker|status|cancel|service|tmux|submit|sync``. ``spec run-cell`` exits with the job's
+  code; the queue's own errors exit 1, an invalid spec 2.
 - SimCLR pilot (task 5.0b, :mod:`astro_simclr.simclr.commands`): ``simclr-pilot``
   pretrains, ``simclr-embed`` dumps ``h`` of a checkpoint or of the random init,
   ``make-label-subsets`` stores the probe's label subsets and ``simclr-probe`` scores the
@@ -1837,6 +1841,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_archive_commands(commands)
     add_corpus_index_command(commands)
     add_runs_command(commands)
+    from astro_simclr.queue.cli import add_queue_commands, add_spec_commands
+
+    add_spec_commands(commands)
+    add_queue_commands(commands)
     add_simclr_commands(commands)
     add_budget_commands(commands)
     return parser

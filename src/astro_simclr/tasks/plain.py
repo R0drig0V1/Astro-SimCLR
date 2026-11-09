@@ -80,7 +80,7 @@ from astro_simclr.engine import (
 from astro_simclr.presets import preset_report
 from astro_simclr.protocol.split_runs import SplitRequest, SplitRun, open_split_run
 from astro_simclr.runs.layout import BEST_CHECKPOINT, LAST_CHECKPOINT, METRICS_FILE
-from astro_simclr.runs.record import RunRecord, start_run
+from astro_simclr.runs.record import QueueAttempt, RunRecord, start_run
 from astro_simclr.tasks.common import (
     PAPER_STAMP_CLASSIFIER,
     check_accelerator,
@@ -358,6 +358,7 @@ def run_plain(
     on_step: Callable[[int], None] | None = None,
     on_validation: Callable[[Validation, Task], None] | None = None,
     progress: IO[str] | None = None,
+    queued: QueueAttempt | None = None,
 ) -> dict[str, Any]:
     """Run ``command`` with ``settings`` on the plain engine; return the metrics (module docstring).
 
@@ -366,7 +367,9 @@ def run_plain(
     elsewhere), which :func:`~astro_simclr.tasks.rj23.run_rj23_plain` trains. ``on_step`` /
     ``on_validation`` / ``progress`` are :func:`astro_simclr.engine.fit`'s (the preflight's
     timer, the tests' probes, one line per validation). The metrics are also written to
-    ``output_dir/metrics.json``.
+    ``output_dir/metrics.json``. ``queued`` is a queued run's fixed attempt, machine class
+    and run id (``runs.record``, "Queued runs"; task A3's ``spec run-cell``), on either
+    schedule.
 
     Raises:
         AcceleratorError: if the accelerator is not available.
@@ -387,6 +390,7 @@ def run_plain(
             on_step=on_step,
             on_validation=on_validation,
             progress=progress,
+            queued=queued,
         )
     check_accelerator(settings.accelerator)
     check_names(settings)
@@ -425,6 +429,7 @@ def run_plain(
         pretrained_file=_pretrained_file(settings.pretrained),
         resumed=ckpt_path is not None,
         engine=ENGINE,
+        queued=queued,
     )
     identity: IdentityState = {
         "run_id": record.manifest.run_id,

@@ -117,7 +117,7 @@ from astro_simclr.config import CARRASCO2021, ConfigError, Settings, settings_to
 from astro_simclr.data.schema import DataError
 from astro_simclr.presets import preset_report
 from astro_simclr.protocol.split_runs import SplitRequest, SplitRun, open_split_run
-from astro_simclr.runs.record import start_run
+from astro_simclr.runs.record import QueueAttempt, start_run
 from astro_simclr.tasks.common import (
     PAPER_STAMP_CLASSIFIER,
     AcceleratorError,
@@ -707,6 +707,7 @@ def run_command(
     callbacks: Sequence[Callback] = (),
     progress_bar: bool = True,
     split: SplitRequest | None = None,
+    queued: QueueAttempt | None = None,
 ) -> dict[str, Any]:
     """Run the training subcommand ``command`` with ``settings``; return the metrics.
 
@@ -714,8 +715,9 @@ def run_command(
     ``resume`` is ``None``, ``"auto"`` or a checkpoint path (:func:`resolve_resume`).
     ``callbacks`` are added to the Trainer (the preflight's throughput timer);
     ``progress_bar=False`` hides Lightning's progress bar (the preflight prints its own
-    summary). ``split`` makes it a split run (module docstring, "Split runs"). The metrics
-    are also written to ``output_dir/metrics.json``.
+    summary). ``split`` makes it a split run (module docstring, "Split runs"). ``queued``
+    is a queued run's fixed attempt and machine class (``runs.record``, "Queued runs"; the
+    queue's ``spec run-cell``). The metrics are also written to ``output_dir/metrics.json``.
 
     Raises:
         AcceleratorError: if the accelerator is not available.
@@ -772,6 +774,7 @@ def run_command(
         split=split,
         pretrained_file=pretrained_checkpoint(settings.pretrained),
         resumed=ckpt_path is not None,
+        queued=queued,
     )
     try:
         trainer.fit(module, datamodule=datamodule, ckpt_path=ckpt_path)

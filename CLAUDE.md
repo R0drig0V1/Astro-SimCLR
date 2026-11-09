@@ -29,7 +29,8 @@ configs/splits/     stored phase-2 decision splits (make-splits; docs/evaluation
 configs/label-budgets/  stored phase-5 label-budget subsets (make-label-budgets)
 configs/runs/       nested configs for `astro-simclr run` (task 4.2; ADR 0017)
 docs/        architecture.md (one section per module), phases/ (the plan), decisions/
-             (ADRs), plan-reviews/, evaluation-protocol.md (phase-2 rules), data.md
+             (ADRs), plan-reviews/, evaluation-protocol.md (phase-2 rules), data.md,
+             queue.md (the run queue: specs, worker, ssh submission, survival checklist)
 scripts/     characterize/ (fixture generators; legacy code via the legacy-final tag),
              check.sh (all checks), check-lock.sh (its machine lock and worker cap),
              check-torch-wheels.sh (ADR 0001 lock assertions), gpu-preflight.sh (wraps
