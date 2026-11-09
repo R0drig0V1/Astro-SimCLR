@@ -1,5 +1,6 @@
 """Tests of the ``rj23`` schedule's plain path (``tasks.rj23``, task 3.4b) beyond the
-differential test (``test_engine_differential.py``, which pins it to Lightning's run):
+golden regression set (``test_engine_regression.py``, which pins its runs to what the
+Lightning runner computed) and the resume tests (``test_engine_resume.py``):
 what ``run_plain`` refuses, the sources, the stream check, the outputs of a plain run.
 """
 

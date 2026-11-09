@@ -26,9 +26,9 @@ sensitivity flags and both stop reasons. The resume tests are in
 AVX-512 against arm64 NEON, or another BLAS), so a golden holds on the platform it was
 recorded on: ``<sys.platform>-<machine>-<torch CPU capability>``
 (``_engine_cases.platform_key``: ``darwin-arm64-default``, ``linux-x86_64-avx2``, ...). On a
-platform without goldens every case is skipped, naming it. A golden recorded with another torch version still applies:
-a torch upgrade that changes these numbers is a numerics change (bump ``NUMERICS_EPOCH``)
-and fails here until the goldens are recorded again.
+platform without goldens every case is skipped, naming it. A golden recorded with another
+torch version still applies: a torch upgrade that changes these numbers is a numerics
+change (bump ``NUMERICS_EPOCH``) and fails here until the goldens are recorded again.
 
 **Recording** (a new flag, a new platform, or a deliberate numerics change, said in the
 PR)::

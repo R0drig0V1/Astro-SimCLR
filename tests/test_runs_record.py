@@ -1,4 +1,4 @@
-"""Tests of ``astro_simclr.runs.record``: the manifest ``run_command`` writes (task A1)."""
+"""Tests of ``astro_simclr.runs.record``: the manifest every run writes (task A1)."""
 
 from __future__ import annotations
 
