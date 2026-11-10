@@ -17,9 +17,10 @@ handlers import torch and the pilot lazily, so ``--help`` stays fast.
   ``--scale-jitter``, ``--blur-sigma``, ``--intensity-jitter`` and ``--rotation-degrees``
   turn on the optional views of task 5.2 (:mod:`~astro_simclr.simclr.views`; off at 0).
   Exit 0 when the call ends.
-- ``simclr-view-admission RUN_DIR... --out FILE [--data DIR] [--seed N] [--repeats R]
-  [view flags]``: plan 5.2's admission test of a view on the replication checkpoint's
-  Validation (:mod:`~astro_simclr.simclr.admission`); exit 0 whatever the verdict.
+- ``simclr-view-admission RUN_DIR... --splits FILE --out FILE [--data DIR] [--seed N]
+  [--repeats R] [view flags]``: plan 5.2's admission test of a view on the replication
+  checkpoint, scored on the screen's selection half only
+  (:mod:`~astro_simclr.simclr.admission`); exit 0 whatever the verdict.
 - ``simclr-embed DATA --output-dir OUT (--checkpoint FILE | --random-init) [--seed N]``:
   the embedding dump of a checkpoint, or of the randomly initialised network (the
   random-init probe of the go/no-go), without training.
@@ -585,6 +586,7 @@ def _view_admission(args: argparse.Namespace) -> int:
     report = view_admission(
         args.run_dirs,
         AdmissionView(views, dihedral=args.dihedral, shift=args.shift),
+        splits=args.splits,
         out=args.out,
         data=args.data,
         seed=args.seed,
@@ -600,14 +602,21 @@ def _add_view_admission(commands: argparse._SubParsersAction[argparse.ArgumentPa
     """``simclr-view-admission`` (task 5.2; ``simclr.admission``)."""
     admission = commands.add_parser(
         "simclr-view-admission",
-        help="plan 5.2's admission test: a view's accuracy drop on Validation (<= 1 point)",
+        help="plan 5.2's admission test: a view's accuracy drop on the screen's selection half",
         description="Evaluate a phase-2 paper-classifier run (the replication checkpoint) on "
-        "the Validation stamps of its prepared layout, as stored and under a SimCLR view "
+        "the screen's selection half (--splits; never the decision half) of its prepared "
+        "layout's Validation, as stored and under a SimCLR view "
         "applied once per stamp at 63 px (the pilot's arithmetic, seeded), then report the "
         "accuracy drop and the verdict (admitted if the mean drop is at most 1 point).",
     )
     admission.add_argument(
         "run_dirs", type=Path, nargs="+", metavar="RUN_DIR", help="train-supervised runs"
+    )
+    admission.add_argument(
+        "--splits",
+        type=Path,
+        required=True,
+        help="a stored splits file of the layout: only its screen's selection half is read",
     )
     admission.add_argument("--out", type=Path, required=True, help="the JSON report")
     admission.add_argument(

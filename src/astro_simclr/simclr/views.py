@@ -8,10 +8,11 @@ this order (steps 2, 3, 6 and 7 are off by default; ADR 0025, amendment "stronge
    whole 63-pixel stamp (:mod:`astro_simclr.stamp_relation`, ADR 0006): the science and
    the template get Gaussian noise of ``u * noise_scale * sigma_bg``, the difference moves
    through the stamp's fit ``diff ~ a*sci + b*tmpl + c`` (it is recomputed, never noised
-   on its own), then the per-channel min-max again, so the view keeps the [0, 1], minimum
-   0, maximum 1 statistics of the stored stamps. Stamps whose fit has ``R^2 < min_r2`` are
-   left unchanged. Only the first three channels are touched. First, because the fit
-   describes the stored stamp.
+   on its own), then the per-channel min-max again, so the 63-pixel stamp keeps the [0, 1],
+   minimum 0, maximum 1 statistics of the stored stamps (before the window: a 57-pixel
+   window of it, as of a stored stamp, need not reach 0 or 1). Stamps whose fit has ``R^2
+   < min_r2`` are left unchanged. Only the first three channels are touched. First,
+   because the fit describes the stored stamp.
 2. **blur** (optional, ``blur_sigma > 0``; an ablation only, plan 5.2): a Gaussian of
    ``sigma = u * blur_sigma`` pixels, the same kernel on the three channels, as a
    normalised convolution that leaves the former-NaN pixels out (and at 0), reflected at
@@ -23,10 +24,12 @@ this order (steps 2, 3, 6 and 7 are off by default; ADR 0025, amendment "stronge
 3. **intensity** (optional, ``intensity_jitter > 0``): a gamma ``x -> x ** gamma`` with
    ``ln gamma`` uniform in ``[-intensity_jitter, intensity_jitter]``, **the same gamma on
    the three channels** (:func:`gamma_remap`). A per-channel change would be the hue or
-   saturation the plan forbids. The remap must fix 0 and 1, so that the view keeps the
-   min-max statistics: an affine contrast would either be undone by a min-max or move the
-   minimum and maximum off 0 and 1, which no evaluation stamp has; the gamma is the
-   simplest one-parameter family of monotone maps that fix them. It is not linear, so
+   saturation the plan forbids. The remap must fix 0 and 1, so that the 63-pixel stamp
+   keeps its min-max statistics (minimum 0, maximum 1; they hold on the stamp before the
+   window, not on the window or the resampled view): an affine contrast would either be
+   undone by a min-max or move the stamp's minimum and maximum off 0 and 1, which no
+   evaluation stamp has; the gamma is the simplest one-parameter family of monotone maps
+   that fix them. It is not linear, so
    (unlike the blur) it bends the fit relation of the difference: the admission test
    measures what that costs. Last of the photometric views, because it needs [0, 1] input.
 4. **dihedral** element ``k`` in 0-7: ``rot90`` by ``k % 4`` quarter turns (counter-
@@ -52,6 +55,23 @@ e`` pixels on each side; the shift gives way to the rotation, ``t = (offset - 3)
 (31 - e) / 3)``, so every view pixel reads inside the stamp. Without rotation (``s >= 1``)
 the shift is the integer one, unchanged; at ``rotation_bound`` it is 0. Off (both 0), the
 view is the integer crop of step 5 itself, bit for bit.
+
+**The interpolation confound** (read it before attributing a rotation or zoom result).
+With scale or rotation on, nearly every view pixel is a bilinear blend of four stamp
+pixels with fractional weights, so the resampling is also a **low-pass filter**: on one
+axis, weights ``(w, 1 - w)`` scale the variance of pixel-independent noise by ``w^2 + (1 -
+w)^2 = 1 - 2w(1 - w)``, a loss of ``2w(1 - w)``, up to 50 % at ``w = 1/2``; in two
+dimensions the factors multiply (down to 25 % at a half pixel on both axes, about 44 % on
+average over uniform fractional positions, which a rotation produces). So the C5 noise,
+added before the resampling, is weaker in the view than its ``noise_scale`` says, the
+background and one-pixel spikes are smoothed, and the former-NaN pixels (exact zeros) are
+blended into their neighbours and stop being exact zeros. The evaluation view
+(:func:`centre_crop`: the monitors, the probes, the embeddings) is an exact crop. A probe
+change under ``rotation_degrees`` or ``scale_jitter`` therefore cannot be attributed to the
+rotation or the zoom alone: it may be the smoothing, or a sharpness gap between training
+and evaluation views that the encoder can use as a shortcut. A control that isolates it
+would be a sub-pixel resampling at ``theta = 0``, ``s = 1`` with a random fractional shift
+(not implemented: it needs a stream number of its own).
 
 **Evaluation** uses :func:`centre_crop`: the 57x57 window at offset (3, 3), no noise, no
 dihedral element, so the evaluation view is the centre of the training distribution
@@ -125,9 +145,10 @@ CENTRE_OFFSET: Final = MAX_OFFSET // 2
 N_DIHEDRAL: Final = 8
 #: Views drawn per stamp per step.
 _N_VIEWS: Final = 2
-#: The largest ``blur_sigma``: its kernel radius ``ceil(3 sigma)`` must stay well inside the
-#: stamp (the reflected padding needs a radius below the side).
-MAX_BLUR_SIGMA: Final = 10.0
+#: The largest ``blur_sigma``: radius ``ceil(3 sigma)`` = 9, 19 taps per axis. The blur is a
+#: sum of shifted full-tensor products (cost linear in the taps), and plan 5.2's blur is an
+#: ablation of seeing-like widths (sigma about 0.5-2 px on a stamp of FWHM about 2-3 px).
+MAX_BLUR_SIGMA: Final = 3.0
 
 
 def rotation_bound(stamp_side: int = STAMP_SIDE, view_side: int = VIEW_SIDE) -> float:
@@ -538,7 +559,7 @@ def gamma_remap(images: torch.Tensor, gamma: npt.ArrayLike) -> torch.Tensor:
 
     The same gamma on the three channels (never a per-channel change: plan 5.2). The
     stamps are in [0, 1] with minimum 0 and maximum 1 (stored, noised or blurred), and the
-    remap fixes 0 and 1, so the view keeps those statistics; the input is clamped to [0, 1]
+    remap fixes 0 and 1, so the stamp keeps those statistics; the input is clamped to [0, 1]
     first, so a rounding error below 0 cannot become a NaN. A stamp with ``gamma == 1`` is
     returned unchanged, bit for bit; so are the channels beyond the third. ``images`` is
     not modified.

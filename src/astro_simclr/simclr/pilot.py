@@ -755,8 +755,12 @@ def diagnose(
     The sample (``diag_samples`` of the pretraining ``stamps``' rows) is drawn from
     ``(seed, 0, simclr_diagnostics)`` and its two views from ``(seed, 1,
     simclr_diagnostics)``, without noise: the same stamps and views at every call, so the
-    values are comparable along the run. The kNN monitor (``knn_selection_bacc``) needs
-    labels and a splits file; it is ``None`` otherwise. Its bank is drawn from the CD21
+    values are comparable along the run. They are the dihedral element and the integer
+    shift only, whatever optional views (task 5.2) the run trains with, on purpose: the
+    diagnostics compare runs on one fixed pair of views, so alignment and uniformity do not
+    measure the training views of a run with scale, blur, gamma or rotation. The kNN
+    monitor (``knn_selection_bacc``) needs labels and a splits file; it is ``None``
+    otherwise. Its bank is drawn from the CD21
     Train stamps ``train_images`` (``data.rows``), whatever the pretraining data.
     ``query_h``, if given, is ``h`` of the selection half already embedded (by the probe
     monitors, :func:`~.monitor.eval_h`: the same view and mode), so it is not embedded twice.

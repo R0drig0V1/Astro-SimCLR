@@ -623,7 +623,7 @@ to sweep, and the plan's admission test. It takes no new ADR number: the views a
 | View | Flag (off at 0) | Per-sample parameter | Plan 5.2 |
 |---|---|---|---|
 | scale jitter | `--scale-jitter J` | zoom `s` log-uniform in `[1, 1 + J]` | ablation only |
-| blur | `--blur-sigma S` (at most 10) | Gaussian `sigma = u S` pixels | ablation only |
+| blur | `--blur-sigma S` (at most 3) | Gaussian `sigma = u S` pixels | ablation only |
 | intensity | `--intensity-jitter G` | gamma, `ln gamma` uniform in `[-G, G]` | a candidate |
 | rotation | `--rotation-degrees D` (at most 6.52) | `theta` uniform in `[-D, D]` | a candidate |
 
@@ -644,7 +644,9 @@ element; the window (crop, or resampling with scale or rotation).
   relation. The remap must fix 0 and 1 so that the view keeps the stored stamps' min-max
   statistics: an affine contrast change is either undone by a min-max or moves the minimum
   and maximum off 0 and 1, which no evaluation stamp has; the gamma is the simplest
-  one-parameter family of monotone maps that fix them. It is not linear, so it bends the
+  one-parameter family of monotone maps that fix them. (The statistics are the 63-pixel
+  stamp's, before the window: a 57-pixel window or a resampled view of it need not reach
+  0 or 1, as a window of a stored stamp need not.) It is not linear, so it bends the
   fit relation: the admission test prices that.
 - **Dihedral** element, exact, as before.
 - **Scale and rotation** with the shift, as **one bilinear resampling** of the 63-pixel
@@ -667,6 +669,27 @@ chosen: `t = (offset - 3) * min(1, (31 - e) / 3)` with `e = 28 (|cos theta| + |s
 bound); without rotation (`s >= 1`) the shift is the integer one, unchanged; at the bound
 it is 0; in between it is fractional (bilinear). The integer offsets are drawn as before,
 so turning the rotation on changes no other draw.
+
+**The interpolation confound of the geometric views** (found in review; read it before
+attributing a result). With scale or rotation on, nearly every view pixel is a bilinear
+blend with fractional weights, so the resampling is also a low-pass filter. On one axis,
+weights `(w, 1 - w)` scale the variance of pixel-independent noise by `1 - 2w(1 - w)`, a
+loss of `2w(1 - w)`, up to 50 % at a half pixel; the two axes multiply (25 % left at a
+half pixel on both, about 44 % on average over uniform fractional positions, which a
+rotation gives). Consequences: the C5 noise, added before the resampling, is weaker in the
+view than `noise_scale` says; the background and one-pixel spikes are smoothed; the
+former-NaN pixels stop being exact zeros. The evaluation view (`centre_crop`, read by the
+monitors, the probes and the embeddings) is an exact crop. So a probe change under
+`--rotation-degrees` or `--scale-jitter` cannot be attributed to the rotation or the zoom:
+it may be the smoothing, or a train/evaluation sharpness gap the encoder can shortcut on.
+A control arm that isolates it (a sub-pixel resampling at `theta = 0`, `s = 1` with a
+random fractional shift, on a stream of its own, 18 being free) is not implemented here;
+a rotation or zoom result is reported with this caveat until it is.
+
+**Diagnostics.** The pilot's fixed diagnostic views (section 6) stay the dihedral element
+and the integer shift, without the optional views, on purpose: they compare runs on one
+fixed pair of views. So the alignment and uniformity of a run with an optional view do
+not measure its training views.
 
 **Never** (plan 5.2): hue, saturation, greyscale, colour jitter, per-channel remaps, and
 source-dropping crops (also random erasing / cutout: they can delete the source). Not
@@ -702,11 +725,24 @@ onto the engine, the views join the golden set with it.
 ### The admission test (`simclr.admission`, `simclr-view-admission`)
 
 Plan 5.2: "a view whose single-view accuracy drop on Validation (replication checkpoint)
-exceeds 1 point is not admitted". `simclr-view-admission RUN_DIR... --out FILE.json` reads
-finished `train-supervised` runs of the paper classifier (task 2.4's replication, plain
-`ckpt/best.pt` or a stored Lightning `best.ckpt`, through `ensemble_eval.member_net`),
-checks that the layout is the data they trained on (data SHA-256), and evaluates each on
-the layout's whole Validation split, as stored and with the view.
+exceeds 1 point is not admitted". `simclr-view-admission RUN_DIR... --splits FILE --out
+FILE.json` reads finished `train-supervised` runs of the paper classifier (task 2.4's
+replication, plain `ckpt/best.pt` or a stored Lightning `best.ckpt`, through
+`ensemble_eval.member_net`), checks that the layout is the data they trained on (data
+SHA-256), and evaluates each on the **screen's selection half** only, as stored and with
+the view.
+
+- **Selection only** (plan 5.0c; a blocker found in review). Admission decides which views,
+  hence which SSL arms, exist, so it is selection, and those arms are then scored on the
+  screen's decision half. In CD21 Validation is exactly the screen (250 selection + 250
+  decision stamps), so a test on the whole of Validation would select on the decision
+  half. `--splits` is required and verified against the layout as the pilot verifies it
+  (`protocol.splits.verify_splits`: a splits file of other data is refused); only its
+  screen's selection rows are read from the stamps' memory map, and the report records the
+  splits file's path and SHA-256 and the rows used. The plan's "on Validation" predates the
+  screen; the integrator amends it to "the screen's selection half". **Resolution:** 250
+  stamps, so one stamp is 0.4 points of accuracy and the 1-point threshold is 2.5 stamps:
+  `--repeats` (independent draws of the view, averaged) matters; 5 or more is advised.
 
 - **Once per stamp, seeded.** The view's parameters are the pilot's draws at "step" `r`
   (`--seed`, repeat `r` of `--repeats`, default 1; the first of the two views); the noise
@@ -723,18 +759,19 @@ the layout's whole Validation split, as stored and with the view.
   `nan_approximation`). The 21-pixel crop sees what the centre of a training view shows.
   The outer ring beyond the 57-pixel window, which the crop never reads, is clamped to the
   stamp's edge; its only reader is the NaN approximation's count of exact zeros over the
-  stamp. Without a view the input is the run's own bit for bit, and the clean accuracy is
-  its `val_acc_best` (tests).
+  stamp. Without a view the input is the run's own on the selection rows, bit for bit
+  (tests).
 - **Verdict:** `admitted` when the mean accuracy drop (clean minus viewed, over runs and
-  repeats) is at most 1 point; the balanced accuracy is reported too (CD21's Validation is
+  repeats) is at most 1 point; the balanced accuracy is reported too (the selection half is
   balanced, so they agree there). Exit 0 whatever the verdict.
 - **Caveats, recorded.** A with-features checkpoint also reads the 23 alert features,
   which no view touches, so its drop understates the image's sensitivity: run the
   without-features replication as well (task 2.4 has both). The replication selected its
   weights on Validation, so the clean accuracy is optimistic; the drop compares the same
   stamps. The 21-pixel crop sees only the centre: a view that degrades the periphery
-  passes more easily here than it would for the 57-pixel encoder.
-- Refused: no view, `repeats < 1`, a run that is not a finished paper-classifier
+  passes more easily here than it would for the 57-pixel encoder. A rotation's or zoom's
+  drop includes its smoothing (the interpolation confound above).
+- Refused: no view, `repeats < 1`, a splits file that is unreadable or made for other data, a run that is not a finished paper-classifier
   `train-supervised` run, `paper_input` other than `float32` or the context channels (an
   input the test does not rebuild), other data, an existing `--out` without `--overwrite`.
 
@@ -744,14 +781,16 @@ identity at strength 0 and the resampling equal to the crop bit for bit, the sam
 transform on the three channels for the blur and the gamma, masked pixels kept out of the
 blur), `tests/test_simclr_views_pilot.py` (each view: deterministic, an exact resume,
 recorded, a changed strength refused; the CLI), `tests/test_simclr_views_unchanged.py`,
-`tests/test_simclr_admission.py` (a tiny synthetic plain run: the input without a view,
-each view deterministic per seed and repeat, the report's arithmetic and verdict, the CLI,
-the refusals).
+`tests/test_simclr_admission.py` (a tiny synthetic plain run with a stored splits file:
+only the selection rows are read and none of the decision half, the input without a view
+on those rows, each view deterministic per seed and repeat, the report's arithmetic and
+verdict, the CLI, the refusals, a splits file of other data included).
 
 **Cost** (CPU, `make_views` of both views of a batch of 256, 4 threads, median of 10
 interleaved repeats on a laptop at load average 37, so a rough figure): without options
 19 ms; noise +94 ms, scale +20 ms, blur sigma 1 +139 ms and sigma 2 +230 ms (7 and 13
-taps, twice for the normalised convolution's weights), gamma +32 ms, rotation +30 ms, the
+taps, twice for the normalised convolution's weights; the cost is linear in the taps, so
+`blur_sigma` is capped at 3, 19 taps), gamma +32 ms, rotation +30 ms, the
 four together +191 ms. The network's CPU step is several seconds at batch 32 already
 (the activation-checkpointing amendment); on the GPU the views are elementwise work on
 2 x 256 x 3 x 63 x 63 values, which the 5090 dry run of each flag will time.

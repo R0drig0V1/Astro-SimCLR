@@ -4,20 +4,29 @@ Plan 5.2: "a view whose single-view accuracy drop on Validation (replication che
 exceeds 1 point is not admitted". The test asks whether a view destroys what a supervised
 classifier of the same stamps needs: the replication checkpoint (task 2.4's
 ``carrasco2021`` paper classifier, a ``train-supervised`` run of the plain engine or a
-stored Lightning run) is evaluated on the prepared layout's whole **Validation** split
-twice, on the stamps as stored and on the stamps under the view, and the drop of the
+stored Lightning run) is evaluated twice on the **screen's selection half** of
+Validation, on the stamps as stored and on the stamps under the view, and the drop of the
 accuracy decides.
 
-``astro-simclr simclr-view-admission RUN_DIR... --out FILE.json [--data DIR] [--seed N]
-[--repeats R] [--device D] [view flags]`` (:func:`view_admission`). Several ``RUN_DIR``
+**Selection only** (plan 5.0c). Admission decides which views, and so which SSL arms,
+exist: it is selection, and the arms are later scored on the screen's decision half. So it
+reads only the selection half of a stored splits file (``--splits``, required, verified
+against the layout as the pilot does: ``protocol.splits.verify_splits``), never the
+decision half, the CV parts or Test. In CD21 Validation is exactly the screen (250 + 250
+stamps), so the plan's "on Validation" (written before the screen) means its selection
+half: 250 stamps, one stamp 0.4 points of accuracy, so ``--repeats`` averages several
+draws of the view. The report records the splits file's SHA-256 and the rows used.
+
+``astro-simclr simclr-view-admission RUN_DIR... --splits FILE --out FILE.json [--data DIR]
+[--seed N] [--repeats R] [--device D] [view flags]`` (:func:`view_admission`). Several ``RUN_DIR``
 (seeds of the replication) are each evaluated on the same viewed stamps; the verdict reads
 the mean of their drops.
 
 **The view** (:class:`AdmissionView`, :func:`view_stamps`) is the pilot's own arithmetic
-(:mod:`astro_simclr.simclr.views`), applied **once per Validation stamp** with the
+(:mod:`astro_simclr.simclr.views`), applied **once per selection stamp** with the
 parameters of ``(seed, r)`` for repeat ``r`` (the pilot's draw functions and streams at
 "step" ``r``, the first of their two views): the noise (C5, with the fits of the
-Validation stamps), the blur, the gamma, a dihedral element (``--dihedral``), and the
+selection stamps), the blur, the gamma, a dihedral element (``--dihedral``), and the
 window's shift (``--shift``), zoom and rotation. Every option is off unless given, so the
 test is of exactly the views asked for (one for a single-view test). The view arithmetic
 runs on the CPU, so the viewed stamps do not depend on the evaluation device.
@@ -33,17 +42,20 @@ output centred where the training window's centre would be. The classifier's 21-
 therefore sees what the centre of the training view shows. The outer ring beyond the
 57-pixel window, which the crop never reads, is clamped to the stamp's edge
 (:func:`~.views.resample`); its only reader is the NaN approximation's count of exact
-zeros over the stamp. Without any view the input is the run's own, bit for bit (a test).
+zeros over the stamp. Without any view the input is the run's own on those rows, bit for
+bit (a test).
 
 **What it measures.** The 21-pixel crop sees the view's effect at the centre, where the
 source is; a with-features checkpoint also reads the alert features, unchanged by any
 view, so its drop understates the image's sensitivity: run the without-features
 replication as well. The run selected its weights on Validation (the paper's protocol), so
-the clean accuracy is optimistic; the drop is a difference on the same stamps.
+the clean accuracy is optimistic; the drop is a difference on the same stamps. A rotation
+or zoom is a bilinear resampling, which also smooths the stamp (:mod:`.views`, "The
+interpolation confound"): its drop measures both.
 
 **Verdict:** ``admitted`` if the mean drop of the accuracy (clean minus viewed, over the
 runs and the repeats) is at most :data:`MAX_DROP` (1 point), ``not admitted`` otherwise.
-The balanced accuracy is reported too (CD21's Validation is balanced, so they agree
+The balanced accuracy is reported too (the selection half is balanced, so they agree
 there). The report (``--out``, JSON, written atomically, never over a file without
 ``--overwrite``) holds every run's clean and viewed scores, the view and its draws' seed.
 Exit 0 whatever the verdict.
@@ -51,7 +63,8 @@ Exit 0 whatever the verdict.
 **Refusals** (``ConfigError``): no view asked for, ``repeats < 1``, a run that is not a
 finished ``train-supervised`` run of the paper classifier, an input the test cannot
 reproduce (``paper_input`` other than ``float32``, or the context channels), a layout
-whose data hash is not the run's, an existing ``--out`` without ``--overwrite``.
+whose data hash is not the run's, an existing ``--out`` without ``--overwrite``; a splits
+file that is unreadable or made for other data is a ``DataError`` (``SplitsError``).
 """
 
 from __future__ import annotations
@@ -69,7 +82,7 @@ import numpy.typing as npt
 import torch
 
 from astro_simclr.config import ConfigError, Settings
-from astro_simclr.data.files import atomic_write_bytes
+from astro_simclr.data.files import atomic_write_bytes, sha256_file
 from astro_simclr.data.float_input import crop_split
 from astro_simclr.data.prepared import load_prepared
 from astro_simclr.data.schema import DataError
@@ -77,6 +90,7 @@ from astro_simclr.engine import Dataset, DevicePolicy, TierChoice, open_eval
 from astro_simclr.engine.record import machine_record
 from astro_simclr.ensemble_eval import Member, member_net, member_settings, read_member
 from astro_simclr.paper_variants import paper_input_side
+from astro_simclr.protocol.splits import read_splits, verify_splits
 from astro_simclr.runs.identity import data_sha256
 from astro_simclr.runs.manifest import is_finished
 from astro_simclr.simclr.views import (
@@ -117,6 +131,8 @@ FORMAT_VERSION: Final = 1
 MAX_DROP: Final = 0.01
 _COMMAND: Final = "train-supervised"
 _SPLIT: Final = "Validation"
+#: What is evaluated: the selection half of the stored splits file's screen.
+_PART: Final = "screen selection half"
 _CPU: Final = torch.device("cpu")
 
 
@@ -296,23 +312,42 @@ def _read_runs(run_dirs: Sequence[Path]) -> list[tuple[Member, Settings]]:
     return runs
 
 
-def _validation_stamps(prepared: Path) -> torch.Tensor:
-    """The stored float32 Validation stamps of ``prepared``, (N, 3, 63, 63) on the CPU."""
+def _selection_rows(splits_file: Path, prepared: Path) -> npt.NDArray[np.int64]:
+    """The screen's selection half (sorted Validation indices) of a verified splits file.
+
+    Raises:
+        DataError: if the file is unreadable or not made for ``prepared`` (``SplitsError``).
+    """
+    splits = read_splits(splits_file)
+    verify_splits(splits, prepared)
+    return np.asarray(splits.screen.selection, dtype=np.int64)
+
+
+def _selection_stamps(prepared: Path, rows: npt.NDArray[np.int64]) -> torch.Tensor:
+    """The stored float32 Validation stamps ``rows`` of ``prepared``, (n, 3, 63, 63), CPU."""
     stored = load_prepared(prepared).splits[_SPLIT].images_f32
     if stored is None:
         raise DataError(f"{prepared}: {_SPLIT} has no float32 stamps (images_f32.npy)")
-    return torch.from_numpy(np.ascontiguousarray(np.asarray(stored).transpose(0, 3, 1, 2)))
+    chosen = np.asarray(stored[rows])  # only these rows are read from the memory map
+    return torch.from_numpy(np.ascontiguousarray(chosen.transpose(0, 3, 1, 2)))
 
 
 def _score_run(
     member: Member,
     settings: Settings,
     prepared: Path,
+    rows: npt.NDArray[np.int64],
     viewed: Sequence[torch.Tensor],
     device: torch.device,
 ) -> dict[str, Any]:
-    """One run's clean and viewed scores and its drops (the report's ``runs`` row)."""
-    split = paper_crops(settings, prepared, (_SPLIT,))[_SPLIT]
+    """One run's clean and viewed scores on ``rows`` and its drops (a ``runs`` row)."""
+    whole = paper_crops(settings, prepared, (_SPLIT,))[_SPLIT]
+    split = TensorSplit(
+        images=np.ascontiguousarray(whole.images[rows]),
+        features=np.ascontiguousarray(whole.features[rows]),
+        labels=np.ascontiguousarray(whole.labels[rows]),
+        n_classes=whole.n_classes,
+    )
     labels = torch.from_numpy(split.labels)
     net = member_net(member, settings).to(device)
     batch = settings.eval_batch_size
@@ -340,6 +375,7 @@ def view_admission(
     run_dirs: Sequence[Path],
     view: AdmissionView,
     *,
+    splits: Path,
     out: Path,
     data: Path | None = None,
     seed: int = 0,
@@ -347,14 +383,17 @@ def view_admission(
     device: str | None = None,
     overwrite: bool = False,
 ) -> AdmissionReport:
-    """Plan 5.2's admission test of ``view`` on the runs' Validation (module docstring).
+    """Plan 5.2's admission test of ``view`` on the screen's selection half (module docstring).
 
-    ``data`` defaults to the first run's ``data_dir / dataset``; ``device`` to the device
-    the first run trained on. Writes ``out`` (JSON, atomically) and returns the report.
+    ``splits`` is the stored splits file whose screen's selection half is evaluated (never
+    its decision half). ``data`` defaults to the first run's ``data_dir / dataset``;
+    ``device`` to the device the first run trained on. Writes ``out`` (JSON, atomically)
+    and returns the report.
 
     Raises:
         ConfigError: on a refusal (module docstring), or an unavailable device.
-        DataError: if the layout is unreadable or has no float32 Validation stamps.
+        DataError: if the layout is unreadable or has no float32 Validation stamps, or the
+            splits file is unreadable or made for other data.
     """
     if not view.any:
         raise ConfigError("no view to test: give at least one view flag")
@@ -371,7 +410,8 @@ def view_admission(
     for member, _ in runs:
         if member.manifest.identity.data_sha256 != digest:
             raise ConfigError(f"{prepared} is not the data {member.run_dir} trained on")
-    stamps = _validation_stamps(prepared)
+    rows = _selection_rows(splits, prepared)
+    stamps = _selection_stamps(prepared, rows)
     fits = torch.from_numpy(stamp_fits(stamps.numpy())) if view.views.noise else None
     target = _device(runs[0][0], device)
     DevicePolicy(
@@ -380,8 +420,10 @@ def view_admission(
         cast(Literal["ieee", "tf32"], first.fp32_precision),
     ).apply()
     viewed = [view_stamps(stamps, view, seed=seed, repeat=r, fits=fits) for r in range(repeats)]
-    rows = [_score_run(member, settings, prepared, viewed, target) for member, settings in runs]
-    drop = statistics.mean(row["drop"] for row in rows)
+    scored = [
+        _score_run(member, settings, prepared, rows, viewed, target) for member, settings in runs
+    ]
+    drop = statistics.mean(row["drop"] for row in scored)
     admitted = drop <= MAX_DROP
     payload: dict[str, Any] = {
         "format": FORMAT,
@@ -392,15 +434,18 @@ def view_admission(
         "seed": seed,
         "repeats": repeats,
         "split": _SPLIT,
+        "part": _PART,
+        "splits": {"path": str(splits), "sha256": sha256_file(splits)},
+        "rows": rows.tolist(),
         "n_stamps": int(stamps.shape[0]),
         "data": {"path": str(prepared), "sha256": digest},
         "metric": "accuracy",
         "max_drop": MAX_DROP,
         "drop": drop,
-        "drop_balanced": statistics.mean(row["drop_balanced"] for row in rows),
+        "drop_balanced": statistics.mean(row["drop_balanced"] for row in scored),
         "admitted": admitted,
         "verdict": "admitted" if admitted else "not admitted",
-        "runs": rows,
+        "runs": scored,
         "evaluation_machine": {k: v for k, v in machine_record(target).items() if k != "engine"},
         "versions": {"astro_simclr": version("astro-simclr"), "torch": str(torch.__version__)},
     }
@@ -408,13 +453,13 @@ def view_admission(
     out.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_bytes(out, (json.dumps(cleaned, indent=2, allow_nan=False) + "\n").encode())
     lines = [
-        f"simclr-view-admission: {json.dumps(view.describe())} on {_SPLIT} of {prepared} "
+        f"simclr-view-admission: {json.dumps(view.describe())} on the {_PART} of {prepared} "
         f"({stamps.shape[0]} stamps, {repeats} repeat(s), seed {seed})"
     ]
     lines += [
         f"  seed {row['seed']}: accuracy {row['clean']['accuracy']:.4f} -> "
         f"{row['viewed_mean']['accuracy']:.4f} (drop {100 * row['drop']:+.2f} points)"
-        for row in rows
+        for row in scored
     ]
     lines.append(
         f"  mean drop {100 * drop:+.2f} points (max {100 * MAX_DROP:.0f}): "
