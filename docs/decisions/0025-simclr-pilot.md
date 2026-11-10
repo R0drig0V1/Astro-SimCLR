@@ -444,3 +444,92 @@ bit for bit, and the corpus run with noise trains the same model on `memmap` and
 the layout run with noise on the mirror. It is deterministic for a seed and resumes
 exactly. The fits lookup costs about 3 µs per batch of 256 on the CPU, against about 66 ms
 for the read of the batch's stamps on the GPU machine.
+
+## Amendment (2026-11-09, tasks 5.0c/5.3): activation checkpointing and the CUDA peak
+
+The batch-size grid {256, 1024, 2048} (user, 2026-11-09: batch 1024 first, "more is
+better", Chen et al. 2020) does not fit the pilot's memory as it is. On the RTX 5090
+(32 GB) the batch-256 pilot uses about 10 GB; at batch 1024 the run filled 31.6 GB and
+logged no step in 10 minutes (the WSL driver spilled to system memory). The pilot has no
+autocast; the encoder's activations dominate: about 20 MiB per 57-pixel view kept for the
+backward (measured on the CPU by the bytes of the tensors autograd saves), so 40 GiB for
+the 2048 views of a batch of 1024.
+
+**Decision.**
+- `PilotConfig.activation_checkpointing` (default off; `--activation-checkpointing` on
+  `simclr-pilot`): `SimCLRNetwork(activation_checkpointing=True)` runs the encoder, in
+  train mode with gradients on, as nine segments under `torch.utils.checkpoint.checkpoint`
+  (`use_reentrant=False`, `preserve_rng_state=True`): the stem (conv1, bn1, ReLU, the
+  identity max-pool), then each of the eight residual blocks
+  (`network.encoder_segments`, `network.checkpointed_encoder`). The head (512-d, 2 BN
+  layers) is not checkpointed: its activations are 3 KB per view. Eval mode and `no_grad`
+  (diagnostics, probes, embeddings, the online probe's encoder pass) run the plain forward.
+- **Granularity: one residual block per segment.** Checkpointing keeps each segment's
+  input and, during the backward, the whole saved set of one segment at a time. Measured
+  per view (CPU, bytes autograd saves): off 20.1 MiB; per block 3.8 MiB of segment inputs
+  plus at most 4.0 MiB for the block being recomputed (a `layer1` block, 57 x 57 x 64);
+  per stage (`layer1` to `layer4` whole) 2.25 MiB of inputs but 8.0 MiB for `layer1`
+  recomputed. Per block has the lower peak (about 7.8 against 10.3 MiB a view, 39 % of the
+  plain run's); both recompute every segment's forward exactly once, so their arithmetic
+  cost is the same: about one more encoder forward a step, roughly a third more encoder
+  time (a backward costs about two forwards). Finer segments (per convolution) would cut
+  the transient further but add a recompute boundary at every BatchNorm; not needed for
+  batch 1024. Expected at batch 1024 on the 5090: about 16 GiB of activations plus the
+  2.4 GB of stamps, the gradients and the allocator's slack, under 32 GB; batch 2048
+  (about 32 GiB of activations) does not fit with this alone (it would need bf16, plan
+  5.3's precision decision).
+- **BatchNorm buffers.** The recompute runs in train mode, so every BatchNorm of the
+  segment would update `running_mean`, `running_var` and `num_batches_tracked` a second
+  time per step. The segment's `context_fn` saves every buffer of the segment when the
+  recompute starts and copies it back when the recompute ends (also when the
+  checkpoint's early stop ends it by raising): the buffers after the step are the
+  forward's. Keeping BN outside the segments was not possible at block granularity
+  (torchvision's `BasicBlock` holds its BN layers), and setting the momentum to 0 still
+  counts `num_batches_tracked`.
+- **Numerics.** The recompute performs the same operations on the same inputs, and the
+  non-reentrant checkpoint keeps the autograd graph (only the saved tensors are produced
+  again), so gradients accumulate in the same order. On the CPU the losses, every
+  gradient, the weights, the BatchNorm buffers and the LARS momenta after N steps equal
+  the run without the flag **bit for bit**, and so do the pilot's metrics, diagnostics and
+  embeddings (tests). On CUDA the same holds whenever the kernels are deterministic
+  (`--deterministic`); without it, a CUDA run is not bitwise reproducible from one run
+  to the next with or without the flag (`cudnn.benchmark` and the atomics of some
+  backward kernels), and the flag adds nothing beyond that run-to-run noise. The RNG state is preserved explicitly although the network has no dropout,
+  so a stochastic layer added later stays exact.
+- **Record and resume.** `to_plain` leaves the field out while off, so a run without it
+  writes the record and the checkpoint config of before; on, `pilot.json`'s `config` and
+  the checkpoints' carry `activation_checkpointing: true`. The flag changes memory, not
+  numbers, so **a resume may turn it on or off** (`_EXECUTION_FIELDS`: the config
+  comparison of `restore` leaves it out): a run started without it resumes with it after
+  an out-of-memory, and the result equals the uninterrupted run (a test). The record and
+  the checkpoints written after the resume hold the new value; the state dict is the same
+  either way (the flag is an attribute, not a buffer).
+- **Peak memory.** On CUDA each `metrics.jsonl` line adds `cuda_max_memory_allocated` and
+  `cuda_max_memory_reserved` (bytes; the allocator's peaks since the process started, one
+  `simclr-pilot` call), nothing on the CPU or MPS. A `--steps` dry run with `--log-every 1`
+  sizes a batch before the real run; the reserved peak is closer to what `nvidia-smi`
+  shows.
+- **Golden set.** The CLAUDE.md checklist for a new training flag covers the plain
+  engine's tasks (`tests/_engine_cases.py`, `Settings` fields); the pilot runs its own
+  loop outside the engine (this ADR, section 1) and has no `Settings` field or config-tree
+  home. The flag draws nothing (no stream) and changes no number, so a golden would be
+  the flag-off golden again; its regression check is instead the bit-for-bit equality with
+  the flag off, in the same test process (`tests/test_simclr_model.py`,
+  `tests/test_simclr_pilot.py`). When 5.3 moves the pilot onto the engine, the flag joins
+  the golden set with it.
+
+**Cost** (CPU, a 4-thread step of the network and LARS on random views, interleaved
+runs on a loaded laptop; GPU timings come from the 5090 dry run):
+
+| Mode | Peak RSS growth, B = 32 / 64 (median of 3) | Step time vs off (paired ratios, 6 pairs) |
+|---|---|---|
+| off | 1.23 / 2.30 GiB | 1 (3.5-8.5 s at B = 32, 7.0-15.1 s at B = 64) |
+| per block (chosen) | 0.84 / 1.56 GiB | median 1.4x (1.09x-1.90x) |
+| per stage | 1.12 / 2.00 GiB | median 1.75x (0.96x-2.9x) |
+
+The process's resident memory includes the weights, gradients, LARS momenta and the
+allocator's slack, so it falls less than the activations alone (-32 % at B = 64 for per
+block, against -61 % of the saved bytes), but the order is the analytic one: per block
+below per stage below off. The time ratios scatter with the laptop's load (load average
+10-15 during the runs); the arithmetic says about 1.3x for the encoder (one extra
+forward on top of a forward and a backward), and the 5090 dry run gives the real figure.
