@@ -201,8 +201,19 @@ The `simclr_300` fallback is dropped: the file is missing, and probably transduc
 - **Noise:** C5-style, on the stamp before normalisation, with the difference recomputed.
 - **Scale jitter and blur are ablations only;** they spread 1-px spikes into PSF-like blobs.
 - **Never:** hue, saturation, greyscale, or source-dropping crops.
-- **Admission test:** a view whose single-view accuracy drop on Validation (replication
-  checkpoint) exceeds 1 point is not admitted.
+- **Admission test:** a view whose single-view accuracy drop on **the screen's selection
+  half** of Validation (replication checkpoint) exceeds 1 point is not admitted. Amended
+  2026-11-10 (PR #70 review): in CD21 Validation is exactly the screen (250 selection +
+  250 decision stamps), and admission decides which arms exist, so it is selection (5.0c:
+  never the decision half). One stamp is 0.4 points; `--repeats` averages the view's draws.
+- **Done 2026-11-10 (PR #70, main 028a5e6):** opt-in `--scale-jitter`, `--blur-sigma`
+  (both ablations only), `--intensity-jitter` (one gamma on the three channels) and
+  `--rotation-degrees` (at most 6.524°, the shift giving way to the rotation, no fill) on
+  `simclr-pilot`, streams 14–17, and `simclr-view-admission`. Caveat for every rotation or
+  zoom result: the view is a bilinear resampling, which also smooths the stamp and weakens
+  the C5 noise (ADR 0025, "the interpolation confound"); the eval view is an exact crop.
+  Pending: the admission runs (they need a replication checkpoint with weights: the 2.4
+  runs were archived without them) and one pilot per admitted view.
 
 ### 5.3 SimCLR on the engine
 The 5.0b functions run on phase-4 tiers 1 and 3 with exact resume. Only the 1M corpus needs
@@ -248,6 +259,14 @@ tier 3. Phase 5 does not wait for 4.6–4.8.
 - **Fairness:** the same test-time augmentation policy and the same trial budget for every
   arm.
 - **Mode:** the probe for exploratory cells; fine-tuning only for H1 and H2.
+  - **Exploratory fine-tuning arm, done 2026-11-10 (PR #69, main 8b8a7df; user decision:
+    pursue fine-tuning and the views):** `simclr-finetune` is `simclr-scratch` with the
+    encoder from a `simclr-pilot` checkpoint: the same recipe, grid (4 trials), step
+    counts, selection rule and draws (stream 13 reused on purpose: common random numbers),
+    so fine-tune − scratch isolates the initialisation. It runs on the screen halves; H1's
+    test set is not touched until the recipe is frozen. Pending: the runs from the pilot,
+    corpus and batch-1024 checkpoints at 10 and 100 per class (the 5090 was unreachable on
+    2026-11-10 morning).
 - **Before relying on R5,** compute its per-class test counts and MDEs. Its Bogus and
   Asteroid come from CD21 Validation/Test only (phase 3 to confirm).
 
