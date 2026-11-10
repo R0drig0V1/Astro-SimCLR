@@ -295,6 +295,11 @@ def test_reserved_streams_are_the_augmentations_numbers() -> None:
         "simclr_online_probe": 12,
         # The go/no-go's supervised scratch baseline (astro_simclr.simclr.scratch).
         "simclr_scratch": 13,
+        # The pilot's optional views (astro_simclr.simclr.views.draw_extra_params, task 5.2).
+        "simclr_view_scale": 14,
+        "simclr_view_blur": 15,
+        "simclr_view_intensity": 16,
+        "simclr_view_rotation": 17,
     }
     assert len(set(RESERVED_STREAMS.values())) == len(RESERVED_STREAMS)
 
@@ -307,6 +312,13 @@ def test_reserved_stream_numbers_are_unique() -> None:
     assert RESERVED_STREAMS["rj23_class_uniform"] == 10
     assert RESERVED_STREAMS["simclr_online_probe"] == 12  # assigned by the integrator
     assert RESERVED_STREAMS["simclr_scratch"] == 13  # assigned by the integrator
+    # Assigned by the integrator (task 5.2's brief).
+    assert [RESERVED_STREAMS[f"simclr_view_{v}"] for v in ("scale", "blur", "intensity")] == [
+        14,
+        15,
+        16,
+    ]
+    assert RESERVED_STREAMS["simclr_view_rotation"] == 17
 
 
 def test_host_generator_is_augment_rng() -> None:

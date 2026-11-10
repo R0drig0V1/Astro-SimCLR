@@ -1,0 +1,40 @@
+{
+ "config": {
+  "allow_weak_index": false,
+  "archive": null,
+  "batch_size": 4,
+  "checkpoint_every": 2,
+  "deterministic": false,
+  "device": "cpu",
+  "diag_samples": 8,
+  "diagnostics_every": 2,
+  "embed_batch": 16,
+  "epochs": null,
+  "eval_data": null,
+  "fp32_precision": "ieee",
+  "host_cap_gb": 24.0,
+  "keep_every_epochs": 1,
+  "knn_bank_per_class": 2,
+  "log_every": 1,
+  "lr_min": 0.0,
+  "lr_per_256": 0.3,
+  "noise_min_r2": 0.5,
+  "noise_scale": 3.0,
+  "seed": 0,
+  "steps": 4,
+  "temperature": 0.5,
+  "tier": "device",
+  "warmup_epochs": 0.3,
+  "weight_decay": 1e-06
+ },
+ "losses": [
+  1.9137394428253174,
+  1.913396954536438,
+  1.9463920593261719,
+  2.02008056640625
+ ],
+ "model": "39e008965e282a5c913ba61b45bb430c30e7db18405c1b30403278d92df57122",
+ "noised_views": "63ef0f986b337deefb5ce46ab770edef9756c6c77592e0b6b0a7c67f532c6014",
+ "optimizer": "5016401b265515c28297ce6b08af2fde4d09e3ff0f7c65a5390e5b88ee043b63",
+ "views": "a1a88437addff0fbd1109f6e0744fa57446e46c1a0884b4fa3fa0f79947dcc5c"
+}

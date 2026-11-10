@@ -237,6 +237,13 @@ of the activation memory for about one more encoder forward per step, with the s
 numbers. On CUDA, `metrics.jsonl` records the peak memory, so a short `--steps` run sizes
 the batch first.
 
+Task 5.2's optional views, each off by default with a strength to sweep:
+`--scale-jitter`, `--blur-sigma` (both ablations only), `--intensity-jitter` (a gamma, the
+same on the three channels) and `--rotation-degrees` (at most 6.52, so the 57-pixel window
+reads no fill). `simclr-view-admission RUN_DIR --out FILE.json --rotation-degrees 6` runs
+the plan's admission test of a view: the replication classifier's accuracy drop on
+Validation with the view applied once per stamp (admitted at 1 point or less).
+
 ### 6. Archive corpus (self-supervised pretraining data)
 
 `ingest-archive` (phase 5, task 5.1a) streams nightly ZTF public archive tarballs into

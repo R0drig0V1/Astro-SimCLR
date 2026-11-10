@@ -46,7 +46,10 @@ steps_per_pass`` of pass ``s // steps_per_pass`` (the last partial batch of a pa
 dropped, so each batch has B distinct stamps). A pure function of ``(seed, s)``.
 
 **Step** ``s`` (:meth:`PilotRun.step`): two views of the batch (:mod:`.views`, parameters
-from ``(seed, s)``), one forward of both views concatenated (BatchNorm statistics over the
+from ``(seed, s)``; the optional views of task 5.2, ``scale_jitter``, ``blur_sigma``,
+``intensity_jitter`` and ``rotation_degrees``, all off at 0 by default, draw theirs from
+their own streams only when on, so with them off every number is the one of before them),
+one forward of both views concatenated (BatchNorm statistics over the
 2B views), NT-Xent in paper mode in float32 (:mod:`.objective`), LARS at the rate of
 :func:`~.optim.warmup_cosine_lr` for ``s`` (:mod:`.optim`), ``zero_grad(set_to_none=True)``,
 backward, step. With ``activation_checkpointing`` the encoder keeps only the inputs of its
@@ -86,7 +89,7 @@ uninterrupted one; the log lines past the checkpoint are dropped. The resume is 
 whenever the kernels are deterministic (``deterministic=True`` on CUDA; always on CPU).
 The resume may turn ``activation_checkpointing`` on or off (:data:`_EXECUTION_FIELDS`: it
 does not change the numbers); the record and the checkpoints written after it hold the new
-value.
+value. Any other change, the optional views' strengths included, is refused.
 """
 
 from __future__ import annotations
@@ -158,6 +161,7 @@ from astro_simclr.simclr.probe import draw_label_subsets
 from astro_simclr.simclr.views import (
     ViewConfig,
     centre_crop,
+    draw_extra_params,
     draw_view_params,
     make_views,
     noise_generator,
@@ -245,6 +249,11 @@ class PilotConfig:
     corpus_fits: str | None = None
     # Memory, not numbers (network.checkpointed_encoder; the record omits it off).
     activation_checkpointing: bool = False
+    # The optional views of task 5.2 (simclr.views; off at 0, and the record omits them).
+    scale_jitter: float = 0.0
+    blur_sigma: float = 0.0
+    intensity_jitter: float = 0.0
+    rotation_degrees: float = 0.0
 
     def __post_init__(self) -> None:
         if (self.epochs is None) == (self.steps is None):
@@ -278,6 +287,10 @@ class PilotConfig:
             raise ConfigError(f"host_cap_gb must be > 0, got {self.host_cap_gb}")
         if self.corpus_fits is not None and not self.noise_scale > 0:
             raise ConfigError("corpus_fits is read only by the noise view: set noise_scale > 0")
+        try:
+            self.views  # noqa: B018 - ViewConfig checks the views' strengths
+        except ValueError as err:
+            raise ConfigError(str(err)) from None
         self._check_monitors()
 
     def _check_monitors(self) -> None:
@@ -294,9 +307,9 @@ class PilotConfig:
     def to_plain(self) -> dict[str, Any]:
         """The config as a JSON-ready dict: every field, but an optional one at its default.
 
-        The monitors' fields, ``corpus_fits`` and ``activation_checkpointing`` are left out
-        while they hold their defaults, so a run without them writes the same record and
-        checkpoint config as before they existed.
+        The monitors' fields, ``corpus_fits``, ``activation_checkpointing`` and the optional
+        views' strengths are left out while they hold their defaults, so a run without them
+        writes the same record and checkpoint config as before they existed.
         """
         plain = asdict(self)
         for name in _OPTIONAL_FIELDS:
@@ -312,7 +325,14 @@ class PilotConfig:
     @property
     def views(self) -> ViewConfig:
         """The training views' configuration."""
-        return ViewConfig(self.noise_scale, self.noise_min_r2)
+        return ViewConfig(
+            self.noise_scale,
+            self.noise_min_r2,
+            scale_jitter=self.scale_jitter,
+            blur_sigma=self.blur_sigma,
+            intensity_jitter=self.intensity_jitter,
+            rotation_degrees=self.rotation_degrees,
+        )
 
 
 #: The probe monitors' fields (:meth:`PilotConfig.to_plain` omits them at their defaults).
@@ -327,8 +347,15 @@ _MONITOR_FIELDS: Final = (
     "online_probe_batch",
     "online_probe_lr",
 )
+#: The optional views' strengths (task 5.2; :mod:`.views`, off at 0).
+_VIEW_FIELDS: Final = ("scale_jitter", "blur_sigma", "intensity_jitter", "rotation_degrees")
 #: Every field :meth:`PilotConfig.to_plain` omits at its default.
-_OPTIONAL_FIELDS: Final = (*_MONITOR_FIELDS, "corpus_fits", "activation_checkpointing")
+_OPTIONAL_FIELDS: Final = (
+    *_MONITOR_FIELDS,
+    "corpus_fits",
+    "activation_checkpointing",
+    *_VIEW_FIELDS,
+)
 #: The fields a resume may change: how the step runs, not what it computes.
 _EXECUTION_FIELDS: Final = ("activation_checkpointing",)
 _DEFAULTS: Final = {f.name: f.default for f in fields(PilotConfig)}
@@ -977,9 +1004,13 @@ class PilotRun:
         fits = None
         if self.fits is not None:
             fits = self.fits[torch.from_numpy(stored).to(self.fits.device)].to(self.device)
-        generator = noise_generator(config.seed, step, self.device) if config.views.noise else None
+        views = config.views
+        generator = noise_generator(config.seed, step, self.device) if views.noise else None
         params = draw_view_params(config.seed, step, config.batch_size)
-        v1, v2 = make_views(x, params, config.views, fits=fits, generator=generator)
+        extra = (
+            draw_extra_params(config.seed, step, config.batch_size, views) if views.extra else None
+        )
+        v1, v2 = make_views(x, params, views, fits=fits, generator=generator, extra=extra)
         self.model.train()
         _, z = self.model(torch.cat([v1, v2]))
         loss, pos, neg = self.loss(z[: config.batch_size], z[config.batch_size :])
@@ -1080,9 +1111,10 @@ def _with_defaults(saved: dict[str, Any]) -> dict[str, Any]:
 
     The fields of task 5.1 (``archive``, ``eval_data``, ``host_cap_gb``,
     ``allow_weak_index``) do not change a layout run's numbers, so a checkpoint written
-    before them resumes; the monitors' fields and ``corpus_fits`` are left out of a record
-    at their defaults (:meth:`PilotConfig.to_plain`). A list (a JSON or older record) of
-    ``probe_budgets`` is read as the tuple.
+    before them resumes; the monitors' fields, ``corpus_fits``, ``activation_checkpointing``
+    and the optional views' strengths are left out of a record at their defaults
+    (:meth:`PilotConfig.to_plain`). A list (a JSON or older record) of ``probe_budgets`` is
+    read as the tuple.
     """
     merged = {**{k: _DEFAULTS[k] for k in _DEFAULTS if k not in saved}, **saved}
     merged["probe_budgets"] = tuple(merged["probe_budgets"])

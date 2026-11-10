@@ -5,7 +5,9 @@ Engine-free (ADR 0014, CLAUDE.md): nothing in this package imports Lightning
 engine of phase 4 once its loop exists (task 5.3). Modules:
 
 - :mod:`.views`: the training views (8 dihedral elements, a 57-pixel integer shift, C5's
-  noise as an option) and the centred evaluation view;
+  noise, and task 5.2's scale jitter, blur, gamma and small-angle rotation as options) and
+  the centred evaluation view;
+- :mod:`.admission`: plan 5.2's admission test of a view (``simclr-view-admission``);
 - :mod:`.network`: ResNet-18 with a CIFAR stem (``h``, 512-d) and the projection head
   (``z``, 128-d);
 - :mod:`.objective`: NT-Xent in paper mode, in float32;
