@@ -30,6 +30,12 @@ handlers import torch and the pilot lazily, so ``--help`` stays fast.
   the go/no-go's supervised scratch baseline (:mod:`~astro_simclr.simclr.scratch`) on
   each subset, the same report shape; the report is rewritten after each subset, and
   ``--resume`` keeps the finished subsets of a report of the same configuration. Exit 0.
+- ``simclr-finetune DATA --checkpoint CKPT --subsets FILE --splits FILE --out FILE ...``:
+  the fine-tuning arm (:mod:`~astro_simclr.simclr.finetune`): ``simclr-scratch`` with the
+  encoder started from a ``simclr-pilot`` checkpoint (the same handler, recipe, grid,
+  draws and report shape, plus ``init``: the checkpoint's path, SHA-256, step and
+  pretraining data). A separate command, not a flag of ``simclr-scratch``, so that its
+  report names its arm (``report: simclr-finetune``) and neither arm resumes the other's.
 - ``simclr-compare --baseline FILE --variant FILE --splits FILE [--out FILE]``: the paired
   interval of two version-2 reports and, at 10 per class, the go/no-go verdict
   (:func:`~astro_simclr.simclr.compare.compare_reports`). Exit 0 whatever the verdict.
@@ -246,8 +252,9 @@ def _write_json(path: Path, document: dict[str, Any]) -> None:
     partial.replace(path)
 
 
-#: The keys of a scratch report that a resumed call must find unchanged.
+#: The keys of a scratch (or fine-tune) report that a resumed call must find unchanged.
 _SCRATCH_IDENTITY = (
+    "report",
     "report_version",
     "subsets_file",
     "splits_file",
@@ -258,6 +265,8 @@ _SCRATCH_IDENTITY = (
     "data_source_sha256",
     "device",
 )
+#: The fine-tune report's extra identity key: the pilot checkpoint's SHA-256.
+_FINETUNE_IDENTITY = ("init_sha256",)
 
 
 def _scratch_done(args: argparse.Namespace, report: dict[str, Any]) -> dict[int, dict[str, Any]]:
@@ -274,13 +283,15 @@ def _scratch_done(args: argparse.Namespace, report: dict[str, Any]) -> dict[int,
     if not args.resume:
         raise ConfigError(f"{args.out} already exists; pass --resume or --overwrite")
     previous = read_report(args.out)
-    for key in _SCRATCH_IDENTITY:
+    identity = _SCRATCH_IDENTITY + (_FINETUNE_IDENTITY if "init_sha256" in report else ())
+    for key in identity:
         if previous.get(key) != report[key]:
             raise ConfigError(f"{args.out} was written with another {key}; cannot resume it")
     return {int(row["subset"]): row for row in previous["subsets"]}
 
 
 def _scratch(args: argparse.Namespace) -> int:
+    """``simclr-scratch`` and ``simclr-finetune`` (``args.checkpoint`` set): one handler."""
     import torch
 
     from astro_simclr.data.schema import DataError
@@ -305,6 +316,13 @@ def _scratch(args: argparse.Namespace) -> int:
     subsets = read_label_subsets(args.subsets, train_y)
     if subsets.candidates_sha256 != array_sha256(data.rows):
         raise DataError(f"{args.subsets} was not drawn from the stamps {args.splits} leaves usable")
+    command: str = args.report_kind
+    init = None
+    if args.checkpoint is not None:
+        from astro_simclr.simclr.finetune import check_init_data, load_pilot_init
+
+        init = load_pilot_init(args.checkpoint)
+        check_init_data(init, data.record)
     recipe = ScratchRecipe(
         steps=args.steps if args.steps is not None else default_steps(subsets.per_class),
         batch_per_class=args.batch_per_class,
@@ -321,7 +339,7 @@ def _scratch(args: argparse.Namespace) -> int:
     )
     report: dict[str, Any] = {
         **report_header(
-            "simclr-scratch",
+            command,
             subsets_path=args.subsets,
             splits_path=args.splits,
             decision_rows=screen.decision,
@@ -344,6 +362,9 @@ def _scratch(args: argparse.Namespace) -> int:
         "complete": False,
         "subsets": [],
     }
+    if init is not None:
+        report["init_sha256"] = init.sha256
+        report["init"] = init.record
     done = _scratch_done(args, report)
     collected = dict(done)
 
@@ -352,7 +373,7 @@ def _scratch(args: argparse.Namespace) -> int:
         report["subsets"] = [collected[r] for r in sorted(collected)]
         _write_json(args.out, report)
         sys.stdout.write(
-            f"simclr-scratch: subset {row['subset']}: lr {row['lr']:g}, weight decay "
+            f"{command}: subset {row['subset']}: lr {row['lr']:g}, weight decay "
             f"{row['weight_decay']:g}, selection {row['selection_bacc']:.4f}, decision "
             f"{row['decision_bacc']:.4f}\n"
         )
@@ -371,13 +392,14 @@ def _scratch(args: argparse.Namespace) -> int:
         device=policy,
         done=done,
         on_subset=finished,
+        encoder_init=None if init is None else init.encoder,
     )
     report["subsets"] = rows
     report.update(summary(rows))
     report["complete"] = True
     _write_json(args.out, report)
     sys.stdout.write(
-        f"simclr-scratch: {report['per_class']} per class, decision-half balanced accuracy "
+        f"{command}: {report['per_class']} per class, decision-half balanced accuracy "
         f"{report['decision_bacc_mean']:.4f} +- {report['decision_bacc_std']:.4f} "
         f"over {len(rows)} subsets ({report['n_trials']} trials) -> {args.out}\n"
     )
@@ -608,6 +630,7 @@ def add_simclr_commands(commands: argparse._SubParsersAction[argparse.ArgumentPa
     )
     probe.set_defaults(handler=_probe)
     _add_scratch(commands)
+    _add_finetune(commands)
     _add_compare(commands)
 
 
@@ -622,6 +645,30 @@ def _add_scratch(commands: argparse._SubParsersAction[argparse.ArgumentParser]) 
         "trial best on the screen's selection half and score it on the decision half. "
         "Writes the simclr-probe report shape, with per-stamp predictions.",
     )
+    _add_trial_arguments(scratch)
+    scratch.set_defaults(handler=_scratch, report_kind="simclr-scratch", checkpoint=None)
+
+
+def _add_finetune(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    """The ``simclr-finetune`` subcommand (``simclr.finetune``): the scratch arm, initialised."""
+    finetune = commands.add_parser(
+        "simclr-finetune",
+        help="the fine-tuning arm: simclr-scratch with the encoder from a pilot checkpoint",
+        description="Exactly simclr-scratch (the same recipe, grid, step counts, selection "
+        "and draws, stream 13, for the same --seed), but the encoder starts from a "
+        "simclr-pilot checkpoint's encoder weights and BatchNorm buffers; the Linear(512, 5) "
+        "head starts as the scratch arm's. Pair its report with the scratch or probe report "
+        "in simclr-compare.",
+    )
+    finetune.add_argument(
+        "--checkpoint", type=Path, required=True, help="a simclr-pilot checkpoint (ckpt/*.pt)"
+    )
+    _add_trial_arguments(finetune)
+    finetune.set_defaults(handler=_scratch, report_kind="simclr-finetune")
+
+
+def _add_trial_arguments(scratch: argparse.ArgumentParser) -> None:
+    """The arguments ``simclr-scratch`` and ``simclr-finetune`` share (all but the init)."""
     scratch.add_argument("data", type=Path, metavar="DATA", help="a prepared layout directory")
     scratch.add_argument("--subsets", type=Path, required=True, help="make-label-subsets file")
     scratch.add_argument("--splits", type=Path, required=True)
@@ -648,7 +695,6 @@ def _add_scratch(commands: argparse._SubParsersAction[argparse.ArgumentParser]) 
     again = scratch.add_mutually_exclusive_group()
     again.add_argument("--resume", action="store_true", help="keep the finished subsets of OUT")
     again.add_argument("--overwrite", action="store_true", help="replace OUT")
-    scratch.set_defaults(handler=_scratch)
 
 
 def _add_compare(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:

@@ -1,8 +1,9 @@
 """The paired go/no-go comparison of two arms' subset reports (phase 5, task 5.0b; ADR 0025).
 
-**Subset reports.** ``simclr-probe`` (an arm: the SSL probe, the random-init probe) and
-``simclr-scratch`` (the supervised scratch baseline) write one JSON report per label-subsets
-file: a row per subset with its decision-half balanced accuracy. From
+**Subset reports.** ``simclr-probe`` (an arm: the SSL probe, the random-init probe),
+``simclr-scratch`` (the supervised scratch baseline) and ``simclr-finetune`` (the scratch
+arm from a pilot's encoder) write one JSON report per label-subsets file: a row per subset
+with its decision-half balanced accuracy. The comparison reads them alike. From
 :data:`REPORT_VERSION` 2 a report also holds what a paired interval needs
 (:func:`report_header`): the subsets and splits files (path and SHA-256), the decision
 half's Validation rows and labels, and each subset's per-stamp ``decision_predictions``.
@@ -115,7 +116,7 @@ def read_report(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as err:
         raise DataError(f"{path}: cannot read the report: {err}") from err
     if not isinstance(report, dict) or "per_class" not in report or "subsets" not in report:
-        raise DataError(f"{path}: not a simclr-probe or simclr-scratch report")
+        raise DataError(f"{path}: not a simclr-probe, simclr-scratch or simclr-finetune report")
     return report
 
 
@@ -128,7 +129,7 @@ def _predictions(report: dict[str, Any], name: str) -> dict[int, npt.NDArray[np.
     if report.get("report_version", 1) < REPORT_VERSION:
         raise DataError(
             f"{name} is a version-1 report, without per-stamp predictions: re-run its "
-            "command (simclr-probe or simclr-scratch) to write them"
+            "command (simclr-probe, simclr-scratch or simclr-finetune) to write them"
         )
     rows = {}
     for row in report["subsets"]:
