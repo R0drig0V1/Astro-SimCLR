@@ -117,6 +117,30 @@ pre-registered tables whatever the result is. A dated literature search is recor
       this recipe; the batch-size grid {256, 1024, 2048} and the views are the next levers
       (exploratory, 5.0c rules). Artifacts: the server's run directory `p5/corpus/`
       (`probe-corpus-{10,100}.json`, `corpus-vs-{pilot,scratch,random}-{10,100}.json`).
+  - **Batch 1024 (2026-11-09, main 6d25d15; user decision: batch 1024 first, "more is
+    better"): no gain over batch 256.** The pilot recipe on CD21 Train with only the batch
+    changed (lr linear in the batch, 0.3·1024/256 = 1.2; 100 passes, 4,900 steps, seed 0).
+    It needs `--activation-checkpointing` (PR #68): without it the run spilled out of the
+    32 GB of VRAM and was killed; with it the CUDA peak is 21.6 GiB allocated in a dry run
+    and about 28 GiB reserved with the monitors, 0.93 s/step, 76 min. Final monitors: kNN
+    0.712 (batch 256: 0.704), online probe 0.74 (0.76), effective rank of `h` 55.6 (41.5).
+
+  | Paired comparison (batch-1024 SSL probe − baseline) | 10 per class | 100 per class |
+  |---|---|---|
+  | Batch-1024 SSL probe (mean ± sd) | 0.574 ± 0.055 | 0.735 ± 0.022 |
+  | − batch-256 pilot SSL probe (0.571 / 0.734) | +0.3 [−1.6, +2.1] pts | +0.1 [−1.8, +2.0] pts |
+  | − scratch ResNet-18 (0.434 / 0.680) | +13.9 [+10.4, +17.6] pts | +5.4 [+1.8, +9.1] pts |
+  | − random-init probe (0.417 / 0.515) | +15.7 [+11.7, +19.8] pts | +22.0 [+17.7, +26.4] pts |
+
+    - Reading: at a fixed number of passes, 4× the negatives per step and 4× fewer steps
+      give the same probe. The batch effect of Chen et al. (2020) is largest for short
+      runs on ImageNet-scale data with 1,000 classes; with 5 classes, many negatives of a
+      large batch share the anchor's class, which may cap the gain. Batch 2048 needs bf16
+      (about 32 GiB of activations with checkpointing; plan 5.3's precision decision).
+      Neither more data (the corpus) nor a larger batch moved the probe: the remaining
+      levers are the views, the encoder and the evaluation itself (fine-tuning, H1).
+      Artifacts: the server's run directory `p5/b1024/` (`probe-b1024-{10,100}.json`,
+      `b1024-vs-{pilot,scratch,random}-{10,100}.json`).
   - Caveats: the scratch model barely beats the random-init probe at 10 per class, so it
     is a weak bar; it is the declared one for this gate only. H1 is decided against the
     strongest baseline of 5.4 (paper model, ImageNet and Zoobot ConvNeXt), fine-tuned, on
