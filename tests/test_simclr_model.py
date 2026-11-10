@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import itertools
 import math
+from contextlib import nullcontext
+from typing import Any
 
 import pytest
 import torch
@@ -11,11 +13,14 @@ from torch import nn
 from torchvision.models.resnet import BasicBlock
 
 from astro_simclr.optim import EXCLUDE_KEY, LARS
+from astro_simclr.simclr import network
 from astro_simclr.simclr.network import (
     PROJECTION_DIM,
     REPRESENTATION_DIM,
     ProjectionHead,
     SimCLRNetwork,
+    checkpointed_encoder,
+    encoder_segments,
     resnet18_cifar,
 )
 from astro_simclr.simclr.objective import SimCLRLoss
@@ -85,6 +90,121 @@ def test_simclr_network_init_depends_only_on_the_seed() -> None:
     torch.manual_seed(5)
     b = SimCLRNetwork().state_dict()
     assert all(torch.equal(a[k], b[k]) for k in a)
+
+
+# --- activation checkpointing -------------------------------------------------------------
+
+
+def _train(checkpointing: bool, steps: int = 3, batch: int = 4) -> dict[str, Any]:
+    """``steps`` LARS steps of a seeded network on seeded views; the state they leave."""
+    torch.manual_seed(0)
+    model = SimCLRNetwork(activation_checkpointing=checkpointing)
+    optimizer = build_lars(model, lr=0.3)
+    loss_fn = SimCLRLoss(0.2)
+    gen = torch.Generator().manual_seed(1)
+    losses, grads = [], []
+    for _ in range(steps):
+        x = torch.rand(2 * batch, 3, 57, 57, generator=gen)
+        model.train()
+        _, z = model(x)
+        loss, _, _ = loss_fn(z[:batch], z[batch:])
+        optimizer.zero_grad(set_to_none=True)
+        torch.autograd.backward(loss)
+        grads.append([p.grad.clone() for p in model.parameters() if p.grad is not None])
+        optimizer.step()
+        losses.append(loss.detach())
+    return {
+        "losses": losses,
+        "grads": grads,
+        "state": model.state_dict(),
+        "optimizer": optimizer.state_dict()["state"],
+    }
+
+
+def _assert_same_training(a: dict[str, Any], b: dict[str, Any]) -> None:
+    assert all(torch.equal(x, y) for x, y in zip(a["losses"], b["losses"], strict=True))
+    for ga, gb in zip(a["grads"], b["grads"], strict=True):
+        assert all(torch.equal(x, y) for x, y in zip(ga, gb, strict=True))
+    assert a["state"].keys() == b["state"].keys()
+    assert all(torch.equal(a["state"][k], b["state"][k]) for k in a["state"])
+    for index, entry in a["optimizer"].items():
+        other = b["optimizer"][index]
+        assert all(torch.equal(v, other[k]) for k, v in entry.items() if torch.is_tensor(v))
+
+
+def test_activation_checkpointing_trains_bit_for_bit_the_same() -> None:
+    # Losses, every gradient, the weights, the BatchNorm buffers and the LARS momenta.
+    plain, checkpointed = _train(False), _train(True)
+    _assert_same_training(plain, checkpointed)
+    assert int(checkpointed["state"]["encoder.bn1.num_batches_tracked"]) == 3
+
+
+def test_activation_checkpointing_restores_the_batchnorm_buffers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Without the restore, the recompute updates every BatchNorm of the encoder twice a
+    # step: the guard is what keeps the buffers equal (and the head is not checkpointed).
+    plain = _train(False)
+    monkeypatch.setattr(network, "_contexts", lambda _m: (nullcontext(), nullcontext()))
+    doubled = _train(True)["state"]
+    assert int(doubled["encoder.bn1.num_batches_tracked"]) == 6
+    assert int(doubled["encoder.layer4.1.bn2.num_batches_tracked"]) == 6
+    assert int(doubled["head.layers.1.num_batches_tracked"]) == 3
+    assert not torch.equal(
+        doubled["encoder.layer1.0.bn1.running_mean"],
+        plain["state"]["encoder.layer1.0.bn1.running_mean"],
+    )
+
+
+def test_restore_buffers_on_an_early_stop() -> None:
+    # The checkpoint's early stop ends a recompute by raising inside the context.
+    bn = nn.BatchNorm2d(2).train()
+    before = {k: v.clone() for k, v in bn.state_dict().items()}
+    with pytest.raises(RuntimeError, match="stop"), network._restore_buffers(bn):
+        bn(torch.randn(3, 2, 4, 4))
+        raise RuntimeError("stop")
+    assert all(torch.equal(before[k], v) for k, v in bn.state_dict().items())
+
+
+def test_activation_checkpointing_only_in_train_mode_with_gradients(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int] = []
+
+    def counting(encoder: nn.Module, x: torch.Tensor) -> torch.Tensor:
+        calls.append(1)
+        return checkpointed_encoder(encoder, x)
+
+    monkeypatch.setattr(network, "checkpointed_encoder", counting)
+    torch.manual_seed(0)
+    model = SimCLRNetwork(activation_checkpointing=True)
+    x = torch.rand(4, 3, 57, 57)
+    with torch.no_grad():
+        model.train()(x)
+    model.eval()(x)
+    assert calls == []
+    model.train()(x)
+    assert calls == [1]
+    model.activation_checkpointing = False  # a plain attribute: no state
+    model(x)
+    assert calls == [1]
+
+
+def test_encoder_segments_compose_to_the_encoder() -> None:
+    torch.manual_seed(0)
+    encoder = resnet18_cifar().eval()
+    segments = encoder_segments(encoder)
+    assert len(segments) == 9  # the stem and the eight residual blocks
+    assert all(isinstance(m, BasicBlock) for m, _ in segments[1:])
+    x = torch.rand(2, 3, 57, 57)
+    with torch.no_grad():
+        out = x
+        for _, function in segments:
+            out = function(out)
+        pooled = nn.functional.adaptive_avg_pool2d(out, (1, 1))  # torchvision's avgpool
+        assert torch.equal(torch.flatten(pooled, 1), encoder(x))
+    with pytest.raises(TypeError, match="ResNet"):
+        encoder_segments(nn.Linear(2, 2))
 
 
 # --- objective ----------------------------------------------------------------------------

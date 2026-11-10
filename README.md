@@ -231,6 +231,12 @@ uv run --no-sync astro-simclr simclr-pilot dataset/prepared/td_ztf_stamp_17_06_2
     --output-dir runs/pilot/ssl --epochs 100 --device cuda
 ```
 
+At a large batch (1024 on a 32 GB GPU), `--activation-checkpointing` recomputes the
+encoder's residual blocks in the backward instead of keeping their activations: about 39 %
+of the activation memory for about one more encoder forward per step, with the same
+numbers. On CUDA, `metrics.jsonl` records the peak memory, so a short `--steps` run sizes
+the batch first.
+
 ### 6. Archive corpus (self-supervised pretraining data)
 
 `ingest-archive` (phase 5, task 5.1a) streams nightly ZTF public archive tarballs into

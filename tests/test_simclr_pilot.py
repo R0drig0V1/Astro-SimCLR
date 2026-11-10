@@ -2,7 +2,9 @@
 
 A CPU smoke of a few steps on a small prepared layout (4 Train and 4 Validation stamps per
 class, uint8 images) with stored splits (2 + 2 per class in the screen halves): the outputs,
-the schedule's end, an exact resume, the refusals, and the four ``simclr-*`` subcommands.
+the schedule's end, an exact resume, the refusals, activation checkpointing (the same
+numbers, a resume that turns it on, the CUDA peak-memory keys), and the four ``simclr-*``
+subcommands.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from astro_simclr.cli import main
 from astro_simclr.config import ConfigError
 from astro_simclr.engine.randomness import RESERVED_STREAMS
 from astro_simclr.protocol.splits import make_splits, write_splits
+from astro_simclr.simclr import pilot as pilot_module
 from astro_simclr.simclr.pilot import (
     CKPT_FORMAT,
     BatchOrder,
@@ -196,6 +199,65 @@ def test_pilot_refuses_to_overwrite_or_resume_another_config(
         train_pilot(_config(layout, temperature=0.2), finished, resume=True)
 
 
+def _assert_same_final(a: Path, b: Path) -> None:
+    """The final checkpoints' weights, BatchNorm buffers and LARS state are equal bit for bit."""
+    first, second = (
+        load_checkpoint(a / "ckpt" / "final.pt"),
+        load_checkpoint(b / "ckpt" / "final.pt"),
+    )
+    assert all(torch.equal(first["model"][k], second["model"][k]) for k in first["model"])
+    states = first["optimizer"]["state"], second["optimizer"]["state"]
+    for index, entry in states[0].items():
+        assert all(torch.equal(v, states[1][index][k]) for k, v in entry.items())
+
+
+def test_pilot_activation_checkpointing_changes_no_number(
+    layout: tuple[Path, Path], finished: Path, tmp_path: Path
+) -> None:
+    train_pilot(_config(layout, activation_checkpointing=True), tmp_path)
+    _assert_same_final(finished, tmp_path)
+    for name in ("metrics.jsonl", "diagnostics.jsonl"):
+        assert _lines(tmp_path / name) == _lines(finished / name)
+    np.testing.assert_array_equal(
+        np.load(tmp_path / "embeddings" / "train_h.npy"),
+        np.load(finished / "embeddings" / "train_h.npy"),
+    )
+    assert json.loads((tmp_path / "pilot.json").read_text())["config"]["activation_checkpointing"]
+    # Off (the default), the record is the one written before the flag existed.
+    assert (
+        "activation_checkpointing"
+        not in json.loads((finished / "pilot.json").read_text())["config"]
+    )
+
+
+def test_pilot_resume_may_turn_activation_checkpointing_on(
+    layout: tuple[Path, Path], finished: Path, tmp_path: Path
+) -> None:
+    train_pilot(_config(layout), tmp_path, stop_at=2)
+    resumed = train_pilot(_config(layout, activation_checkpointing=True), tmp_path, resume=True)
+    assert resumed.steps_done == 4 and resumed.model.activation_checkpointing
+    _assert_same_final(finished, tmp_path)
+    assert _lines(tmp_path / "metrics.jsonl") == _lines(finished / "metrics.jsonl")
+    saved = load_checkpoint(tmp_path / "ckpt" / "final.pt")["config"]
+    assert saved["activation_checkpointing"] is True
+    # Any other change is still refused.
+    with pytest.raises(ConfigError, match="another config"):
+        train_pilot(
+            _config(layout, activation_checkpointing=True, temperature=0.2), tmp_path, resume=True
+        )
+
+
+def test_memory_row_only_on_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert pilot_module._memory_row(torch.device("cpu")) == {}
+    assert pilot_module._memory_row(torch.device("mps")) == {}
+    monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda _d: 7 * 2**30)
+    monkeypatch.setattr(torch.cuda, "max_memory_reserved", lambda _d: 8 * 2**30)
+    assert pilot_module._memory_row(torch.device("cuda")) == {
+        "cuda_max_memory_allocated": 7 * 2**30,
+        "cuda_max_memory_reserved": 8 * 2**30,
+    }
+
+
 def test_pilot_with_noise_on_the_host_tier(layout: tuple[Path, Path], tmp_path: Path) -> None:
     config = _config(layout, splits=None, noise_scale=1.0, tier="host", batch_size=10)
     run = train_pilot(config, tmp_path, stop_at=2)  # 2 of 4 noised steps, no final dump
@@ -223,8 +285,10 @@ def test_cli_pilot_embed_subsets_and_probe(
     run = tmp_path / "run"
     pilot = ("simclr-pilot", prepared, "--output-dir", run, "--device", "cpu", "--batch-size", 4)
     # 1 of 2 steps: a time-boxed call (no final dump), then the refusal without --resume.
-    assert _cli(*pilot, "--splits", splits, "--steps", 2, "--stop-at", 1) == 0
+    once = ("--steps", 2, "--stop-at", 1, "--activation-checkpointing")
+    assert _cli(*pilot, "--splits", splits, *once) == 0
     assert "1 steps done" in capsys.readouterr().out
+    assert json.loads((run / "pilot.json").read_text())["config"]["activation_checkpointing"]
     assert _cli(*pilot, "--splits", splits, "--steps", 2) == 2
 
     random_init = tmp_path / "random"

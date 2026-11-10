@@ -49,7 +49,12 @@ dropped, so each batch has B distinct stamps). A pure function of ``(seed, s)``.
 from ``(seed, s)``), one forward of both views concatenated (BatchNorm statistics over the
 2B views), NT-Xent in paper mode in float32 (:mod:`.objective`), LARS at the rate of
 :func:`~.optim.warmup_cosine_lr` for ``s`` (:mod:`.optim`), ``zero_grad(set_to_none=True)``,
-backward, step.
+backward, step. With ``activation_checkpointing`` the encoder keeps only the inputs of its
+nine segments for the backward and runs their forward again there
+(:func:`~.network.checkpointed_encoder`; the BatchNorm buffers are left as the forward
+left them): the numbers are the same bit for bit on the CPU, the step costs about one more
+encoder forward, and the activation memory drops (ADR 0025, amendment "activation
+checkpointing").
 
 **Run length.** ``epochs`` (whole passes) or ``steps``: the schedule's ``total_steps`` is
 exactly the run's length, and the warmup is ``warmup_epochs`` passes (at most
@@ -59,7 +64,9 @@ exactly the run's length, and the warmup is ``warmup_epochs`` passes (at most
 
 - ``pilot.json``: the config, the data record, the schedule, the device and versions;
 - ``metrics.jsonl``: every ``log_every`` steps, the step's loss, mean positive and negative
-  cosine, and rate;
+  cosine, and rate; on CUDA also ``cuda_max_memory_allocated`` and
+  ``cuda_max_memory_reserved`` (bytes, the peaks since the process started, one
+  ``simclr-pilot`` call: :func:`_memory_row`), so a ``--steps`` dry run sizes the batch;
 - ``diagnostics.jsonl``: every ``diagnostics_every`` steps and at the end
   (:func:`diagnose`): the effective rank of ``cov(h)``, the per-dimension std of ``z``,
   alignment and uniformity on a fixed sample with fixed views, and the kNN monitor; with
@@ -77,6 +84,9 @@ included), the optimizer and the steps done; the config must be the same. Every 
 function of the step, so the continued run takes the same batches and views as an
 uninterrupted one; the log lines past the checkpoint are dropped. The resume is exact
 whenever the kernels are deterministic (``deterministic=True`` on CUDA; always on CPU).
+The resume may turn ``activation_checkpointing`` on or off (:data:`_EXECUTION_FIELDS`: it
+does not change the numbers); the record and the checkpoints written after it hold the new
+value.
 """
 
 from __future__ import annotations
@@ -233,6 +243,8 @@ class PilotConfig:
     online_probe_lr: float = ONLINE_LR
     # The stamp fits of a corpus index (archive.corpus_fits; the record omits it unset).
     corpus_fits: str | None = None
+    # Memory, not numbers (network.checkpointed_encoder; the record omits it off).
+    activation_checkpointing: bool = False
 
     def __post_init__(self) -> None:
         if (self.epochs is None) == (self.steps is None):
@@ -282,9 +294,9 @@ class PilotConfig:
     def to_plain(self) -> dict[str, Any]:
         """The config as a JSON-ready dict: every field, but an optional one at its default.
 
-        The monitors' fields and ``corpus_fits`` are left out while they hold their
-        defaults, so a run without them writes the same record and checkpoint config as
-        before they existed.
+        The monitors' fields, ``corpus_fits`` and ``activation_checkpointing`` are left out
+        while they hold their defaults, so a run without them writes the same record and
+        checkpoint config as before they existed.
         """
         plain = asdict(self)
         for name in _OPTIONAL_FIELDS:
@@ -316,7 +328,9 @@ _MONITOR_FIELDS: Final = (
     "online_probe_lr",
 )
 #: Every field :meth:`PilotConfig.to_plain` omits at its default.
-_OPTIONAL_FIELDS: Final = (*_MONITOR_FIELDS, "corpus_fits")
+_OPTIONAL_FIELDS: Final = (*_MONITOR_FIELDS, "corpus_fits", "activation_checkpointing")
+#: The fields a resume may change: how the step runs, not what it computes.
+_EXECUTION_FIELDS: Final = ("activation_checkpointing",)
 _DEFAULTS: Final = {f.name: f.default for f in fields(PilotConfig)}
 
 
@@ -864,7 +878,9 @@ class PilotRun:
             None if config.keep_every_epochs is None else config.keep_every_epochs * per_pass
         )
         torch.manual_seed(config.seed)
-        self.model = SimCLRNetwork().to(device)
+        self.model = SimCLRNetwork(activation_checkpointing=config.activation_checkpointing).to(
+            device
+        )
         self.optimizer = build_lars(self.model, lr=self.base_lr, weight_decay=config.weight_decay)
         self.loss = SimCLRLoss(config.temperature)
         self.steps_done = 0
@@ -1002,13 +1018,18 @@ class PilotRun:
     def restore(self, payload: dict[str, Any]) -> None:
         """Load a checkpoint of this run (same config) into the model and optimizer.
 
+        The configs are compared without :data:`_EXECUTION_FIELDS`: a resume may turn
+        activation checkpointing on or off.
+
         Raises:
             ConfigError: if the checkpoint is of another format or another config, or the
                 run it holds was stopped by the abort rule.
         """
         if payload.get("format") != CKPT_FORMAT or payload.get("format_version") != _CKPT_VERSION:
             raise ConfigError("not a pilot checkpoint of this version")
-        if _with_defaults(payload["config"]) != asdict(self.config):
+        if _numbers_config(_with_defaults(payload["config"])) != _numbers_config(
+            asdict(self.config)
+        ):
             raise ConfigError("the checkpoint was written with another config; refusing to resume")
         # The same paths may now hold other data (an index or fits rebuilt with --overwrite).
         saved, current = payload["data"].get("pretrain"), self.data.record.get("pretrain")
@@ -1066,6 +1087,26 @@ def _with_defaults(saved: dict[str, Any]) -> dict[str, Any]:
     merged = {**{k: _DEFAULTS[k] for k in _DEFAULTS if k not in saved}, **saved}
     merged["probe_budgets"] = tuple(merged["probe_budgets"])
     return merged
+
+
+def _numbers_config(plain: dict[str, Any]) -> dict[str, Any]:
+    """A config without :data:`_EXECUTION_FIELDS`: what a resume must keep."""
+    return {k: v for k, v in plain.items() if k not in _EXECUTION_FIELDS}
+
+
+def _memory_row(device: torch.device) -> dict[str, int]:
+    """The CUDA allocator's peaks on ``device`` since the process started, in bytes.
+
+    ``cuda_max_memory_allocated`` is the tensors' peak (what a batch size must fit);
+    ``cuda_max_memory_reserved`` the caching allocator's, closer to what ``nvidia-smi``
+    shows. Empty on any other device (the CPU and MPS have no such counter here).
+    """
+    if device.type != "cuda":
+        return {}
+    return {
+        "cuda_max_memory_allocated": int(torch.cuda.max_memory_allocated(device)),
+        "cuda_max_memory_reserved": int(torch.cuda.max_memory_reserved(device)),
+    }
 
 
 def _probe_rows(config: PilotConfig, data: PilotData) -> tuple[BudgetRows, dict[str, Any]]:
@@ -1273,6 +1314,7 @@ def _after_step(
             if not np.isfinite(value):
                 raise FloatingPointError(f"loss {value} at step {done}")
             row = {"step": done, "loss": value, "pos": float(pos), "neg": float(neg), "lr": lr}
+            row.update(_memory_row(run.device))
             _append_jsonl(out_dir / "metrics.jsonl", row)
         elif event == "diagnostics":
             selection_h = _selection_h(run) if run.config.monitors else None
