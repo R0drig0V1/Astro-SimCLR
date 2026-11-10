@@ -14,7 +14,13 @@ handlers import torch and the pilot lazily, so ``--help`` stays fast.
   ``--noise-scale`` on an index needs ``--corpus-fits FITS_FILE`` (``build-corpus-fits``);
   ``--activation-checkpointing`` trades about one more encoder forward per step for less
   activation memory, with the same numbers (a resume may turn it on or off).
+  ``--scale-jitter``, ``--blur-sigma``, ``--intensity-jitter`` and ``--rotation-degrees``
+  turn on the optional views of task 5.2 (:mod:`~astro_simclr.simclr.views`; off at 0).
   Exit 0 when the call ends.
+- ``simclr-view-admission RUN_DIR... --splits FILE --out FILE [--data DIR] [--seed N]
+  [--repeats R] [view flags]``: plan 5.2's admission test of a view on the replication
+  checkpoint, scored on the screen's selection half only
+  (:mod:`~astro_simclr.simclr.admission`); exit 0 whatever the verdict.
 - ``simclr-embed DATA --output-dir OUT (--checkpoint FILE | --random-init) [--seed N]``:
   the embedding dump of a checkpoint, or of the randomly initialised network (the
   random-init probe of the go/no-go), without training.
@@ -105,6 +111,10 @@ def _pilot(args: argparse.Namespace) -> int:
         online_probe_lr=args.online_probe_lr,
         corpus_fits=None if args.corpus_fits is None else str(args.corpus_fits),
         activation_checkpointing=args.activation_checkpointing,
+        scale_jitter=args.scale_jitter,
+        blur_sigma=args.blur_sigma,
+        intensity_jitter=args.intensity_jitter,
+        rotation_degrees=args.rotation_degrees,
     )
     run = train_pilot(config, args.output_dir, resume=args.resume, stop_at=args.stop_at)
     if run.status == "aborted":
@@ -474,6 +484,7 @@ def _add_pilot(commands: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     pilot.add_argument("--lr-per-256", type=float, default=0.3, help="lr = this * B / 256")
     pilot.add_argument("--warmup-epochs", type=float, default=10.0)
     pilot.add_argument("--noise-scale", type=float, default=0.0, help="C5 noise; 0 = off")
+    _add_view_arguments(pilot)
     pilot.add_argument("--seed", type=int, default=0)
     pilot.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda", "mps"))
     pilot.add_argument("--fp32-precision", default="ieee", choices=("ieee", "tf32"))
@@ -530,6 +541,102 @@ def _add_pilot(commands: argparse._SubParsersAction[argparse.ArgumentParser]) ->
     pilot.set_defaults(handler=_pilot)
 
 
+def _add_view_arguments(parser: argparse.ArgumentParser) -> None:
+    """The optional views of task 5.2 (``simclr.views``; each off at 0, the default)."""
+    views = parser.add_argument_group(
+        "optional views (task 5.2; off at 0; scale jitter and blur are ablations only)"
+    )
+    views.add_argument(
+        "--scale-jitter",
+        type=float,
+        default=0.0,
+        help="zoom in by up to 1 + this, log-uniform, about the window's centre",
+    )
+    views.add_argument(
+        "--blur-sigma", type=float, default=0.0, help="Gaussian blur of up to this many pixels"
+    )
+    views.add_argument(
+        "--intensity-jitter",
+        type=float,
+        default=0.0,
+        help="gamma remap, the same on the 3 channels, |ln gamma| up to this",
+    )
+    views.add_argument(
+        "--rotation-degrees",
+        type=float,
+        default=0.0,
+        help="rotation by up to this many degrees (at most 6.52: no fill in the window)",
+    )
+
+
+def _view_admission(args: argparse.Namespace) -> int:
+    from astro_simclr.simclr.admission import AdmissionView, view_admission
+    from astro_simclr.simclr.views import ViewConfig
+
+    try:
+        views = ViewConfig(
+            noise_scale=args.noise_scale,
+            scale_jitter=args.scale_jitter,
+            blur_sigma=args.blur_sigma,
+            intensity_jitter=args.intensity_jitter,
+            rotation_degrees=args.rotation_degrees,
+        )
+    except ValueError as err:
+        raise ConfigError(str(err)) from None
+    report = view_admission(
+        args.run_dirs,
+        AdmissionView(views, dihedral=args.dihedral, shift=args.shift),
+        splits=args.splits,
+        out=args.out,
+        data=args.data,
+        seed=args.seed,
+        repeats=args.repeats,
+        device=args.device,
+        overwrite=args.overwrite,
+    )
+    sys.stdout.write("\n".join(report.lines) + "\n")
+    return 0
+
+
+def _add_view_admission(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    """``simclr-view-admission`` (task 5.2; ``simclr.admission``)."""
+    admission = commands.add_parser(
+        "simclr-view-admission",
+        help="plan 5.2's admission test: a view's accuracy drop on the screen's selection half",
+        description="Evaluate a phase-2 paper-classifier run (the replication checkpoint) on "
+        "the screen's selection half (--splits; never the decision half) of its prepared "
+        "layout's Validation, as stored and under a SimCLR view "
+        "applied once per stamp at 63 px (the pilot's arithmetic, seeded), then report the "
+        "accuracy drop and the verdict (admitted if the mean drop is at most 1 point).",
+    )
+    admission.add_argument(
+        "run_dirs", type=Path, nargs="+", metavar="RUN_DIR", help="train-supervised runs"
+    )
+    admission.add_argument(
+        "--splits",
+        type=Path,
+        required=True,
+        help="a stored splits file of the layout: only its screen's selection half is read",
+    )
+    admission.add_argument("--out", type=Path, required=True, help="the JSON report")
+    admission.add_argument(
+        "--data", type=Path, help="the prepared layout (default: the run's data_dir/dataset)"
+    )
+    admission.add_argument("--seed", type=int, default=0, help="the views' draws")
+    admission.add_argument(
+        "--repeats", type=int, default=1, help="independent draws, averaged (default 1)"
+    )
+    admission.add_argument(
+        "--device", choices=("cpu", "cuda", "mps"), help="default: the run's training device"
+    )
+    admission.add_argument("--noise-scale", type=float, default=0.0, help="C5 noise; 0 = off")
+    _add_view_arguments(admission)
+    admission.add_argument("--dihedral", action="store_true", help="one of the 8 elements")
+    admission.add_argument("--shift", action="store_true", help="the window's integer shift")
+    admission.add_argument("--overwrite", action="store_true", help="replace --out")
+    admission.set_defaults(handler=_view_admission)
+
+
 def _add_monitor_arguments(pilot: argparse.ArgumentParser) -> None:
     """The probe monitors' options (``simclr.monitor``; all off by default)."""
     monitors = pilot.add_argument_group(
@@ -582,6 +689,7 @@ def _add_monitor_arguments(pilot: argparse.ArgumentParser) -> None:
 def add_simclr_commands(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     """Register the ``simclr-*`` and ``make-label-subsets`` subcommands."""
     _add_pilot(commands)
+    _add_view_admission(commands)
 
     embed = commands.add_parser(
         "simclr-embed",

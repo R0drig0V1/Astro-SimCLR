@@ -53,6 +53,10 @@ __all__ = ["RESERVED_STREAMS", "device_generator", "host_generator", "seed_every
 #: noise fields, from one host generator). The fine-tuning arm (``simclr.finetune``) reuses
 #: it on purpose: the same draws as the scratch arm per subset and step (common random
 #: numbers between two arms, not two processes of one run; ADR 0025, amendment 5.4).
+#: Task 5.2 (:mod:`astro_simclr.simclr.views`, the pilot's optional views; ADR 0025,
+#: amendment "stronger views"): ``simclr_view_scale``, ``simclr_view_blur``,
+#: ``simclr_view_intensity`` and ``simclr_view_rotation``, each the per-sample parameter of
+#: its view (``[seed, step, 14..17]``, host; drawn only when on).
 RESERVED_STREAMS: Final = MappingProxyType(
     {
         "aug_noise": 1,
@@ -73,6 +77,11 @@ RESERVED_STREAMS: Final = MappingProxyType(
         "simclr_online_probe": 12,
         # simclr.scratch (task 5.0b): the scratch baseline's batch, view and noise per step.
         "simclr_scratch": 13,
+        # simclr.views (task 5.2): the optional views' per-sample parameters, one each.
+        "simclr_view_scale": 14,
+        "simclr_view_blur": 15,
+        "simclr_view_intensity": 16,
+        "simclr_view_rotation": 17,
     }
 )
 

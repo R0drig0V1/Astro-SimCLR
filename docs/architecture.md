@@ -444,6 +444,7 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   [--splits FILE] [--epochs N | --steps N] [--batch-size B] [--temperature T] [--lr-per-256
   X] [--warmup-epochs E] [--noise-scale S] [--seed N] [--device auto|cpu|cuda|mps]
   [--fp32-precision ieee|tf32] [--deterministic] [--activation-checkpointing]
+  [--scale-jitter J] [--blur-sigma S] [--intensity-jitter G] [--rotation-degrees D]
   [--tier device|host] [--probe-every K
   --label-budgets FILE [--probe-budgets B...] [--probe-part P] [--probe-repeat R]
   [--abort-if-probe-below-random EPOCH]] [--online-probe [--online-probe-batch N]
@@ -458,7 +459,10 @@ shared `--config FILE` and repeatable `--set KEY=VALUE` options through
   handler, the encoder from a `simclr-pilot` checkpoint; an unreadable or unknown
   checkpoint: 1, one pretrained against another layout or splits file: 2);
   `simclr-compare --baseline FILE --variant FILE --splits FILE [--out FILE] [--margin M]
-  [--n-boot N] [--seed S]`. Registered by `simclr.commands.add_simclr_commands`; each exits 0
+  [--n-boot N] [--seed S]`; `simclr-view-admission RUN_DIR... --splits FILE --out FILE
+  [--data DIR] [--seed N] [--repeats R] [--device cpu|cuda|mps] [--noise-scale S] [--scale-jitter J]
+  [--blur-sigma S] [--intensity-jitter G] [--rotation-degrees D] [--dihedral] [--shift]
+  [--overwrite]` (task 5.2). Registered by `simclr.commands.add_simclr_commands`; each exits 0
   when it ends, whatever the verdict (an existing run without `--resume`, an existing
   subsets file or report, a budget larger than a class, a margin out of range: 2; subsets
   of other candidates, unpaired or version-1 reports, another splits file: 1).
@@ -2730,7 +2734,8 @@ draw is keyed by `step`, so 5.3 can run the same functions on the plain engine.
 
 | Module | Contents |
 |---|---|
-| `views` | `make_views(images, params, config, *, fits, generator)`: two training views (B, C, 57, 57) of (B, C, 63, 63) stamps: optional C5 noise on the 63-pixel stamp (`background_noise`: science and template noised, the difference through the fit, the min-max again), then `dihedral(images, k)` (8 exact elements: `rot90` by `k % 4`, flip if `k >= 4`), then `crop(images, offsets)` (an integer 57-pixel window, offsets 0-6, the same for every channel, no fill). `centre_crop` is the evaluation view (offset 3). `noise_with_fields(images, fits, u, z, config)` is `background_noise` with its standard-normal fields given (the scratch baseline draws them on the host). `draw_view_params(seed, step, B)`: `k`, offsets and noise strengths of both views from `default_rng([seed, step, simclr_views])`, always drawn in full; `noise_generator(seed, step, device)`: the noise fields' device generator. |
+| `views` | `make_views(images, params, config, *, fits, generator, extra)`: two training views (B, C, 57, 57) of (B, C, 63, 63) stamps: optional C5 noise on the 63-pixel stamp (`background_noise`: science and template noised, the difference through the fit, the min-max again), the optional blur (`gaussian_blur`: a normalised convolution that leaves the former-NaN pixels out, then the min-max) and gamma (`gamma_remap`: the same `x ** gamma` on the three channels), then `dihedral(images, k)` (8 exact elements: `rot90` by `k % 4`, flip if `k >= 4`), then `crop(images, offsets)` (an integer 57-pixel window, offsets 0-6, the same for every channel, no fill), or with scale jitter or rotation `resample(images, *window_transform(offsets, scale, angle))` (one bilinear resampling; the shift gives way to the rotation so no view pixel reads a fill; `rotation_bound()` = 6.52 degrees). `centre_crop` is the evaluation view (offset 3). `noise_with_fields(images, fits, u, z, config)` is `background_noise` with its standard-normal fields given (the scratch baseline draws them on the host). `draw_view_params(seed, step, B)`: `k`, offsets and noise strengths of both views from `default_rng([seed, step, simclr_views])`, always drawn in full; `draw_extra_params(seed, step, B, config)`: each optional view's parameters from its own stream (14-17), only when on; `noise_generator(seed, step, device)`: the noise fields' device generator. |
+| `admission` | `view_admission(run_dirs, AdmissionView, *, splits, out, data, seed, repeats, device)`: plan 5.2's admission test (`simclr-view-admission`): the paper classifier's accuracy on the screen's **selection half** only (a verified splits file; never the decision half), as stored and with the view applied once per stamp at 63 px (`view_stamps`, the pilot's arithmetic and draws at step `repeat`), through the run's own crop (`model_input`); the verdict is a mean drop of at most `MAX_DROP` (1 point). |
 | `network` | `resnet18_cifar()`: torchvision ResNet-18, 3x3 stride-1 stem, no max-pool, `fc = Identity`, `zero_init_residual=True` (57 -> 57 -> 29 -> 15 -> 8, `h` 512-d); `ProjectionHead`: Linear(512, 512, no bias)-BN-ReLU-Linear(512, 128); `SimCLRNetwork(x) -> (h, z)`; `SimCLRNetwork(activation_checkpointing=True)` (a plain attribute, not in the state dict): in train mode with gradients on, `checkpointed_encoder` runs the nine `encoder_segments` (the stem, then each residual block) under `torch.utils.checkpoint` (`use_reentrant=False`, `preserve_rng_state=True`), and each segment's recompute saves and restores its BatchNorm buffers (`_restore_buffers`), so the numbers are bit-identical on the CPU (see below). |
 | `objective` | `SimCLRLoss(T)(z_i, z_j)`: `losses.NT_Xent` in paper mode (ADR 0002), in float32 with autocast off; returns `(loss, pos, neg)`. |
 | `optim` | `lars_param_groups(model)`: convolution/linear weights (weight decay 1e-6, trust ratio) and an excluded group (normalisation parameters and biases: no decay, no trust ratio, `optim.EXCLUDE_KEY`); `build_lars(model, lr=...)`: fixed trust ratio, no Nesterov, momentum 0.9; `base_learning_rate(B) = 0.3 * B / 256`; `warmup_cosine_lr(step, base_lr, total_steps, warmup_steps, lr_min=0)`: linear warmup to `base_lr` at step `W - 1`, then a cosine that is exactly `lr_min` at `total_steps - 1`; `set_learning_rate`. |
@@ -2741,7 +2746,7 @@ draw is keyed by `step`, so 5.3 can run the same functions on the plain engine.
 | `scratch` | The go/no-go's supervised scratch baseline (on the plain engine). `ScratchRecipe(steps, batch_per_class=10, warmup_fraction=0.05, noise_scale=3, lr_grid=(5e-4, 2e-3), weight_decay_grid=(0.05, 0.5), eval_batch=256)` (`trials`: lr outer; `default_steps(per_class)`: 1,000 at 10, 2,000 at 100); `subset_seed(seed, r)`: the first 32-bit word of `SeedSequence([seed, r, 13])`; `draw_step(seed, step, by_class, k, noise=)`: from `host_generator(seed, step, simclr_scratch)` (stream 13), in order, the class-stratified batch, the dihedral elements, the offsets, the noise strengths and the noise fields (float32, on the host: device-independent); `scratch_view`: the pilot's view, one per stamp (`views.noise_with_fields`, `dihedral`, `crop`); `ScratchNetwork`: `resnet18_cifar()` then `Linear(512, 5)`; `ScratchStream` (a `TrainStream` holding only the subset's Train stamps: `k` of each class per step); `EvalStamps` (an `EvalSource` of the centred view); `ScratchTask` (AdamW, no decay on norms and biases, warmup then cosine to 0 set per step, cross-entropy); `fit_trial`: `engine.loop.fit` with a fixed horizon, one validation after the last step scored by `selection_score` (balanced accuracy) on the selection half, the last weights kept; `scratch_screen`: every trial of every subset, the first best on the selection half kept and only it scored on the decision half. `encoder_init` (of `ScratchTask`, `fit_trial` and `scratch_screen`; the fine-tuning arm): an encoder state copied into the encoder after the network is built, so the head and every draw stay the scratch arm's. |
 | `compare` | `report_header(command, ...)`: the pairing keys of a version-2 subset report (subsets and splits files with their SHA-256, the decision rows and labels); `summary(rows)`; `read_report`; `decision_groups(splits, rows)`: the objects of the decision rows; `compare_reports(baseline, variant, groups=, margin=0.02)`: `protocol.stats.hierarchical_paired_bootstrap` of balanced accuracy, variant - baseline, after checking the pairing, and `margin_verdict` (`go` iff the lower bound exceeds the margin) at 10 per class only. No torch. |
 | `finetune` | The fine-tuning arm (plan 5.4). `load_pilot_init(path) -> PilotInit(encoder, record)`: the `encoder.*` entries of a `simclr-pilot` checkpoint's `model` (weights and BatchNorm buffers; the head and optimizer ignored), checked by `encoder_state` against `resnet18_cifar()`'s keys, shapes and dtypes and for finite values; refuses a non-pilot file and a version outside `KNOWN_CKPT_VERSIONS`. `record`: path, SHA-256, version, `steps_done`, `total_steps`, config and the pretraining data (`cd21-layout` or `archive-corpus`, `cd21_train_in_pretraining`). `check_init_data(init, data_record)`: the same layout and splits file as the fine-tune's, else `ConfigError`. |
-| `commands` | The `simclr-pilot`, `simclr-embed`, `make-label-subsets`, `simclr-probe`, `simclr-scratch`, `simclr-finetune` and `simclr-compare` subcommands (see `cli`). |
+| `commands` | The `simclr-pilot`, `simclr-view-admission`, `simclr-embed`, `make-label-subsets`, `simclr-probe`, `simclr-scratch`, `simclr-finetune` and `simclr-compare` subcommands (see `cli`). |
 
 A pilot run directory holds `pilot.json` (config, data record with the source and splits
 SHA-256, schedule, device, precision and determinism flags, versions), `metrics.jsonl`
@@ -2777,6 +2782,54 @@ astro-simclr simclr-pilot $D --splits $S --output-dir runs/dry-1024 --steps 20 -
   --diagnostics-every 1000 --checkpoint-every 1000 --activation-checkpointing
 tail -n 1 runs/dry-1024/metrics.jsonl   # cuda_max_memory_allocated / _reserved, in bytes
 ```
+
+**Optional views and their admission test** (task 5.2; ADR 0025, amendment "stronger
+views"). Four views of plan 5.2, each off at 0 (the default) with a strength to sweep:
+`--scale-jitter J` (a zoom in by `s`, log-uniform in `[1, 1 + J]`, about the window's
+centre; magnification only, as SimCLR's resized crop, since a zoom out would read a fill),
+`--blur-sigma S` (a Gaussian of `u * S` pixels, `S` at most 3), `--intensity-jitter G` (a gamma with
+`ln gamma` uniform in `[-G, G]`, **the same on the three channels**: a per-channel change
+would be the hue or saturation the plan forbids) and `--rotation-degrees D` (`theta`
+uniform in `[-D, D]`, at most 6.52 degrees). Scale jitter and blur are **ablations only**
+(plan 5.2: they spread one-pixel spikes into PSF-like blobs). The order: noise, blur,
+gamma at 63 px (the photometric views; the noise first because its fit describes the
+stored stamp, the gamma last because it needs [0, 1] input), the dihedral element, then
+the window. With scale or rotation the window is one bilinear resampling of the stamp at
+`c + t + R(theta) q / s`; its corners reach `e = 28 (|cos| + |sin|) / s` pixels from its
+centre, so the shift is scaled by `min(1, (31 - e) / 3)`: **no view pixel reads a fill**,
+the integer shift is unchanged without rotation, and at 6.52 degrees (where `e = 31`, the
+bound for the centred window) there is no shift. **Interpolation confound:** the
+resampling is also a low-pass filter (on one axis, weights `(w, 1 - w)` keep `1 - 2w(1 -
+w)` of the variance of pixel noise, half at a half pixel; about 44 % on average in two
+dimensions), so it weakens the C5 noise, smooths spikes and blurs the former-NaN zeros,
+while the evaluation view is an exact crop: a rotation or zoom result cannot be
+attributed to the geometry alone (ADR 0025). The pilot's fixed diagnostic views stay
+without the optional views, so alignment and uniformity do not measure them. Each view draws its per-sample parameter
+from its own host stream (`simclr_view_scale` 14, `simclr_view_blur` 15,
+`simclr_view_intensity` 16, `simclr_view_rotation` 17), only when on; with every view off
+the pilot draws and trains exactly as before (`tests/test_simclr_views_unchanged.py`, a
+reference recorded from main). `pilot.json` and the checkpoints record a strength only
+when it is on; a `--resume` refuses any change of them. CPU cost per batch of 256 (both
+views, 4 threads, a heavily loaded laptop; the views without options take about 19 ms):
+noise +94 ms, scale +20 ms, blur (sigma 1) +139 ms, blur (sigma 2) +230 ms, gamma +32 ms,
+rotation +30 ms; small against the network's own CPU step (3.5-8.5 s at batch 32
+already, ADR 0025's activation-checkpointing amendment).
+
+`simclr-view-admission RUN_DIR... --splits FILE --out FILE.json [view flags]` is the plan's
+admission test (`simclr.admission`): the replication checkpoint (a `train-supervised` run
+of the paper classifier) on the **screen's selection half** of Validation only (admission
+selects the arms, so it never reads the decision half, plan 5.0c; the splits file is
+verified against the layout and recorded with the rows), as stored and with the view
+applied once per stamp (seeded, `--repeats` independent draws averaged: at 250 stamps one
+stamp is 0.4 points), and the verdict `admitted` when the mean accuracy drop is at most 1
+point. The paper model reads the
+centre 21 pixels of the 63-pixel stamp, so the view is applied at 63 pixels, keeping the
+size (the geometric part resampled to 63 pixels about the training window's centre, the
+outer ring beyond the 57-pixel window clamped to the stamp's edge), and the run's own crop
+and re-normalisation follow; with no view the input is the run's own bit for bit.
+`--dihedral` and `--shift` test the pilot's fixed views as well. A with-features
+checkpoint reads the alert features, untouched by any view, so its drop understates the
+image's: run the without-features replication too.
 
 **Probe monitors** (`simclr.monitor`; tasks 5.0b/5.0c/5.3, ADR 0025 amendment of
 2026-11-09). Both are off by default, and then the run's files are byte for byte those of
