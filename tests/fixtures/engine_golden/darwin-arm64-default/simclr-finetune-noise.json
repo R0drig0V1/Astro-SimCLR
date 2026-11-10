@@ -1,0 +1,20 @@
+{
+ "case": "simclr-finetune-noise",
+ "format": 1,
+ "initial": "a113c377ee2c6766d34b2e4e29b8bbc2e9aa647bbe55efd7c90497d257c6cbc9",
+ "metrics": {
+  "decision_bacc": 0.2,
+  "selection_bacc": 0.2
+ },
+ "predictions": {
+  "decision": "6d5b12667167b1e5d0198795a34f245139c3a010d9c08dfaff064a1997197667"
+ },
+ "torch": "2.14.1",
+ "validations": [
+  [
+   6,
+   0.2,
+   "c6d99e6a95e34146e5a5af4be7cd9fb8658ad4a7ea413f2c0ff83d130c9a7f8d"
+  ]
+ ]
+}

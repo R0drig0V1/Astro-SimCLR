@@ -221,7 +221,8 @@ on the CD21 Train stamps, with checkpoints, diagnostics and a final embedding du
 `simclr-embed --random-init` dumps the untrained network's embeddings, `make-label-subsets`
 stores the probe's label subsets and `simclr-probe` scores a linear probe on the screen
 halves; `simclr-scratch` trains the go/no-go's baseline (the same ResNet-18 from scratch,
-supervised, on the same subsets) and `simclr-compare` gives the paired interval and the
+supervised, on the same subsets), `simclr-finetune` the same recipe with the encoder
+started from a pilot checkpoint, and `simclr-compare` gives the paired interval and the
 verdict (the SSL probe must beat it by more than 2 points at 10 per class). The whole sequence is in [docs/architecture.md](docs/architecture.md) (`simclr`)
 and the decisions in [ADR 0025](docs/decisions/0025-simclr-pilot.md).
 
