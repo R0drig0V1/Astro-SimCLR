@@ -301,3 +301,57 @@ def predictions_digests(run_dir: Path) -> dict[str, dict[str, str]]:
                 for key in sorted(arrays.files)
             }
     return out
+
+
+#: The ``data`` record of :func:`pilot_checkpoint_payload` by default: a CD21 layout run.
+PILOT_DATA: dict[str, Any] = {
+    "path": "layout",
+    "source_sha256": "0" * 64,
+    "kind": "classifier",
+    "n_train": 20,
+    "n_pretrain": 18,
+    "excluded_train": [3, 7],
+    "splits_sha256": "1" * 64,
+}
+
+
+def pilot_checkpoint_payload(
+    seed: int,
+    *,
+    data: dict[str, Any] | None = None,
+    model: dict[str, torch.Tensor] | None = None,
+) -> dict[str, Any]:
+    """A tiny ``simclr-pilot`` checkpoint payload, built deterministically on the CPU.
+
+    The fine-tuning arm's fixture (``simclr.finetune``; ``simclr-finetune-noise``): a
+    ``SimCLRNetwork`` from ``seed`` whose parameters are moved by 0.05 standard normals and
+    whose BatchNorm buffers are moved by one train-mode forward, all from a generator of
+    ``seed`` (the global generator is left as it was), so its encoder is neither the
+    scratch init nor zero-init-residual's identity blocks. ``model`` replaces the state dict
+    (e.g. a scratch init's encoder under ``encoder.``), ``data`` the pretraining record.
+    """
+    from astro_simclr.simclr.finetune import KNOWN_CKPT_VERSIONS
+    from astro_simclr.simclr.network import SimCLRNetwork
+    from astro_simclr.simclr.pilot import CKPT_FORMAT
+
+    if model is None:
+        generator = torch.Generator().manual_seed(seed)
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(seed)
+            network = SimCLRNetwork()
+        with torch.no_grad():
+            for parameter in network.parameters():
+                parameter.add_(0.05 * torch.randn(parameter.shape, generator=generator))
+            network.train()
+            network(torch.rand((8, 3, 57, 57), generator=generator))
+        model = cpu_state(network)
+    return {
+        "format": CKPT_FORMAT,
+        "format_version": KNOWN_CKPT_VERSIONS[-1],
+        "config": {"seed": seed},
+        "data": dict(PILOT_DATA if data is None else data),
+        "steps_done": 3,
+        "total_steps": 3,
+        "model": model,
+        "optimizer": {},
+    }

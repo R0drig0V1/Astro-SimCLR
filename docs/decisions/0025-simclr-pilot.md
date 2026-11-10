@@ -5,13 +5,16 @@
   `docs/plan-reviews/2026-11-08-phase-5.md`, findings F7, F8, F10, F11; the SimCLR review
   of the package, findings A1-A6 and B1-B8)
 - **Implemented by:** `src/astro_simclr/simclr/` (`views.py`, `network.py`,
-  `objective.py`, `optim.py`, `probe.py`, `diagnostics.py`, `pilot.py`, `commands.py`);
+  `objective.py`, `optim.py`, `probe.py`, `diagnostics.py`, `pilot.py`, `commands.py`;
+  the amendments' `scratch.py`, `compare.py`, `finetune.py`);
   `src/astro_simclr/stamp_relation.py`; the per-group exclusion of `optim.LARS`
   (`EXCLUDE_KEY`); four new `engine.randomness.RESERVED_STREAMS`
 - **Checked by:** `tests/test_simclr_views.py`, `tests/test_simclr_model.py`,
   `tests/test_simclr_probe.py`, `tests/test_simclr_pilot.py` (CPU only: a few steps);
   the scratch baseline (amendment below): `tests/test_simclr_scratch.py` and the golden
-  case `simclr-scratch-noise` of `tests/test_engine_regression.py`; the corpus amendments:
+  case `simclr-scratch-noise` of `tests/test_engine_regression.py`; the fine-tuning arm:
+  `tests/test_simclr_finetune.py` and the golden case `simclr-finetune-noise`; the corpus
+  amendments:
   `tests/test_corpus_index.py`, `tests/test_corpus_fits.py`
 
 ## Context
@@ -533,3 +536,74 @@ block, against -61 % of the saved bytes), but the order is the analytic one: per
 below per stage below off. The time ratios scatter with the laptop's load (load average
 10-15 during the runs); the arithmetic says about 1.3x for the encoder (one extra
 forward on top of a forward and a backward), and the 5090 dry run gives the real figure.
+
+## Amendment (2026-11-10, plan 5.4): the fine-tuning arm
+
+**Context.** Neither more pretraining data (the corpus run, 0.568 / 0.721) nor batch 1024
+(0.574 / 0.735) moved the SSL linear probe (0.571 / 0.734 at 10 / 100 per class on the
+decision half; the scratch ResNet-18 0.434 / 0.680). The user decided (2026-11-10) to
+pursue fine-tuning and the views; plan 5.4 reads H1 and H2 in fine-tuning mode. This
+amendment adds the **exploratory** fine-tuning arm on the CD21 screen halves (selection /
+decision), with the probe's and the scratch arm's label subsets; H1's pre-registered test
+set is not touched.
+
+### The arm (`simclr.finetune`, `simclr-finetune`)
+
+- **Exactly the scratch arm, but the encoder's start.** `simclr-finetune DATA --checkpoint
+  CKPT ...` runs `simclr-scratch`'s handler, recipe, grid (lr {5e-4, 2e-3} x weight decay
+  {0.05, 0.5}: four trials, the probe's and scratch's trial budget), fixed step counts
+  (1,000 / 2,000), final weights, selection rule and report shape. `ScratchTask` builds
+  `ScratchNetwork` from the seeded generator as before (encoder, then head) and then
+  copies the checkpoint's encoder state into the encoder: the encoder's random init is
+  drawn and discarded, so the `Linear(512, 5)` head starts with the scratch arm's weights.
+  The paired difference fine-tune - scratch therefore isolates the initialisation.
+- **A command, not `simclr-scratch --init`.** The arm is a different experiment: its report
+  says so (`report: simclr-finetune`, which `simclr-compare` prints), the resume identity
+  of both commands now includes `report` (a scratch report is not resumed as a fine-tune,
+  nor the reverse) and the fine-tune's adds `init_sha256` (another checkpoint is refused).
+  Both commands share one handler and one argument set, so they cannot drift apart.
+- **What is loaded.** Only the `encoder.*` entries of the checkpoint's `model`: the
+  convolution and BatchNorm weights and the BatchNorm buffers. The projection head, the
+  LARS state and the monitors are ignored. A file that is not a pilot checkpoint
+  (`format`), of a version outside `finetune.KNOWN_CKPT_VERSIONS` (today 1), without
+  `model`, `data` or `steps_done`, whose encoder keys, shapes or dtypes are not
+  `resnet18_cifar()`'s, or with non-finite values is refused with the reason. The pilot
+  must have been pretrained against the same layout (source SHA-256) **and the same
+  splits file** (its SHA-256): a checkpoint pretrained without the splits file, or with
+  another, did not leave out this screen's Train exclusions, and is refused.
+- **What is recorded** (the report's `init`): the checkpoint's path, SHA-256, format
+  version, `steps_done`, `total_steps`, `pretraining_complete`, its config, and the
+  pretraining data: `kind` (`cd21-layout`, the pilot: **CD21 Train was in pretraining**,
+  unlabelled, less the splits file's exclusions; or `archive-corpus`, the corpus run: it was
+  not), the layout and splits SHA-256, `n_pretrain`, and for a corpus the index and
+  exclusion SHA-256; `cd21_train_in_pretraining` says it in one field.
+- **Randomness: stream 13 reused, deliberately** (an exception to "a new stream per
+  flag"). The fine-tune draws its batches, views and noise from `draw_step` on stream 13
+  with `subset_seed(seed, r)`, exactly as `simclr-scratch` does: at the same `--seed`,
+  subset `r` sees the same batches, dihedral elements, offsets and noise at every step in
+  both arms (**common random numbers**). The rule exists so that two random processes of
+  one run are not correlated by sharing a stream; here no process is added, and the
+  correlation is between two arms, where it is wanted: it removes the augmentation's and
+  the batch order's noise from the paired difference, and the hierarchical paired
+  bootstrap resamples whole subsets of paired outcomes, so the interval accounts for it.
+  The pairing holds only at the same `--seed` (recorded in both reports); against the
+  probe report, which draws nothing, the arms share only the subsets.
+- **Golden set.** The trial runs on the plain engine, so it joins the regression set:
+  `simclr-finetune-noise` (`tests/test_engine_regression.py`) is the scratch case's trial
+  with the encoder from a tiny pilot checkpoint built deterministically in the test
+  (`tests/_engine_cases.pilot_checkpoint_payload`: a seeded `SimCLRNetwork`, its
+  parameters moved by seeded normals and its BatchNorm buffers by one train-mode forward).
+  No `Settings` field: the arm is a command of the `simclr` package, as the scratch arm.
+- **Checked by** `tests/test_simclr_finetune.py`: with a "checkpoint" equal to the scratch
+  init, the fine-tune equals the scratch arm bit for bit (rows and final weights); with a
+  pilot checkpoint the encoder at step 0 equals the checkpoint's and the head the scratch
+  arm's; every refusal; determinism; the subset and the selection half alone reach
+  training and selection (the rest poisoned with NaN); the command end to end from a real
+  two-step `simclr-pilot` checkpoint, its resume identity, and its pairing in
+  `simclr-compare` with the scratch and the probe reports, unchanged.
+- **Cost:** the scratch arm's plus a checkpoint read: about 1.2 min per subset at 10 per
+  class and 2.5 min at 100 on the RTX 5090, so about 25 and 50 minutes for 20 subsets.
+- **Known limit.** The recipe is the scratch arm's on purpose, including its learning rates;
+  fine-tuning often prefers a lower rate for the encoder than for the head. If the arm
+  under-performs the probe, a fine-tuning grid (a lower encoder rate, a frozen-then-unfrozen
+  schedule) is a separate, declared change, with its own trial budget.

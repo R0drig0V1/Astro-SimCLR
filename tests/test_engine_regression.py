@@ -21,7 +21,9 @@ The cases (``_engine_cases``) are the differential test's: every 2.5 and D3 flag
 (``FLAGS``), split runs (a fold and the screen) and the rj23 scenarios, protocols,
 sensitivity flags and both stop reasons; and one trial of the go/no-go's supervised scratch
 baseline (``simclr.scratch``, ``simclr-scratch-noise``: its initial and final weights, its
-selection score and its decision predictions). The resume tests are in
+selection score and its decision predictions) and the same trial in the fine-tuning arm
+(``simclr.finetune``, ``simclr-finetune-noise``: the encoder from a tiny pilot checkpoint
+built in the test). The resume tests are in
 ``test_engine_resume.py``.
 
 **Platforms.** CPU kernels differ in their rounding between instruction sets (x86 AVX2 /
@@ -66,6 +68,7 @@ from _engine_cases import (
     cpu_state,
     make_split_data,
     paper_settings,
+    pilot_checkpoint_payload,
     platform_key,
     predictions_digests,
     rj23_settings,
@@ -242,9 +245,15 @@ def test_rj23_case_matches_its_golden(
 #: The scratch baseline's golden case (``simclr.scratch``, task 5.0b): one trial of the
 #: go/no-go's supervised baseline with every draw on (C5 noise, dihedral, shift).
 SCRATCH_CASE = "simclr-scratch-noise"
+#: The fine-tuning arm's golden case (``simclr.finetune``, plan 5.4): the same trial, with
+#: the encoder started from a tiny pilot checkpoint (``_engine_cases.pilot_checkpoint_payload``).
+FINETUNE_CASE = "simclr-finetune-noise"
+#: The tiny pilot checkpoint's seed (not the trial's: its encoder is not the scratch init).
+FINETUNE_CHECKPOINT_SEED = 11
 
 
-def test_simclr_scratch_case_matches_its_golden() -> None:
+def _scratch_case(encoder_init: Any = None) -> dict[str, Any]:
+    """The outputs of the scratch case's trial, from ``encoder_init`` if given."""
     from astro_simclr.engine import DevicePolicy
     from astro_simclr.simclr.scratch import (
         EvalStamps,
@@ -271,26 +280,46 @@ def test_simclr_scratch_case_matches_its_golden() -> None:
     cpu = torch.device("cpu")
     picked = EvalStamps(selection, labels[1::4], cpu, batch_size=4)
     task, score = fit_trial(
-        stream, picked, recipe, lr=2e-3, weight_decay=0.05, seed=seed, device=DevicePolicy("cpu")
+        stream,
+        picked,
+        recipe,
+        lr=2e-3,
+        weight_decay=0.05,
+        seed=seed,
+        device=DevicePolicy("cpu"),
+        encoder_init=encoder_init,
     )
     final = cpu_state(task.module)
     seed_everything(seed)
-    initial = cpu_state(ScratchTask(recipe, 2e-3, 0.05).module)
+    initial = cpu_state(ScratchTask(recipe, 2e-3, 0.05, encoder_init=encoder_init).module)
     held_out = EvalStamps(decision, labels[3::4], cpu, batch_size=4)
     task.module.eval()
     with torch.no_grad():
         outputs = [task.eval_step(batch) for batch in held_out]
     predicted = torch.cat([o.probabilities for o in outputs]).argmax(dim=1).numpy()
     digest = hashlib.sha256(np.ascontiguousarray(predicted, dtype="<i8").tobytes()).hexdigest()
-    _check_golden(
-        SCRATCH_CASE,
-        {
-            "initial": state_digest(initial),
-            "validations": [[recipe.steps, score, state_digest(final)]],
-            "metrics": {"selection_bacc": score, "decision_bacc": selection_score(outputs)},
-            "predictions": {"decision": digest},
-        },
-    )
+    return {
+        "initial": state_digest(initial),
+        "validations": [[recipe.steps, score, state_digest(final)]],
+        "metrics": {"selection_bacc": score, "decision_bacc": selection_score(outputs)},
+        "predictions": {"decision": digest},
+    }
+
+
+def test_simclr_scratch_case_matches_its_golden() -> None:
+    _check_golden(SCRATCH_CASE, _scratch_case())
+
+
+def test_simclr_finetune_case_matches_its_golden(tmp_path: Path) -> None:
+    from astro_simclr.simclr.finetune import load_pilot_init
+
+    path = tmp_path / "final.pt"
+    torch.save(pilot_checkpoint_payload(FINETUNE_CHECKPOINT_SEED), path)
+    init = load_pilot_init(path)
+    outputs = _scratch_case(init.encoder)
+    # The fine-tune's initial weights are not the scratch case's (the init is used).
+    assert outputs["initial"] != _scratch_case()["initial"]
+    _check_golden(FINETUNE_CASE, outputs)
 
 
 def test_golden_directory_has_no_stray_case() -> None:
@@ -299,7 +328,7 @@ def test_golden_directory_has_no_stray_case() -> None:
     cases = {f"paper-{p.id}" for p in FLAGS}
     cases |= {f"split-{p.id}" for p in SPLIT_RUNS}
     cases |= {f"rj23-{p.id}" for p in RJ23_CASES}
-    cases.add(SCRATCH_CASE)
+    cases |= {SCRATCH_CASE, FINETUNE_CASE}
     recorded = sorted(GOLDEN_DIR.glob("*/*.json"))
     assert recorded, "no golden recorded on any platform"
     for path in recorded:

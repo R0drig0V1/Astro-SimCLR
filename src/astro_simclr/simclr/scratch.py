@@ -64,6 +64,12 @@ with no increment), validates once after the last step on a monitor of the task'
 batch of each step as a pure function of ``step``, and the task is a plain classifier. No
 checkpoint is written (``run_dir=None``): a trial is short, and the command resumes at
 subset granularity instead (``simclr-scratch --resume``).
+
+**The fine-tuning arm** (``encoder_init``; :mod:`.finetune`, ``simclr-finetune``). Given a
+pilot encoder's state, :class:`ScratchTask` builds the same network from the same seeded
+generator (encoder first, then the head), then copies the state into the encoder: the head
+starts as the scratch arm's, and every draw of stream 13 is the scratch arm's (common
+random numbers). Without it (``None``) nothing changes.
 """
 
 from __future__ import annotations
@@ -460,14 +466,32 @@ class ScratchTask:
     The rate of step ``s`` (:func:`~.optim.warmup_cosine_lr`) is set on the optimizer in
     :meth:`train_step`, before the loop's ``optimizer.step()``. The loss is the mean
     cross-entropy of the logits (the batches are class-stratified, so it is class-balanced).
+    ``encoder_init`` (the fine-tuning arm) is an encoder state dict copied into the encoder
+    after the network is built (module docstring).
     """
 
-    def __init__(self, recipe: ScratchRecipe, lr: float, weight_decay: float) -> None:
-        """Build the network on the CPU (from the global generator the engine seeded)."""
+    def __init__(
+        self,
+        recipe: ScratchRecipe,
+        lr: float,
+        weight_decay: float,
+        *,
+        encoder_init: Mapping[str, torch.Tensor] | None = None,
+    ) -> None:
+        """Build the network on the CPU (from the global generator the engine seeded).
+
+        The head is drawn after the encoder's random init in both arms, so it is the same
+        with and without ``encoder_init``.
+
+        Raises:
+            RuntimeError: as ``load_state_dict`` (strict) for a state of another encoder.
+        """
         self.recipe = recipe
         self.lr = lr
         self.weight_decay = weight_decay
         self._module = ScratchNetwork()
+        if encoder_init is not None:
+            self._module.encoder.load_state_dict(dict(encoder_init), strict=True)
         self._optimizer: torch.optim.Optimizer | None = None
 
     @property
@@ -550,13 +574,15 @@ def fit_trial(
     weight_decay: float,
     seed: int,
     device: DevicePolicy,
+    encoder_init: Mapping[str, torch.Tensor] | None = None,
 ) -> tuple[ScratchTask, float]:
     """One trial on the engine: its task (final weights) and its selection-half score.
 
-    ``seed`` seeds the global streams before the network is built (the engine's order).
+    ``seed`` seeds the global streams before the network is built (the engine's order);
+    ``encoder_init`` starts the encoder from a pilot's state (:class:`ScratchTask`).
     """
     task, result = fit(
-        lambda: ScratchTask(recipe, lr, weight_decay),
+        lambda: ScratchTask(recipe, lr, weight_decay, encoder_init=encoder_init),
         stream,
         selection,
         schedule=_schedule(recipe),
@@ -581,6 +607,7 @@ def scratch_screen(
     device: DevicePolicy,
     done: Mapping[int, dict[str, Any]] | None = None,
     on_subset: Callable[[dict[str, Any]], None] | None = None,
+    encoder_init: Mapping[str, torch.Tensor] | None = None,
 ) -> list[dict[str, Any]]:
     """Train, select and score the baseline on every subset (module docstring).
 
@@ -588,7 +615,8 @@ def scratch_screen(
     order, ``train_labels`` their classes, ``subsets`` the Train indices of each subset;
     ``selection`` and ``decision`` are ``(stamps, labels)`` of the screen halves (host,
     63-pixel). ``done`` maps subset numbers to rows already computed (a resume: they are
-    returned unchanged), ``on_subset`` gets each new row. Returns one row per subset:
+    returned unchanged), ``on_subset`` gets each new row; ``encoder_init`` (the fine-tuning
+    arm) starts every trial's encoder from the same pilot state. Returns one row per subset:
     ``{"subset", "seed", "lr", "weight_decay", "selection_bacc", "decision_bacc",
     "trials": [{"lr", "weight_decay", "selection_bacc"}], "decision_predictions"}``.
 
@@ -618,7 +646,14 @@ def scratch_screen(
                 stamps, train_labels[np.asarray(subset)], fits, seed=seed_r, recipe=recipe
             )
             task, score = fit_trial(
-                stream, selection_source, recipe, lr=lr, weight_decay=wd, seed=seed_r, device=device
+                stream,
+                selection_source,
+                recipe,
+                lr=lr,
+                weight_decay=wd,
+                seed=seed_r,
+                device=device,
+                encoder_init=encoder_init,
             )
             trials.append({"lr": lr, "weight_decay": wd, "selection_bacc": score})
             if best is None or score > best[0]:

@@ -50,7 +50,9 @@ __all__ = ["RESERVED_STREAMS", "device_generator", "host_generator", "seed_every
 #: online linear probe (``[seed, step, 12]``, :mod:`astro_simclr.simclr.monitor`).
 #: ``simclr_scratch``: every draw of the go/no-go's supervised scratch baseline (``[seed_r,
 #: step, 13]``, :mod:`astro_simclr.simclr.scratch`: the batch, its one view and the view's
-#: noise fields, from one host generator).
+#: noise fields, from one host generator). The fine-tuning arm (``simclr.finetune``) reuses
+#: it on purpose: the same draws as the scratch arm per subset and step (common random
+#: numbers between two arms, not two processes of one run; ADR 0025, amendment 5.4).
 RESERVED_STREAMS: Final = MappingProxyType(
     {
         "aug_noise": 1,
